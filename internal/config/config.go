@@ -8,13 +8,14 @@ import (
 )
 
 type Config struct {
-	Addr          string
-	DataDir       string
-	TasksFile     string
-	LogsDir       string
-	WorktreesDir  string
-	PresetsFile   string
-	DefaultEditor string
+	Addr           string
+	DataDir        string
+	TasksFile      string
+	WorkspacesFile string
+	LogsDir        string
+	WorktreesDir   string
+	PresetsFile    string
+	DefaultEditor  string
 }
 
 func Load() (Config, error) {
@@ -35,6 +36,7 @@ func Load() (Config, error) {
 func (c *Config) RefreshDerivedPaths() {
 	c.DataDir = expandHome(c.DataDir)
 	c.TasksFile = filepath.Join(c.DataDir, "tasks.json")
+	c.WorkspacesFile = filepath.Join(c.DataDir, "workspaces.json")
 	c.LogsDir = filepath.Join(c.DataDir, "logs")
 	c.WorktreesDir = filepath.Join(c.DataDir, "worktrees")
 	c.PresetsFile = filepath.Join(c.DataDir, "presets.json")

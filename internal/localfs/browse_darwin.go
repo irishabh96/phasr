@@ -1,0 +1,75 @@
+//go:build darwin
+
+package localfs
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+func BrowseDirectory() (string, error) {
+	primaryScript := `POSIX path of (choose folder with prompt "Select a git repository folder")`
+	path, err := runAppleScript(primaryScript)
+	if err == nil {
+		return path, nil
+	}
+
+	// Retry once after foregrounding Finder; some macOS sessions incorrectly
+	// dismiss `choose folder` unless a GUI app is active.
+	retryScript := `tell application "Finder" to activate
+POSIX path of (choose folder with prompt "Select a git repository folder")`
+	path, retryErr := runAppleScript(retryScript)
+	if retryErr == nil {
+		return path, nil
+	}
+
+	// Fallback to native NSOpenPanel via Swift CLI if AppleScript fails.
+	path, swiftErr := runSwiftDirectoryPicker()
+	if swiftErr == nil {
+		return path, nil
+	}
+
+	return "", fmt.Errorf("browse directory failed: %v; fallback failed: %v", err, swiftErr)
+}
+
+func runAppleScript(script string) (string, error) {
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", fmt.Errorf("no folder selected")
+	}
+	return path, nil
+}
+
+func runSwiftDirectoryPicker() (string, error) {
+	swiftCode := `
+import AppKit
+let panel = NSOpenPanel()
+panel.canChooseDirectories = true
+panel.canChooseFiles = false
+panel.allowsMultipleSelection = false
+panel.canCreateDirectories = true
+panel.title = "Select Folder"
+panel.message = "Select a git repository folder"
+let result = panel.runModal()
+if result == .OK, let url = panel.url {
+  print(url.path)
+  exit(0)
+}
+fputs("selection dismissed", stderr)
+exit(1)
+`
+	out, err := exec.Command("swift", "-e", swiftCode).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", fmt.Errorf("no folder selected")
+	}
+	return path, nil
+}

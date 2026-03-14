@@ -5,9 +5,12 @@ Staq is a Go-first reconstruction of the Superset-style coding-agent workspace: 
 ## What This MVP Includes
 
 - Multi-agent dashboard (running/completed/archived tasks)
+- Workspace + tag metadata for task organization/filtering (workspace stores repo path)
+- Workspace sidebar with active highlight + create workspace action
 - Per-task git worktree + branch isolation
 - Concurrent CLI agent runner with PTY-backed terminal sessions + real-time streaming (SSE)
-- Git diff viewer with changed-file summary + patch rendering
+- Interactive ANSI terminal pane (`xterm`) with tabbed task sessions
+- Git sidebar with staged/unstaged changes, line counts, stage/unstage, and commit action
 - Task lifecycle: create, stop, resume, archive, delete
 - Editor launcher integration (`code`, `cursor`, `zed`, `vim`, `open`, custom command)
 - Presets/templates for setup commands before agent execution
@@ -56,16 +59,11 @@ internal/api                # HTTP API + dashboard template
 - `git`
 - `zsh`
 - At least one editor CLI if using open-editor actions (`code`, `cursor`, etc.)
+- For desktop mode: Xcode Command Line Tools (for CGO) + macOS WebKit runtime
 
 ## Quick Start
 
-1. Configure env (optional):
-
-```bash
-cp .env.example .env
-```
-
-2. Build and run:
+1. Build and run CLI server:
 
 ```bash
 make build
@@ -73,15 +71,38 @@ make build
 # or: make run
 ```
 
-3. Open dashboard:
+2. Open dashboard:
 
 - `http://127.0.0.1:7777`
 
-4. Create a task:
+3. Create a task:
 
 - `Repo Path`: absolute path to an existing local git repository
 - `Agent Command`: any CLI coding agent command
-- Optional preset/prompt
+- Optional `Workspace`, `Tags`, preset, and prompt
+
+## Desktop App Mode (macOS)
+
+Run Staq in a native desktop window (webview shell over the same Go backend):
+
+```bash
+make desktop-run
+```
+
+Build desktop binary:
+
+```bash
+make desktop-build
+./bin/staq-desktop
+```
+
+Common desktop flags:
+
+- `-addr 127.0.0.1:7777`
+- `-data-dir ~/.staq`
+- `-editor code`
+- `-width 1500 -height 980`
+- `-debug`
 
 ## API Surface (MVP)
 
@@ -99,6 +120,13 @@ make build
 - `POST /api/tasks/{id}/terminal/input`
 - `POST /api/tasks/{id}/terminal/resize`
 - `GET /api/presets`
+- `GET /api/workspaces`
+- `POST /api/workspaces`
+- `POST /api/local/browse-directory` (macOS folder picker)
+- `GET /api/tasks/{id}/git/status`
+- `POST /api/tasks/{id}/git/stage`
+- `POST /api/tasks/{id}/git/unstage`
+- `POST /api/tasks/{id}/git/commit`
 
 ## Presets File (Optional)
 
@@ -124,6 +152,7 @@ Create `~/.staq/presets.json` to define custom setup templates:
 Default directory: `~/.staq`
 
 - `tasks.json`
+- `workspaces.json`
 - `logs/<task-id>.log`
 - `worktrees/<task-id>-<name>/`
 - `presets.json` (optional)
@@ -132,14 +161,14 @@ Default directory: `~/.staq`
 
 - No auth/multi-user model (local workstation only)
 - No remote runners
-- Browser UI provides lightweight terminal I/O; no full ANSI terminal renderer yet
+- Desktop/web UI currently attaches one live terminal stream at a time (selected task)
 - Restart does not reattach running processes; tasks marked `stopped`
 - Diff view uses standard `git diff` output only
 
 ## Next Improvements
 
 1. Add websocket multiplexing + richer terminal stream metadata
-2. Add full ANSI terminal rendering in UI with scrollback controls
+2. Add multi-task split terminal view with synchronized terminal tabs
 3. Add workspace snapshot/export and task sharing
 4. Add policy controls for repo allow-lists and command safelists
 5. Add unit/integration tests around task + worktree lifecycle

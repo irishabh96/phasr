@@ -16,6 +16,9 @@ const (
 type Task struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
+	Workspace      string     `json:"workspace"`
+	Tags           []string   `json:"tags"`
+	DirectRepo     bool       `json:"direct_repo"`
 	RepoPath       string     `json:"repo_path"`
 	Branch         string     `json:"branch"`
 	WorktreePath   string     `json:"worktree_path"`

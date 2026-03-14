@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"staq/internal/localfs"
 	"staq/internal/task"
 )
 
@@ -42,6 +44,13 @@ func NewServer(opts Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleDashboard)
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		return nil, fmt.Errorf("load static assets: %w", err)
+	}
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
+	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/presets", s.handlePresets)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
@@ -75,6 +84,49 @@ func (s *server) handlePresets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"presets": s.tasks.Presets(),
 	})
+}
+
+func (s *server) handleBrowseDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	path, err := localfs.BrowseDirectory()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path})
+}
+
+func (s *server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"workspaces": s.tasks.Workspaces(),
+		})
+	case http.MethodPost:
+		var payload struct {
+			Name     string `json:"name"`
+			RepoPath string `json:"repo_path"`
+			InitGit  bool   `json:"init_git"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		workspace, err := s.tasks.CreateWorkspace(payload.Name, payload.RepoPath, payload.InitGit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"workspace":  workspace,
+			"workspaces": s.tasks.Workspaces(),
+		})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +191,8 @@ func (s *server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		s.handleOpenEditor(w, r, id)
 	case "terminal":
 		s.handleTaskTerminal(w, r, id, subaction)
+	case "git":
+		s.handleTaskGit(w, r, id, subaction)
 	default:
 		http.NotFound(w, r)
 	}
@@ -260,7 +314,7 @@ func (s *server) handleTaskEvents(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 
-	logs, _ := s.tasks.Logs(id, 80)
+	logs, _ := s.tasks.LogTailBytes(id, 256*1024)
 	bootstrap := map[string]any{"logs": logs}
 	payload, _ := json.Marshal(bootstrap)
 	_, _ = fmt.Fprintf(w, "event: bootstrap\ndata: %s\n\n", payload)
@@ -317,6 +371,101 @@ func (s *server) handleTaskTerminal(w http.ResponseWriter, r *http.Request, id, 
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *server) handleTaskGit(w http.ResponseWriter, r *http.Request, id, subaction string) {
+	switch subaction {
+	case "status":
+		s.handleGitStatus(w, r, id)
+	case "stage":
+		s.handleGitStage(w, r, id)
+	case "unstage":
+		s.handleGitUnstage(w, r, id)
+	case "commit":
+		s.handleGitCommit(w, r, id)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *server) handleGitStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	status, err := s.tasks.GitStatus(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":   id,
+		"staged":    status.Staged,
+		"unstaged":  status.Unstaged,
+		"staged_n":  len(status.Staged),
+		"changes_n": len(status.Staged) + len(status.Unstaged),
+	})
+}
+
+func (s *server) handleGitStage(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.tasks.StageFile(id, payload.Path); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "staged": payload.Path})
+}
+
+func (s *server) handleGitUnstage(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.tasks.UnstageFile(id, payload.Path); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "unstaged": payload.Path})
+}
+
+func (s *server) handleGitCommit(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	out, err := s.tasks.Commit(id, payload.Message)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id": id,
+		"commit":  out,
+	})
 }
 
 func (s *server) handleTerminalInput(w http.ResponseWriter, r *http.Request, id string) {

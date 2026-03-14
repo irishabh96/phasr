@@ -11,15 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"staq/internal/api"
+	"staq/internal/app"
 	"staq/internal/config"
-	"staq/internal/diff"
-	"staq/internal/editor"
-	"staq/internal/gitops"
-	"staq/internal/preset"
-	"staq/internal/process"
-	"staq/internal/store"
-	"staq/internal/task"
 )
 
 func main() {
@@ -39,45 +32,14 @@ func run() error {
 	flag.StringVar(&cfg.DefaultEditor, "editor", cfg.DefaultEditor, "Default editor command (code/cursor/zed/vim/open)")
 	flag.Parse()
 
-	cfg.RefreshDerivedPaths()
-	if err := cfg.EnsureDirs(); err != nil {
-		return err
-	}
-
-	taskStore := store.NewTaskStore(cfg.TasksFile)
-	presetManager, err := preset.NewManager(cfg.PresetsFile)
-	if err != nil {
-		return err
-	}
-	processManager := process.NewManager()
-	worktreeManager := gitops.NewWorktreeManager(cfg.WorktreesDir)
-	diffService := diff.NewService()
-	editorLauncher := editor.NewLauncher(cfg.DefaultEditor)
-
-	taskManager, err := task.NewManager(task.Options{
-		Store:    taskStore,
-		Process:  processManager,
-		Worktree: worktreeManager,
-		Diff:     diffService,
-		Presets:  presetManager,
-		Editor:   editorLauncher,
-		LogsDir:  cfg.LogsDir,
-	})
-	if err != nil {
-		return err
-	}
-
-	handler, err := api.NewServer(api.Options{
-		TaskManager: taskManager,
-		Address:     cfg.Addr,
-	})
+	runtime, err := app.New(cfg)
 	if err != nil {
 		return err
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           handler,
+		Addr:              runtime.Config.Addr,
+		Handler:           runtime.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -91,8 +53,8 @@ func run() error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Printf("Staq listening on http://%s\n", cfg.Addr)
-	fmt.Printf("Data dir: %s\n", cfg.DataDir)
+	fmt.Printf("Staq listening on http://%s\n", runtime.Config.Addr)
+	fmt.Printf("Data dir: %s\n", runtime.Config.DataDir)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}

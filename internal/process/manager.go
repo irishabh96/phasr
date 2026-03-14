@@ -1,6 +1,7 @@
 package process
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 
@@ -99,10 +101,10 @@ func (m *Manager) Start(spec StartSpec) (int, error) {
 		return 0, fmt.Errorf("open log file: %w", err)
 	}
 
-	script := buildScript(spec.PreCommands, spec.Command)
+	script := buildScript(spec.WorkDir, spec.PreCommands, spec.Command)
 	cmd := exec.Command("zsh", "-lc", script)
 	cmd.Dir = spec.WorkDir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = appendDefaultUTF8Env(append(os.Environ(), "TERM=xterm-256color"))
 
 	winsize := &pty.Winsize{Cols: defaultCols(spec.Cols), Rows: defaultRows(spec.Rows)}
 	ptyFile, err := pty.StartWithSize(cmd, winsize)
@@ -251,14 +253,20 @@ func (m *Manager) Publish(event Event) {
 
 func (m *Manager) streamPTY(taskID string, rp *runningProcess) {
 	buf := make([]byte, 4096)
+	pendingUTF8 := make([]byte, 0, 4)
 	for {
 		n, err := rp.ptyFile.Read(buf)
 		if n > 0 {
-			chunk := string(buf[:n])
-
 			rp.ioMu.Lock()
 			_, _ = rp.logFile.Write(buf[:n])
 			rp.ioMu.Unlock()
+
+			chunk, remainder := decodeUTF8Chunk(pendingUTF8, buf[:n])
+			pendingUTF8 = remainder
+
+			if chunk == "" {
+				continue
+			}
 
 			m.Publish(Event{
 				TaskID:    taskID,
@@ -269,6 +277,17 @@ func (m *Manager) streamPTY(taskID string, rp *runningProcess) {
 		}
 
 		if err != nil {
+			if len(pendingUTF8) > 0 {
+				flush := string(bytes.ToValidUTF8(pendingUTF8, []byte("\uFFFD")))
+				if flush != "" {
+					m.Publish(Event{
+						TaskID:    taskID,
+						Type:      EventLog,
+						Message:   flush,
+						Timestamp: time.Now().UTC(),
+					})
+				}
+			}
 			if isExpectedPTYClose(err) {
 				return
 			}
@@ -282,6 +301,74 @@ func (m *Manager) streamPTY(taskID string, rp *runningProcess) {
 			return
 		}
 	}
+}
+
+func decodeUTF8Chunk(prefix, chunk []byte) (string, []byte) {
+	if len(prefix) == 0 && len(chunk) == 0 {
+		return "", nil
+	}
+
+	combined := make([]byte, 0, len(prefix)+len(chunk))
+	combined = append(combined, prefix...)
+	combined = append(combined, chunk...)
+
+	end := 0
+	for i := 0; i < len(combined); {
+		if combined[i] < utf8.RuneSelf {
+			i++
+			end = i
+			continue
+		}
+
+		r, size := utf8.DecodeRune(combined[i:])
+		if r == utf8.RuneError && size == 1 {
+			if !utf8.FullRune(combined[i:]) {
+				break
+			}
+			i++
+			end = i
+			continue
+		}
+		i += size
+		end = i
+	}
+
+	if end == 0 {
+		return "", append([]byte(nil), combined...)
+	}
+
+	decoded := string(bytes.ToValidUTF8(combined[:end], []byte("\uFFFD")))
+	remainder := append([]byte(nil), combined[end:]...)
+	return decoded, remainder
+}
+
+func appendDefaultUTF8Env(env []string) []string {
+	hasLCAll := false
+	hasLANG := false
+	hasLCCType := false
+
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch strings.ToUpper(key) {
+		case "LC_ALL":
+			hasLCAll = true
+		case "LANG":
+			hasLANG = true
+		case "LC_CTYPE":
+			hasLCCType = true
+		}
+	}
+
+	if !hasLCAll && !hasLANG {
+		env = append(env, "LANG=en_US.UTF-8")
+	}
+	if !hasLCAll && !hasLCCType {
+		env = append(env, "LC_CTYPE=en_US.UTF-8")
+	}
+	return env
 }
 
 func (m *Manager) wait(taskID string, rp *runningProcess) {
@@ -327,8 +414,11 @@ func exitCodeFromError(err error) int {
 	return -1
 }
 
-func buildScript(preCommands []string, command string) string {
+func buildScript(workDir string, preCommands []string, command string) string {
 	lines := []string{"set -e"}
+	if strings.TrimSpace(workDir) != "" {
+		lines = append(lines, "cd -- "+shellQuote(workDir))
+	}
 	for _, c := range preCommands {
 		trimmed := strings.TrimSpace(c)
 		if trimmed == "" {
@@ -338,6 +428,11 @@ func buildScript(preCommands []string, command string) string {
 	}
 	lines = append(lines, strings.TrimSpace(command))
 	return strings.Join(lines, "\n")
+}
+
+func shellQuote(value string) string {
+	// Single-quote shell escaping: abc'def -> 'abc'"'"'def'
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func defaultCols(value uint16) uint16 {
