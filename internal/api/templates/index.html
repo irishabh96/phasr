@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Staq | Multi-Agent Worktree Console</title>
+  <style>
+    :root {
+      --bg: #0a0f12;
+      --bg-soft: #11181f;
+      --panel: #141f28;
+      --line: #2b3d4d;
+      --text: #d7e3ea;
+      --text-soft: #90a3b3;
+      --ok: #45d483;
+      --warn: #f0be68;
+      --bad: #ef6f6f;
+      --done: #77a8ff;
+      --chip: #1d2b38;
+      --accent: #62d8ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "IBM Plex Mono", "Fira Code", Menlo, Consolas, monospace;
+      background: radial-gradient(circle at 10% 10%, #13222f 0%, var(--bg) 50%), linear-gradient(180deg, #0a0f12 0%, #080c10 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1450px;
+      margin: 0 auto;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent 30%), var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 14px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      letter-spacing: 0.02em;
+      background: rgba(0,0,0,0.18);
+      text-transform: uppercase;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--text-soft);
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    input, textarea, select, button {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--bg-soft);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 8px;
+      font: inherit;
+    }
+
+    textarea { min-height: 66px; resize: vertical; }
+
+    .full { grid-column: 1 / -1; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      padding: 0 12px 12px;
+    }
+
+    button {
+      cursor: pointer;
+      transition: border-color 120ms ease, transform 120ms ease;
+    }
+
+    button:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+    .primary {
+      background: linear-gradient(180deg, #1f556a, #173f50);
+      border-color: #2d7693;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th, td {
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      text-align: left;
+      padding: 8px;
+      vertical-align: top;
+    }
+
+    tr:hover { background: rgba(255,255,255,0.03); }
+    tr.selected { background: rgba(98,216,255,0.12); }
+
+    .chip {
+      display: inline-block;
+      border: 1px solid var(--line);
+      background: var(--chip);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .status-running { color: var(--ok); }
+    .status-pending { color: var(--warn); }
+    .status-failed { color: var(--bad); }
+    .status-completed { color: var(--done); }
+    .status-stopped { color: var(--text-soft); }
+    .status-archived { color: #8b8f95; }
+
+    .table-wrap {
+      max-height: 46vh;
+      overflow: auto;
+    }
+
+    .detail {
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .meta {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-soft);
+    }
+
+    pre {
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      background: #0a131a;
+      border-radius: 8px;
+      max-height: 30vh;
+      overflow: auto;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .file-list {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .file-list button {
+      width: auto;
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+
+    .subtle { color: var(--text-soft); font-size: 12px; }
+
+    .inline-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .inline-actions button {
+      width: auto;
+      font-size: 11px;
+      padding: 4px 7px;
+    }
+
+    .terminal-input {
+      display: flex;
+      gap: 8px;
+    }
+
+    .terminal-input input {
+      flex: 1;
+    }
+
+    .terminal-input button {
+      width: auto;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      .table-wrap { max-height: 40vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="card">
+      <h2>Create Task</h2>
+      <form id="createForm">
+        <div class="grid">
+          <div>
+            <label for="name">Task Name</label>
+            <input id="name" placeholder="refactor-auth-flow" />
+          </div>
+          <div>
+            <label for="preset">Preset</label>
+            <select id="preset"></select>
+          </div>
+          <div class="full">
+            <label for="repo">Repo Path</label>
+            <input id="repo" placeholder="/Users/you/projects/repo" required />
+          </div>
+          <div class="full">
+            <label for="command">Agent Command</label>
+            <input id="command" placeholder="codex --model gpt-5 --prompt-file task.md" required />
+          </div>
+          <div class="full">
+            <label for="prompt">Instructions / Prompt</label>
+            <textarea id="prompt" placeholder="Describe objective, constraints, and acceptance criteria"></textarea>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Create & Run Task</button>
+        </div>
+      </form>
+
+      <h2>Task Dashboard</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Name</th>
+              <th>Repo</th>
+              <th>Branch</th>
+              <th>PID</th>
+              <th>Updated</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="taskRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Task Detail</h2>
+      <div class="detail">
+        <div id="selectionHint" class="subtle">Select a task to inspect logs and diffs.</div>
+        <div id="taskMeta" class="meta"></div>
+        <div class="inline-actions" id="detailActions"></div>
+
+        <div>
+          <div class="subtle">Changed Files</div>
+          <div id="fileList" class="file-list"></div>
+        </div>
+
+        <div>
+          <div class="subtle">Patch</div>
+          <pre id="diffPane">No task selected.</pre>
+        </div>
+
+        <div>
+          <div class="subtle">Live Logs</div>
+          <pre id="logPane"></pre>
+        </div>
+
+        <div>
+          <div class="subtle">Interactive Terminal Input (PTY)</div>
+          <div class="terminal-input">
+            <input id="terminalInput" placeholder="Type command and press Enter" disabled />
+            <button id="terminalSendBtn" disabled>Send</button>
+            <button id="terminalCtrlCBtn" disabled>Ctrl+C</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    let selectedTaskId = "";
+    let stream = null;
+    let tasksCache = [];
+
+    const rowsEl = document.getElementById("taskRows");
+    const logPane = document.getElementById("logPane");
+    const diffPane = document.getElementById("diffPane");
+    const fileList = document.getElementById("fileList");
+    const taskMeta = document.getElementById("taskMeta");
+    const detailActions = document.getElementById("detailActions");
+    const selectionHint = document.getElementById("selectionHint");
+    const terminalInput = document.getElementById("terminalInput");
+    const terminalSendBtn = document.getElementById("terminalSendBtn");
+    const terminalCtrlCBtn = document.getElementById("terminalCtrlCBtn");
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `request failed: ${response.status}`);
+      }
+      return data;
+    }
+
+    function formatTime(value) {
+      if (!value) return "-";
+      try {
+        return new Date(value).toLocaleString();
+      } catch {
+        return value;
+      }
+    }
+
+    function escapeHtml(value) {
+      return (value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function loadPresets() {
+      const data = await api("/api/presets");
+      const select = document.getElementById("preset");
+      select.innerHTML = data.presets
+        .map((preset) => `<option value="${escapeHtml(preset.name)}">${escapeHtml(preset.name)} - ${escapeHtml(preset.description || "")}</option>`)
+        .join("");
+    }
+
+    async function loadTasks() {
+      const data = await api("/api/tasks");
+      tasksCache = data.tasks || [];
+      renderRows();
+      if (selectedTaskId) {
+        const selected = tasksCache.find((task) => task.id === selectedTaskId);
+        if (selected) {
+          renderMeta(selected);
+          setTerminalEnabled(selected.status === "running");
+        }
+      }
+    }
+
+    function renderRows() {
+      rowsEl.innerHTML = tasksCache.map((task) => {
+        const statusClass = `status-${task.status || "pending"}`;
+        const actionButton = task.status === "running"
+          ? `<button data-action="stop" data-id="${task.id}">Stop</button>`
+          : `<button data-action="resume" data-id="${task.id}">Resume</button>`;
+
+        return `
+          <tr data-select="${task.id}" class="${task.id === selectedTaskId ? "selected" : ""}">
+            <td><span class="chip ${statusClass}">${escapeHtml(task.status)}</span></td>
+            <td>${escapeHtml(task.name)}</td>
+            <td title="${escapeHtml(task.repo_path)}">${escapeHtml((task.repo_path || "").split("/").slice(-2).join("/"))}</td>
+            <td><span class="chip">${escapeHtml(task.branch || "-")}</span></td>
+            <td>${task.pid || "-"}</td>
+            <td>${formatTime(task.updated_at)}</td>
+            <td>
+              <div class="inline-actions">
+                ${actionButton}
+                <button data-action="open" data-id="${task.id}">Open</button>
+                <button data-action="archive" data-id="${task.id}">Archive</button>
+                <button data-action="delete" data-id="${task.id}">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function renderMeta(task) {
+      selectionHint.style.display = "none";
+      taskMeta.innerHTML = `
+        <div><strong>${escapeHtml(task.name)}</strong></div>
+        <div>Status: <span class="chip status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></div>
+        <div>Repo: ${escapeHtml(task.repo_path)}</div>
+        <div>Branch: ${escapeHtml(task.branch)}</div>
+        <div>Worktree: ${escapeHtml(task.worktree_path)}</div>
+        <div>Current command: ${escapeHtml(task.current_command || task.command)}</div>
+        <div>Last update: ${formatTime(task.updated_at)}</div>
+        <div>Prompt: ${escapeHtml(task.prompt || "-")}</div>
+      `;
+
+      detailActions.innerHTML = `
+        <button onclick="runAction('open', '${task.id}')">Open Editor</button>
+        <button onclick="runAction('resume', '${task.id}')">Resume</button>
+        <button onclick="runAction('stop', '${task.id}')">Stop</button>
+        <button onclick="refreshDiff('${task.id}')">Refresh Diff</button>
+      `;
+
+      setTerminalEnabled(task.status === "running");
+    }
+
+    async function selectTask(id) {
+      selectedTaskId = id;
+      renderRows();
+
+      const data = await api(`/api/tasks/${id}`);
+      const task = data.task;
+      renderMeta(task);
+      await syncTerminalSize().catch(() => {});
+
+      const logs = await api(`/api/tasks/${id}/logs?tail=160`);
+      logPane.textContent = logs.logs || "";
+      logPane.scrollTop = logPane.scrollHeight;
+
+      await refreshDiff(id);
+      attachStream(id);
+    }
+
+    async function refreshDiff(id, file = "") {
+      const query = file ? `?file=${encodeURIComponent(file)}` : "";
+      const data = await api(`/api/tasks/${id}/diff${query}`);
+
+      fileList.innerHTML = "";
+      (data.changes || []).forEach((change) => {
+        const button = document.createElement("button");
+        button.textContent = `${change.status} ${change.path}`;
+        button.addEventListener("click", () => refreshDiff(id, change.path));
+        fileList.appendChild(button);
+      });
+
+      const stat = data.stat ? `${data.stat}\n\n` : "";
+      const patch = data.patch || "No changes.";
+      diffPane.textContent = stat + patch;
+    }
+
+    function attachStream(id) {
+      if (stream) {
+        stream.close();
+      }
+      stream = new EventSource(`/api/tasks/${id}/events`);
+
+      stream.addEventListener("bootstrap", (event) => {
+        const data = JSON.parse(event.data || "{}");
+        if (typeof data.logs === "string") {
+          logPane.textContent = data.logs;
+          logPane.scrollTop = logPane.scrollHeight;
+        }
+      });
+
+      stream.addEventListener("log", (event) => {
+        const data = JSON.parse(event.data || "{}");
+        if (!data.message) return;
+        logPane.textContent += data.message;
+        if (logPane.textContent.length > 250000) {
+          logPane.textContent = logPane.textContent.slice(logPane.textContent.length - 150000);
+        }
+        logPane.scrollTop = logPane.scrollHeight;
+      });
+
+      stream.addEventListener("status", async () => {
+        await loadTasks();
+        if (selectedTaskId === id) {
+          await refreshDiff(id);
+          const selected = tasksCache.find((task) => task.id === id);
+          if (selected) {
+            setTerminalEnabled(selected.status === "running");
+          }
+        }
+      });
+
+      stream.onerror = () => {
+        if (stream) stream.close();
+      };
+    }
+
+    async function runAction(action, id) {
+      try {
+        if (action === "delete") {
+          if (!confirm("Delete task and remove worktree?")) return;
+          await api(`/api/tasks/${id}`, { method: "DELETE" });
+          if (selectedTaskId === id) {
+            selectedTaskId = "";
+            taskMeta.innerHTML = "";
+            diffPane.textContent = "No task selected.";
+            logPane.textContent = "";
+            fileList.innerHTML = "";
+            selectionHint.style.display = "block";
+            setTerminalEnabled(false);
+          }
+        }
+        if (action === "stop") {
+          await api(`/api/tasks/${id}/stop`, { method: "POST" });
+        }
+        if (action === "resume") {
+          await api(`/api/tasks/${id}/resume`, { method: "POST" });
+        }
+        if (action === "archive") {
+          await api(`/api/tasks/${id}/archive`, { method: "POST" });
+        }
+        if (action === "open") {
+          await api(`/api/tasks/${id}/open-editor`, { method: "POST", body: JSON.stringify({}) });
+        }
+        await loadTasks();
+      } catch (error) {
+        alert(error.message || String(error));
+      }
+    }
+
+    document.getElementById("createForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const body = {
+        name: document.getElementById("name").value,
+        preset: document.getElementById("preset").value,
+        repo_path: document.getElementById("repo").value,
+        command: document.getElementById("command").value,
+        prompt: document.getElementById("prompt").value,
+      };
+
+      try {
+        const result = await api("/api/tasks", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        await loadTasks();
+        if (result.task && result.task.id) {
+          await selectTask(result.task.id);
+        }
+      } catch (error) {
+        alert(error.message || String(error));
+      }
+    });
+
+    rowsEl.addEventListener("click", async (event) => {
+      const action = event.target?.dataset?.action;
+      const id = event.target?.dataset?.id;
+      if (action && id) {
+        event.stopPropagation();
+        await runAction(action, id);
+        return;
+      }
+
+      const row = event.target.closest("tr[data-select]");
+      if (!row) return;
+      await selectTask(row.dataset.select);
+    });
+
+    async function boot() {
+      await loadPresets();
+      await loadTasks();
+      setTerminalEnabled(false);
+      setInterval(loadTasks, 3000);
+    }
+
+    function setTerminalEnabled(enabled) {
+      terminalInput.disabled = !enabled;
+      terminalSendBtn.disabled = !enabled;
+      terminalCtrlCBtn.disabled = !enabled;
+      if (enabled) {
+        terminalInput.focus();
+      }
+    }
+
+    function estimateTerminalSize() {
+      const width = Math.max(logPane.clientWidth, 320);
+      const height = Math.max(logPane.clientHeight, 160);
+      const cols = Math.max(60, Math.floor(width / 8));
+      const rows = Math.max(20, Math.floor(height / 18));
+      return { cols, rows };
+    }
+
+    async function syncTerminalSize() {
+      if (!selectedTaskId) return;
+      const selected = tasksCache.find((task) => task.id === selectedTaskId);
+      if (!selected || selected.status !== "running") return;
+      const { cols, rows } = estimateTerminalSize();
+      await api(`/api/tasks/${selectedTaskId}/terminal/resize`, {
+        method: "POST",
+        body: JSON.stringify({ cols, rows }),
+      });
+    }
+
+    async function sendTerminalInput(input, appendNewline = true, clearInput = true) {
+      if (!selectedTaskId) return;
+      if (!input) return;
+      await api(`/api/tasks/${selectedTaskId}/terminal/input`, {
+        method: "POST",
+        body: JSON.stringify({
+          input,
+          append_newline: appendNewline,
+        }),
+      });
+      if (clearInput) {
+        terminalInput.value = "";
+      }
+    }
+
+    terminalSendBtn.addEventListener("click", async () => {
+      try {
+        await sendTerminalInput(terminalInput.value, true, true);
+      } catch (error) {
+        alert(error.message || String(error));
+      }
+    });
+
+    terminalCtrlCBtn.addEventListener("click", async () => {
+      try {
+        await sendTerminalInput("\u0003", false, false);
+      } catch (error) {
+        alert(error.message || String(error));
+      }
+    });
+
+    terminalInput.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      try {
+        await sendTerminalInput(terminalInput.value, true, true);
+      } catch (error) {
+        alert(error.message || String(error));
+      }
+    });
+
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        syncTerminalSize().catch(() => {});
+      }, 180);
+    });
+
+    boot().catch((error) => {
+      alert(error.message || String(error));
+    });
+  </script>
+</body>
+</html>
