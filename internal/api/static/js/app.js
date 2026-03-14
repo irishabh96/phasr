@@ -39,7 +39,6 @@
 
     const tabBarEl = document.getElementById("tabBar");
     const terminalOverlayEl = document.getElementById("terminalOverlay");
-    const terminalMetaEl = document.getElementById("terminalMeta");
 
     const gitTaskLabelEl = document.getElementById("gitTaskLabel");
     const stagedCountChipEl = document.getElementById("stagedCountChip");
@@ -56,10 +55,7 @@
     const repoFilesTreeEl = document.getElementById("repoFilesTree");
     const patchPreviewEl = document.getElementById("patchPreview");
     const terminalPanelEl = document.getElementById("terminalPanel");
-    const workspaceGroupCountEl = document.getElementById("workspaceGroupCount");
     const providerBarEl = document.getElementById("providerBar");
-    const taskTitleTextEl = document.getElementById("taskTitleText");
-    const taskStatusDotEl = document.getElementById("taskStatusDot");
     const runAgentBtnEl = document.getElementById("runAgentBtn");
 
     const workspaceModalBackdropEl = document.getElementById("workspaceModalBackdrop");
@@ -105,15 +101,19 @@
       });
     }
 
+    const taskHeaderEl = document.getElementById("taskHeader");
+    const taskTitleTextEl = document.getElementById("taskTitleText");
+    const taskStatusDotEl = document.getElementById("taskStatusDot");
+
     function updateTaskHeader(task = null) {
       const nextTask = task || getTask(activeTabId);
-      if (!nextTask) {
-        taskTitleTextEl.textContent = "make this an desktop app";
-        taskStatusDotEl.classList.add("active");
+      if (!nextTask || (nextTask.status !== "running" && nextTask.status !== "pending")) {
+        taskHeaderEl.classList.add("hidden");
         return;
       }
       taskTitleTextEl.textContent = nextTask.name || "untitled task";
-      taskStatusDotEl.classList.toggle("active", nextTask.status === "running" || nextTask.status === "pending");
+      taskStatusDotEl.classList.toggle("active", true);
+      taskHeaderEl.classList.remove("hidden");
     }
 
     function setPatchPreviewMessage(message) {
@@ -462,60 +462,20 @@
     }
 
     function renderWorkspaces() {
-      workspaceGroupCountEl.textContent = String(workspaces.length || 0);
       if (!workspaces.length) {
         workspaceListEl.innerHTML = `<div class="empty">No workspaces</div>`;
         return;
       }
       workspaceListEl.innerHTML = workspaces.map((workspace) => {
         const name = workspace.name || "default";
-        const workspaceTasks = tasksForWorkspace(name);
-        const count = workspaceTasks.length;
         const activeClass = name === activeWorkspace ? "active" : "";
-        const isOpen = expandedWorkspaces.has(name);
-        const repoPath = workspace.repo_path || "";
-        const repoName = shortPath(repoPath) === "-" ? "local" : shortPath(repoPath).split("/").slice(-1)[0];
-        const activeBadges = name === activeWorkspace
-          ? `<span class="workspace-badges"><span class="badge-add">+2514</span><span class="badge-del">-534</span></span>`
-          : `<span class="chip">${count}</span>`;
-        const tasksMarkup = workspaceTasks.length
-          ? workspaceTasks.map((task) => {
-            const isOpenTab = openTabs.includes(task.id);
-            const tags = (task.tags || []).map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join(" ");
-            return `
-              <div class="workspace-task-row">
-                <div class="name">${escapeHtml(task.name)}</div>
-                <div class="workspace-task-meta">
-                  <span class="chip ${statusClass(task.status)}">${escapeHtml(task.status)}</span>
-                  ${tags || ""}
-                </div>
-                <div class="task-actions">
-                  <button data-open-tab="${task.id}" type="button">${isOpenTab ? "Focus" : "Open Tab"}</button>
-                  <button data-open-editor="${task.id}" type="button">Editor</button>
-                  ${task.status === "running"
-                    ? `<button data-stop="${task.id}" type="button">Stop</button>`
-                    : `<button data-resume="${task.id}" type="button">Resume</button>`}
-                </div>
-              </div>
-            `;
-          }).join("")
-          : `<div class="empty">No tasks in this workspace.</div>`;
         return `
-          <details class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(name)}" ${isOpen ? "open" : ""}>
-            <summary class="workspace-summary" data-workspace-summary="${escapeHtml(name)}" title="${escapeHtml(repoPath)}">
-              <span class="workspace-main">
-                <span class="workspace-name">${escapeHtml(name)}</span>
-                <span class="workspace-branch">master</span>
-              </span>
-              <span class="workspace-repo-row">
-                <span>${escapeHtml(repoName)}</span>
-                ${activeBadges}
-              </span>
-            </summary>
-            <div class="workspace-task-list">
-              ${tasksMarkup}
+          <div class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(name)}">
+            <div class="workspace-summary" data-workspace-summary="${escapeHtml(name)}">
+              <span class="workspace-name">${escapeHtml(name)}</span>
+              <span class="workspace-branch">master</span>
             </div>
-          </details>
+          </div>
         `;
       }).join("");
     }
@@ -559,7 +519,6 @@
       if (!openTabs.length) {
         detachStream();
         activeTabId = "";
-        terminalMetaEl.textContent = "No active tab";
         gitTaskLabelEl.textContent = "No task";
         currentGitStatus = { staged: [], unstaged: [] };
         renderGitStatus();
@@ -610,7 +569,6 @@
       setPatchPreviewMessage("Select a changed file to open a diff view.");
       setMainViewMode("terminal");
 
-      terminalMetaEl.textContent = `${task.name} | ${task.workspace || "default"} | ${task.repo_path}`;
       updateTaskHeader(task);
 
       if (task.status === "running") {
@@ -656,8 +614,7 @@
         const task = getTask(taskId);
         if (!task) return;
 
-        terminalMetaEl.textContent = `${task.name} | ${task.workspace || "default"} | ${task.repo_path}`;
-        updateTaskHeader(task);
+          updateTaskHeader(task);
 
         if (task.status === "running") {
           setTerminalOverlay("", false);
@@ -1224,12 +1181,6 @@
       document.getElementById("createWorkspaceBtn").addEventListener("click", () => {
         openWorkspaceModal();
       });
-      document.getElementById("topOpenBtn").addEventListener("click", () => {
-        openWorkspaceModal();
-      });
-      document.getElementById("addRepositoryBtn").addEventListener("click", () => {
-        openWorkspaceModal();
-      });
 
       workspaceModalCloseBtnEl.addEventListener("click", closeWorkspaceModal);
       workspaceModalCancelBtnEl.addEventListener("click", closeWorkspaceModal);
@@ -1460,6 +1411,7 @@
         }
       });
 
+
       document.getElementById("refreshGitBtn").addEventListener("click", () => {
         refreshGitStatus()
           .then(async () => {
@@ -1528,20 +1480,6 @@
         setMainViewMode("terminal");
       });
 
-      document.getElementById("activeOpenEditorBtn").addEventListener("click", async () => {
-        if (!activeTabId) return;
-        await runTaskAction("open-editor", activeTabId);
-      });
-
-      document.getElementById("activeResumeBtn").addEventListener("click", async () => {
-        if (!activeTabId) return;
-        await runTaskAction("resume", activeTabId);
-      });
-
-      document.getElementById("activeStopBtn").addEventListener("click", async () => {
-        if (!activeTabId) return;
-        await runTaskAction("stop", activeTabId);
-      });
 
       let resizeTimer = null;
       window.addEventListener("resize", () => {

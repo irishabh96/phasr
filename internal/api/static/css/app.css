@@ -111,84 +111,12 @@
     .app-shell {
       height: 100%;
       display: grid;
-      grid-template-rows: 44px minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
       gap: 8px;
       padding: 8px;
       background: var(--window-bg);
     }
 
-    .top-toolbar {
-      background: var(--toolbar-bg);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      display: grid;
-      grid-template-columns: auto minmax(300px, 1fr) auto;
-      gap: 10px;
-      align-items: center;
-      padding: 5px 10px;
-      min-height: 0;
-    }
-
-    .toolbar-left, .toolbar-right {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-    }
-
-    .traffic-lights {
-      display: inline-flex;
-      gap: 5px;
-      margin-right: 6px;
-    }
-
-    .traffic-lights span {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      display: inline-block;
-      border: 1px solid rgba(0, 0, 0, 0.35);
-    }
-
-    .traffic-lights .red { background: #ff5f56; }
-    .traffic-lights .yellow { background: #febc2e; }
-    .traffic-lights .green { background: #28c840; }
-
-    .icon-chip {
-      border: 1px solid var(--border-subtle);
-      background: transparent;
-      color: var(--text-tertiary);
-      width: 24px;
-      height: 24px;
-      border-radius: var(--radius-sm);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-    }
-
-    .memory-chip {
-      border: 1px solid var(--border-default);
-      background: #241E1C;
-      border-radius: 999px;
-      padding: 0 10px;
-      height: 28px;
-      color: var(--text-tertiary);
-      font-size: 11px;
-      font-family: var(--mono-font);
-      white-space: nowrap;
-    }
-
-    .toolbar-search {
-      border-radius: 999px;
-      background: var(--input-bg);
-      text-align: center;
-      font-size: 13px;
-      height: 32px;
-      border-color: var(--border-default);
-    }
-
-    .toolbar-search::placeholder { color: #8F8178; }
 
     .btn-primary {
       background: #2A2421;
@@ -205,6 +133,7 @@
 
     .app {
       min-height: 0;
+      height: 100%;
       display: flex;
       gap: 8px;
     }
@@ -387,9 +316,9 @@
     .workspace-summary {
       list-style: none;
       cursor: pointer;
-      padding: 8px 9px;
+      padding: 5px 9px;
       display: grid;
-      gap: 4px;
+      gap: 2px;
     }
 
     .workspace-summary::-webkit-details-marker {
@@ -431,7 +360,7 @@
     }
 
     .workspace-name {
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 500;
       white-space: nowrap;
       overflow: hidden;
@@ -439,7 +368,7 @@
     }
 
     .workspace-branch {
-      font-size: 11px;
+      font-size: 10px;
       color: var(--text-dim);
     }
 
@@ -592,10 +521,12 @@
     .status-archived { color: var(--text-tertiary); }
 
     .center-col {
-      display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
-      background: var(--center-bg);
+      background: #120F0E;
+      flex: 1;
+      min-height: 0;
     }
 
     .tabs {
@@ -789,29 +720,34 @@
     }
 
     .transcript-wrap {
+      flex: 1;
       min-height: 0;
       overflow: hidden;
-      display: grid;
-      grid-template-rows: minmax(0, 1fr);
-      padding: 8px;
-      gap: 8px;
-      background: var(--center-bg);
+      display: flex;
+      flex-direction: column;
+      background: #120F0E;
+    }
+
+    .transcript-wrap > .terminal-box {
+      flex: 1;
+    }
+
+    .transcript-wrap > .diff-editor {
+      flex: 1;
     }
 
     .terminal-box {
       position: relative;
-      min-height: 230px;
-      height: 100%;
-      max-height: none;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      background: #100D0C;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: #120F0E;
       overflow: hidden;
     }
 
     #terminal {
       width: 100%;
-      height: 100%;
+      flex: 1;
       padding: 6px 8px;
     }
 
@@ -1086,9 +1022,9 @@
     }
 
     .right-head {
-      display: grid;
-      grid-template-columns: auto 1fr auto;
+      display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 8px;
     }
 
@@ -1619,11 +1555,5 @@
       .commit-row,
       .repo-picker {
         grid-template-columns: 1fr;
-      }
-      .top-toolbar {
-        grid-template-columns: 1fr;
-      }
-      .toolbar-search {
-        text-align: left;
       }
     }

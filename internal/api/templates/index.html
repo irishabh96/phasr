@@ -9,49 +9,18 @@
 </head>
 <body>
   <div class="app-shell">
-    <header class="top-toolbar">
-      <div class="toolbar-left">
-        <div class="traffic-lights" aria-hidden="true">
-          <span class="red"></span>
-          <span class="yellow"></span>
-          <span class="green"></span>
-        </div>
-        <span class="icon-chip" title="Back">&#x2039;</span>
-        <span class="icon-chip" title="Forward">&#x203A;</span>
-        <span class="icon-chip" title="History">&#x2630;</span>
-        <span class="memory-chip">893.6 MB</span>
-      </div>
-      <input class="toolbar-search" type="search" placeholder="Search Staq - local..." aria-label="Search">
-      <div class="toolbar-right">
-        <button id="topOpenBtn" class="btn-ghost" type="button">Open</button>
-        <button class="btn-ghost" type="button">workspace/local &#9662;</button>
-      </div>
-    </header>
-
     <div class="app">
       <aside class="panel left-col">
-        <div class="sidebar-nav">
-          <button class="sidebar-nav-item active" type="button">Workspaces</button>
-        </div>
-
         <div class="workspace-actions">
           <button id="createWorkspaceBtn" class="new-workspace-btn" type="button">
             <span class="plus">+</span>
             <span style="margin-right:auto;">New Workspace</span>
-            <kbd>&#x2318;N</kbd>
+            <kbd>&#x2318; N</kbd>
           </button>
         </div>
 
-        <details class="workspace-section" open>
-          <summary>
-            <span>Staq (<span id="workspaceGroupCount">1</span>)</span>
-          </summary>
-          <div id="workspaceList" class="workspace-list"></div>
-        </details>
+        <div id="workspaceList" class="workspace-list"></div>
 
-        <div class="left-footer">
-          <button id="addRepositoryBtn" class="btn-ghost add-repo-btn" type="button">Add repository</button>
-        </div>
       </aside>
 
       <main class="panel center-col">
@@ -68,7 +37,6 @@
               <button type="button" class="provider-pill" data-provider-pill="opencode">opencode</button>
               <button type="button" class="provider-pill" data-provider-pill="gemini">gemini</button>
             </div>
-            <div class="meta-address">{{.Address}}</div>
           </div>
 
           <div class="hidden-controls">
@@ -98,10 +66,10 @@
           </div>
         </form>
 
-        <div class="task-header">
+        <div id="taskHeader" class="task-header hidden">
           <div class="task-header-main">
             <span id="taskStatusDot" class="status-dot active"></span>
-            <h2 id="taskTitleText" class="task-header-title">make this an desktop app</h2>
+            <h2 id="taskTitleText" class="task-header-title"></h2>
           </div>
           <span class="chip">live transcript</span>
         </div>
@@ -115,16 +83,6 @@
           <div id="patchPreview" class="diff-editor hidden"></div>
         </div>
 
-        <div class="terminal-foot">
-          <div id="terminalMeta" class="terminal-meta">No active tab</div>
-          <div class="terminal-actions">
-            <span class="chip">00:00 elapsed</span>
-            <span class="chip">/bin/zsh</span>
-            <button id="activeOpenEditorBtn" class="btn-ghost" type="button">Open Editor</button>
-            <button id="activeResumeBtn" class="btn-ghost" type="button">Resume</button>
-            <button id="activeStopBtn" class="btn-ghost" type="button">Stop</button>
-          </div>
-        </div>
 
       </main>
 
@@ -134,11 +92,7 @@
             <button id="rightTabChanges" class="right-tab active" type="button">Changes</button>
             <button id="rightTabFiles" class="right-tab" type="button">Files</button>
           </div>
-          <div></div>
-          <div class="right-tools">
-            <button class="icon-btn btn-ghost" type="button" title="Filter">&#x25F3;</button>
-            <button id="refreshGitBtn" class="icon-btn btn-ghost" type="button" title="Refresh">&#x21BB;</button>
-          </div>
+          <button id="refreshGitBtn" class="icon-btn btn-ghost" type="button" title="Refresh">&#x21BB;</button>
         </div>
 
         <div class="git-summary">
