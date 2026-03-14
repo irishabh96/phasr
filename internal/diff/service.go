@@ -143,10 +143,27 @@ func (s *Service) UnstageFile(worktreePath, path string) error {
 		return fmt.Errorf("path is required")
 	}
 	out, err := runGit("-C", worktreePath, "restore", "--staged", "--", path)
-	if err != nil {
-		return fmt.Errorf("git restore --staged: %w (%s)", err, strings.TrimSpace(out))
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// In repos without an initial commit, `restore --staged` can fail because HEAD
+	// does not exist yet. Fall back to removing the entry from index.
+	if _, headErr := runGit("-C", worktreePath, "rev-parse", "--verify", "HEAD"); headErr != nil {
+		fallbackOut, fallbackErr := runGit("-C", worktreePath, "rm", "--cached", "-r", "--", path)
+		if fallbackErr == nil {
+			return nil
+		}
+		return fmt.Errorf(
+			"git restore --staged: %w (%s); fallback git rm --cached failed: %v (%s)",
+			err,
+			strings.TrimSpace(out),
+			fallbackErr,
+			strings.TrimSpace(fallbackOut),
+		)
+	}
+
+	return fmt.Errorf("git restore --staged: %w (%s)", err, strings.TrimSpace(out))
 }
 
 func (s *Service) Commit(worktreePath, message string) (string, error) {

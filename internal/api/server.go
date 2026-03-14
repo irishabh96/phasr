@@ -7,6 +7,10 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +55,7 @@ func NewServer(opts Options) (http.Handler, error) {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
 	mux.HandleFunc("/api/presets", s.handlePresets)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
@@ -150,6 +155,33 @@ func (s *server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) handleWorkspaceByName(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
+	suffix = strings.Trim(suffix, "/")
+	if suffix == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	parts := strings.SplitN(suffix, "/", 2)
+	workspaceName, err := url.PathUnescape(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace path")
+		return
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	switch action {
+	case "files":
+		s.handleWorkspaceFiles(w, r, workspaceName)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 func (s *server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	suffix := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
 	suffix = strings.Trim(suffix, "/")
@@ -193,6 +225,8 @@ func (s *server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		s.handleTaskTerminal(w, r, id, subaction)
 	case "git":
 		s.handleTaskGit(w, r, id, subaction)
+	case "files":
+		s.handleTaskFiles(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -386,6 +420,136 @@ func (s *server) handleTaskGit(w http.ResponseWriter, r *http.Request, id, subac
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *server) handleTaskFiles(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	taskInfo, err := s.tasks.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	root := strings.TrimSpace(taskInfo.WorktreePath)
+	if root == "" {
+		root = strings.TrimSpace(taskInfo.RepoPath)
+	}
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "task repository path is missing")
+		return
+	}
+
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "task repository path is not a directory")
+		return
+	}
+
+	entries, truncated, err := collectRepoFiles(root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":   id,
+		"root":      root,
+		"entries":   entries,
+		"truncated": truncated,
+		"entries_n": len(entries),
+	})
+}
+
+func (s *server) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request, workspaceName string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	workspace, err := s.tasks.Workspace(workspaceName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	root := strings.TrimSpace(workspace.RepoPath)
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "workspace repository path is missing")
+		return
+	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "workspace repository path is not a directory")
+		return
+	}
+
+	entries, truncated, err := collectRepoFiles(root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workspace": workspace.Name,
+		"root":      root,
+		"entries":   entries,
+		"truncated": truncated,
+		"entries_n": len(entries),
+	})
+}
+
+type repoFileItem struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+func collectRepoFiles(root string) ([]repoFileItem, bool, error) {
+	const maxEntries = 30000
+	entries := make([]repoFileItem, 0, 1024)
+	truncated := false
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if len(entries) >= maxEntries {
+			truncated = true
+			return fs.SkipAll
+		}
+
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+
+		kind := "file"
+		if d.IsDir() {
+			kind = "dir"
+		}
+		entries = append(entries, repoFileItem{Path: rel, Kind: kind})
+		return nil
+	})
+	if err != nil && err != fs.SkipAll {
+		return nil, truncated, err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Path == entries[j].Path {
+			return entries[i].Kind < entries[j].Kind
+		}
+		return entries[i].Path < entries[j].Path
+	})
+
+	return entries, truncated, nil
 }
 
 func (s *server) handleGitStatus(w http.ResponseWriter, r *http.Request, id string) {

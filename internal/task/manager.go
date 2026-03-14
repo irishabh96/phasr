@@ -278,9 +278,17 @@ func (m *Manager) start(id string, includePresetSetup bool) error {
 	t.StartedAt = &now
 	t.FinishedAt = nil
 	t.UpdatedAt = now
+	promptSeed := strings.TrimSpace(t.Prompt)
 	err = m.persistLocked()
 	m.mu.Unlock()
-	return err
+	if err != nil {
+		return err
+	}
+
+	if promptSeed != "" {
+		_ = m.process.WriteInput(id, promptSeed+"\n")
+	}
+	return nil
 }
 
 func (m *Manager) Stop(id string, force bool) (domain.Task, error) {
@@ -410,6 +418,19 @@ func (m *Manager) Workspaces() []domain.Workspace {
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
 	return items
+}
+
+func (m *Manager) Workspace(name string) (domain.Workspace, error) {
+	workspaceName := normalizedWorkspace(name)
+	key := strings.ToLower(workspaceName)
+
+	m.mu.RLock()
+	workspace, ok := m.workspaces[key]
+	m.mu.RUnlock()
+	if !ok {
+		return domain.Workspace{}, fmt.Errorf("workspace %q not found", workspaceName)
+	}
+	return workspace, nil
 }
 
 func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.Workspace, error) {
