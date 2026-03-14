@@ -27,6 +27,34 @@
     let selectedPatchFile = "";
     let centerViewMode = "terminal";
 
+    // P0-A: ANSI color codes for severity highlighting
+    const ANSI_RESET = "\x1b[0m";
+    const ANSI_RED = "\x1b[38;2;208;92;92m";     // --red
+    const ANSI_YELLOW = "\x1b[38;2;209;154;26m";  // --amber
+    const ANSI_GREEN = "\x1b[38;2;39;196;107m";   // --green
+
+    const SEVERITY_PATTERNS = [
+      { pattern: /^.*\b(FAIL|ERROR|FATAL|PANIC|error:|fatal:)\b/i, ansi: ANSI_RED },
+      { pattern: /^.*\b(WARN|WARNING|warn:|warning:)\b/i, ansi: ANSI_YELLOW },
+      { pattern: /^.*\b(SUCCESS|PASS|OK|ok|PASSED|passed|succeeded)\b/i, ansi: ANSI_GREEN },
+    ];
+
+    function colorizeLine(line) {
+      // Skip lines that already contain ANSI escapes
+      if (line.includes("\x1b[")) return line;
+      for (const rule of SEVERITY_PATTERNS) {
+        if (rule.pattern.test(line)) {
+          return rule.ansi + line + ANSI_RESET;
+        }
+      }
+      return line;
+    }
+
+    function colorizeTerminalOutput(data) {
+      if (!data || !data.includes("\n")) return colorizeLine(data);
+      return data.split("\n").map(colorizeLine).join("\n");
+    }
+
     const workspaceListEl = document.getElementById("workspaceList");
 
     const agentSelectEl = document.getElementById("agentSelect");
@@ -39,6 +67,9 @@
 
     const tabBarEl = document.getElementById("tabBar");
     const terminalOverlayEl = document.getElementById("terminalOverlay");
+    const taskContextTaskEl = document.getElementById("taskContextTask");
+    const taskContextBranchEl = document.getElementById("taskContextBranch");
+    const taskContextPathEl = document.getElementById("taskContextPath");
 
     const gitTaskLabelEl = document.getElementById("gitTaskLabel");
     const stagedCountChipEl = document.getElementById("stagedCountChip");
@@ -58,12 +89,18 @@
     const providerBarEl = document.getElementById("providerBar");
     const runAgentBtnEl = document.getElementById("runAgentBtn");
 
+    const terminalOverlayTextEl = document.getElementById("terminalOverlayText");
+
     const workspaceModalBackdropEl = document.getElementById("workspaceModalBackdrop");
     const workspaceModalNameEl = document.getElementById("workspaceModalName");
+    const workspaceModalNameHelpEl = document.getElementById("workspaceModalNameHelp");
     const workspaceModalRepoEl = document.getElementById("workspaceModalRepo");
+    const workspaceModalRepoHelpEl = document.getElementById("workspaceModalRepoHelp");
     const workspaceModalErrorEl = document.getElementById("workspaceModalError");
     const workspaceModalBrowseBtnEl = document.getElementById("workspaceModalBrowseBtn");
     const workspaceModalCreateBtnEl = document.getElementById("workspaceModalCreateBtn");
+    const workspaceModalCreateLabelEl = document.getElementById("workspaceModalCreateLabel");
+    const workspaceModalCreateSpinnerEl = document.getElementById("workspaceModalCreateSpinner");
     const workspaceModalCloseBtnEl = document.getElementById("workspaceModalCloseBtn");
     const workspaceModalCancelBtnEl = document.getElementById("workspaceModalCancelBtn");
     const workspaceInitPromptEl = document.getElementById("workspaceInitPrompt");
@@ -71,6 +108,19 @@
     const workspaceInitPromptBrowseBtnEl = document.getElementById("workspaceInitPromptBrowseBtn");
 
     let pendingWorkspaceCreate = null;
+    let autoWorkspaceNameValue = "";
+    let workspaceModalNameTouched = false;
+    let workspaceModalRepoTouched = false;
+    let workspaceModalSubmitAttempted = false;
+    let workspaceModalCreating = false;
+    let workspaceRepoValidationTimer = null;
+    let workspaceRepoValidationSeq = 0;
+    let workspaceRepoValidation = {
+      path: "",
+      valid: false,
+      checking: false,
+      message: "",
+    };
 
     function escapeHtml(value) {
       return String(value || "")
@@ -114,6 +164,42 @@
       taskTitleTextEl.textContent = nextTask.name || "untitled task";
       taskStatusDotEl.classList.toggle("active", true);
       taskHeaderEl.classList.remove("hidden");
+    }
+
+    function taskCodePath(task) {
+      return String(task?.worktree_path || task?.repo_path || "").trim();
+    }
+
+    function updateTaskContextBar(task = undefined) {
+      if (!taskContextTaskEl || !taskContextBranchEl || !taskContextPathEl) return;
+
+      const nextTask = task === undefined ? getTask(activeTabId) : task;
+      const workspacePath = String(activeWorkspaceRepoPath() || "").trim();
+
+      function applyPath(pathValue) {
+        const path = String(pathValue || "").trim();
+        const hasPath = Boolean(path);
+        taskContextPathEl.textContent = `Path: ${hasPath ? path : "-"}`;
+        taskContextPathEl.title = hasPath ? path : "";
+        taskContextPathEl.dataset.path = hasPath ? path : "";
+        taskContextPathEl.disabled = !hasPath;
+      }
+
+      if (nextTask) {
+        const taskLabel = nextTask.name || (nextTask.id ? nextTask.id.slice(0, 8) : "untitled");
+        const branch = String(nextTask.branch || "").trim() || "-";
+        const path = taskCodePath(nextTask) || workspacePath;
+        taskContextTaskEl.textContent = `Task: ${taskLabel}`;
+        taskContextBranchEl.textContent = `Branch: ${branch}`;
+        taskContextBranchEl.title = branch === "-" ? "" : branch;
+        applyPath(path);
+        return;
+      }
+
+      taskContextTaskEl.textContent = "Task: none";
+      taskContextBranchEl.textContent = "Branch: -";
+      taskContextBranchEl.title = "";
+      applyPath(workspacePath);
     }
 
     function setPatchPreviewMessage(message) {
@@ -313,13 +399,6 @@
       return workspace?.repo_path || "";
     }
 
-    function shortPath(path) {
-      const value = String(path || "").trim();
-      if (!value) return "-";
-      const parts = value.split("/");
-      return parts.slice(-2).join("/");
-    }
-
     function syncRepoInputToActiveWorkspace(force = false) {
       const repoPath = activeWorkspaceRepoPath();
       if (!repoPath) {
@@ -333,9 +412,156 @@
       }
     }
 
+    function isWorkspaceModalOpen() {
+      return !workspaceModalBackdropEl.classList.contains("hidden");
+    }
+
     function setWorkspaceModalError(message) {
-      workspaceModalErrorEl.textContent = message || "";
-      workspaceModalErrorEl.style.color = message ? "var(--red)" : "var(--text-secondary)";
+      const text = String(message || "").trim();
+      workspaceModalErrorEl.textContent = text;
+      workspaceModalErrorEl.classList.toggle("hidden", !text);
+    }
+
+    function workspaceModalSnapshot() {
+      const name = String(workspaceModalNameEl.value || "").trim();
+      const repoPath = String(workspaceModalRepoEl.value || "").trim();
+      const repoValidationMatches = workspaceRepoValidation.path === repoPath;
+      const repoValid = Boolean(repoPath) && repoValidationMatches && workspaceRepoValidation.valid && !workspaceRepoValidation.checking;
+      const nameValid = Boolean(name);
+      return {
+        name,
+        repoPath,
+        nameValid,
+        repoValid,
+        canSubmit: nameValid && repoValid && !workspaceModalCreating,
+      };
+    }
+
+    function setWorkspaceModalCreateLoading(loading) {
+      workspaceModalCreating = Boolean(loading);
+      workspaceModalCreateSpinnerEl.classList.toggle("hidden", !workspaceModalCreating);
+      workspaceModalCreateSpinnerEl.classList.toggle("animate-spin", workspaceModalCreating);
+      workspaceModalCreateLabelEl.textContent = workspaceModalCreating ? "Creating…" : "Create Workspace";
+      updateWorkspaceModalValidityUI();
+    }
+
+    function updateWorkspaceModalValidityUI() {
+      const state = workspaceModalSnapshot();
+
+      const showNameError = (workspaceModalNameTouched || workspaceModalSubmitAttempted) && !state.nameValid;
+      workspaceModalNameEl.classList.toggle("workspace-modal-input-invalid", showNameError);
+      workspaceModalNameEl.setAttribute("aria-invalid", showNameError ? "true" : "false");
+      workspaceModalNameHelpEl.textContent = showNameError ? "Workspace name is required." : "";
+      workspaceModalNameHelpEl.classList.toggle("workspace-modal-help-error", showNameError);
+
+      const showRepoValidationError = (workspaceModalRepoTouched || workspaceModalSubmitAttempted) && state.repoPath
+        && !workspaceRepoValidation.checking
+        && workspaceRepoValidation.path === state.repoPath
+        && !workspaceRepoValidation.valid;
+      const showRepoRequiredError = (workspaceModalRepoTouched || workspaceModalSubmitAttempted) && !state.repoPath;
+      const showRepoError = showRepoValidationError || showRepoRequiredError;
+      workspaceModalRepoEl.classList.toggle("workspace-modal-input-invalid", showRepoError);
+      workspaceModalRepoEl.setAttribute("aria-invalid", showRepoError ? "true" : "false");
+
+      let repoHelpText = "Select the root folder of your git repository.";
+      let repoHelpError = false;
+      if (showRepoRequiredError) {
+        repoHelpText = "Git repo path is required.";
+        repoHelpError = true;
+      } else if (state.repoPath && (workspaceRepoValidation.checking || workspaceRepoValidation.path !== state.repoPath)) {
+        repoHelpText = "Validating path...";
+      } else if (showRepoValidationError) {
+        repoHelpText = workspaceRepoValidation.message || "Path does not exist.";
+        repoHelpError = true;
+      }
+      workspaceModalRepoHelpEl.textContent = repoHelpText;
+      workspaceModalRepoHelpEl.classList.toggle("workspace-modal-help-error", repoHelpError);
+
+      workspaceModalCreateBtnEl.disabled = !state.canSubmit || workspaceRepoValidation.checking;
+    }
+
+    async function validateWorkspaceRepoPath(path) {
+      const repoPath = String(path || "").trim();
+      if (!repoPath) {
+        workspaceRepoValidation = { path: "", valid: false, checking: false, message: "" };
+        updateWorkspaceModalValidityUI();
+        return;
+      }
+
+      const seq = ++workspaceRepoValidationSeq;
+      workspaceRepoValidation = { path: repoPath, valid: false, checking: true, message: "" };
+      updateWorkspaceModalValidityUI();
+
+      try {
+        const data = await api("/api/local/validate-directory", {
+          method: "POST",
+          body: JSON.stringify({ path: repoPath }),
+        });
+        if (seq !== workspaceRepoValidationSeq) return;
+        workspaceRepoValidation = {
+          path: repoPath,
+          valid: Boolean(data.valid),
+          checking: false,
+          message: String(data.message || (data.valid ? "" : "Path does not exist.")),
+        };
+      } catch (error) {
+        if (seq !== workspaceRepoValidationSeq) return;
+        workspaceRepoValidation = {
+          path: repoPath,
+          valid: false,
+          checking: false,
+          message: String(error.message || error || "Unable to validate path."),
+        };
+      }
+      updateWorkspaceModalValidityUI();
+    }
+
+    function queueWorkspaceRepoValidation({ immediate = false } = {}) {
+      if (workspaceRepoValidationTimer) {
+        clearTimeout(workspaceRepoValidationTimer);
+        workspaceRepoValidationTimer = null;
+      }
+      const repoPath = String(workspaceModalRepoEl.value || "").trim();
+      if (!repoPath) {
+        workspaceRepoValidation = { path: "", valid: false, checking: false, message: "" };
+        updateWorkspaceModalValidityUI();
+        return;
+      }
+      if (immediate) {
+        void validateWorkspaceRepoPath(repoPath);
+        return;
+      }
+      workspaceRepoValidation = { path: repoPath, valid: false, checking: true, message: "" };
+      updateWorkspaceModalValidityUI();
+      workspaceRepoValidationTimer = setTimeout(() => {
+        void validateWorkspaceRepoPath(repoPath);
+      }, 180);
+    }
+
+    function resetWorkspaceModalValidationState() {
+      workspaceModalNameTouched = false;
+      workspaceModalRepoTouched = false;
+      workspaceModalSubmitAttempted = false;
+      workspaceModalCreating = false;
+      workspaceRepoValidationSeq += 1;
+      if (workspaceRepoValidationTimer) {
+        clearTimeout(workspaceRepoValidationTimer);
+        workspaceRepoValidationTimer = null;
+      }
+      workspaceRepoValidation = { path: "", valid: false, checking: false, message: "" };
+      workspaceModalCreateSpinnerEl.classList.add("hidden");
+      workspaceModalCreateSpinnerEl.classList.remove("animate-spin");
+      workspaceModalCreateLabelEl.textContent = "Create Workspace";
+      setWorkspaceModalError("");
+      workspaceModalNameHelpEl.textContent = "";
+      workspaceModalNameHelpEl.classList.remove("workspace-modal-help-error");
+      workspaceModalRepoHelpEl.textContent = "Select the root folder of your git repository.";
+      workspaceModalRepoHelpEl.classList.remove("workspace-modal-help-error");
+      workspaceModalNameEl.classList.remove("workspace-modal-input-invalid");
+      workspaceModalRepoEl.classList.remove("workspace-modal-input-invalid");
+      workspaceModalNameEl.setAttribute("aria-invalid", "false");
+      workspaceModalRepoEl.setAttribute("aria-invalid", "false");
+      workspaceModalCreateBtnEl.disabled = true;
     }
 
     function hideWorkspaceInitPrompt() {
@@ -351,7 +577,8 @@
     function openWorkspaceModal() {
       workspaceModalNameEl.value = "";
       workspaceModalRepoEl.value = "";
-      setWorkspaceModalError("");
+      autoWorkspaceNameValue = "";
+      resetWorkspaceModalValidationState();
       hideWorkspaceInitPrompt();
       workspaceModalBackdropEl.classList.remove("hidden");
       setTimeout(() => {
@@ -360,6 +587,10 @@
     }
 
     function closeWorkspaceModal() {
+      if (workspaceRepoValidationTimer) {
+        clearTimeout(workspaceRepoValidationTimer);
+        workspaceRepoValidationTimer = null;
+      }
       workspaceModalBackdropEl.classList.add("hidden");
     }
 
@@ -371,7 +602,37 @@
         throw new Error("No folder selected.");
       }
       workspaceModalRepoEl.value = path;
+      syncWorkspaceNameWithRepoPath(path);
+      workspaceModalRepoTouched = true;
+      queueWorkspaceRepoValidation({ immediate: true });
       return path;
+    }
+
+    function inferWorkspaceNameFromRepoPath(repoPath) {
+      const normalized = String(repoPath || "")
+        .trim()
+        .replaceAll("\\", "/")
+        .replace(/\/+$/, "");
+      if (!normalized) return "";
+      const parts = normalized.split("/").filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : "";
+    }
+
+    function syncWorkspaceNameWithRepoPath(repoPath) {
+      const suggested = inferWorkspaceNameFromRepoPath(repoPath);
+      const currentName = String(workspaceModalNameEl.value || "").trim();
+      if (!suggested) {
+        if (currentName === autoWorkspaceNameValue) {
+          workspaceModalNameEl.value = "";
+        }
+        autoWorkspaceNameValue = "";
+        return;
+      }
+      // Only auto-fill when the name is empty or still using the previous auto value.
+      if (!currentName || currentName === autoWorkspaceNameValue) {
+        workspaceModalNameEl.value = suggested;
+      }
+      autoWorkspaceNameValue = suggested;
     }
 
     function tasksForWorkspace(workspace) {
@@ -446,8 +707,8 @@
     }
 
     function setTerminalOverlay(message, show = true) {
-      terminalOverlayEl.textContent = message;
-      terminalOverlayEl.style.display = show ? "flex" : "none";
+      terminalOverlayTextEl.textContent = message;
+      terminalOverlayEl.classList.toggle("hidden", !show);
     }
 
     async function resizeTerminalForActiveTab() {
@@ -477,16 +738,37 @@
         </summary>`;
     }
 
-    function SidebarRow({ id, title, subtitle, isSelected, dataAttr }) {
+    function healthDotColor(status) {
+      switch (String(status || "").toLowerCase()) {
+        case "running": return "bg-green-accent";
+        case "pending": return "bg-amber";
+        case "failed": return "bg-red-accent";
+        case "stopped": case "completed": return "bg-text-dim";
+        default: return "bg-text-dim";
+      }
+    }
+
+    function healthDotTooltip(status, updatedAt) {
+      const state = status || "unknown";
+      const time = updatedAt ? new Date(updatedAt).toLocaleTimeString() : "–";
+      return `${state} \u00b7 last active ${time}`;
+    }
+
+    function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updatedAt }) {
       const bg = isSelected ? "bg-[#2F2A29]" : "";
-      const titleColor = isSelected ? "text-[rgba(255,255,255,0.92)]" : "text-[rgba(255,255,255,0.80)]";
+      const leftAccent = isSelected ? "border-l-[3px] border-l-amber pl-[55px]" : "pl-[58px]";
+      const titleColor = isSelected ? "text-[rgba(255,255,255,0.92)] font-medium" : "text-[rgba(255,255,255,0.80)]";
       const attr = dataAttr || "";
+      const dot = status
+        ? `<span class="w-2 h-2 rounded-full flex-none ${healthDotColor(status)}" title="${escapeHtml(healthDotTooltip(status, updatedAt))}"></span>`
+        : "";
       return `
-        <div class="sidebar-row flex items-center gap-3 h-[56px] px-[14px] pl-[58px] cursor-pointer hover:bg-[rgba(255,255,255,0.03)] ${bg}" ${attr}>
+        <div class="sidebar-row flex items-center gap-3 h-[56px] px-[14px] ${leftAccent} cursor-pointer hover:bg-[rgba(255,255,255,0.03)] ${bg}" ${attr}>
           <div class="min-w-0 flex-1 flex flex-col justify-center gap-[2px]">
             <span class="text-[14px] font-medium ${titleColor} truncate leading-tight">${escapeHtml(title)}</span>
             ${subtitle ? `<span class="text-[12px] text-[rgba(255,255,255,0.42)] font-mono truncate leading-tight">${escapeHtml(subtitle)}</span>` : ""}
           </div>
+          ${dot}
         </div>`;
     }
 
@@ -501,15 +783,6 @@
         const activeClass = isActive ? "active" : "";
         const isOpen = expandedWorkspaces.has(name);
         const tasks = tasksForWorkspace(name);
-        const repoPath = workspace.repo_path || "";
-        const shortRepo = shortPath(repoPath);
-
-        const envRow = SidebarRow({
-          title: "local",
-          subtitle: shortRepo || "master",
-          isSelected: isActive && !activeTabId,
-          dataAttr: "",
-        });
 
         const taskRows = tasks.map((task) => {
           const isOpenTab = task.id === activeTabId;
@@ -519,6 +792,8 @@
             subtitle: task.id ? task.id.slice(0, 8) : "",
             isSelected: isOpenTab,
             dataAttr: `data-open-tab="${task.id}"`,
+            status: task.status,
+            updatedAt: task.updated_at,
           });
         }).join("");
 
@@ -529,8 +804,7 @@
           <details class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(name)}" ${isOpen ? "open" : ""}>
             ${WorkspaceHeader(name, tasks.length, isOpen)}
             <div class="workspace-children bg-[#141110]">
-              ${envRow}
-              ${taskRows}
+              ${taskRows || `<div class="px-[58px] py-3 text-[12px] text-[rgba(255,255,255,0.34)]">No tasks</div>`}
             </div>
           </details>
         `;
@@ -541,20 +815,67 @@
       // tasks are rendered inline under each workspace node
     }
 
+    function tabLabel(task, index) {
+      const name = task.name || "untitled";
+      const hint = task.command ? task.command.split(" ")[0] : "";
+      const suffix = hint ? ` \u00b7 ${hint}` : ` #${index + 1}`;
+      const full = name + suffix;
+      const truncated = full.length > 24 ? full.slice(0, 22) + "\u2026" : full;
+      return { truncated, full };
+    }
+
     function renderTabs() {
-      const dynamicTabs = openTabs
-        .map((taskId) => getTask(taskId))
-        .filter(Boolean)
-        .map((task) => {
+      const tasksWithIndex = openTabs.map((taskId, idx) => ({ task: getTask(taskId), idx })).filter(({ task }) => task);
+      const dynamicTabs = tasksWithIndex
+        .map(({ task, idx }) => {
           const active = task.id === activeTabId ? "active" : "";
+          const label = tabLabel(task, idx);
           return `
-            <div class="tab ${active} inline-flex items-center gap-1.5 border border-border-subtle rounded-sm min-h-[27px] px-[9px] bg-tab-bg text-[#B5A8A0] cursor-pointer text-sm max-w-[300px]" data-tab="${task.id}">
-              <span>${escapeHtml(task.name)}</span>
-              <button class="tab-close border-0 bg-transparent text-inherit p-0 w-auto text-base leading-none opacity-70" data-close-tab="${task.id}" type="button">x</button>
+            <div class="tab ${active} inline-flex items-center gap-1.5 border border-border-subtle rounded-sm min-h-[27px] px-[9px] bg-tab-bg text-[#B5A8A0] cursor-pointer text-sm max-w-[300px]" data-tab="${task.id}" title="${escapeHtml(label.full)}">
+              <span class="truncate">${escapeHtml(label.truncated)}</span>
+              <button class="tab-close border-0 bg-transparent text-inherit p-0 w-auto text-base leading-none opacity-70 flex-none" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
             </div>
           `;
         })
         .join("");
+
+      const MAX_VISIBLE_TABS = 6;
+      const visibleTabs = dynamicTabs;
+      let overflowPill = "";
+      if (tasksWithIndex.length > MAX_VISIBLE_TABS) {
+        const overflowCount = tasksWithIndex.length - MAX_VISIBLE_TABS;
+        const visibleIds = new Set(tasksWithIndex.slice(0, MAX_VISIBLE_TABS).map(({ task }) => task.id));
+        // re-render only the visible portion
+        const visibleHtml = tasksWithIndex.slice(0, MAX_VISIBLE_TABS).map(({ task, idx }) => {
+          const active = task.id === activeTabId ? "active" : "";
+          const label = tabLabel(task, idx);
+          return `
+            <div class="tab ${active} inline-flex items-center gap-1.5 border border-border-subtle rounded-sm min-h-[27px] px-[9px] bg-tab-bg text-[#B5A8A0] cursor-pointer text-sm max-w-[300px]" data-tab="${task.id}" title="${escapeHtml(label.full)}">
+              <span class="truncate">${escapeHtml(label.truncated)}</span>
+              <button class="tab-close border-0 bg-transparent text-inherit p-0 w-auto text-base leading-none opacity-70 flex-none" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
+            </div>`;
+        }).join("");
+        const overflowItems = tasksWithIndex.slice(MAX_VISIBLE_TABS).map(({ task }) => {
+          return `<button class="w-full text-left px-2.5 py-1.5 text-sm text-text-secondary hover:bg-hover-bg hover:text-text-primary border-0 bg-transparent rounded-sm" data-overflow-tab="${task.id}" type="button">${escapeHtml(task.name || "untitled")}</button>`;
+        }).join("");
+        overflowPill = `
+          <div class="tab-overflow-wrap relative flex-none">
+            <button class="tab-overflow-btn inline-flex items-center border border-border-subtle rounded-sm min-h-[27px] px-2 bg-tab-bg text-text-tertiary cursor-pointer text-sm flex-none" type="button" aria-label="More tabs">+${overflowCount} more</button>
+            <div class="tab-overflow-menu hidden absolute top-full left-0 mt-1 z-50 bg-panel-bg border border-border-default rounded-md shadow-lg py-1 min-w-[180px]">
+              ${overflowItems}
+            </div>
+          </div>`;
+
+        const emptyHint = "";
+        tabBarEl.innerHTML = `
+          <div class="tab-list inline-flex items-center gap-1 min-w-0 overflow-x-auto pb-px">
+            ${visibleHtml}
+            ${overflowPill}
+            <button class="tab plus-tab inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-amber cursor-pointer text-sm flex-none" type="button" aria-label="New tab">+</button>
+          </div>
+        `;
+        return;
+      }
 
       const emptyHint = openTabs.length ? "" : `<div class="tabs-empty text-[#8E827A] text-sm whitespace-nowrap pr-1">No open tabs</div>`;
       tabBarEl.innerHTML = `
@@ -586,6 +907,7 @@
         }
         setMainViewMode("terminal");
         setTerminalOverlay("Open a task in this workspace to attach terminal.", true);
+        updateTaskContextBar(null);
         renderTabs();
         if (rightPanelMode === "files") {
           loadRepoFiles().catch((error) => console.error(error));
@@ -626,11 +948,12 @@
       setMainViewMode("terminal");
 
       updateTaskHeader(task);
+      updateTaskContextBar(task);
 
       if (task.status === "running") {
-        setTerminalOverlay("Connecting to terminal stream...", true);
+        setTerminalOverlay("Connecting…", true);
       } else {
-        setTerminalOverlay("Task is not running. Resume to use terminal.", true);
+        setTerminalOverlay("", false);
       }
 
       attachStream(taskId);
@@ -648,7 +971,7 @@
         if (activeTabId !== taskId) return;
         const data = JSON.parse(event.data || "{}");
         if (typeof data.logs === "string" && data.logs.length > 0) {
-          terminal.write(data.logs);
+          terminal.write(colorizeTerminalOutput(data.logs));
         }
         const task = getTask(taskId);
         if (task && task.status === "running") {
@@ -660,7 +983,7 @@
         if (activeTabId !== taskId) return;
         const data = JSON.parse(event.data || "{}");
         if (!data.message) return;
-        terminal.write(data.message);
+        terminal.write(colorizeTerminalOutput(data.message));
         setTerminalOverlay("", false);
       });
 
@@ -671,12 +994,13 @@
         if (!task) return;
 
           updateTaskHeader(task);
+          updateTaskContextBar(task);
 
         if (task.status === "running") {
           setTerminalOverlay("", false);
           await resizeTerminalForActiveTab().catch(() => {});
         } else {
-          setTerminalOverlay("Task is not running. Resume to use terminal.", true);
+          setTerminalOverlay("", false);
         }
 
         await refreshGitStatus();
@@ -691,7 +1015,7 @@
           activeStream = null;
         }
         if (activeTabId === taskId) {
-          setTerminalOverlay("Terminal stream disconnected. Re-open tab to reconnect.", true);
+          setTerminalOverlay("Stream disconnected — re-open tab to reconnect", true);
         }
       };
     }
@@ -701,11 +1025,21 @@
       const presets = data.presets || [];
       if (!presets.length) {
         presetSelectEl.innerHTML = `<option value="none">none</option>`;
+        presetSelectEl.value = "none";
         return;
       }
+      const previousPreset = presetSelectEl.value;
       presetSelectEl.innerHTML = presets
         .map((preset) => `<option value="${escapeHtml(preset.name)}">${escapeHtml(preset.name)} - ${escapeHtml(preset.description || "")}</option>`)
         .join("");
+      const presetNames = new Set(presets.map((preset) => String(preset.name || "")));
+      if (previousPreset && presetNames.has(previousPreset)) {
+        presetSelectEl.value = previousPreset;
+      } else if (presetNames.has("none")) {
+        presetSelectEl.value = "none";
+      } else {
+        presetSelectEl.value = String(presets[0]?.name || "none");
+      }
     }
 
     async function loadWorkspaces() {
@@ -725,6 +1059,7 @@
       renderWorkspaces();
       renderWorkspaceTasks();
       syncRepoInputToActiveWorkspace(true);
+      updateTaskContextBar();
       if (rightPanelMode === "files" && !activeTabId) {
         loadRepoFiles().catch((error) => console.error(error));
       }
@@ -754,6 +1089,7 @@
       renderWorkspaceTasks();
       renderTabs();
       updateTaskHeader();
+      updateTaskContextBar();
       if (!activeTabId) {
         setPatchPreviewMessage("Select a changed file to open a diff view.");
       }
@@ -1081,7 +1417,7 @@
         command,
         prompt: promptInputEl.value,
         preset: presetSelectEl.value,
-        direct_repo: true,
+        direct_repo: false,
       };
 
       const result = await api("/api/tasks", {
@@ -1091,11 +1427,25 @@
       return result.task || null;
     }
 
-    async function createQuickTaskForAgent(agent) {
+    function setRunAgentBtnState(running) {
+      const labelEl = document.getElementById("runAgentLabel");
+      const kbdEl = runAgentBtnEl?.querySelector(".run-agent-kbd");
+      if (running) {
+        if (labelEl) labelEl.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-text-dim border-t-text-primary rounded-full animate-spin"></span> Running\u2026`;
+        if (kbdEl) kbdEl.classList.add("hidden");
+        if (runAgentBtnEl) runAgentBtnEl.disabled = true;
+      } else {
+        if (labelEl) labelEl.textContent = "Run Agent";
+        if (kbdEl) kbdEl.classList.remove("hidden");
+        if (runAgentBtnEl) runAgentBtnEl.disabled = false;
+      }
+    }
+
+    async function createQuickTaskForAgent(agent, options = {}) {
       if (launchingAgent) return;
       launchingAgent = true;
-      if (runAgentBtnEl) runAgentBtnEl.disabled = true;
-      const promptSnapshot = promptInputEl.value;
+      setRunAgentBtnState(true);
+      const promptSnapshot = String(options.prompt ?? promptInputEl.value ?? "");
 
       try {
         const selectedAgent = AGENT_COMMANDS[agent] ? agent : agentSelectEl.value;
@@ -1114,7 +1464,7 @@
           command,
           prompt: promptSnapshot,
           preset: presetSelectEl.value,
-          direct_repo: true,
+          direct_repo: false,
         };
 
         const result = await api("/api/tasks", {
@@ -1126,14 +1476,33 @@
         await loadWorkspaces();
         if (result.task && result.task.id) {
           openTab(result.task.id);
-          if (String(promptSnapshot || "").trim()) {
+          if (!options.keepPromptInput && String(promptSnapshot || "").trim()) {
             promptInputEl.value = "";
           }
         }
       } finally {
         launchingAgent = false;
-        if (runAgentBtnEl) runAgentBtnEl.disabled = false;
+        setRunAgentBtnState(false);
       }
+    }
+
+    async function createTaskFromNewTab() {
+      let trimmedPrompt = String(promptInputEl.value || "").trim();
+      if (!trimmedPrompt && typeof window.prompt === "function") {
+        const nextPrompt = window.prompt("What should the agent run in this new task?", "");
+        if (nextPrompt !== null) {
+          trimmedPrompt = String(nextPrompt).trim();
+        }
+      }
+      if (!trimmedPrompt) {
+        promptInputEl.focus();
+        alert("Enter task instructions in the prompt box, then click New tab.");
+        return;
+      }
+      await createQuickTaskForAgent(agentSelectEl.value, {
+        prompt: trimmedPrompt,
+        keepPromptInput: true,
+      });
     }
 
     async function runTaskAction(action, taskId) {
@@ -1248,6 +1617,7 @@
 
       workspaceModalBrowseBtnEl.addEventListener("click", async () => {
         hideWorkspaceInitPrompt();
+        setWorkspaceModalError("");
         try {
           await browseWorkspaceRepoIntoModal();
         } catch (error) {
@@ -1255,26 +1625,55 @@
         }
       });
 
-      workspaceModalCreateBtnEl.addEventListener("click", async () => {
-        const cleanName = workspaceModalNameEl.value.trim();
-        const repoPath = workspaceModalRepoEl.value.trim();
-        hideWorkspaceInitPrompt();
+      workspaceModalNameEl.addEventListener("input", () => {
+        workspaceModalNameTouched = true;
+        setWorkspaceModalError("");
+        updateWorkspaceModalValidityUI();
+      });
+      workspaceModalNameEl.addEventListener("blur", () => {
+        workspaceModalNameTouched = true;
+        updateWorkspaceModalValidityUI();
+      });
 
-        if (!cleanName) {
-          setWorkspaceModalError("Workspace name is required.");
-          workspaceModalNameEl.focus();
-          return;
-        }
-        if (!repoPath) {
-          setWorkspaceModalError("Git repository path is required. Type it or browse local folder.");
+      workspaceModalRepoEl.addEventListener("input", () => {
+        workspaceModalRepoTouched = true;
+        setWorkspaceModalError("");
+        syncWorkspaceNameWithRepoPath(workspaceModalRepoEl.value);
+        queueWorkspaceRepoValidation();
+      });
+      workspaceModalRepoEl.addEventListener("blur", () => {
+        workspaceModalRepoTouched = true;
+        queueWorkspaceRepoValidation({ immediate: true });
+      });
+
+      workspaceModalCreateBtnEl.addEventListener("click", async () => {
+        const cleanName = String(workspaceModalNameEl.value || "").trim();
+        const repoPath = String(workspaceModalRepoEl.value || "").trim();
+        workspaceModalSubmitAttempted = true;
+        hideWorkspaceInitPrompt();
+        updateWorkspaceModalValidityUI();
+
+        if (workspaceModalCreateBtnEl.disabled) {
+          if (!cleanName) {
+            workspaceModalNameTouched = true;
+            updateWorkspaceModalValidityUI();
+            workspaceModalNameEl.focus();
+            return;
+          }
+          if (!repoPath) {
+            workspaceModalRepoTouched = true;
+            updateWorkspaceModalValidityUI();
+            workspaceModalRepoEl.focus();
+            return;
+          }
           workspaceModalRepoEl.focus();
           return;
         }
 
         setWorkspaceModalError("");
-        workspaceModalCreateBtnEl.disabled = true;
+        setWorkspaceModalCreateLoading(true);
         try {
-          let data = await api("/api/workspaces", {
+          const data = await api("/api/workspaces", {
             method: "POST",
             body: JSON.stringify({ name: cleanName, repo_path: repoPath, init_git: false }),
           });
@@ -1300,14 +1699,18 @@
 
           setWorkspaceModalError(message);
         } finally {
-          workspaceModalCreateBtnEl.disabled = false;
+          setWorkspaceModalCreateLoading(false);
         }
       });
 
       workspaceModalRepoEl.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           event.preventDefault();
-          workspaceModalCreateBtnEl.click();
+          workspaceModalSubmitAttempted = true;
+          updateWorkspaceModalValidityUI();
+          if (!workspaceModalCreateBtnEl.disabled) {
+            workspaceModalCreateBtnEl.click();
+          }
         }
       });
       workspaceInitPromptYesBtnEl.addEventListener("click", async () => {
@@ -1351,6 +1754,20 @@
           workspaceModalRepoEl.focus();
         }
       });
+
+      taskContextPathEl.addEventListener("click", async () => {
+        const path = String(taskContextPathEl.dataset.path || "").trim();
+        if (!path) return;
+        try {
+          await api("/api/local/open-directory", {
+            method: "POST",
+            body: JSON.stringify({ path }),
+          });
+        } catch (error) {
+          alert(error.message || String(error));
+        }
+      });
+
       window.addEventListener("keydown", (event) => {
         const key = String(event.key || "").toLowerCase();
         if ((event.metaKey || event.ctrlKey) && key === "n") {
@@ -1358,8 +1775,20 @@
           openWorkspaceModal();
           return;
         }
-        if (event.key === "Escape" && !workspaceModalBackdropEl.classList.contains("hidden")) {
+        if (!isWorkspaceModalOpen()) return;
+
+        if (event.key === "Escape") {
+          event.preventDefault();
           closeWorkspaceModal();
+          return;
+        }
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          workspaceModalSubmitAttempted = true;
+          updateWorkspaceModalValidityUI();
+          if (!workspaceModalCreateBtnEl.disabled) {
+            workspaceModalCreateBtnEl.click();
+          }
         }
       });
 
@@ -1403,16 +1832,32 @@
         renderWorkspaces();
         renderWorkspaceTasks();
         syncRepoInputToActiveWorkspace(true);
+        updateTaskContextBar();
         if (rightPanelMode === "files") {
           loadRepoFiles().catch((error) => console.error(error));
         }
       });
 
-      tabBarEl.addEventListener("click", (event) => {
+      tabBarEl.addEventListener("click", async (event) => {
         const closeBtn = event.target.closest("button[data-close-tab]");
         if (closeBtn) {
           event.stopPropagation();
           closeTab(closeBtn.dataset.closeTab);
+          return;
+        }
+
+        // P2-B: overflow menu toggle
+        const overflowBtn = event.target.closest(".tab-overflow-btn");
+        if (overflowBtn) {
+          const menu = overflowBtn.parentElement.querySelector(".tab-overflow-menu");
+          if (menu) menu.classList.toggle("hidden");
+          return;
+        }
+        const overflowTab = event.target.closest("[data-overflow-tab]");
+        if (overflowTab) {
+          openTab(overflowTab.dataset.overflowTab);
+          const menu = overflowTab.closest(".tab-overflow-menu");
+          if (menu) menu.classList.add("hidden");
           return;
         }
 
@@ -1424,7 +1869,11 @@
 
         const plusTab = event.target.closest(".plus-tab");
         if (plusTab) {
-          promptInputEl.focus();
+          try {
+            await createTaskFromNewTab();
+          } catch (error) {
+            alert(error.message || String(error));
+          }
         }
       });
 
@@ -1449,12 +1898,25 @@
         }
       });
       promptInputEl.addEventListener("keydown", async (event) => {
+        // Plain Enter or ⌘Enter both submit
         if (event.key !== "Enter" || event.shiftKey) return;
         event.preventDefault();
         try {
           await createQuickTaskForAgent(agentSelectEl.value);
         } catch (error) {
           alert(error.message || String(error));
+        }
+      });
+      // ⌘↵ global shortcut
+      window.addEventListener("keydown", async (event) => {
+        if (isWorkspaceModalOpen()) return;
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          try {
+            await createQuickTaskForAgent(agentSelectEl.value);
+          } catch (error) {
+            alert(error.message || String(error));
+          }
         }
       });
 
@@ -1482,11 +1944,31 @@
         commitChanges().catch((error) => alert(error.message || String(error)));
       });
 
+      document.getElementById("suggestCommitBtn").addEventListener("click", () => {
+        const staged = currentGitStatus.staged || [];
+        if (staged.length === 0) return;
+        const files = staged.map((f) => f.path.split("/").pop()).slice(0, 5);
+        const prefix = staged.some((f) => f.status === "A") ? "feat" : "fix";
+        const msg = `${prefix}: update ${files.join(", ")}`;
+        const el = document.getElementById("commitMessage");
+        el.value = msg;
+        el.style.fontStyle = "normal";
+      });
+
       rightTabChangesEl.addEventListener("click", () => {
         setRightPanelMode("changes");
       });
       rightTabFilesEl.addEventListener("click", () => {
         setRightPanelMode("files");
+      });
+
+      document.getElementById("stageAllBtn").addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const unstaged = currentGitStatus.unstaged || [];
+        for (const change of unstaged) {
+          await stageFile(change.path);
+        }
       });
 
       unstagedListEl.addEventListener("click", async (event) => {
@@ -1552,6 +2034,7 @@
       setPatchPreviewMessage("Select a changed file to open a diff view.");
       setMainViewMode("terminal");
       updateTaskHeader(null);
+      updateTaskContextBar(null);
 
       commandInputEl.value = AGENT_COMMANDS[agentSelectEl.value] || "";
       syncProviderPills();

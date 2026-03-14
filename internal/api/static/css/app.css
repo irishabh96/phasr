@@ -26,6 +26,7 @@
   --red: #D05C5C;
   --blue: #7AA2FF;
   --orange: #C97A2B;
+  --color-border-info: #7AA2FF;
   --diff-add-bg: #1B3527;
   --diff-add-text: #B7E7C8;
   --diff-remove-bg: #412625;
@@ -104,11 +105,18 @@ html, body { height: 100%; }
   }
 }
 
+/* ---------- Spinner animation ---------- */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.animate-spin { animation: spin 0.6s linear infinite; }
+
 /* ---------- Focus ring ---------- */
 :focus-visible {
-  outline: none;
-  border-color: #5B4C47 !important;
-  box-shadow: 0 0 0 2px rgba(121, 167, 255, 0.12);
+  outline: 1.5px solid var(--color-border-info);
+  outline-offset: 0;
+  border-color: var(--color-border-info) !important;
+  box-shadow: none !important;
 }
 
 /* ---------- JS toggle ---------- */
@@ -238,17 +246,6 @@ html, body { height: 100%; }
 .diff-columns-head .pane.right::before { background: var(--green); }
 .diff-columns-head .pane.left { border-right: 1px solid #312A28; }
 
-/* ---------- Terminal overlay pseudo-element ---------- */
-.terminal-overlay::before {
-  content: "";
-  position: absolute;
-  width: min(460px, calc(100% - 32px));
-  height: 58px;
-  border-radius: var(--radius-md);
-  border: 1px dashed #423734;
-  background: rgba(34, 28, 25, 0.42);
-}
-
 /* ---------- Change section chevron (pseudo-element) ---------- */
 .change-section summary::-webkit-details-marker { display: none; }
 .change-section summary::marker { display: none; }
@@ -306,6 +303,70 @@ html, body { height: 100%; }
 
 /* ---------- Workspace summary ---------- */
 .workspace-summary::-webkit-details-marker { display: none; }
+
+/* ---------- Workspace modal ---------- */
+.workspace-modal-label {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none !important;
+}
+
+.workspace-modal-help {
+  min-height: 16px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workspace-modal-help.workspace-modal-help-error {
+  color: var(--red);
+}
+
+.workspace-modal-input-invalid {
+  border-color: var(--red) !important;
+}
+
+.workspace-modal-browse-btn {
+  border-left: 1px solid var(--border-default);
+  border-top-right-radius: var(--radius-md);
+  border-bottom-right-radius: var(--radius-md);
+  color: var(--text-secondary);
+  background: transparent;
+}
+
+.workspace-modal-browse-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  background: var(--hover-bg);
+}
+
+.workspace-modal-error {
+  border: 1px solid rgba(208, 92, 92, 0.45);
+  background: rgba(208, 92, 92, 0.11);
+  color: var(--red);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+}
+
+.workspace-modal-cancel-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  background: var(--hover-bg);
+}
+
+.workspace-modal-cancel-btn:focus-visible {
+  outline: 1.5px solid var(--color-border-info);
+  outline-offset: 0;
+  box-shadow: none !important;
+}
+
+.workspace-modal-create-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
 
 /* ---------- Media queries ---------- */
 @media (max-width: 1400px) {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -54,6 +55,8 @@ func NewServer(opts Options) (http.Handler, error) {
 	}
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
+	mux.HandleFunc("/api/local/open-directory", s.handleOpenDirectory)
+	mux.HandleFunc("/api/local/validate-directory", s.handleValidateDirectory)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
 	mux.HandleFunc("/api/presets", s.handlePresets)
@@ -102,6 +105,103 @@ func (s *server) handleBrowseDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": path})
+}
+
+func (s *server) handleOpenDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusBadRequest, "path does not exist")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	if err := localfs.OpenDirectory(path); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opened": path})
+}
+
+func (s *server) handleValidateDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":    "",
+			"exists":  false,
+			"is_dir":  false,
+			"valid":   false,
+			"message": "Path is required.",
+		})
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"path":    path,
+				"exists":  false,
+				"is_dir":  false,
+				"valid":   false,
+				"message": "Path does not exist.",
+			})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	isDir := info.IsDir()
+	message := ""
+	if !isDir {
+		message = "Path exists but is not a directory."
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":    path,
+		"exists":  true,
+		"is_dir":  isDir,
+		"valid":   isDir,
+		"message": message,
+	})
 }
 
 func (s *server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {

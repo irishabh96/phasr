@@ -58,7 +58,7 @@
     <link rel="stylesheet" href="/static/css/app.css" />
   </head>
   <body class="font-ui text-text-primary bg-app-bg text-base leading-[1.4]">
-    <div class="app-shell h-full grid grid-rows-[minmax(0,1fr)] gap-2 p-2 bg-window-bg">
+    <div class="app-shell h-full grid grid-rows-[minmax(0,1fr)_auto] gap-2 p-2 bg-window-bg">
       <div class="app min-h-0 h-full flex gap-2">
         <aside
           class="panel left-col bg-[#141110] border border-[rgba(255,255,255,0.06)] rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden w-[290px] min-w-[240px] max-w-[420px] resize-x"
@@ -88,10 +88,12 @@
           <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
             <div class="provider-row flex items-center justify-between gap-2.5">
               <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
+                <span class="text-2xs text-text-dim font-mono mr-0.5">Run with:</span>
                 <button
                   type="button"
                   class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
                   data-provider-pill="claude"
+                  title="Anthropic Claude — autonomous coding agent"
                 >
                   claude
                 </button>
@@ -99,6 +101,7 @@
                   type="button"
                   class="provider-pill active border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
                   data-provider-pill="codex"
+                  title="OpenAI Codex — GPT-powered coding agent"
                 >
                   codex
                 </button>
@@ -106,6 +109,7 @@
                   type="button"
                   class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
                   data-provider-pill="copilot"
+                  title="GitHub Copilot — AI pair programmer"
                 >
                   copilot
                 </button>
@@ -113,6 +117,7 @@
                   type="button"
                   class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
                   data-provider-pill="opencode"
+                  title="OpenCode — open-source coding assistant"
                 >
                   opencode
                 </button>
@@ -120,6 +125,7 @@
                   type="button"
                   class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
                   data-provider-pill="gemini"
+                  title="Google Gemini — multimodal AI agent"
                 >
                   gemini
                 </button>
@@ -155,10 +161,11 @@
               ></textarea>
               <button
                 id="runAgentBtn"
-                class="btn-primary min-w-[108px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold"
+                class="btn-primary min-w-[120px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold inline-flex items-center justify-center gap-1.5"
                 type="button"
               >
-                Run Agent
+                <span id="runAgentLabel">Run Agent</span>
+                <kbd class="run-agent-kbd text-2xs text-text-dim border-0 bg-transparent p-0">&#x2318;&#x21A9;</kbd>
               </button>
             </div>
           </form>
@@ -191,9 +198,9 @@
               <div id="terminal" class="w-full flex-1 px-2 py-1.5"></div>
               <div
                 id="terminalOverlay"
-                class="terminal-overlay absolute inset-0 flex items-center justify-center text-center p-[18px] text-text-secondary text-sm pointer-events-none bg-gradient-to-b from-[rgba(20,17,16,0.34)] to-[rgba(20,17,16,0.58)] leading-[1.45] tracking-[0.01em] z-[2]"
+                class="terminal-banner hidden absolute top-0 left-0 right-0 h-7 flex items-center justify-center gap-2 text-text-secondary text-xs font-mono bg-[#1A1514] border-b border-border-subtle z-[2]"
               >
-                Open a task in this workspace to attach terminal.
+                <span id="terminalOverlayText"></span>
               </div>
             </div>
 
@@ -256,10 +263,19 @@
 
           <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
             <div>
-              <label for="commitMessage" class="mb-0.5">Commit Message</label>
+              <div class="flex items-center justify-between mb-0.5">
+                <label for="commitMessage" class="mb-0">Commit Message</label>
+                <button
+                  id="suggestCommitBtn"
+                  class="text-2xs text-blue-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
+                  type="button"
+                >
+                  Suggest
+                </button>
+              </div>
               <textarea
                 id="commitMessage"
-                class="min-h-[52px] p-2 rounded-md bg-input-bg border-border-default"
+                class="min-h-[52px] p-2 rounded-md bg-input-bg border-border-default placeholder:text-text-dim placeholder:italic"
                 placeholder="feat: concise message"
               ></textarea>
             </div>
@@ -293,9 +309,16 @@
 
             <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
               <summary
-                class="cursor-pointer list-none flex items-center justify-start gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+                class="cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
               >
                 <span id="unstagedSectionLabel">Unstaged 0</span>
+                <button
+                  id="stageAllBtn"
+                  class="text-2xs text-green-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
+                  type="button"
+                >
+                  Stage all
+                </button>
               </summary>
               <div id="unstagedList" class="change-list block pt-0.5 bg-transparent"></div>
             </details>
@@ -312,6 +335,26 @@
             ></div>
           </div>
         </aside>
+      </div>
+      <div
+        id="taskContextBar"
+        class="h-8 min-h-8 border border-border-subtle rounded-md bg-[#151211] px-2.5 flex items-center gap-2.5 text-xs text-text-secondary font-mono"
+      >
+        <span id="taskContextTask" class="text-text-tertiary whitespace-nowrap">Task: none</span>
+        <span
+          id="taskContextBranch"
+          class="inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] px-2 h-5 whitespace-nowrap"
+          >Branch: -</span
+        >
+        <button
+          id="taskContextPath"
+          class="min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-left hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
+          type="button"
+          title=""
+          disabled
+        >
+          Path: -
+        </button>
       </div>
     </div>
 
@@ -330,7 +373,7 @@
         >
           <h3
             id="workspaceModalTitle"
-            class="m-0 text-sm font-semibold text-text-secondary uppercase tracking-[0.05em]"
+            class="m-0 text-[15px] font-medium text-text-secondary"
           >
             Create Workspace
           </h3>
@@ -342,25 +385,40 @@
             Close
           </button>
         </div>
-        <div class="modal-body px-3 py-[13px] grid gap-[11px]">
-          <div>
-            <label for="workspaceModalName">Workspace Name</label>
-            <input id="workspaceModalName" placeholder="payments" />
+        <div class="modal-body px-3 py-[13px] grid gap-3.5">
+          <div class="workspace-modal-field grid gap-1">
+            <label class="workspace-modal-label" for="workspaceModalName">Workspace name</label>
+            <input
+              id="workspaceModalName"
+              class="workspace-modal-input w-full min-h-[42px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
+              placeholder="e.g. my-project"
+            />
+            <div id="workspaceModalNameHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite"></div>
           </div>
-          <div class="repo-picker grid grid-cols-[1fr_auto] gap-2 items-end">
-            <div>
-              <label for="workspaceModalRepo">Git Repo Path</label>
-              <input id="workspaceModalRepo" placeholder="/Users/you/projects/repo" />
+          <div class="workspace-modal-field grid gap-1">
+            <label class="workspace-modal-label" for="workspaceModalRepo">Git repo path</label>
+            <div class="workspace-repo-input-wrap relative">
+              <input
+                id="workspaceModalRepo"
+                class="workspace-modal-input workspace-modal-input-with-action w-full min-h-[42px] px-3 pr-12 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
+                placeholder="/Users/you/projects/repo"
+              />
+              <button
+                id="workspaceModalBrowseBtn"
+                class="workspace-modal-browse-btn absolute right-0 top-0 h-full w-10 border-0 border-l border-border-default bg-transparent text-text-secondary inline-flex items-center justify-center"
+                type="button"
+                aria-label="Browse local folder"
+                title="Browse local folder"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.1c.4 0 .78.16 1.06.44l1.4 1.4c.28.28.66.44 1.06.44h7.37A1.5 1.5 0 0 1 21 9.78V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V7.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                  <path d="M3 10h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+              </button>
             </div>
-            <button
-              id="workspaceModalBrowseBtn"
-              class="btn-ghost bg-transparent border-border-default text-text-secondary"
-              type="button"
-            >
-              Browse local folder
-            </button>
+            <div id="workspaceModalRepoHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite">Select the root folder of your git repository.</div>
           </div>
-          <div id="workspaceModalError" class="muted text-text-secondary text-sm"></div>
+          <div id="workspaceModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
           <div
             id="workspaceInitPrompt"
             class="inline-prompt hidden border border-[#4A3F3A] rounded-md p-2 bg-[rgba(213,155,26,0.08)] grid gap-2"
@@ -389,17 +447,23 @@
         <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
           <button
             id="workspaceModalCancelBtn"
-            class="btn-ghost bg-transparent border-border-default text-text-secondary"
+            class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary"
             type="button"
           >
             Cancel
           </button>
           <button
             id="workspaceModalCreateBtn"
-            class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
+            class="btn-primary workspace-modal-create-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2 inline-flex items-center justify-center gap-2"
             type="button"
+            disabled
           >
-            Create Workspace
+            <span
+              id="workspaceModalCreateSpinner"
+              class="workspace-btn-spinner hidden w-3.5 h-3.5 rounded-full border-2 border-[#8F837A] border-t-[#F2EBE4]"
+              aria-hidden="true"
+            ></span>
+            <span id="workspaceModalCreateLabel">Create Workspace</span>
           </button>
         </div>
       </div>
