@@ -69,6 +69,9 @@
     const terminalOverlayEl = document.getElementById("terminalOverlay");
     const taskContextTaskEl = document.getElementById("taskContextTask");
     const taskContextBranchEl = document.getElementById("taskContextBranch");
+    const taskContextBranchMenuEl = document.getElementById("taskContextBranchMenu");
+    const taskContextOpenPrBtnEl = document.getElementById("taskContextOpenPrBtn");
+    const taskContextOpenBranchBtnEl = document.getElementById("taskContextOpenBranchBtn");
     const taskContextPathEl = document.getElementById("taskContextPath");
 
     const gitTaskLabelEl = document.getElementById("gitTaskLabel");
@@ -121,6 +124,8 @@
       checking: false,
       message: "",
     };
+    const taskContextRepoMetaCache = new Map();
+    let taskContextBranchLookupSeq = 0;
 
     function escapeHtml(value) {
       return String(value || "")
@@ -170,6 +175,72 @@
       return String(task?.worktree_path || task?.repo_path || "").trim();
     }
 
+    function closeTaskContextBranchMenu() {
+      if (!taskContextBranchMenuEl) return;
+      taskContextBranchMenuEl.classList.add("hidden");
+    }
+
+    function setTaskContextBranchActions({ provider = "", baseBranch = "", branchUrl = "", prUrl = "" } = {}) {
+      if (!taskContextBranchEl || !taskContextOpenPrBtnEl || !taskContextOpenBranchBtnEl) return;
+
+      const hasActions = Boolean(branchUrl || prUrl);
+      taskContextBranchEl.disabled = !hasActions;
+      taskContextBranchEl.dataset.branchUrl = branchUrl || "";
+      taskContextBranchEl.dataset.prUrl = prUrl || "";
+      taskContextBranchEl.dataset.provider = provider || "";
+      taskContextBranchEl.dataset.baseBranch = baseBranch || "";
+
+      const branchLabel = String(taskContextBranchEl.textContent || "").trim();
+      const providerLabel = provider ? provider.toUpperCase() : "";
+      const branchTitleParts = [branchLabel];
+      if (providerLabel) branchTitleParts.push(providerLabel);
+      if (baseBranch) branchTitleParts.push(`base: ${baseBranch}`);
+      taskContextBranchEl.title = hasActions ? branchTitleParts.join(" · ") : branchLabel;
+
+      taskContextOpenPrBtnEl.disabled = !prUrl;
+      taskContextOpenPrBtnEl.dataset.url = prUrl || "";
+      taskContextOpenPrBtnEl.textContent = baseBranch ? `Open PR to ${baseBranch}` : "Open PR";
+
+      taskContextOpenBranchBtnEl.disabled = !branchUrl;
+      taskContextOpenBranchBtnEl.dataset.url = branchUrl || "";
+      closeTaskContextBranchMenu();
+    }
+
+    async function loadTaskContextBranchActions(pathValue, branchValue) {
+      const path = String(pathValue || "").trim();
+      const branch = String(branchValue || "").trim();
+      const lookupSeq = ++taskContextBranchLookupSeq;
+      setTaskContextBranchActions({});
+
+      if (!path || !branch || branch === "-") return;
+
+      const cacheKey = `${path}::${branch}`;
+      const cached = taskContextRepoMetaCache.get(cacheKey);
+      if (cached) {
+        setTaskContextBranchActions(cached);
+        return;
+      }
+
+      try {
+        const data = await api("/api/local/git-metadata", {
+          method: "POST",
+          body: JSON.stringify({ path, branch }),
+        });
+        if (lookupSeq !== taskContextBranchLookupSeq) return;
+        const nextActions = {
+          provider: String(data.provider || ""),
+          baseBranch: String(data.base_branch || ""),
+          branchUrl: String(data.branch_url || ""),
+          prUrl: String(data.pr_url || ""),
+        };
+        taskContextRepoMetaCache.set(cacheKey, nextActions);
+        setTaskContextBranchActions(nextActions);
+      } catch (_) {
+        if (lookupSeq !== taskContextBranchLookupSeq) return;
+        setTaskContextBranchActions({});
+      }
+    }
+
     function updateTaskContextBar(task = undefined) {
       if (!taskContextTaskEl || !taskContextBranchEl || !taskContextPathEl) return;
 
@@ -191,15 +262,15 @@
         const path = taskCodePath(nextTask) || workspacePath;
         taskContextTaskEl.textContent = `Task: ${taskLabel}`;
         taskContextBranchEl.textContent = `Branch: ${branch}`;
-        taskContextBranchEl.title = branch === "-" ? "" : branch;
         applyPath(path);
+        void loadTaskContextBranchActions(path, branch);
         return;
       }
 
       taskContextTaskEl.textContent = "Task: none";
       taskContextBranchEl.textContent = "Branch: -";
-      taskContextBranchEl.title = "";
       applyPath(workspacePath);
+      void loadTaskContextBranchActions(workspacePath, "");
     }
 
     function setPatchPreviewMessage(message) {
@@ -1755,6 +1826,52 @@
         }
       });
 
+      const openTaskContextLink = async (targetUrl) => {
+        const href = String(targetUrl || "").trim();
+        if (!href) return;
+        try {
+          await api("/api/local/open-url", {
+            method: "POST",
+            body: JSON.stringify({ url: href }),
+          });
+          return;
+        } catch (_) {
+          const opened = window.open(href, "_blank", "noopener,noreferrer");
+          if (opened) {
+            opened.opener = null;
+            return;
+          }
+        }
+        alert("Unable to open link in browser.");
+      };
+
+      taskContextBranchEl.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (taskContextBranchEl.disabled) return;
+        taskContextBranchMenuEl.classList.toggle("hidden");
+      });
+      taskContextOpenPrBtnEl.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await openTaskContextLink(taskContextOpenPrBtnEl.dataset.url);
+        closeTaskContextBranchMenu();
+      });
+      taskContextOpenBranchBtnEl.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await openTaskContextLink(taskContextOpenBranchBtnEl.dataset.url);
+        closeTaskContextBranchMenu();
+      });
+      document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          closeTaskContextBranchMenu();
+          return;
+        }
+        if (target.closest("#taskContextBranch") || target.closest("#taskContextBranchMenu")) return;
+        closeTaskContextBranchMenu();
+      });
+
       taskContextPathEl.addEventListener("click", async () => {
         const path = String(taskContextPathEl.dataset.path || "").trim();
         if (!path) return;
@@ -1774,6 +1891,11 @@
           event.preventDefault();
           openWorkspaceModal();
           return;
+        }
+
+        if (event.key === "Escape" && !taskContextBranchMenuEl.classList.contains("hidden")) {
+          closeTaskContextBranchMenu();
+          if (!isWorkspaceModalOpen()) return;
         }
         if (!isWorkspaceModalOpen()) return;
 

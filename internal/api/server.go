@@ -55,7 +55,9 @@ func NewServer(opts Options) (http.Handler, error) {
 	}
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
+	mux.HandleFunc("/api/local/git-metadata", s.handleGitMetadata)
 	mux.HandleFunc("/api/local/open-directory", s.handleOpenDirectory)
+	mux.HandleFunc("/api/local/open-url", s.handleOpenURL)
 	mux.HandleFunc("/api/local/validate-directory", s.handleValidateDirectory)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
@@ -146,6 +148,43 @@ func (s *server) handleOpenDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"opened": path})
+}
+
+func (s *server) handleOpenURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	rawURL := strings.TrimSpace(payload.URL)
+	if rawURL == "" {
+		writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed == nil || parsed.Host == "" {
+		writeError(w, http.StatusBadRequest, "invalid url")
+		return
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if scheme != "https" && scheme != "http" {
+		writeError(w, http.StatusBadRequest, "only http/https urls are allowed")
+		return
+	}
+
+	if err := localfs.OpenURL(rawURL); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opened": rawURL})
 }
 
 func (s *server) handleValidateDirectory(w http.ResponseWriter, r *http.Request) {

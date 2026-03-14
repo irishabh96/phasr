@@ -341,11 +341,38 @@
         class="h-8 min-h-8 border border-border-subtle rounded-md bg-[#151211] px-2.5 flex items-center gap-2.5 text-xs text-text-secondary font-mono"
       >
         <span id="taskContextTask" class="text-text-tertiary whitespace-nowrap">Task: none</span>
-        <span
-          id="taskContextBranch"
-          class="inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] px-2 h-5 whitespace-nowrap"
-          >Branch: -</span
-        >
+        <div class="relative">
+          <button
+            id="taskContextBranch"
+            class="inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] px-2 h-5 whitespace-nowrap text-text-secondary hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
+            type="button"
+            title=""
+            disabled
+          >
+            Branch: -
+          </button>
+          <div
+            id="taskContextBranchMenu"
+            class="hidden absolute bottom-full right-0 mb-1 min-w-[180px] p-1 rounded-md border border-border-default bg-[#1A1514] shadow-lg z-30"
+          >
+            <button
+              id="taskContextOpenPrBtn"
+              class="w-full text-left px-2 py-1 rounded-sm bg-transparent border-0 text-text-secondary hover:bg-hover-bg hover:text-text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
+              type="button"
+              disabled
+            >
+              Open PR
+            </button>
+            <button
+              id="taskContextOpenBranchBtn"
+              class="w-full text-left px-2 py-1 rounded-sm bg-transparent border-0 text-text-secondary hover:bg-hover-bg hover:text-text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
+              type="button"
+              disabled
+            >
+              Open branch
+            </button>
+          </div>
+        </div>
         <button
           id="taskContextPath"
           class="min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-left hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
