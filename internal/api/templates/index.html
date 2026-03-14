@@ -1,176 +1,412 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Staq | Multi-Workspace Terminal</title>
-  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
-  <link rel="stylesheet" href="/static/css/app.css">
-</head>
-<body>
-  <div class="app-shell">
-    <div class="app">
-      <aside class="panel left-col">
-        <div class="workspace-actions">
-          <button id="createWorkspaceBtn" class="new-workspace-btn" type="button">
-            <span class="plus">+</span>
-            <span style="margin-right:auto;">New Workspace</span>
-            <kbd>&#x2318; N</kbd>
-          </button>
-        </div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Staq | Multi-Workspace Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'app-bg': '#141110',
+              'window-bg': '#171312',
+              'sidebar-bg': '#191514',
+              'center-bg': '#120F0E',
+              'panel-bg': '#171312',
+              'elevated-bg': '#211B19',
+              'toolbar-bg': '#1A1514',
+              'tab-bg': '#201A18',
+              'active-tab-bg': '#2A2321',
+              'input-bg': '#211A18',
+              'hover-bg': '#26201E',
+              'selected-row-bg': '#302826',
+              'border-subtle': '#2B2422',
+              'border-default': '#3A312F',
+              'border-strong': '#4A3F3B',
+              'text-primary': '#E6DED7',
+              'text-secondary': '#A89A90',
+              'text-tertiary': '#7E7169',
+              'text-dim': '#655B56',
+              amber: '#D19A1A',
+              'green-accent': '#27C46B',
+              'red-accent': '#D05C5C',
+              'blue-accent': '#7AA2FF',
+              'orange-accent': '#C97A2B',
+            },
+            fontFamily: {
+              ui: ['"Inter"', '"SF Pro Text"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
+              mono: ['"JetBrains Mono"', '"SF Mono"', 'Menlo', 'Consolas', 'monospace'],
+            },
+            fontSize: {
+              '2xs': '10px',
+              xs: '11px',
+              sm: '12px',
+              base: '13px',
+            },
+            borderRadius: {
+              sm: '6px',
+              md: '8px',
+              lg: '10px',
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body class="font-ui text-text-primary bg-app-bg text-base leading-[1.4]">
+    <div class="app-shell h-full grid grid-rows-[minmax(0,1fr)] gap-2 p-2 bg-window-bg">
+      <div class="app min-h-0 h-full flex gap-2">
+        <aside
+          class="panel left-col bg-[#141110] border border-[rgba(255,255,255,0.06)] rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden w-[290px] min-w-[240px] max-w-[420px] resize-x"
+        >
+          <div id="workspaceList" class="workspace-list min-h-0 flex-1 overflow-y-auto"></div>
 
-        <div id="workspaceList" class="workspace-list"></div>
+          <div class="border-t border-[rgba(255,255,255,0.06)] px-3 py-2.5">
+            <button
+              id="createWorkspaceBtn"
+              class="w-full flex items-center gap-2.5 bg-transparent border border-[rgba(255,255,255,0.08)] text-[rgba(255,255,255,0.68)] min-h-[34px] px-3 text-[13px] font-medium rounded-md hover:bg-[rgba(255,255,255,0.04)] hover:border-[rgba(255,255,255,0.12)]"
+              type="button"
+            >
+              <span class="text-[15px] leading-none">+</span>
+              <span>New Workspace</span>
+              <kbd class="ml-auto">&#x2318; N</kbd>
+            </button>
+          </div>
+        </aside>
 
-      </aside>
+        <main
+          class="panel center-col bg-[#120F0E] border border-border-subtle rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden flex-1"
+        >
+          <div class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap">
+            <div id="tabBar" class="tab-bar flex items-center justify-between gap-2.5 min-w-full"></div>
+          </div>
 
-      <main class="panel center-col">
-        <div class="tabs">
-          <div id="tabBar" class="tab-bar"></div>
-        </div>
+          <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
+            <div class="provider-row flex items-center justify-between gap-2.5">
+              <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+                  data-provider-pill="claude"
+                >
+                  claude
+                </button>
+                <button
+                  type="button"
+                  class="provider-pill active border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+                  data-provider-pill="codex"
+                >
+                  codex
+                </button>
+                <button
+                  type="button"
+                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+                  data-provider-pill="copilot"
+                >
+                  copilot
+                </button>
+                <button
+                  type="button"
+                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+                  data-provider-pill="opencode"
+                >
+                  opencode
+                </button>
+                <button
+                  type="button"
+                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+                  data-provider-pill="gemini"
+                >
+                  gemini
+                </button>
+              </div>
+            </div>
 
-        <form id="createTaskForm" class="compose">
-          <div class="provider-row">
-            <div id="providerBar" class="provider-bar">
-              <button type="button" class="provider-pill" data-provider-pill="claude">claude</button>
-              <button type="button" class="provider-pill active" data-provider-pill="codex">codex</button>
-              <button type="button" class="provider-pill" data-provider-pill="copilot">copilot</button>
-              <button type="button" class="provider-pill" data-provider-pill="opencode">opencode</button>
-              <button type="button" class="provider-pill" data-provider-pill="gemini">gemini</button>
+            <div class="hidden-controls hidden">
+              <label for="agentSelect">Provider</label>
+              <select id="agentSelect">
+                <option value="claude">claude</option>
+                <option value="codex" selected>codex</option>
+                <option value="copilot">copilot</option>
+                <option value="opencode">opencode</option>
+                <option value="gemini">gemini</option>
+              </select>
+              <label for="commandInput">Agent Command</label>
+              <input id="commandInput" required />
+              <label for="presetSelect">Preset</label>
+              <select id="presetSelect"></select>
+              <label for="repoInput">Repo Path</label>
+              <input id="repoInput" placeholder="Leave empty to use active workspace repo" />
+              <label for="taskNameInput">Task Name</label>
+              <input id="taskNameInput" placeholder="fix-auth-bug" />
+              <label for="tagInput">Tags</label>
+              <input id="tagInput" placeholder="backend, urgent" />
+            </div>
+
+            <div class="prompt-row grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
+              <textarea
+                id="promptInput"
+                class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] resize-y border-border-default bg-input-bg"
+                placeholder="Run /review on my current changes"
+              ></textarea>
+              <button
+                id="runAgentBtn"
+                class="btn-primary min-w-[108px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold"
+                type="button"
+              >
+                Run Agent
+              </button>
+            </div>
+          </form>
+
+          <div
+            id="taskHeader"
+            class="task-header hidden flex items-center justify-between gap-2 px-2.5 py-[7px] border-b border-border-subtle bg-toolbar-bg"
+          >
+            <div class="task-header-main inline-flex items-center gap-2 min-w-0">
+              <span
+                id="taskStatusDot"
+                class="status-dot active w-2 h-2 rounded-full bg-[#4A413E] border border-black/45 flex-none"
+              ></span>
+              <h2
+                id="taskTitleText"
+                class="task-header-title m-0 text-base font-semibold text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono"
+              ></h2>
+            </div>
+            <span
+              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
+              >live transcript</span
+            >
+          </div>
+
+          <div class="transcript-wrap flex-1 min-h-0 overflow-hidden flex flex-col bg-[#120F0E]">
+            <div
+              id="terminalPanel"
+              class="terminal-box relative min-h-0 flex flex-col bg-[#120F0E] overflow-hidden flex-1"
+            >
+              <div id="terminal" class="w-full flex-1 px-2 py-1.5"></div>
+              <div
+                id="terminalOverlay"
+                class="terminal-overlay absolute inset-0 flex items-center justify-center text-center p-[18px] text-text-secondary text-sm pointer-events-none bg-gradient-to-b from-[rgba(20,17,16,0.34)] to-[rgba(20,17,16,0.58)] leading-[1.45] tracking-[0.01em] z-[2]"
+              >
+                Open a task in this workspace to attach terminal.
+              </div>
+            </div>
+
+            <div
+              id="patchPreview"
+              class="diff-editor hidden min-h-0 border border-[#312A28] rounded-md bg-[#181312] overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)] flex-1"
+            ></div>
+          </div>
+        </main>
+
+        <aside
+          class="panel right-col bg-sidebar-bg border border-border-subtle rounded-md min-h-0 min-w-0 grid overflow-hidden w-[360px] min-w-[300px] max-w-[520px] resize-x grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+        >
+          <div
+            class="head right-head flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border-subtle bg-toolbar-bg"
+          >
+            <div class="right-tabs inline-flex items-center gap-1">
+              <button
+                id="rightTabChanges"
+                class="right-tab active border border-transparent bg-transparent text-text-tertiary rounded-sm min-h-[24px] px-2 text-sm"
+                type="button"
+              >
+                Changes
+              </button>
+              <button
+                id="rightTabFiles"
+                class="right-tab border border-transparent bg-transparent text-text-tertiary rounded-sm min-h-[24px] px-2 text-sm"
+                type="button"
+              >
+                Files
+              </button>
+            </div>
+            <button
+              id="refreshGitBtn"
+              class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
+              type="button"
+              title="Refresh"
+            >
+              &#x21BB;
+            </button>
+          </div>
+
+          <div class="git-summary p-2 border-b border-border-subtle flex gap-2 flex-wrap items-center bg-transparent">
+            <span
+              id="gitTaskLabel"
+              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
+              >No task</span
+            >
+            <span
+              id="stagedCountChip"
+              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
+              >Staged 0</span
+            >
+            <span
+              id="unstagedCountChip"
+              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
+              >Unstaged 0</span
+            >
+          </div>
+
+          <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
+            <div>
+              <label for="commitMessage" class="mb-0.5">Commit Message</label>
+              <textarea
+                id="commitMessage"
+                class="min-h-[52px] p-2 rounded-md bg-input-bg border-border-default"
+                placeholder="feat: concise message"
+              ></textarea>
+            </div>
+            <button
+              class="publish-btn w-full min-h-[30px] rounded-md bg-[#2A2421] border-border-default font-semibold"
+              type="button"
+            >
+              Publish Branch &#9662;
+            </button>
+            <div class="commit-row grid grid-cols-[1fr_auto] gap-2 items-center">
+              <div class="muted text-text-secondary text-sm">Stage files and commit from this panel.</div>
+              <button
+                id="commitBtn"
+                class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
+                type="button"
+              >
+                Commit
+              </button>
             </div>
           </div>
 
-          <div class="hidden-controls">
-            <label for="agentSelect">Provider</label>
-            <select id="agentSelect">
-              <option value="claude">claude</option>
-              <option value="codex" selected>codex</option>
-              <option value="copilot">copilot</option>
-              <option value="opencode">opencode</option>
-              <option value="gemini">gemini</option>
-            </select>
-            <label for="commandInput">Agent Command</label>
-            <input id="commandInput" required>
-            <label for="presetSelect">Preset</label>
-            <select id="presetSelect"></select>
-            <label for="repoInput">Repo Path</label>
-            <input id="repoInput" placeholder="Leave empty to use active workspace repo">
-            <label for="taskNameInput">Task Name</label>
-            <input id="taskNameInput" placeholder="fix-auth-bug">
-            <label for="tagInput">Tags</label>
-            <input id="tagInput" placeholder="backend, urgent">
+          <div id="changesPanel" class="changes-wrap min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
+            <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
+              <summary
+                class="cursor-pointer list-none flex items-center justify-start gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+              >
+                <span id="stagedSectionLabel">Staged 0</span>
+              </summary>
+              <div id="stagedList" class="change-list block pt-0.5 bg-transparent"></div>
+            </details>
+
+            <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
+              <summary
+                class="cursor-pointer list-none flex items-center justify-start gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+              >
+                <span id="unstagedSectionLabel">Unstaged 0</span>
+              </summary>
+              <div id="unstagedList" class="change-list block pt-0.5 bg-transparent"></div>
+            </details>
           </div>
 
-          <div class="prompt-row">
-            <textarea id="promptInput" placeholder="Run /review on my current changes"></textarea>
-            <button id="runAgentBtn" class="btn-primary" type="button">Run Agent</button>
+          <div
+            id="filesPanel"
+            class="changes-wrap hidden min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent"
+          >
+            <div id="repoFilesMeta" class="muted px-1.5 pb-1 text-xs text-[#9A8D84] font-mono"></div>
+            <div
+              id="repoFilesTree"
+              class="repo-tree-list block border-t border-[rgba(58,49,48,0.35)] bg-transparent pt-1 min-h-0 flex-auto overflow-auto"
+            ></div>
           </div>
-        </form>
-
-        <div id="taskHeader" class="task-header hidden">
-          <div class="task-header-main">
-            <span id="taskStatusDot" class="status-dot active"></span>
-            <h2 id="taskTitleText" class="task-header-title"></h2>
-          </div>
-          <span class="chip">live transcript</span>
-        </div>
-
-        <div class="transcript-wrap">
-          <div id="terminalPanel" class="terminal-box">
-            <div id="terminal"></div>
-            <div id="terminalOverlay" class="terminal-overlay">Open a task in this workspace to attach terminal.</div>
-          </div>
-
-          <div id="patchPreview" class="diff-editor hidden"></div>
-        </div>
-
-
-      </main>
-
-      <aside class="panel right-col">
-        <div class="head right-head">
-          <div class="right-tabs">
-            <button id="rightTabChanges" class="right-tab active" type="button">Changes</button>
-            <button id="rightTabFiles" class="right-tab" type="button">Files</button>
-          </div>
-          <button id="refreshGitBtn" class="icon-btn btn-ghost" type="button" title="Refresh">&#x21BB;</button>
-        </div>
-
-        <div class="git-summary">
-          <span id="gitTaskLabel" class="chip">No task</span>
-          <span id="stagedCountChip" class="chip">Staged 0</span>
-          <span id="unstagedCountChip" class="chip">Unstaged 0</span>
-        </div>
-
-        <div class="commit-box">
-          <label for="commitMessage">Commit Message</label>
-          <textarea id="commitMessage" placeholder="feat: concise message"></textarea>
-          <button class="publish-btn" type="button">Publish Branch &#9662;</button>
-          <div class="commit-row">
-            <div class="muted">Stage files and commit from this panel.</div>
-            <button id="commitBtn" class="btn-primary" type="button">Commit</button>
-          </div>
-        </div>
-
-        <div id="changesPanel" class="changes-wrap">
-          <details class="change-section" open>
-            <summary>
-              <span id="stagedSectionLabel">Staged 0</span>
-            </summary>
-            <div id="stagedList" class="change-list"></div>
-          </details>
-
-          <details class="change-section" open>
-            <summary>
-              <span id="unstagedSectionLabel">Unstaged 0</span>
-            </summary>
-            <div id="unstagedList" class="change-list"></div>
-          </details>
-        </div>
-
-        <div id="filesPanel" class="changes-wrap hidden">
-          <div id="repoFilesMeta" class="muted"></div>
-          <div id="repoFilesTree" class="repo-tree-list"></div>
-        </div>
-      </aside>
-    </div>
-  </div>
-
-  <div id="workspaceModalBackdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="workspaceModalTitle">
-    <div class="modal">
-      <div class="modal-head">
-        <h3 id="workspaceModalTitle">Create Workspace</h3>
-        <button id="workspaceModalCloseBtn" class="btn-ghost" type="button">Close</button>
+        </aside>
       </div>
-      <div class="modal-body">
-        <div>
-          <label for="workspaceModalName">Workspace Name</label>
-          <input id="workspaceModalName" placeholder="payments">
+    </div>
+
+    <div
+      id="workspaceModalBackdrop"
+      class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3000] p-3.5"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="workspaceModalTitle"
+    >
+      <div
+        class="modal w-[min(560px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+      >
+        <div
+          class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
+        >
+          <h3
+            id="workspaceModalTitle"
+            class="m-0 text-sm font-semibold text-text-secondary uppercase tracking-[0.05em]"
+          >
+            Create Workspace
+          </h3>
+          <button
+            id="workspaceModalCloseBtn"
+            class="btn-ghost bg-transparent border-border-default text-text-secondary"
+            type="button"
+          >
+            Close
+          </button>
         </div>
-        <div class="repo-picker">
+        <div class="modal-body px-3 py-[13px] grid gap-[11px]">
           <div>
-            <label for="workspaceModalRepo">Git Repo Path</label>
-            <input id="workspaceModalRepo" placeholder="/Users/you/projects/repo">
+            <label for="workspaceModalName">Workspace Name</label>
+            <input id="workspaceModalName" placeholder="payments" />
           </div>
-          <button id="workspaceModalBrowseBtn" class="btn-ghost" type="button">Browse local folder</button>
-        </div>
-        <div id="workspaceModalError" class="muted"></div>
-        <div id="workspaceInitPrompt" class="inline-prompt hidden">
-          <div class="muted">Selected folder is not a git repo. Initialize git in this folder?</div>
-          <div class="actions">
-            <button id="workspaceInitPromptBrowseBtn" class="btn-ghost" type="button">Browse Again</button>
-            <button id="workspaceInitPromptYesBtn" class="btn-primary" type="button">Yes, Init Git</button>
+          <div class="repo-picker grid grid-cols-[1fr_auto] gap-2 items-end">
+            <div>
+              <label for="workspaceModalRepo">Git Repo Path</label>
+              <input id="workspaceModalRepo" placeholder="/Users/you/projects/repo" />
+            </div>
+            <button
+              id="workspaceModalBrowseBtn"
+              class="btn-ghost bg-transparent border-border-default text-text-secondary"
+              type="button"
+            >
+              Browse local folder
+            </button>
+          </div>
+          <div id="workspaceModalError" class="muted text-text-secondary text-sm"></div>
+          <div
+            id="workspaceInitPrompt"
+            class="inline-prompt hidden border border-[#4A3F3A] rounded-md p-2 bg-[rgba(213,155,26,0.08)] grid gap-2"
+          >
+            <div class="muted text-text-secondary text-sm">
+              Selected folder is not a git repo. Initialize git in this folder?
+            </div>
+            <div class="actions flex gap-2 justify-end">
+              <button
+                id="workspaceInitPromptBrowseBtn"
+                class="btn-ghost bg-transparent border-border-default text-text-secondary"
+                type="button"
+              >
+                Browse Again
+              </button>
+              <button
+                id="workspaceInitPromptYesBtn"
+                class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
+                type="button"
+              >
+                Yes, Init Git
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="modal-foot">
-        <button id="workspaceModalCancelBtn" class="btn-ghost" type="button">Cancel</button>
-        <button id="workspaceModalCreateBtn" class="btn-primary" type="button">Create Workspace</button>
+        <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
+          <button
+            id="workspaceModalCancelBtn"
+            class="btn-ghost bg-transparent border-border-default text-text-secondary"
+            type="button"
+          >
+            Cancel
+          </button>
+          <button
+            id="workspaceModalCreateBtn"
+            class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
+            type="button"
+          >
+            Create Workspace
+          </button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <script src="/static/vendor/xterm/xterm.js"></script>
-  <script src="/static/vendor/xterm/addon-fit.js"></script>
-  <script src="/static/js/app.js"></script>
-</body>
+    <script src="/static/vendor/xterm/xterm.js"></script>
+    <script src="/static/vendor/xterm/addon-fit.js"></script>
+    <script src="/static/js/app.js"></script>
+  </body>
 </html>

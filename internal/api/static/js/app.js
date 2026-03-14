@@ -117,7 +117,7 @@
     }
 
     function setPatchPreviewMessage(message) {
-      patchPreviewEl.innerHTML = `<div class="diff-empty">${escapeHtml(message)}</div>`;
+      patchPreviewEl.innerHTML = `<div class="diff-empty text-text-tertiary p-3 text-sm">${escapeHtml(message)}</div>`;
     }
 
     function setMainViewMode(mode) {
@@ -254,36 +254,36 @@
       const rows = buildSideBySideRows(patch);
       const rowsHtml = rows.length
         ? rows.map((row) => `
-            <div class="diff-sbs-row">
-              <div class="diff-cell left ${row.leftType}">
-                <span class="diff-ln">${escapeHtml(row.leftNo || "")}</span>
-                <span class="diff-code">${escapeHtml(row.leftText || " ")}</span>
+            <div class="diff-sbs-row grid grid-cols-2 border-b border-[rgba(49,42,40,0.52)] last:border-b-0">
+              <div class="diff-cell left ${row.leftType} grid grid-cols-[44px_minmax(0,1fr)] items-stretch min-h-[22px] bg-transparent">
+                <span class="diff-ln text-[#7D726B] text-right select-none px-1 pr-2 border-r border-[rgba(49,42,40,0.68)] inline-flex items-center justify-end">${escapeHtml(row.leftNo || "")}</span>
+                <span class="diff-code text-[#E5DED8] px-2.5 whitespace-pre-wrap break-words inline-flex items-center min-h-[22px]">${escapeHtml(row.leftText || " ")}</span>
               </div>
-              <div class="diff-cell right ${row.rightType}">
-                <span class="diff-ln">${escapeHtml(row.rightNo || "")}</span>
-                <span class="diff-code">${escapeHtml(row.rightText || " ")}</span>
+              <div class="diff-cell right ${row.rightType} grid grid-cols-[44px_minmax(0,1fr)] items-stretch min-h-[22px] bg-transparent">
+                <span class="diff-ln text-[#7D726B] text-right select-none px-1 pr-2 border-r border-[rgba(49,42,40,0.68)] inline-flex items-center justify-end">${escapeHtml(row.rightNo || "")}</span>
+                <span class="diff-code text-[#E5DED8] px-2.5 whitespace-pre-wrap break-words inline-flex items-center min-h-[22px]">${escapeHtml(row.rightText || " ")}</span>
               </div>
             </div>
           `).join("")
-        : `<div class="diff-empty">No line-level changes available for this selection.</div>`;
+        : `<div class="diff-empty text-text-tertiary p-3 text-sm">No line-level changes available for this selection.</div>`;
 
       return `
-        <div class="diff-editor-head">
-          <div class="diff-head-main">
-            <div class="diff-file-name">${escapeHtml(fileName)}</div>
-            <div class="diff-file-path">${escapeHtml(parentPath)}</div>
+        <div class="diff-editor-head flex items-center justify-between gap-2.5 px-2.5 py-2 border-b border-[#312A28] bg-[#24201D]">
+          <div class="diff-head-main min-w-0 grid gap-px">
+            <div class="diff-file-name text-text-primary text-base font-[560] whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(fileName)}</div>
+            <div class="diff-file-path text-[#9C8F86] text-xs font-mono whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(parentPath)}</div>
           </div>
-          <div class="diff-head-right">
-            <span class="diff-head-mode">Changes</span>
-            ${statLine ? `<span class="diff-head-stat">${escapeHtml(statLine)}</span>` : ""}
-            <button class="diff-close-btn" data-diff-close type="button">Terminal</button>
+          <div class="diff-head-right inline-flex items-center gap-[9px] shrink-0">
+            <span class="diff-head-mode text-[#AA9D94] text-xs font-[560] tracking-[0.03em] uppercase">Changes</span>
+            ${statLine ? `<span class="diff-head-stat text-[#9C8F86] text-xs font-mono whitespace-nowrap max-w-[340px] overflow-hidden text-ellipsis">${escapeHtml(statLine)}</span>` : ""}
+            <button class="diff-close-btn min-h-[24px] px-2 rounded-sm border border-[#3A3130] bg-[#2A2421] text-[#CFC3BA] text-xs" data-diff-close type="button">Terminal</button>
           </div>
         </div>
-        <div class="diff-columns-head">
-          <div class="pane left">Original</div>
-          <div class="pane right">Current</div>
+        <div class="diff-columns-head grid grid-cols-2 border-b border-[#312A28] bg-[#201B19] text-[#9D9087] text-xs tracking-[0.03em] uppercase">
+          <div class="pane left px-2.5 py-1.5 flex items-center gap-1.5">Original</div>
+          <div class="pane right px-2.5 py-1.5 flex items-center gap-1.5">Current</div>
         </div>
-        <div class="diff-scroll">${rowsHtml}</div>
+        <div class="diff-scroll min-h-0 overflow-auto bg-[#181312] font-mono text-base leading-[1.52]">${rowsHtml}</div>
       `;
     }
 
@@ -461,21 +461,78 @@
       });
     }
 
+    function workspaceInitial(name) {
+      return String(name || "W").charAt(0).toUpperCase();
+    }
+
+    function WorkspaceHeader(name, taskCount, isOpen) {
+      return `
+        <summary class="workspace-summary list-none cursor-pointer h-[56px] flex items-center gap-3 px-[14px] bg-[#1A1615] hover:bg-[#1E1B19]" data-workspace-summary="${escapeHtml(name)}">
+          <span class="w-[30px] h-[30px] flex-none rounded-[6px] bg-[#2A2624] flex items-center justify-center text-[13px] font-semibold text-[rgba(255,255,255,0.72)]">${workspaceInitial(name)}</span>
+          <span class="text-[15px] font-semibold text-[rgba(255,255,255,0.88)] truncate">${escapeHtml(name)}</span>
+          <span class="text-[14px] font-medium text-[rgba(255,255,255,0.32)]">(${taskCount})</span>
+          <div class="ml-auto flex items-center gap-1.5 flex-none">
+            <span class="ws-chevron w-[18px] h-[18px] flex items-center justify-center text-[rgba(255,255,255,0.40)] text-[11px] ${isOpen ? "rotate-90" : ""}">&#9656;</span>
+          </div>
+        </summary>`;
+    }
+
+    function SidebarRow({ id, title, subtitle, isSelected, dataAttr }) {
+      const bg = isSelected ? "bg-[#2F2A29]" : "";
+      const titleColor = isSelected ? "text-[rgba(255,255,255,0.92)]" : "text-[rgba(255,255,255,0.80)]";
+      const attr = dataAttr || "";
+      return `
+        <div class="sidebar-row flex items-center gap-3 h-[56px] px-[14px] pl-[58px] cursor-pointer hover:bg-[rgba(255,255,255,0.03)] ${bg}" ${attr}>
+          <div class="min-w-0 flex-1 flex flex-col justify-center gap-[2px]">
+            <span class="text-[14px] font-medium ${titleColor} truncate leading-tight">${escapeHtml(title)}</span>
+            ${subtitle ? `<span class="text-[12px] text-[rgba(255,255,255,0.42)] font-mono truncate leading-tight">${escapeHtml(subtitle)}</span>` : ""}
+          </div>
+        </div>`;
+    }
+
     function renderWorkspaces() {
       if (!workspaces.length) {
-        workspaceListEl.innerHTML = `<div class="empty">No workspaces</div>`;
+        workspaceListEl.innerHTML = `<div class="px-[14px] py-5 text-[13px] text-[rgba(255,255,255,0.32)]">No workspaces</div>`;
         return;
       }
-      workspaceListEl.innerHTML = workspaces.map((workspace) => {
+      workspaceListEl.innerHTML = workspaces.map((workspace, idx) => {
         const name = workspace.name || "default";
-        const activeClass = name === activeWorkspace ? "active" : "";
+        const isActive = name === activeWorkspace;
+        const activeClass = isActive ? "active" : "";
+        const isOpen = expandedWorkspaces.has(name);
+        const tasks = tasksForWorkspace(name);
+        const repoPath = workspace.repo_path || "";
+        const shortRepo = shortPath(repoPath);
+
+        const envRow = SidebarRow({
+          title: "local",
+          subtitle: shortRepo || "master",
+          isSelected: isActive && !activeTabId,
+          dataAttr: "",
+        });
+
+        const taskRows = tasks.map((task) => {
+          const isOpenTab = task.id === activeTabId;
+          return SidebarRow({
+            id: task.id,
+            title: task.name || "untitled",
+            subtitle: task.id ? task.id.slice(0, 8) : "",
+            isSelected: isOpenTab,
+            dataAttr: `data-open-tab="${task.id}"`,
+          });
+        }).join("");
+
+        const divider = idx > 0 ? `<div class="h-px bg-[rgba(255,255,255,0.06)]"></div>` : "";
+
         return `
-          <div class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(name)}">
-            <div class="workspace-summary" data-workspace-summary="${escapeHtml(name)}">
-              <span class="workspace-name">${escapeHtml(name)}</span>
-              <span class="workspace-branch">master</span>
+          ${divider}
+          <details class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(name)}" ${isOpen ? "open" : ""}>
+            ${WorkspaceHeader(name, tasks.length, isOpen)}
+            <div class="workspace-children bg-[#141110]">
+              ${envRow}
+              ${taskRows}
             </div>
-          </div>
+          </details>
         `;
       }).join("");
     }
@@ -491,20 +548,19 @@
         .map((task) => {
           const active = task.id === activeTabId ? "active" : "";
           return `
-            <div class="tab ${active}" data-tab="${task.id}">
-              <span class="chip ${statusClass(task.status)}">${escapeHtml(task.status)}</span>
+            <div class="tab ${active} inline-flex items-center gap-1.5 border border-border-subtle rounded-sm min-h-[27px] px-[9px] bg-tab-bg text-[#B5A8A0] cursor-pointer text-sm max-w-[300px]" data-tab="${task.id}">
               <span>${escapeHtml(task.name)}</span>
-              <button class="tab-close" data-close-tab="${task.id}" type="button">x</button>
+              <button class="tab-close border-0 bg-transparent text-inherit p-0 w-auto text-base leading-none opacity-70" data-close-tab="${task.id}" type="button">x</button>
             </div>
           `;
         })
         .join("");
 
-      const emptyHint = openTabs.length ? "" : `<div class="tabs-empty">No open tabs</div>`;
+      const emptyHint = openTabs.length ? "" : `<div class="tabs-empty text-[#8E827A] text-sm whitespace-nowrap pr-1">No open tabs</div>`;
       tabBarEl.innerHTML = `
-        <div class="tab-list">
+        <div class="tab-list inline-flex items-center gap-1 min-w-0 overflow-x-auto pb-px">
           ${dynamicTabs}
-          <button class="tab plus-tab" type="button" aria-label="New tab">+</button>
+          <button class="tab plus-tab inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-amber cursor-pointer text-sm flex-none" type="button" aria-label="New tab">+</button>
         </div>
         ${emptyHint}
       `;
@@ -727,7 +783,7 @@
     }
 
     function TreeChevron() {
-      return `<span class="tree-chevron" aria-hidden="true">▸</span>`;
+      return `<span class="tree-chevron" aria-hidden="true">\u25B8</span>`;
     }
 
     function fileIconType(name, kind = "file") {
@@ -753,14 +809,14 @@
     function FileIcon(name, kind = "file") {
       const icon = fileIconType(name, kind);
       const cls = icon.cls ? ` ${icon.cls}` : "";
-      return `<span class="file-icon${cls}" aria-hidden="true">${icon.label}</span>`;
+      return `<span class="file-icon${cls} w-[18px] min-w-[18px] h-[14px] inline-flex items-center justify-center text-[8px] leading-none lowercase tracking-[0.01em] border border-[#3C322F] rounded text-[#B4A79D] bg-[#221C1A]" aria-hidden="true">${icon.label}</span>`;
     }
 
     function FolderGroupLabel(label) {
       return `
-        <div class="change-group-label">
+        <div class="change-group-label min-h-[22px] flex items-center gap-1.5 px-1.5 text-[#9F9288] text-xs bg-transparent font-mono tracking-[0.015em]">
           ${FileIcon(label, "dir")}
-          <span class="tree-row-label">${escapeHtml(label)}</span>
+          <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(label)}</span>
         </div>
       `;
     }
@@ -781,17 +837,17 @@
       const selectedClass = selectedPatchFile === path ? " selected" : "";
 
       return `
-        <div class="change-file-row${selectedClass}" data-patch-file="${escapeHtml(path)}">
-          <div class="change-file-main">
-            <span class="change-status-icon ${statusClassName}" aria-hidden="true"></span>
-            <span class="change-file-name">${escapeHtml(name)}</span>
-            <span class="change-inline-counts">
-              <span class="add">+${add}</span>
-              <span class="del">-${del}</span>
+        <div class="change-file-row${selectedClass} flex items-center justify-between gap-2 min-h-[24px] px-1.5 rounded-[7px] bg-transparent cursor-pointer hover:bg-[#211B19]" data-patch-file="${escapeHtml(path)}">
+          <div class="change-file-main min-w-0 flex items-center gap-[7px]">
+            <span class="change-status-icon ${statusClassName} w-[7px] h-[7px] rounded-full flex-none bg-[#8B7F77]" aria-hidden="true"></span>
+            <span class="change-file-name text-sm font-[450] text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(name)}</span>
+            <span class="change-inline-counts inline-flex items-center gap-1.5 text-xs font-mono ml-0.5 whitespace-nowrap">
+              <span class="add text-green-accent">+${add}</span>
+              <span class="del text-red-accent">-${del}</span>
             </span>
           </div>
-          <div class="tree-row-right">
-            <button class="tree-action-btn ${actionClass}" ${actionAttr} aria-label="${actionLabel}" type="button">${actionSymbol}</button>
+          <div class="tree-row-right inline-flex items-center gap-1.5 shrink-0">
+            <button class="tree-action-btn ${actionClass} w-5 min-w-[20px] h-5 min-h-[20px] p-0 rounded-[5px] inline-flex items-center justify-center text-sm leading-none font-semibold border border-[#3C322F] bg-[#231D1B] text-[#CFC3BA] relative z-[1]" ${actionAttr} aria-label="${actionLabel}" type="button">${actionSymbol}</button>
           </div>
         </div>
       `;
@@ -824,13 +880,13 @@
 
     function renderChangeList(list, mode) {
       if (!list.length) {
-        return `<div class="empty">No ${mode} changes.</div>`;
+        return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No ${mode} changes.</div>`;
       }
 
       return groupChangesByFolder(list).map((group) => `
-        <div class="change-group">
+        <div class="change-group mb-1.5 last:mb-0">
           ${FolderGroupLabel(group.folder)}
-          <div class="change-group-files">
+          <div class="change-group-files ml-4 pl-2 border-l border-[rgba(58,49,48,0.35)] grid gap-0.5">
             ${group.changes.map((change) => ChangedFileRow(change, mode)).join("")}
           </div>
         </div>
@@ -876,20 +932,20 @@
     function FileTreeRow({ name, kind = "file", depth = 0, open = false, children = "" }) {
       if (kind === "dir") {
         return `
-          <details class="repo-tree-dir" ${open ? "open" : ""} style="--depth:${depth};">
-            <summary>
+          <details class="repo-tree-dir block" ${open ? "open" : ""} style="--depth:${depth};">
+            <summary class="list-none cursor-pointer min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#A79A91] text-sm font-mono rounded-sm bg-transparent hover:bg-[#201A18]">
               ${TreeChevron()}
               ${FileIcon(name, "dir")}
-              <span class="tree-row-label">${escapeHtml(name)}</span>
+              <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(name)}</span>
             </summary>
-            <div class="repo-tree-children">${children}</div>
+            <div class="repo-tree-children block">${children}</div>
           </details>
         `;
       }
       return `
-        <div class="repo-tree-file" style="--depth:${depth};">
+        <div class="repo-tree-file min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#D7CDC4] text-sm font-mono rounded-sm bg-transparent whitespace-nowrap overflow-hidden text-ellipsis hover:bg-[#201A18]" style="--depth:${depth};">
           ${FileIcon(name, "file")}
-          <span class="tree-row-label">${escapeHtml(name)}</span>
+          <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(name)}</span>
         </div>
       `;
     }
@@ -906,7 +962,7 @@
 
     function renderRepoFilesTree(entries) {
       if (!entries?.length) {
-        repoFilesTreeEl.innerHTML = `<div class="empty">No files found.</div>`;
+        repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No files found.</div>`;
         return;
       }
       const rootTree = buildRepoTree(entries);
@@ -940,7 +996,7 @@
 
       if (!endpoint) {
         repoFilesMetaEl.textContent = "No active workspace";
-        repoFilesTreeEl.innerHTML = `<div class="empty">Select a workspace to view files.</div>`;
+        repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">Select a workspace to view files.</div>`;
         return;
       }
 
@@ -953,7 +1009,7 @@
         renderRepoFilesTree(data.entries || []);
       } catch (error) {
         repoFilesMetaEl.textContent = "Files";
-        repoFilesTreeEl.innerHTML = `<div class="empty">${escapeHtml(error.message || String(error))}</div>`;
+        repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">${escapeHtml(error.message || String(error))}</div>`;
       }
     }
 
@@ -1308,7 +1364,7 @@
       });
 
       workspaceListEl.addEventListener("click", async (event) => {
-        const openBtn = event.target.closest("button[data-open-tab]");
+        const openBtn = event.target.closest("[data-open-tab]");
         if (openBtn) {
           openTab(openBtn.dataset.openTab);
           return;
