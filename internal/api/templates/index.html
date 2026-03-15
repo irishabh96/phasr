@@ -237,7 +237,7 @@
         </main>
 
         <aside
-          class="panel right-col bg-sidebar-bg border border-border-subtle rounded-md min-h-0 min-w-0 grid overflow-hidden w-[300px] min-w-[240px] max-w-[460px] resize-x grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+          class="panel right-col bg-sidebar-bg border border-border-subtle rounded-md min-h-0 min-w-0 grid overflow-hidden w-[300px] min-w-[240px] max-w-[460px] resize-x grid-rows-[auto_auto_minmax(0,1fr)]"
         >
           <div
             class="head right-head flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border-subtle bg-toolbar-bg"
@@ -258,32 +258,26 @@
                 Files
               </button>
             </div>
-            <button
-              id="refreshGitBtn"
-              class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
-              type="button"
-              title="Refresh"
-            >
-              &#x21BB;
-            </button>
-          </div>
-
-          <div class="git-summary p-2 border-b border-border-subtle flex gap-2 flex-wrap items-center bg-transparent">
-            <span
-              id="gitTaskLabel"
-              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >No task</span
-            >
-            <span
-              id="stagedCountChip"
-              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >Staged</span
-            >
-            <span
-              id="unstagedCountChip"
-              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >Unstaged</span
-            >
+            <div class="right-head-actions inline-flex items-center gap-1">
+              <button
+                id="changeViewModeBtn"
+                class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
+                type="button"
+                title="Switch to tree view"
+                aria-label="Switch to tree view"
+              >
+                &#x2630;
+              </button>
+              <button
+                id="refreshGitBtn"
+                class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
+                type="button"
+                title="Refresh changes"
+                aria-label="Refresh changes"
+              >
+                &#x21BB;
+              </button>
+            </div>
           </div>
 
           <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
@@ -325,9 +319,33 @@
           <div id="changesPanel" class="changes-wrap min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
             <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
               <summary
-                class="change-section-summary cursor-pointer list-none flex items-center justify-start gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+                class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
               >
+                <svg
+                  stroke="currentColor"
+                  fill="currentColor"
+                  stroke-width="0"
+                  viewBox="0 0 16 16"
+                  class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
+                  height="1em"
+                  width="1em"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    clip-rule="evenodd"
+                    d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
+                  ></path>
+                </svg>
                 <span id="stagedSectionLabel">Staged</span>
+                <button
+                  id="unstageAllBtn"
+                  class="change-section-action text-2xs text-red-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
+                  type="button"
+                >
+                  Unstage all
+                </button>
               </summary>
               <div id="stagedList" class="change-list block pt-0.5 bg-transparent"></div>
             </details>
@@ -336,6 +354,23 @@
               <summary
                 class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
               >
+                <svg
+                  stroke="currentColor"
+                  fill="currentColor"
+                  stroke-width="0"
+                  viewBox="0 0 16 16"
+                  class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
+                  height="1em"
+                  width="1em"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    clip-rule="evenodd"
+                    d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
+                  ></path>
+                </svg>
                 <span id="unstagedSectionLabel">Unstaged</span>
                 <button
                   id="stageAllBtn"
@@ -353,7 +388,16 @@
             id="filesPanel"
             class="changes-wrap hidden min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent"
           >
-            <div id="repoFilesMeta" class="muted px-1.5 pb-1 text-xs text-[#9A8D84] font-mono"></div>
+            <div class="files-toolbar px-1.5 pb-1 grid gap-1">
+              <div id="repoFilesMeta" class="muted text-xs text-[#9A8D84] font-mono"></div>
+              <input
+                id="repoFilesSearch"
+                class="files-search"
+                type="text"
+                placeholder="Search files..."
+                autocomplete="off"
+              />
+            </div>
             <div
               id="repoFilesTree"
               class="repo-tree-list block border-t border-[rgba(58,49,48,0.35)] bg-transparent pt-1 min-h-0 flex-auto overflow-auto"

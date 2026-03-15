@@ -35,6 +35,8 @@
     let currentGitStatus = { staged: [], unstaged: [] };
     let selectedPatchFile = "";
     let centerViewMode = "terminal";
+    let changesViewMode = "grouped";
+    let repoFilesEntriesCache = [];
 
     // P0-A: ANSI color codes for severity highlighting
     const ANSI_RESET = "\x1b[0m";
@@ -98,9 +100,11 @@
     const stagedListEl = document.getElementById("stagedList");
     const rightTabChangesEl = document.getElementById("rightTabChanges");
     const rightTabFilesEl = document.getElementById("rightTabFiles");
+    const changeViewModeBtnEl = document.getElementById("changeViewModeBtn");
     const changesPanelEl = document.getElementById("changesPanel");
     const filesPanelEl = document.getElementById("filesPanel");
     const repoFilesMetaEl = document.getElementById("repoFilesMeta");
+    const repoFilesSearchEl = document.getElementById("repoFilesSearch");
     const repoFilesTreeEl = document.getElementById("repoFilesTree");
     const patchPreviewEl = document.getElementById("patchPreview");
     const terminalPanelEl = document.getElementById("terminalPanel");
@@ -1533,7 +1537,9 @@
         activeTaskGroupId = "";
         detachStream();
         activeTabId = "";
-        gitTaskLabelEl.textContent = "No task";
+        if (gitTaskLabelEl) {
+          gitTaskLabelEl.textContent = "No task";
+        }
         currentGitStatus = { staged: [], unstaged: [] };
         renderGitStatus();
         setPatchPreviewMessage("Select a changed file to open a diff view.");
@@ -1850,11 +1856,24 @@
     function SidebarSectionHeader(title, count) {
       const safeTitle = String(title || "").trim();
       const safeCount = Number(count) || 0;
-      return safeCount > 0 ? `${safeTitle} ${safeCount}` : safeTitle;
+      return safeCount > 0 ? `${safeTitle} (${safeCount})` : safeTitle;
+    }
+
+    function renderChangeViewModeButton() {
+      if (!changeViewModeBtnEl) return;
+      const isTree = changesViewMode === "tree";
+      changeViewModeBtnEl.textContent = isTree ? "\u2637" : "\u2630";
+      const nextLabel = isTree ? "Switch to grouped view" : "Switch to tree view";
+      changeViewModeBtnEl.title = nextLabel;
+      changeViewModeBtnEl.setAttribute("aria-label", nextLabel);
     }
 
     function TreeChevron() {
-      return `<span class="tree-chevron" aria-hidden="true">\u25B8</span>`;
+      return `
+        <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 16 16" class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path fill-rule="evenodd" clip-rule="evenodd" d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"></path>
+        </svg>
+      `;
     }
 
     function fileIconType(name, kind = "file") {
@@ -1892,7 +1911,7 @@
       `;
     }
 
-    function ChangedFileRow(change, mode) {
+    function ChangedFileRow(change, mode, depth = 0) {
       const path = String(change.path || "");
       const parts = path.split("/").filter(Boolean);
       const name = parts.length ? parts[parts.length - 1] : path;
@@ -1908,7 +1927,7 @@
       const selectedClass = selectedPatchFile === path ? " selected" : "";
 
       return `
-        <div class="change-file-row${selectedClass} flex items-center justify-between gap-2 min-h-[24px] px-1.5 rounded-[7px] bg-transparent cursor-pointer hover:bg-[#211B19]" data-patch-file="${escapeHtml(path)}">
+        <div class="change-file-row${selectedClass} flex items-center justify-between gap-2 min-h-[24px] px-1.5 rounded-[7px] bg-transparent cursor-pointer hover:bg-[#211B19]" data-patch-file="${escapeHtml(path)}" style="--change-depth:${depth};">
           <div class="change-file-main min-w-0 flex items-center gap-[7px]">
             <span class="change-status-icon ${statusClassName} w-[7px] h-[7px] rounded-full flex-none bg-[#8B7F77]" aria-hidden="true"></span>
             <span class="change-file-name text-sm font-[450] text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(name)}</span>
@@ -1954,6 +1973,10 @@
         return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No ${mode} changes.</div>`;
       }
 
+      if (changesViewMode === "tree") {
+        return renderTreeChangeList(list, mode);
+      }
+
       return groupChangesByFolder(list).map((group) => `
         <div class="change-group mb-1.5 last:mb-0">
           ${FolderGroupLabel(group.folder)}
@@ -1962,6 +1985,83 @@
           </div>
         </div>
       `).join("");
+    }
+
+    function createChangeTreeNode(name = "") {
+      return { name, dirs: new Map(), files: [] };
+    }
+
+    function buildChangeTree(list) {
+      const root = createChangeTreeNode();
+      (list || []).forEach((change) => {
+        const path = String(change.path || "").trim();
+        if (!path) return;
+        const parts = path.split("/").filter(Boolean);
+        if (!parts.length) return;
+
+        let node = root;
+        for (let i = 0; i < parts.length; i += 1) {
+          const part = parts[i];
+          const isLast = i === parts.length - 1;
+          if (isLast) {
+            node.files.push(change);
+            continue;
+          }
+          if (!node.dirs.has(part)) {
+            node.dirs.set(part, createChangeTreeNode(part));
+          }
+          node = node.dirs.get(part);
+        }
+      });
+      return root;
+    }
+
+    function renderChangeTreeNode(name, node, depth, mode) {
+      const dirs = [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b));
+      const files = [...node.files].sort((a, b) => String(a.path || "").localeCompare(String(b.path || "")));
+      const childParts = [];
+
+      dirs.forEach(([dirName, dirNode]) => {
+        childParts.push(renderChangeTreeNode(dirName, dirNode, depth + 1, mode));
+      });
+      files.forEach((file) => {
+        childParts.push(ChangedFileRow(file, mode, depth + 1));
+      });
+
+      return `
+        <details class="change-tree-dir block" ${depth < 1 ? "open" : ""} style="--change-depth:${depth};">
+          <summary class="list-none cursor-pointer min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#A79A91] text-sm font-mono rounded-sm bg-transparent hover:bg-[#201A18]">
+            ${TreeChevron()}
+            ${FileIcon(name, "dir")}
+            <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(name)}</span>
+          </summary>
+          <div class="change-tree-children block">${childParts.join("")}</div>
+        </details>
+      `;
+    }
+
+    function renderTreeChangeList(list, mode) {
+      const tree = buildChangeTree(list);
+      const parts = [];
+      const rootFiles = [...tree.files].sort((a, b) => String(a.path || "").localeCompare(String(b.path || "")));
+      const rootDirs = [...tree.dirs.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+      if (rootFiles.length) {
+        parts.push(`
+          <div class="change-group mb-1.5 last:mb-0">
+            ${FolderGroupLabel("(root)")}
+            <div class="change-group-files ml-4 pl-2 border-l border-[rgba(58,49,48,0.35)] grid gap-0.5">
+              ${rootFiles.map((change) => ChangedFileRow(change, mode, 0)).join("")}
+            </div>
+          </div>
+        `);
+      }
+
+      rootDirs.forEach(([dirName, dirNode]) => {
+        parts.push(renderChangeTreeNode(dirName, dirNode, 0, mode));
+      });
+
+      return parts.join("");
     }
 
     function createRepoTreeNode(name = "") {
@@ -2053,6 +2153,19 @@
       repoFilesTreeEl.innerHTML = parts.join("");
     }
 
+    function filteredRepoEntries() {
+      const term = String(repoFilesSearchEl?.value || "").trim().toLowerCase();
+      if (!term) return repoFilesEntriesCache;
+      return (repoFilesEntriesCache || []).filter((entry) => {
+        const path = String(entry?.path || "").toLowerCase();
+        return path.includes(term);
+      });
+    }
+
+    function renderFilteredRepoFilesTree() {
+      renderRepoFilesTree(filteredRepoEntries());
+    }
+
     async function loadRepoFiles() {
       const workspace = getWorkspace(activeWorkspace);
       const workspaceID = workspaceId(workspace) || activeWorkspace;
@@ -2076,18 +2189,25 @@
 
       if (!endpoint) {
         repoFilesMetaEl.textContent = "No active workspace";
+        repoFilesMetaEl.title = "No active workspace";
+        repoFilesEntriesCache = [];
         repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">Select a workspace to view files.</div>`;
         return;
       }
 
       repoFilesMetaEl.textContent = "Loading files...";
+      repoFilesMetaEl.title = "Loading files...";
       try {
         const data = await api(endpoint);
         const root = String(data.root || activeTask?.repo_path || workspaceRepo || "");
         repoFilesMetaEl.textContent = root || "Repository files";
-        renderRepoFilesTree(data.entries || []);
+        repoFilesMetaEl.title = root || "Repository files";
+        repoFilesEntriesCache = data.entries || [];
+        renderFilteredRepoFilesTree();
       } catch (error) {
         repoFilesMetaEl.textContent = "Files";
+        repoFilesMetaEl.title = "Files";
+        repoFilesEntriesCache = [];
         repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">${escapeHtml(error.message || String(error))}</div>`;
       }
     }
@@ -2099,22 +2219,46 @@
       rightTabChangesEl.classList.toggle("active", !filesActive);
       filesPanelEl.classList.toggle("hidden", !filesActive);
       changesPanelEl.classList.toggle("hidden", filesActive);
+      if (changeViewModeBtnEl) {
+        changeViewModeBtnEl.classList.toggle("hidden", filesActive);
+      }
       if (filesActive) {
         loadRepoFiles().catch((error) => console.error(error));
+      } else {
+        renderChangeViewModeButton();
       }
     }
 
     function renderGitStatus() {
       const task = getTask(activeTabId);
-      gitTaskLabelEl.textContent = task ? task.name : "No task";
+      if (gitTaskLabelEl) {
+        gitTaskLabelEl.textContent = task ? task.name : "No task";
+      }
 
       const staged = currentGitStatus.staged || [];
       const unstaged = currentGitStatus.unstaged || [];
 
-      stagedCountChipEl.textContent = SidebarSectionHeader("Staged", staged.length);
-      unstagedCountChipEl.textContent = SidebarSectionHeader("Unstaged", unstaged.length);
-      stagedSectionLabelEl.textContent = SidebarSectionHeader("Staged", staged.length);
-      unstagedSectionLabelEl.textContent = SidebarSectionHeader("Unstaged", unstaged.length);
+      if (stagedCountChipEl) {
+        stagedCountChipEl.textContent = SidebarSectionHeader("Staged", staged.length);
+      }
+      if (unstagedCountChipEl) {
+        unstagedCountChipEl.textContent = SidebarSectionHeader("Unstaged", unstaged.length);
+      }
+      if (stagedSectionLabelEl) {
+        stagedSectionLabelEl.textContent = SidebarSectionHeader("Staged", staged.length);
+      }
+      if (unstagedSectionLabelEl) {
+        unstagedSectionLabelEl.textContent = SidebarSectionHeader("Unstaged", unstaged.length);
+      }
+      const stageAllBtn = document.getElementById("stageAllBtn");
+      if (stageAllBtn) {
+        stageAllBtn.disabled = unstaged.length === 0;
+      }
+      const unstageAllBtn = document.getElementById("unstageAllBtn");
+      if (unstageAllBtn) {
+        unstageAllBtn.disabled = staged.length === 0;
+      }
+      renderChangeViewModeButton();
 
       stagedListEl.innerHTML = renderChangeList(staged, "staged");
       unstagedListEl.innerHTML = renderChangeList(unstaged, "unstaged");
@@ -2366,6 +2510,38 @@
           moveChangeBetweenLists(path, "unstaged", "staged");
         }
         alert(error.message || String(error));
+      } finally {
+        await refreshGitStatus();
+      }
+    }
+
+    async function stageAllFiles() {
+      if (!activeTabId) return;
+      const unstaged = [...(currentGitStatus.unstaged || [])];
+      if (!unstaged.length) return;
+      try {
+        for (const change of unstaged) {
+          await api(`/api/tasks/${activeTabId}/git/stage`, {
+            method: "POST",
+            body: JSON.stringify({ path: change.path }),
+          });
+        }
+      } finally {
+        await refreshGitStatus();
+      }
+    }
+
+    async function unstageAllFiles() {
+      if (!activeTabId) return;
+      const staged = [...(currentGitStatus.staged || [])];
+      if (!staged.length) return;
+      try {
+        for (const change of staged) {
+          await api(`/api/tasks/${activeTabId}/git/unstage`, {
+            method: "POST",
+            body: JSON.stringify({ path: change.path }),
+          });
+        }
       } finally {
         await refreshGitStatus();
       }
@@ -2897,15 +3073,32 @@
       rightTabFilesEl.addEventListener("click", () => {
         setRightPanelMode("files");
       });
+      if (changeViewModeBtnEl) {
+        changeViewModeBtnEl.addEventListener("click", (event) => {
+          event.preventDefault();
+          changesViewMode = changesViewMode === "tree" ? "grouped" : "tree";
+          renderGitStatus();
+        });
+      }
 
       document.getElementById("stageAllBtn").addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
-        const unstaged = currentGitStatus.unstaged || [];
-        for (const change of unstaged) {
-          await stageFile(change.path);
-        }
+        await stageAllFiles();
       });
+      const unstageAllBtn = document.getElementById("unstageAllBtn");
+      if (unstageAllBtn) {
+        unstageAllBtn.addEventListener("click", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          await unstageAllFiles();
+        });
+      }
+      if (repoFilesSearchEl) {
+        repoFilesSearchEl.addEventListener("input", () => {
+          renderFilteredRepoFilesTree();
+        });
+      }
 
       unstagedListEl.addEventListener("click", async (event) => {
         const stageBtn = closestFromEvent(event, "button[data-stage-file]");
@@ -2978,6 +3171,7 @@
 
       commandInputEl.value = AGENT_COMMANDS[agentSelectEl.value] || "";
       syncProviderPills();
+      renderChangeViewModeButton();
 
       installEventHandlers();
       await loadPresets();
