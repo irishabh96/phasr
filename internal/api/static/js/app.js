@@ -206,7 +206,7 @@
       taskContextBranchEl.dataset.provider = provider || "";
       taskContextBranchEl.dataset.baseBranch = baseBranch || "";
 
-      const branchLabel = String(taskContextBranchEl.textContent || "").trim();
+      const branchLabel = String(taskContextBranchEl.textContent || "").trim() || "-";
       const providerLabel = provider ? provider.toUpperCase() : "";
       const branchTitleParts = [branchLabel];
       if (providerLabel) branchTitleParts.push(providerLabel);
@@ -266,7 +266,7 @@
       function applyPath(pathValue) {
         const path = String(pathValue || "").trim();
         const hasPath = Boolean(path);
-        taskContextPathEl.textContent = `Path: ${hasPath ? path : "-"}`;
+        taskContextPathEl.textContent = hasPath ? path : "-";
         taskContextPathEl.title = hasPath ? path : "";
         taskContextPathEl.dataset.path = hasPath ? path : "";
         taskContextPathEl.disabled = !hasPath;
@@ -276,15 +276,15 @@
         const taskLabel = nextTask.name || (nextTask.id ? nextTask.id.slice(0, 8) : "untitled");
         const branch = String(nextTask.branch || "").trim() || "-";
         const path = taskCodePath(nextTask) || workspacePath;
-        taskContextTaskEl.textContent = `Task: ${taskLabel}`;
-        taskContextBranchEl.textContent = `Branch: ${branch}`;
+        taskContextTaskEl.textContent = taskLabel;
+        taskContextBranchEl.textContent = branch;
         applyPath(path);
         void loadTaskContextBranchActions(path, branch);
         return;
       }
 
-      taskContextTaskEl.textContent = "Task: none";
-      taskContextBranchEl.textContent = "Branch: -";
+      taskContextTaskEl.textContent = "none";
+      taskContextBranchEl.textContent = "-";
       applyPath(workspacePath);
       void loadTaskContextBranchActions(workspacePath, "");
     }
@@ -1077,20 +1077,20 @@
 
     function WorkspaceHeader(id, name, taskCount, isOpen) {
       return `
-        <summary class="workspace-summary list-none cursor-pointer h-[56px] flex items-center gap-3 px-[14px] bg-[#1A1615] hover:bg-[#1E1B19]" data-workspace-summary="${escapeHtml(id)}">
-          <span class="w-[30px] h-[30px] flex-none rounded-[6px] bg-[#2A2624] flex items-center justify-center text-[13px] font-semibold text-[rgba(255,255,255,0.72)]">${workspaceInitial(name)}</span>
-          <span class="text-[14px] font-semibold text-[rgba(255,255,255,0.88)] truncate">${escapeHtml(name)}</span>
-          <span class="text-[12px] font-medium text-[rgba(255,255,255,0.32)]">(${taskCount})</span>
-          <div class="ml-auto flex items-center gap-1.5 flex-none">
+        <summary class="workspace-summary" data-workspace-summary="${escapeHtml(id)}">
+          <span class="workspace-avatar">${workspaceInitial(name)}</span>
+          <span class="workspace-name">${escapeHtml(name)}</span>
+          <span class="workspace-count">(${taskCount})</span>
+          <div class="workspace-actions">
             <button
-              class="workspace-add-tab-btn inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-amber cursor-pointer text-sm flex-none"
+              class="icon-btn ghost-action workspace-add-tab-btn"
               type="button"
               data-new-workspace-tab="${escapeHtml(id)}"
               aria-label="New tab in ${escapeHtml(name)}"
               title="New tab in ${escapeHtml(name)}"
             >+</button>
             <button
-              class="workspace-delete-btn inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-[#C97A2B] cursor-pointer text-sm flex-none"
+              class="icon-btn ghost-action workspace-delete-btn"
               type="button"
               data-delete-workspace="${escapeHtml(id)}"
               aria-label="Delete workspace ${escapeHtml(name)}"
@@ -1117,18 +1117,16 @@
     }
 
     function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updatedAt }) {
-      const bg = isSelected ? "bg-[#2F2A29]" : "";
-      const leftAccent = isSelected ? "border-l-[3px] border-l-amber pl-[55px]" : "pl-[58px]";
-      const titleColor = isSelected ? "text-[rgba(255,255,255,0.92)] font-medium" : "text-[rgba(255,255,255,0.80)]";
+      const selectedClass = isSelected ? "selected" : "";
       const attr = dataAttr || "";
       const dot = status
-        ? `<span class="w-2 h-2 rounded-full flex-none ${healthDotColor(status)}" title="${escapeHtml(healthDotTooltip(status, updatedAt))}"></span>`
+        ? `<span class="sidebar-status-dot ${healthDotColor(status)}" title="${escapeHtml(healthDotTooltip(status, updatedAt))}"></span>`
         : "";
       return `
-        <div class="sidebar-row flex items-center gap-3 h-[56px] px-[14px] ${leftAccent} cursor-pointer hover:bg-[rgba(255,255,255,0.03)] ${bg}" ${attr}>
-          <div class="min-w-0 flex-1 flex flex-col justify-center gap-[2px]">
-            <span class="text-[13px] font-medium ${titleColor} truncate leading-tight">${escapeHtml(title)}</span>
-            ${subtitle ? `<span class="text-[11px] text-[rgba(255,255,255,0.42)] font-mono truncate leading-tight">${escapeHtml(subtitle)}</span>` : ""}
+        <div class="sidebar-row ${selectedClass}" ${attr}>
+          <div class="sidebar-row-content">
+            <span class="sidebar-row-title">${escapeHtml(title)}</span>
+            ${subtitle ? `<span class="sidebar-row-subtitle">${escapeHtml(subtitle)}</span>` : ""}
           </div>
           ${dot}
         </div>`;
@@ -1136,7 +1134,7 @@
 
     function renderWorkspaces() {
       if (!workspaces.length) {
-        workspaceListEl.innerHTML = `<div class="px-[14px] py-5 text-[13px] text-[rgba(255,255,255,0.32)]">No workspaces</div>`;
+        workspaceListEl.innerHTML = `<div class="sidebar-empty">No workspaces</div>`;
         return;
       }
       const workspaceRows = workspaces.map((workspace, idx) => {
@@ -1167,14 +1165,14 @@
           });
         }).join("");
 
-        const divider = idx > 0 ? `<div class="h-px bg-[rgba(255,255,255,0.06)]"></div>` : "";
+        const divider = idx > 0 ? `<div class="workspace-divider"></div>` : "";
 
         const html = `
           ${divider}
           <details class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(id)}" ${isOpen ? "open" : ""}>
             ${WorkspaceHeader(id, name, taskGroups.length, isOpen)}
-            <div class="workspace-children bg-[#141110]">
-              ${taskRows || `<div class="px-[58px] py-3 text-[12px] text-[rgba(255,255,255,0.34)]">No tasks</div>`}
+            <div class="workspace-children">
+              ${taskRows || `<div class="sidebar-empty sidebar-empty-tasks">No tasks</div>`}
             </div>
           </details>
         `;
@@ -1212,9 +1210,9 @@
           const active = task.id === activeTabId ? "active" : "";
           const label = tabLabel(task, idx);
           return `
-            <div class="tab ${active} inline-flex items-center gap-1.5 border border-border-subtle rounded-sm min-h-[27px] px-[9px] bg-tab-bg text-[#B5A8A0] cursor-pointer text-sm max-w-[300px]" data-tab="${task.id}" title="${escapeHtml(label.full)}">
-              <span class="truncate">${escapeHtml(label.truncated)}</span>
-              <button class="tab-close border-0 bg-transparent text-inherit p-0 w-auto text-base leading-none opacity-70 flex-none" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
+            <div class="tab ${active}" data-tab="${task.id}" title="${escapeHtml(label.full)}">
+              <span class="tab-label">${escapeHtml(label.truncated)}</span>
+              <button class="tab-close" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
             </div>
           `;
         })
@@ -1231,38 +1229,38 @@
           const active = task.id === activeTabId ? "active" : "";
           const label = tabLabel(task, idx);
           return `
-            <div class="tab ${active} inline-flex items-center gap-1.5 border border-border-subtle rounded-sm min-h-[27px] px-[9px] bg-tab-bg text-[#B5A8A0] cursor-pointer text-sm max-w-[300px]" data-tab="${task.id}" title="${escapeHtml(label.full)}">
-              <span class="truncate">${escapeHtml(label.truncated)}</span>
-              <button class="tab-close border-0 bg-transparent text-inherit p-0 w-auto text-base leading-none opacity-70 flex-none" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
+            <div class="tab ${active}" data-tab="${task.id}" title="${escapeHtml(label.full)}">
+              <span class="tab-label">${escapeHtml(label.truncated)}</span>
+              <button class="tab-close" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
             </div>`;
         }).join("");
         const overflowItems = tasksWithIndex.slice(MAX_VISIBLE_TABS).map(({ task }) => {
-          return `<button class="w-full text-left px-2.5 py-1.5 text-sm text-text-secondary hover:bg-hover-bg hover:text-text-primary border-0 bg-transparent rounded-sm" data-overflow-tab="${task.id}" type="button">${escapeHtml(task.name || "untitled")}</button>`;
+          return `<button class="tab-overflow-item" data-overflow-tab="${task.id}" type="button">${escapeHtml(task.name || "untitled")}</button>`;
         }).join("");
         overflowPill = `
-          <div class="tab-overflow-wrap relative flex-none">
-            <button class="tab-overflow-btn inline-flex items-center border border-border-subtle rounded-sm min-h-[27px] px-2 bg-tab-bg text-text-tertiary cursor-pointer text-sm flex-none" type="button" aria-label="More tabs">+${overflowCount} more</button>
-            <div class="tab-overflow-menu hidden absolute top-full left-0 mt-1 z-50 bg-panel-bg border border-border-default rounded-md shadow-lg py-1 min-w-[180px]">
+          <div class="tab-overflow-wrap">
+            <button class="tab-overflow-btn" type="button" aria-label="More tabs">+${overflowCount} more</button>
+            <div class="tab-overflow-menu hidden">
               ${overflowItems}
             </div>
           </div>`;
 
         const emptyHint = "";
         tabBarEl.innerHTML = `
-          <div class="tab-list inline-flex items-center gap-1 min-w-0 overflow-x-auto pb-px">
+          <div class="tab-list">
             ${visibleHtml}
             ${overflowPill}
-            <button class="tab plus-tab inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-amber cursor-pointer text-sm flex-none" type="button" aria-label="New tab">+</button>
+            <button class="tab plus-tab" type="button" aria-label="New tab">+</button>
           </div>
         `;
         return;
       }
 
-      const emptyHint = openTabs.length ? "" : `<div class="tabs-empty text-[#8E827A] text-sm whitespace-nowrap pr-1">No open tabs</div>`;
+      const emptyHint = openTabs.length ? "" : `<div class="tabs-empty">No open tabs</div>`;
       tabBarEl.innerHTML = `
-        <div class="tab-list inline-flex items-center gap-1 min-w-0 overflow-x-auto pb-px">
+        <div class="tab-list">
           ${dynamicTabs}
-          <button class="tab plus-tab inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-amber cursor-pointer text-sm flex-none" type="button" aria-label="New tab">+</button>
+          <button class="tab plus-tab" type="button" aria-label="New tab">+</button>
         </div>
         ${emptyHint}
       `;
@@ -1561,7 +1559,9 @@
     }
 
     function SidebarSectionHeader(title, count) {
-      return `${title} ${count}`;
+      const safeTitle = String(title || "").trim();
+      const safeCount = Number(count) || 0;
+      return safeCount > 0 ? `${safeTitle} ${safeCount}` : safeTitle;
     }
 
     function TreeChevron() {

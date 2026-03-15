@@ -257,12 +257,12 @@
             <span
               id="stagedCountChip"
               class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >Staged 0</span
+              >Staged</span
             >
             <span
               id="unstagedCountChip"
               class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >Unstaged 0</span
+              >Unstaged</span
             >
           </div>
 
@@ -305,21 +305,21 @@
           <div id="changesPanel" class="changes-wrap min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
             <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
               <summary
-                class="cursor-pointer list-none flex items-center justify-start gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+                class="change-section-summary cursor-pointer list-none flex items-center justify-start gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
               >
-                <span id="stagedSectionLabel">Staged 0</span>
+                <span id="stagedSectionLabel">Staged</span>
               </summary>
               <div id="stagedList" class="change-list block pt-0.5 bg-transparent"></div>
             </details>
 
             <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
               <summary
-                class="cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+                class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
               >
-                <span id="unstagedSectionLabel">Unstaged 0</span>
+                <span id="unstagedSectionLabel">Unstaged</span>
                 <button
                   id="stageAllBtn"
-                  class="text-2xs text-green-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
+                  class="change-section-action text-2xs text-green-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
                   type="button"
                 >
                   Stage all
@@ -345,16 +345,20 @@
         id="taskContextBar"
         class="h-8 min-h-8 border border-border-subtle rounded-md bg-[#151211] px-2.5 flex items-center gap-2.5 text-xs text-text-secondary font-mono"
       >
-        <span id="taskContextTask" class="text-text-tertiary whitespace-nowrap">Task: none</span>
-        <div class="relative">
+        <div class="context-item">
+          <span class="context-label">Task</span>
+          <span id="taskContextTask" class="context-value whitespace-nowrap">none</span>
+        </div>
+        <div class="context-item relative">
+          <span class="context-label">Branch</span>
           <button
             id="taskContextBranch"
-            class="inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] px-2 h-5 whitespace-nowrap text-text-secondary hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
+            class="context-branch-btn"
             type="button"
             title=""
             disabled
           >
-            Branch: -
+            -
           </button>
           <div
             id="taskContextBranchMenu"
@@ -378,15 +382,18 @@
             </button>
           </div>
         </div>
-        <button
-          id="taskContextPath"
-          class="min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-left hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
-          type="button"
-          title=""
-          disabled
-        >
-          Path: -
-        </button>
+        <div class="context-item context-path-item min-w-0 flex-1">
+          <span class="context-label">Path</span>
+          <button
+            id="taskContextPath"
+            class="context-path-btn min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-left hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
+            type="button"
+            title=""
+            disabled
+          >
+            -
+          </button>
+        </div>
       </div>
     </div>
 
