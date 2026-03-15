@@ -85,19 +85,27 @@ func (s *WorkspaceStore) Save(workspaces []domain.Workspace) error {
 }
 
 func normalizeWorkspaces(workspaces []domain.Workspace) []domain.Workspace {
-	seen := map[string]struct{}{}
+	seenByID := map[string]struct{}{}
+	seenByName := map[string]struct{}{}
 	out := make([]domain.Workspace, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		name := strings.TrimSpace(workspace.Name)
 		if name == "" {
 			continue
 		}
-		key := strings.ToLower(name)
-		if _, ok := seen[key]; ok {
+		id := normalizeWorkspaceID(workspace.ID, name)
+		nameKey := strings.ToLower(name)
+		if _, ok := seenByName[nameKey]; ok {
 			continue
 		}
-		seen[key] = struct{}{}
+		idKey := strings.ToLower(id)
+		if _, ok := seenByID[idKey]; ok {
+			continue
+		}
+		seenByName[nameKey] = struct{}{}
+		seenByID[idKey] = struct{}{}
 		out = append(out, domain.Workspace{
+			ID:       id,
 			Name:     name,
 			RepoPath: strings.TrimSpace(workspace.RepoPath),
 		})
@@ -106,4 +114,12 @@ func normalizeWorkspaces(workspaces []domain.Workspace) []domain.Workspace {
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
 	return out
+}
+
+func normalizeWorkspaceID(id, name string) string {
+	cleanID := strings.TrimSpace(id)
+	if cleanID != "" {
+		return cleanID
+	}
+	return "ws-" + strings.ToLower(strings.TrimSpace(name))
 }

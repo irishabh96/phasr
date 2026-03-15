@@ -95,7 +95,8 @@
                   data-provider-pill="claude"
                   title="Anthropic Claude — autonomous coding agent"
                 >
-                  claude
+                  <span class="provider-icon provider-icon-claude" aria-hidden="true">✶</span>
+                  <span>claude</span>
                 </button>
                 <button
                   type="button"
@@ -103,7 +104,8 @@
                   data-provider-pill="codex"
                   title="OpenAI Codex — GPT-powered coding agent"
                 >
-                  codex
+                  <span class="provider-icon provider-icon-codex" aria-hidden="true">⌬</span>
+                  <span>codex</span>
                 </button>
                 <button
                   type="button"
@@ -111,7 +113,8 @@
                   data-provider-pill="copilot"
                   title="GitHub Copilot — AI pair programmer"
                 >
-                  copilot
+                  <span class="provider-icon provider-icon-copilot" aria-hidden="true">◎</span>
+                  <span>copilot</span>
                 </button>
                 <button
                   type="button"
@@ -119,7 +122,8 @@
                   data-provider-pill="opencode"
                   title="OpenCode — open-source coding assistant"
                 >
-                  opencode
+                  <span class="provider-icon provider-icon-opencode" aria-hidden="true">&lt;/&gt;</span>
+                  <span>opencode</span>
                 </button>
                 <button
                   type="button"
@@ -127,7 +131,8 @@
                   data-provider-pill="gemini"
                   title="Google Gemini — multimodal AI agent"
                 >
-                  gemini
+                  <span class="provider-icon provider-icon-gemini" aria-hidden="true">✦</span>
+                  <span>gemini</span>
                 </button>
               </div>
             </div>
@@ -491,6 +496,89 @@
               aria-hidden="true"
             ></span>
             <span id="workspaceModalCreateLabel">Create Workspace</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="newTaskModalBackdrop"
+      class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3100] p-3.5"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="newTaskModalTitle"
+    >
+      <div
+        class="modal w-[min(540px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+      >
+        <div
+          class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
+        >
+          <h3
+            id="newTaskModalTitle"
+            class="m-0 text-[15px] font-medium text-text-secondary"
+          >
+            New Tab Task
+          </h3>
+          <button
+            id="newTaskModalCloseBtn"
+            class="btn-ghost bg-transparent border-border-default text-text-secondary"
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+        <div class="modal-body px-3 py-[13px] grid gap-3.5">
+          <div class="workspace-modal-field grid gap-1">
+            <label class="workspace-modal-label" for="newTaskModalPrompt">What task do you need to do?</label>
+            <textarea
+              id="newTaskModalPrompt"
+              class="new-task-modal-textarea w-full min-h-[110px] max-h-[260px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.35] resize-y"
+              placeholder="Describe the task for this new tab..."
+            ></textarea>
+            <div id="newTaskModalPromptHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite"></div>
+          </div>
+          <div class="workspace-modal-field grid gap-1">
+            <label class="workspace-modal-label" for="newTaskModalAgent">Which agent should run?</label>
+            <select
+              id="newTaskModalAgent"
+              class="new-task-modal-select w-full min-h-[42px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
+            >
+              <option value="claude">claude</option>
+              <option value="codex" selected>codex</option>
+              <option value="copilot">copilot</option>
+              <option value="opencode">opencode</option>
+              <option value="gemini">gemini</option>
+            </select>
+          </div>
+          <div class="workspace-modal-field grid gap-1">
+            <label class="workspace-modal-label" for="newTaskModalWorkspace">Which workspace should this tab use?</label>
+            <select
+              id="newTaskModalWorkspace"
+              class="new-task-modal-select w-full min-h-[42px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
+            ></select>
+          </div>
+          <div id="newTaskModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
+        </div>
+        <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
+          <button
+            id="newTaskModalCancelBtn"
+            class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary"
+            type="button"
+          >
+            Cancel
+          </button>
+          <button
+            id="newTaskModalCreateBtn"
+            class="btn-primary workspace-modal-create-btn new-task-modal-create-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2 inline-flex items-center justify-center gap-2"
+            type="button"
+          >
+            <span
+              id="newTaskModalCreateSpinner"
+              class="workspace-btn-spinner hidden w-3.5 h-3.5 rounded-full border-2 border-[#8F837A] border-t-[#F2EBE4]"
+              aria-hidden="true"
+            ></span>
+            <span id="newTaskModalCreateLabel">Create Tab</span>
           </button>
         </div>
       </div>

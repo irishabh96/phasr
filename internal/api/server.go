@@ -303,7 +303,7 @@ func (s *server) handleWorkspaceByName(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.SplitN(suffix, "/", 2)
-	workspaceName, err := url.PathUnescape(parts[0])
+	workspaceID, err := url.PathUnescape(parts[0])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid workspace path")
 		return
@@ -313,9 +313,25 @@ func (s *server) handleWorkspaceByName(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 
+	if action == "" {
+		if r.Method != http.MethodDelete {
+			methodNotAllowed(w)
+			return
+		}
+		if err := s.tasks.DeleteWorkspace(workspaceID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted":    workspaceID,
+			"workspaces": s.tasks.Workspaces(),
+		})
+		return
+	}
+
 	switch action {
 	case "files":
-		s.handleWorkspaceFiles(w, r, workspaceName)
+		s.handleWorkspaceFiles(w, r, workspaceID)
 	default:
 		http.NotFound(w, r)
 	}
@@ -602,13 +618,13 @@ func (s *server) handleTaskFiles(w http.ResponseWriter, r *http.Request, id stri
 	})
 }
 
-func (s *server) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request, workspaceName string) {
+func (s *server) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request, workspaceID string) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
 
-	workspace, err := s.tasks.Workspace(workspaceName)
+	workspace, err := s.tasks.Workspace(workspaceID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -631,7 +647,7 @@ func (s *server) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request, wo
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"workspace": workspace.Name,
+		"workspace": workspace.ID,
 		"root":      root,
 		"entries":   entries,
 		"truncated": truncated,

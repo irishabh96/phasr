@@ -87,7 +87,6 @@ func NewManager(opts Options) (*Manager, error) {
 		logsDir:        opts.LogsDir,
 	}
 
-	m.ensureWorkspaceLocked(domain.Workspace{Name: defaultWorkspace})
 	for _, workspace := range storedWorkspaces {
 		m.ensureWorkspaceLocked(workspace)
 	}
@@ -133,6 +132,9 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 		return domain.Task{}, errors.New("command is required")
 	}
 	workspaceName := normalizedWorkspace(req.Workspace)
+	if workspaceName == "" {
+		return domain.Task{}, errors.New("workspace is required")
+	}
 	repoInput := strings.TrimSpace(req.RepoPath)
 	if repoInput == "" {
 		m.mu.RLock()
@@ -420,17 +422,20 @@ func (m *Manager) Workspaces() []domain.Workspace {
 	return items
 }
 
-func (m *Manager) Workspace(name string) (domain.Workspace, error) {
-	workspaceName := normalizedWorkspace(name)
-	key := strings.ToLower(workspaceName)
+func (m *Manager) Workspace(workspaceID string) (domain.Workspace, error) {
+	targetID := strings.TrimSpace(workspaceID)
+	if targetID == "" {
+		return domain.Workspace{}, errors.New("workspace id is required")
+	}
 
 	m.mu.RLock()
-	workspace, ok := m.workspaces[key]
-	m.mu.RUnlock()
-	if !ok {
-		return domain.Workspace{}, fmt.Errorf("workspace %q not found", workspaceName)
+	defer m.mu.RUnlock()
+	for _, workspace := range m.workspaces {
+		if strings.EqualFold(strings.TrimSpace(workspace.ID), targetID) {
+			return workspace, nil
+		}
 	}
-	return workspace, nil
+	return domain.Workspace{}, fmt.Errorf("workspace %q not found", targetID)
 }
 
 func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.Workspace, error) {
@@ -457,7 +462,11 @@ func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.W
 		}
 	}
 
-	workspace := domain.Workspace{Name: workspaceName, RepoPath: absRepoPath}
+	workspace := domain.Workspace{
+		ID:       newWorkspaceID(workspaceName),
+		Name:     workspaceName,
+		RepoPath: absRepoPath,
+	}
 
 	m.mu.Lock()
 	m.ensureWorkspaceLocked(workspace)
@@ -467,6 +476,40 @@ func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.W
 	}
 	m.mu.Unlock()
 	return workspace, nil
+}
+
+func (m *Manager) DeleteWorkspace(workspaceID string) error {
+	targetID := strings.TrimSpace(workspaceID)
+	if targetID == "" {
+		return errors.New("workspace id is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var target domain.Workspace
+	found := false
+	for _, workspace := range m.workspaces {
+		if strings.EqualFold(strings.TrimSpace(workspace.ID), targetID) {
+			target = workspace
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("workspace %q not found", targetID)
+	}
+
+	for _, task := range m.tasks {
+		if strings.EqualFold(strings.TrimSpace(task.Workspace), target.Name) {
+			return errors.New("workspace has tasks; remove tasks from this workspace first")
+		}
+	}
+
+	delete(m.workspaces, strings.ToLower(target.Name))
+	if err := m.persistWorkspacesLocked(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) Diff(id, file string) ([]diff.Change, string, string, error) {
@@ -676,11 +719,7 @@ func normalizedPreset(name string) string {
 const defaultWorkspace = "default"
 
 func normalizedWorkspace(workspace string) string {
-	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
-		return defaultWorkspace
-	}
-	return workspace
+	return strings.TrimSpace(workspace)
 }
 
 func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
@@ -688,6 +727,7 @@ func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
 	if workspace.Name == "" {
 		return false
 	}
+	workspace.ID = normalizedWorkspaceID(workspace.ID, workspace.Name)
 	workspace.RepoPath = strings.TrimSpace(workspace.RepoPath)
 	key := strings.ToLower(workspace.Name)
 
@@ -696,12 +736,31 @@ func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
 		m.workspaces[key] = workspace
 		return true
 	}
+	mutated := false
+	if strings.TrimSpace(existing.ID) == "" && strings.TrimSpace(workspace.ID) != "" {
+		existing.ID = workspace.ID
+		mutated = true
+	}
 	if existing.RepoPath == "" && workspace.RepoPath != "" {
 		existing.RepoPath = workspace.RepoPath
-		m.workspaces[key] = existing
-		return true
+		mutated = true
 	}
-	return false
+	if mutated {
+		m.workspaces[key] = existing
+	}
+	return mutated
+}
+
+func normalizedWorkspaceID(id, name string) string {
+	cleanID := strings.TrimSpace(id)
+	if cleanID != "" {
+		return cleanID
+	}
+	return newWorkspaceID(name)
+}
+
+func newWorkspaceID(name string) string {
+	return "ws-" + strings.ToLower(strings.TrimSpace(name))
 }
 
 func ensureGitRepo(repoPath string) error {
