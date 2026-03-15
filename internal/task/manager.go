@@ -45,6 +45,8 @@ type CreateRequest struct {
 	Preset     string   `json:"preset"`
 	DirectRepo bool     `json:"direct_repo"`
 	RootTaskID string   `json:"root_task_id"`
+	Cols       uint16   `json:"cols"`
+	Rows       uint16   `json:"rows"`
 }
 
 type Manager struct {
@@ -201,9 +203,17 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 		branch = currentRepoBranch(repoPath)
 		worktreePath = repoPath
 	} else {
-		branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID)
-		if err != nil {
-			return domain.Task{}, err
+		// Repos without a commit cannot produce a usable detached worktree with tracked files.
+		// Fall back to running directly in repo so files remain visible/editable.
+		if !repoHasCommits(repoPath) {
+			directRepo = true
+			branch = currentRepoBranch(repoPath)
+			worktreePath = repoPath
+		} else {
+			branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID)
+			if err != nil {
+				return domain.Task{}, err
+			}
 		}
 	}
 
@@ -245,7 +255,7 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 	}
 	m.mu.Unlock()
 
-	if err := m.start(t.ID, true); err != nil {
+	if err := m.start(t.ID, true, req.Cols, req.Rows); err != nil {
 		m.mu.Lock()
 		t.Status = domain.StatusFailed
 		t.LastError = err.Error()
@@ -259,13 +269,13 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 }
 
 func (m *Manager) Start(id string) (domain.Task, error) {
-	if err := m.start(id, false); err != nil {
+	if err := m.start(id, false, 0, 0); err != nil {
 		return domain.Task{}, err
 	}
 	return m.Get(id)
 }
 
-func (m *Manager) start(id string, includePresetSetup bool) error {
+func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) error {
 	m.mu.Lock()
 	t, ok := m.tasks[id]
 	if !ok {
@@ -301,8 +311,8 @@ func (m *Manager) start(id string, includePresetSetup bool) error {
 		WorkDir:     worktreePath,
 		LogFile:     logFile,
 		PreCommands: preCommands,
-		Cols:        120,
-		Rows:        40,
+		Cols:        cols,
+		Rows:        rows,
 	})
 	if err != nil {
 		return err
@@ -899,6 +909,11 @@ func currentRepoBranch(repoPath string) string {
 		return "HEAD"
 	}
 	return branch
+}
+
+func repoHasCommits(repoPath string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "HEAD")
+	return cmd.Run() == nil
 }
 
 func normalizedTags(tags []string) []string {

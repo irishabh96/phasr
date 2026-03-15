@@ -12,6 +12,7 @@
     let activeTaskGroupId = "";
     let openTabs = [];
     let activeTabId = "";
+    const closedTabIds = new Set();
     let activeStream = null;
     let launchingAgent = false;
     let rightPanelMode = "changes";
@@ -21,8 +22,15 @@
     let terminal = null;
     let fitAddon = null;
     let terminalReady = false;
+    let terminalResizeObserver = null;
+    let terminalFitTimer = null;
+    let terminalBackendResizeTimer = null;
+    let lastPtyCols = 0;
+    let lastPtyRows = 0;
+    const bootstrappedTerminalTasks = new Set();
     let inputBuffer = "";
     let flushTimer = null;
+    const pendingTaskStarts = new Set();
 
     let currentGitStatus = { staged: [], unstaged: [] };
     let selectedPatchFile = "";
@@ -30,9 +38,12 @@
 
     // P0-A: ANSI color codes for severity highlighting
     const ANSI_RESET = "\x1b[0m";
-    const ANSI_RED = "\x1b[38;2;208;92;92m";     // --red
-    const ANSI_YELLOW = "\x1b[38;2;209;154;26m";  // --amber
-    const ANSI_GREEN = "\x1b[38;2;39;196;107m";   // --green
+    const ANSI_RED = "\x1b[38;2;220;107;107m";     // ember #dc6b6b
+    const ANSI_YELLOW = "\x1b[38;2;229;192;123m";  // ember #e5c07b
+    const ANSI_GREEN = "\x1b[38;2;126;198;153m";   // ember #7ec699
+    const terminalFormatter = window.staqTerminalFormatter?.createFormatter
+      ? window.staqTerminalFormatter.createFormatter()
+      : null;
 
     const SEVERITY_PATTERNS = [
       { pattern: /^.*\b(FAIL|ERROR|FATAL|PANIC|error:|fatal:)\b/i, ansi: ANSI_RED },
@@ -52,8 +63,11 @@
     }
 
     function colorizeTerminalOutput(data) {
-      if (!data || !data.includes("\n")) return colorizeLine(data);
-      return data.split("\n").map(colorizeLine).join("\n");
+      const raw = String(data || "");
+      const cols = terminal?.cols || 120;
+      const formatted = terminalFormatter ? terminalFormatter.format(raw, cols) : raw;
+      if (!formatted || !formatted.includes("\n")) return colorizeLine(formatted);
+      return formatted.split("\n").map(colorizeLine).join("\n");
     }
 
     const workspaceListEl = document.getElementById("workspaceList");
@@ -175,15 +189,39 @@
     const taskHeaderEl = document.getElementById("taskHeader");
     const taskTitleTextEl = document.getElementById("taskTitleText");
     const taskStatusDotEl = document.getElementById("taskStatusDot");
+    const taskHeaderChipEl = document.getElementById("taskHeaderChip");
+    const taskStopBtnEl = document.getElementById("taskStopBtn");
+    const taskResumeBtnEl = document.getElementById("taskResumeBtn");
 
     function updateTaskHeader(task = null) {
       const nextTask = task || getTask(activeTabId);
-      if (!nextTask || (nextTask.status !== "running" && nextTask.status !== "pending")) {
+      if (!nextTask) {
         taskHeaderEl.classList.add("hidden");
         return;
       }
       taskTitleTextEl.textContent = nextTask.name || "untitled task";
-      taskStatusDotEl.classList.toggle("active", true);
+
+      const isRunning = nextTask.status === "running" || nextTask.status === "pending";
+      const isStopped = nextTask.status === "completed" || nextTask.status === "failed" || nextTask.status === "stopped";
+      taskStatusDotEl.classList.toggle("active", isRunning);
+
+      // Chip label
+      if (isRunning) {
+        taskHeaderChipEl.textContent = "live transcript";
+        taskHeaderChipEl.classList.remove("hidden");
+      } else {
+        taskHeaderChipEl.textContent = nextTask.status || "done";
+        taskHeaderChipEl.classList.remove("hidden");
+      }
+
+      // Stop button (visible when running/pending)
+      taskStopBtnEl.classList.toggle("hidden", !isRunning);
+      taskStopBtnEl.dataset.stop = nextTask.id;
+
+      // Resume button (visible when stopped/completed/failed)
+      taskResumeBtnEl.classList.toggle("hidden", !isStopped);
+      taskResumeBtnEl.dataset.resume = nextTask.id;
+
       taskHeaderEl.classList.remove("hidden");
     }
 
@@ -995,46 +1033,231 @@
       terminal = new Terminal({
         convertEol: false,
         cursorBlink: true,
-        fontFamily: '"JetBrains Mono", "SF Mono", Menlo, Consolas, monospace',
-        fontSize: 12,
+        cursorStyle: "block",
+        cursorInactiveStyle: "outline",
+        fontFamily: '"MesloLGM Nerd Font", "MesloLGM NF", "MesloLGS NF", "MesloLGS Nerd Font", "Hack Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", "CaskaydiaCove Nerd Font", Menlo, Monaco, "Courier New", monospace',
+        fontSize: 14,
         lineHeight: 1.2,
-        scrollback: 40000,
+        allowProposedApi: true,
+        macOptionIsMeta: false,
+        screenReaderMode: false,
+        scrollback: 5000,
+        scrollbar: { showScrollbar: false },
         theme: {
-          background: "#120F0E",
-          foreground: "#E8E1DB",
-          cursor: "#D59B1A",
-          black: "#1A1513",
-          red: "#C65C5C",
-          green: "#31B36E",
-          yellow: "#D59B1A",
-          blue: "#79A7FF",
-          magenta: "#BE9AD3",
-          cyan: "#86B7A2",
-          white: "#D9CFC7",
-          brightBlack: "#7D726B",
-          brightRed: "#E18989",
-          brightGreen: "#6FD09A",
-          brightYellow: "#E4B85F",
-          brightBlue: "#A4C2FF",
-          brightMagenta: "#D3B6E2",
-          brightCyan: "#A4D3C1",
-          brightWhite: "#F3ECE6",
+          background: "#151110",
+          foreground: "#eae8e6",
+          cursor: "#e07850",
+          cursorAccent: "#151110",
+          selectionBackground: "rgba(224, 120, 80, 0.25)",
+          black: "#151110",
+          red: "#dc6b6b",
+          green: "#7ec699",
+          yellow: "#e5c07b",
+          blue: "#61afef",
+          magenta: "#c678dd",
+          cyan: "#56b6c2",
+          white: "#eae8e6",
+          brightBlack: "#5c5856",
+          brightRed: "#e88888",
+          brightGreen: "#98d1a8",
+          brightYellow: "#ecd08f",
+          brightBlue: "#7ec0f5",
+          brightMagenta: "#d494e6",
+          brightCyan: "#73c7d3",
+          brightWhite: "#ffffff",
         },
       });
 
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(document.getElementById("terminal"));
-      fitAddon.fit();
+      fitTerminalViewport();
+      if (document.fonts?.ready) {
+        document.fonts.ready.then(() => {
+          scheduleTerminalFitAndResize(0);
+        }).catch(() => {});
+      }
+      if (typeof ResizeObserver !== "undefined") {
+        terminalResizeObserver = new ResizeObserver(() => {
+          scheduleTerminalFitAndResize();
+        });
+        const terminalHost = document.getElementById("terminal");
+        if (terminalHost) {
+          terminalResizeObserver.observe(terminalHost);
+        }
+      }
+
+      // Suppress terminal query responses (CSI R, I, O, $y) from showing as visible text
+      try {
+        const parser = terminal.parser;
+        if (parser) {
+          parser.registerCsiHandler({ final: "R" }, () => true);
+          parser.registerCsiHandler({ final: "I" }, () => true);
+          parser.registerCsiHandler({ final: "O" }, () => true);
+          parser.registerCsiHandler({ intermediates: "$", final: "y" }, () => true);
+        }
+      } catch (_) {}
+
+      // Copy handler: trim trailing whitespace from copied text
+      const xtermElement = terminal.element;
+      if (xtermElement) {
+        xtermElement.addEventListener("copy", (event) => {
+          const selection = terminal.getSelection();
+          if (!selection) return;
+          const trimmed = selection.split("\n").map((line) => line.trimEnd()).join("\n");
+          if (event.clipboardData) {
+            event.preventDefault();
+            event.clipboardData.setData("text/plain", trimmed);
+          }
+        });
+      }
 
       terminal.onData((data) => {
-        const task = getTask(activeTabId);
-        if (!task || task.status !== "running") return;
+        if (!activeTabId) return;
+        // Signal characters (Ctrl+C, Ctrl+Z, Ctrl+\) must bypass the
+        // debounced buffer and be sent immediately so interrupts aren't delayed.
+        if (data === "\x03" || data === "\x1a" || data === "\x1c") {
+          flushInputImmediately(data);
+          return;
+        }
         inputBuffer += data;
         scheduleInputFlush();
       });
 
+      // Keyboard handler: Cmd+Backspace, Cmd+Left/Right, Option+Left/Right
+      const isMac = navigator.platform.toLowerCase().includes("mac");
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (event.type !== "keydown") return true;
+
+        // Cmd+Backspace: clear line (Ctrl+U + left arrow)
+        if (event.key === "Backspace" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+          event.preventDefault();
+          sendTerminalInput("\x15\x1b[D");
+          return false;
+        }
+        // Cmd+Left: beginning of line (Ctrl+A)
+        if (event.key === "ArrowLeft" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+          event.preventDefault();
+          sendTerminalInput("\x01");
+          return false;
+        }
+        // Cmd+Right: end of line (Ctrl+E)
+        if (event.key === "ArrowRight" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+          event.preventDefault();
+          sendTerminalInput("\x05");
+          return false;
+        }
+        // Option+Left (macOS): backward word (Meta+B)
+        if (event.key === "ArrowLeft" && event.altKey && isMac && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+          sendTerminalInput("\x1bb");
+          return false;
+        }
+        // Option+Right (macOS): forward word (Meta+F)
+        if (event.key === "ArrowRight" && event.altKey && isMac && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+          sendTerminalInput("\x1bf");
+          return false;
+        }
+        return true;
+      });
+
+      // Click-to-move cursor on the current prompt line
+      if (terminal.element) {
+        terminal.element.addEventListener("click", (event) => {
+          if (terminal.buffer.active !== terminal.buffer.normal) return;
+          if (event.button !== 0) return;
+          if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+          if (terminal.hasSelection()) return;
+
+          const rect = terminal.element.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const y = event.clientY - rect.top;
+          const dims = terminal._core?._renderService?.dimensions;
+          if (!dims?.css?.cell) return;
+          const cellW = dims.css.cell.width;
+          const cellH = dims.css.cell.height;
+          if (cellW <= 0 || cellH <= 0) return;
+
+          const col = Math.max(0, Math.min(terminal.cols - 1, Math.floor(x / cellW)));
+          const row = Math.max(0, Math.min(terminal.rows - 1, Math.floor(y / cellH)));
+          const buf = terminal.buffer.active;
+          const clickRow = row + buf.viewportY;
+          if (clickRow !== buf.cursorY + buf.viewportY) return;
+
+          const delta = col - buf.cursorX;
+          if (delta === 0) return;
+          const arrow = delta > 0 ? "\x1b[C" : "\x1b[D";
+          sendTerminalInput(arrow.repeat(Math.abs(delta)));
+        });
+      }
+
       terminalReady = true;
+    }
+
+    // Helper to send raw data directly to the active task's PTY
+    function sendTerminalInput(data) {
+      const taskId = String(activeTabId || "").trim();
+      if (!taskId) return;
+      api(`/api/tasks/${taskId}/terminal/input`, {
+        method: "POST",
+        body: JSON.stringify({ input: data, append_newline: false }),
+      }).catch((err) => console.error(err));
+    }
+
+    function fitTerminalViewport() {
+      if (!terminal || !fitAddon) return;
+      try {
+        fitAddon.fit();
+      } catch (_) {}
+    }
+
+    function taskStartTerminalSize() {
+      fitTerminalViewport();
+      const cols = Math.max(40, Number(terminal?.cols) || 120);
+      const rows = Math.max(12, Number(terminal?.rows) || 40);
+      return { cols, rows };
+    }
+
+    function scheduleTerminalFitAndResize(delay = 150) {
+      if (terminalFitTimer) clearTimeout(terminalFitTimer);
+      terminalFitTimer = setTimeout(() => {
+        fitTerminalViewport();
+      }, delay);
+
+      if (terminalBackendResizeTimer) clearTimeout(terminalBackendResizeTimer);
+      terminalBackendResizeTimer = setTimeout(() => {
+        resizeTerminalForActiveTab().catch(() => {});
+      }, delay + 40);
+    }
+
+    // Send signal characters (Ctrl+C etc.) immediately, bypassing the debounce buffer.
+    // These must not be delayed or batched — they need to reach the PTY as fast as possible.
+    // If the task is not running, we silently drop the signal (no resume/restart).
+    async function flushInputImmediately(data) {
+      // Also flush any pending buffered input first so ordering is preserved.
+      if (inputBuffer) {
+        const pending = inputBuffer;
+        inputBuffer = "";
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        const taskId = String(activeTabId || "").trim();
+        if (pending && taskId) {
+          try {
+            await api(`/api/tasks/${taskId}/terminal/input`, {
+              method: "POST",
+              body: JSON.stringify({ input: pending, append_newline: false }),
+            });
+          } catch (_) {}
+        }
+      }
+      const taskId = String(activeTabId || "").trim();
+      if (!data || !taskId) return;
+      try {
+        await api(`/api/tasks/${taskId}/terminal/input`, {
+          method: "POST",
+          body: JSON.stringify({ input: data, append_newline: false }),
+        });
+      } catch (_) {
+        // Signal on a non-running task is intentionally dropped — don't restart.
+      }
     }
 
     function scheduleInputFlush() {
@@ -1043,16 +1266,46 @@
         flushTimer = null;
         const chunk = inputBuffer;
         inputBuffer = "";
-        if (!chunk || !activeTabId) return;
+        const taskId = String(activeTabId || "").trim();
+        if (!chunk || !taskId) return;
         try {
-          await api(`/api/tasks/${activeTabId}/terminal/input`, {
+          await api(`/api/tasks/${taskId}/terminal/input`, {
             method: "POST",
             body: JSON.stringify({ input: chunk, append_newline: false }),
           });
         } catch (error) {
-          console.error(error);
+          const message = String(error?.message || "").toLowerCase();
+          const notRunning = message.includes("not running");
+          if (!notRunning) {
+            console.error(error);
+            return;
+          }
+          try {
+            await ensureTaskRunning(taskId);
+            await api(`/api/tasks/${taskId}/terminal/input`, {
+              method: "POST",
+              body: JSON.stringify({ input: chunk, append_newline: false }),
+            });
+          } catch (retryError) {
+            console.error(retryError);
+          }
         }
       }, 25);
+    }
+
+    async function ensureTaskRunning(taskId) {
+      const key = String(taskId || "").trim();
+      if (!key) return;
+      const knownTask = getTask(key);
+      if (knownTask?.status === "running") return;
+      if (pendingTaskStarts.has(key)) return;
+      pendingTaskStarts.add(key);
+      try {
+        await api(`/api/tasks/${key}/resume`, { method: "POST" });
+        await loadTasks({ keepTab: true });
+      } finally {
+        pendingTaskStarts.delete(key);
+      }
     }
 
     function setTerminalOverlay(message, show = true) {
@@ -1062,9 +1315,12 @@
 
     async function resizeTerminalForActiveTab() {
       if (centerViewMode !== "terminal") return;
+      fitTerminalViewport();
       const task = getTask(activeTabId);
       if (!task || task.status !== "running" || !terminalReady) return;
-      fitAddon.fit();
+      if (terminal.cols === lastPtyCols && terminal.rows === lastPtyRows) return;
+      lastPtyCols = terminal.cols;
+      lastPtyRows = terminal.rows;
       await api(`/api/tasks/${activeTabId}/terminal/resize`, {
         method: "POST",
         body: JSON.stringify({ cols: terminal.cols, rows: terminal.rows }),
@@ -1267,6 +1523,7 @@
     }
 
     function closeTab(taskId) {
+      closedTabIds.add(taskId);
       openTabs = openTabs.filter((id) => id !== taskId);
       if (activeTabId !== taskId) {
         renderTabs();
@@ -1281,10 +1538,6 @@
         renderGitStatus();
         setPatchPreviewMessage("Select a changed file to open a diff view.");
         updateTaskHeader(null);
-        if (terminal) {
-          terminal.clear();
-          terminal.reset();
-        }
         setMainViewMode("terminal");
         setTerminalOverlay("Open a task in this workspace to attach terminal.", true);
         updateTaskContextBar(null);
@@ -1302,6 +1555,7 @@
       if (!groupID) return;
 
       activeTaskGroupId = groupID;
+      closedTabIds.clear();
       const tabs = tabsForTaskGroup(groupID);
       openTabs = tabs.map((task) => task.id);
 
@@ -1342,6 +1596,9 @@
         activeStream.close();
         activeStream = null;
       }
+      if (terminalFormatter) {
+        terminalFormatter.reset();
+      }
       inputBuffer = "";
     }
 
@@ -1349,13 +1606,27 @@
       const task = getTask(taskId);
       if (!task) return;
 
+      // Skip full teardown+rebuild when the terminal is already showing this task.
+      const isAlreadyActive = activeTabId === taskId && activeStream;
       activeTaskGroupId = taskRootId(task);
       activeTabId = taskId;
+      closedTabIds.delete(taskId);
       renderTabs();
 
+      if (isAlreadyActive) {
+        // Just refresh metadata — no terminal clear/re-bootstrap needed.
+        updateTaskHeader(task);
+        updateTaskContextBar(task);
+        if (terminal) terminal.focus();
+        return;
+      }
+
       ensureTerminal();
+      // Clear previous task output so the terminal shows only this task's content.
       terminal.clear();
-      terminal.reset();
+      // Allow re-bootstrap so the new task's logs are written after clear.
+      bootstrappedTerminalTasks.delete(taskId);
+      scheduleTerminalFitAndResize(0);
       detachStream();
       selectedPatchFile = "";
       setPatchPreviewMessage("Select a changed file to open a diff view.");
@@ -1371,11 +1642,15 @@
       }
 
       attachStream(taskId);
+      // Defer focus so DOM updates (overlay, tabs) settle first.
+      setTimeout(() => { if (terminal) terminal.focus(); }, 50);
       await refreshGitStatus();
       if (rightPanelMode === "files") {
         await loadRepoFiles();
       }
       await resizeTerminalForActiveTab().catch(() => {});
+      // Re-focus after all async work to ensure typing works.
+      if (terminal && activeTabId === taskId) terminal.focus();
     }
 
     function attachStream(taskId) {
@@ -1384,8 +1659,13 @@
       activeStream.addEventListener("bootstrap", (event) => {
         if (activeTabId !== taskId) return;
         const data = JSON.parse(event.data || "{}");
-        if (typeof data.logs === "string" && data.logs.length > 0) {
+        if (
+          typeof data.logs === "string"
+          && data.logs.length > 0
+          && !bootstrappedTerminalTasks.has(taskId)
+        ) {
           terminal.write(colorizeTerminalOutput(data.logs));
+          bootstrappedTerminalTasks.add(taskId);
         }
         const task = getTask(taskId);
         if (task && task.status === "running") {
@@ -1518,9 +1798,18 @@
       }
 
       if (activeTaskGroupId) {
-        openTabs = tabsForTaskGroup(activeTaskGroupId).map((task) => task.id);
+        const groupTabIds = tabsForTaskGroup(activeTaskGroupId).map((task) => task.id);
+        // Add new tabs from the group that weren't manually closed.
+        for (const id of groupTabIds) {
+          if (!openTabs.includes(id) && !closedTabIds.has(id)) {
+            openTabs.push(id);
+          }
+        }
+        // Remove tabs that no longer exist in the group (deleted/moved tasks).
+        openTabs = openTabs.filter((id) => groupTabIds.includes(id));
       } else {
         openTabs = [];
+        closedTabIds.clear();
       }
 
       if (!openTabs.length) {
@@ -1768,9 +2057,18 @@
       const workspace = getWorkspace(activeWorkspace);
       const workspaceID = workspaceId(workspace) || activeWorkspace;
       const workspaceRepo = workspace?.repo_path || activeWorkspaceRepoPath();
+      const activeTask = getTask(activeTabId);
+      const activeTaskWorkspaceID = activeTask ? workspaceIdByName(activeTask.workspace) : "";
+      const useActiveTaskFiles = Boolean(
+        activeTask
+        && activeTabId
+        && activeTaskWorkspaceID
+        && workspaceID
+        && activeTaskWorkspaceID.toLowerCase() === workspaceID.toLowerCase()
+      );
 
       let endpoint = "";
-      if (activeTabId) {
+      if (useActiveTaskFiles) {
         endpoint = `/api/tasks/${activeTabId}/files`;
       } else if (workspaceID) {
         endpoint = `/api/workspaces/${encodeURIComponent(workspaceID)}/files`;
@@ -1785,8 +2083,7 @@
       repoFilesMetaEl.textContent = "Loading files...";
       try {
         const data = await api(endpoint);
-        const task = getTask(activeTabId);
-        const root = String(data.root || task?.repo_path || workspaceRepo || "");
+        const root = String(data.root || activeTask?.repo_path || workspaceRepo || "");
         repoFilesMetaEl.textContent = root || "Repository files";
         renderRepoFilesTree(data.entries || []);
       } catch (error) {
@@ -1867,6 +2164,7 @@
         prompt: promptInputEl.value,
         preset: presetSelectEl.value,
         direct_repo: false,
+        ...taskStartTerminalSize(),
       };
 
       const result = await api("/api/tasks", {
@@ -1952,6 +2250,7 @@
           preset: presetSelectEl.value,
           direct_repo: useExistingWorktree,
           root_task_id: rootTaskID,
+          ...taskStartTerminalSize(),
         };
 
         const result = await api("/api/tasks", {
@@ -2557,6 +2856,16 @@
       });
 
 
+      taskStopBtnEl.addEventListener("click", async () => {
+        const taskId = taskStopBtnEl.dataset.stop;
+        if (taskId) await runTaskAction("stop", taskId);
+      });
+
+      taskResumeBtnEl.addEventListener("click", async () => {
+        const taskId = taskResumeBtnEl.dataset.resume;
+        if (taskId) await runTaskAction("resume", taskId);
+      });
+
       document.getElementById("refreshGitBtn").addEventListener("click", () => {
         refreshGitStatus()
           .then(async () => {
@@ -2645,12 +2954,16 @@
         setMainViewMode("terminal");
       });
 
+      terminalPanelEl.addEventListener("click", () => {
+        if (terminal) terminal.focus();
+      });
+
 
       let resizeTimer = null;
       window.addEventListener("resize", () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-          resizeTerminalForActiveTab().catch(() => {});
+          scheduleTerminalFitAndResize(0);
         }, 180);
       });
     }

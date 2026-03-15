@@ -23,7 +23,7 @@
   --accent-red: #B95A52;
 
   --font-ui: "Inter", "Geist", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace;
+  --font-mono: "MesloLGM Nerd Font", "MesloLGM NF", "MesloLGS NF", "MesloLGS Nerd Font", "Hack Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", "CaskaydiaCove Nerd Font", Menlo, Monaco, "Courier New", monospace;
 
   --fs-window: 13px;
   --lh-window: 18px;
@@ -54,8 +54,8 @@
   --lh-input: 20px;
   --fw-input: 400;
 
-  --fs-terminal: 13px;
-  --lh-terminal: 19px;
+  --fs-terminal: 14px;
+  --lh-terminal: 20px;
   --fw-terminal: 400;
 
   --fs-tiny: 11px;
@@ -123,7 +123,37 @@ body {
   font-family: var(--font-ui);
   font-size: var(--fs-body);
   line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
 }
+
+/* Dark mode scrollbar styling (from Superset desktop globals.css) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(63 63 70 / 0.5) transparent;
+}
+*::-webkit-scrollbar { width: 12px; height: 12px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(63 63 70 / 0.5);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: rgb(82 82 91 / 0.7); }
+*::-webkit-scrollbar-thumb:active { background-color: rgb(113 113 122 / 0.8); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* Thin scrollbar variant for compact areas */
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { border-radius: 4px; border: 2px solid transparent; }
+
+/* Hide scrollbar utility */
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.hide-scrollbar::-webkit-scrollbar { display: none; }
 
 button, input, select, textarea {
   font: inherit;
@@ -461,11 +491,20 @@ kbd {
 .transcript-wrap,
 #terminalPanel,
 .terminal-box {
-  background: var(--bg-app) !important;
+  background: #151110 !important;
 }
 
 #terminal {
-  padding: var(--space-16) !important;
+  padding: 8px !important;
+}
+
+/* xterm 6.0+ requires explicit sizing */
+#terminal .xterm,
+#terminal .xterm .xterm-scrollable-element,
+#terminal .xterm .xterm-viewport,
+#terminal .xterm .xterm-screen {
+  height: 100% !important;
+  width: 100% !important;
 }
 
 #terminal .xterm,
@@ -473,6 +512,18 @@ kbd {
   font-family: var(--font-mono) !important;
   font-size: var(--fs-terminal) !important;
   line-height: var(--lh-terminal) !important;
+}
+
+/* Link styling in terminal */
+#terminal .xterm .xterm-rows a {
+  color: inherit;
+  cursor: pointer;
+}
+#terminal .xterm .xterm-rows a.xterm-underline-5 {
+  text-decoration-color: #3b8eea;
+}
+#terminal .xterm .xterm-rows a:hover.xterm-underline-5 {
+  text-decoration-color: #5ca8ff;
 }
 
 .terminal-banner {

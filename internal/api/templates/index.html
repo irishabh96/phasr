@@ -61,7 +61,7 @@
     <div class="app-shell h-full grid grid-rows-[minmax(0,1fr)_auto] gap-2 p-2 bg-window-bg">
       <div class="app min-h-0 h-full flex gap-2">
         <aside
-          class="panel left-col bg-[#141110] border border-[rgba(255,255,255,0.06)] rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden w-[290px] min-w-[240px] max-w-[420px] resize-x"
+          class="panel left-col bg-[#141110] border border-[rgba(255,255,255,0.06)] rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden w-[240px] min-w-[200px] max-w-[360px] resize-x"
         >
           <div id="workspaceList" class="workspace-list min-h-0 flex-1 overflow-y-auto"></div>
 
@@ -81,7 +81,7 @@
         <main
           class="panel center-col bg-[#120F0E] border border-border-subtle rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden flex-1"
         >
-          <div class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap">
+          <div class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap hide-scrollbar">
             <div id="tabBar" class="tab-bar flex items-center justify-between gap-2.5 min-w-full"></div>
           </div>
 
@@ -189,21 +189,41 @@
                 class="task-header-title m-0 text-base font-semibold text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono"
               ></h2>
             </div>
-            <span
-              class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >live transcript</span
-            >
+            <div class="inline-flex items-center gap-2">
+              <span
+                id="taskHeaderChip"
+                class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
+              >live transcript</span>
+              <button
+                id="taskStopBtn"
+                class="hidden icon-btn ghost-action inline-flex items-center gap-1 px-2 h-6 rounded text-2xs font-mono text-red-400 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-colors"
+                type="button"
+                title="Stop task"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>
+                <span>Stop</span>
+              </button>
+              <button
+                id="taskResumeBtn"
+                class="hidden icon-btn ghost-action inline-flex items-center gap-1 px-2 h-6 rounded text-2xs font-mono text-green-400 hover:bg-green-500/10 border border-green-500/20 hover:border-green-500/40 transition-colors"
+                type="button"
+                title="Resume task"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg>
+                <span>Resume</span>
+              </button>
+            </div>
           </div>
 
-          <div class="transcript-wrap flex-1 min-h-0 overflow-hidden flex flex-col bg-[#120F0E]">
+          <div class="transcript-wrap flex-1 min-h-0 overflow-hidden flex flex-col bg-[#151110]">
             <div
               id="terminalPanel"
-              class="terminal-box relative min-h-0 flex flex-col bg-[#120F0E] overflow-hidden flex-1"
+              class="terminal-box relative min-h-0 flex flex-col bg-[#151110] overflow-hidden flex-1"
             >
-              <div id="terminal" class="w-full flex-1 px-2 py-1.5"></div>
+              <div id="terminal" class="w-full h-full flex-1 overflow-hidden p-2"></div>
               <div
                 id="terminalOverlay"
-                class="terminal-banner hidden absolute top-0 left-0 right-0 h-7 flex items-center justify-center gap-2 text-text-secondary text-xs font-mono bg-[#1A1514] border-b border-border-subtle z-[2]"
+                class="terminal-banner hidden absolute top-0 left-0 right-0 h-7 flex items-center justify-center gap-2 text-text-secondary text-xs font-mono bg-[#1a1716] border-b border-border-subtle z-[2]"
               >
                 <span id="terminalOverlayText"></span>
               </div>
@@ -217,7 +237,7 @@
         </main>
 
         <aside
-          class="panel right-col bg-sidebar-bg border border-border-subtle rounded-md min-h-0 min-w-0 grid overflow-hidden w-[360px] min-w-[300px] max-w-[520px] resize-x grid-rows-[auto_auto_auto_minmax(0,1fr)]"
+          class="panel right-col bg-sidebar-bg border border-border-subtle rounded-md min-h-0 min-w-0 grid overflow-hidden w-[300px] min-w-[240px] max-w-[460px] resize-x grid-rows-[auto_auto_auto_minmax(0,1fr)]"
         >
           <div
             class="head right-head flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border-subtle bg-toolbar-bg"
@@ -592,6 +612,7 @@
 
     <script src="/static/vendor/xterm/xterm.js"></script>
     <script src="/static/vendor/xterm/addon-fit.js"></script>
+    <script src="/static/js/terminal_formatter.js"></script>
     <script src="/static/js/app.js"></script>
   </body>
 </html>
