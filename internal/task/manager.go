@@ -292,6 +292,11 @@ func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) e
 	}
 
 	command := t.Command
+	promptSeed := strings.TrimSpace(t.Prompt)
+	if inlineCommand, ok := appendPromptAsArgument(command, promptSeed); ok {
+		command = inlineCommand
+		promptSeed = ""
+	}
 	worktreePath := t.WorktreePath
 	logFile := t.LogFile
 	preCommands := []string{}
@@ -327,7 +332,6 @@ func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) e
 	t.StartedAt = &now
 	t.FinishedAt = nil
 	t.UpdatedAt = now
-	promptSeed := strings.TrimSpace(t.Prompt)
 	err = m.persistLocked()
 	m.mu.Unlock()
 	if err != nil {
@@ -335,9 +339,68 @@ func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) e
 	}
 
 	if promptSeed != "" {
-		_ = m.process.WriteInput(id, promptSeed+"\n")
+		go m.deliverPromptWhenReady(id, promptSeed)
 	}
 	return nil
+}
+
+func appendPromptAsArgument(command, prompt string) (string, bool) {
+	baseCommand := strings.TrimSpace(command)
+	basePrompt := strings.TrimSpace(prompt)
+	if baseCommand == "" || basePrompt == "" {
+		return "", false
+	}
+
+	parts := strings.Fields(baseCommand)
+	if len(parts) == 0 {
+		return "", false
+	}
+
+	binary := strings.ToLower(filepath.Base(parts[0]))
+	switch binary {
+	case "codex", "claude", "gemini":
+		// These CLIs support an initial prompt argument; passing it inline avoids
+		// PTY timing races at startup.
+		return baseCommand + " " + shellQuoteArg(basePrompt), true
+	default:
+		return "", false
+	}
+}
+
+func shellQuoteArg(value string) string {
+	// Single-quote shell escaping: abc'def -> 'abc'"'"'def'
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func (m *Manager) deliverPromptWhenReady(taskID, prompt string) {
+	seed := strings.TrimSpace(prompt)
+	if seed == "" {
+		return
+	}
+
+	events, cancel := m.process.Subscribe(taskID)
+	defer cancel()
+
+	timeout := time.NewTimer(12 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case event := <-events:
+			if event.Type == process.EventLog {
+				if m.process.IsRunning(taskID) {
+					_ = m.process.WriteInput(taskID, seed+"\n")
+				}
+				return
+			}
+		case <-timeout.C:
+			// Fallback in case startup produced no logs yet.
+			if m.process.IsRunning(taskID) {
+				_ = m.process.WriteInput(taskID, seed+"\n")
+			}
+			return
+		}
+	}
 }
 
 func (m *Manager) Stop(id string, force bool) (domain.Task, error) {

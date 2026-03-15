@@ -1,6 +1,6 @@
     const AGENT_COMMANDS = {
-      claude: "claude --dangerously-skip-permissions",
-      codex: "codex --model gpt-5 --sandbox danger-full-access --ask-for-approval never",
+      claude: "claude --dangerously-skip-permissions --permission-mode bypassPermissions",
+      codex: "codex --model gpt-5 --sandbox danger-full-access --ask-for-approval never -c approval_policy=never -c sandbox_mode=danger-full-access",
       copilot: "copilot --allow-all-tools",
       opencode: "opencode --dangerously-skip-permissions",
       gemini: "gemini --yolo",
@@ -36,6 +36,8 @@
     let currentGitStatus = { staged: [], unstaged: [] };
     let currentGitCommits = [];
     let currentGitCommitsTotal = 0;
+    let gitStatusRefreshSeq = 0;
+    let lastGitRenderSignature = "";
     let selectedPatchFile = "";
     let centerViewMode = "terminal";
     let changesViewMode = "grouped";
@@ -2032,33 +2034,92 @@
     }
 
     async function refreshGitStatus() {
-      if (!activeTabId) {
+      const taskId = String(activeTabId || "").trim();
+      const refreshSeq = ++gitStatusRefreshSeq;
+      if (!taskId) {
         currentGitStatus = { staged: [], unstaged: [] };
         currentGitCommits = [];
         currentGitCommitsTotal = 0;
         renderGitStatus();
         return;
       }
-      try {
-        const data = await api(`/api/tasks/${activeTabId}/git/status`);
+
+      const [statusResult, commitsResult] = await Promise.allSettled([
+        api(`/api/tasks/${taskId}/git/status`),
+        api(`/api/tasks/${taskId}/git/commits`),
+      ]);
+      if (refreshSeq !== gitStatusRefreshSeq) {
+        return;
+      }
+      if (String(activeTabId || "").trim() !== taskId) {
+        return;
+      }
+
+      if (statusResult.status === "fulfilled") {
+        const data = statusResult.value || {};
         currentGitStatus = {
           staged: data.staged || [],
           unstaged: data.unstaged || [],
         };
-      } catch (error) {
+      } else {
         currentGitStatus = { staged: [], unstaged: [] };
-        console.error(error);
+        console.error(statusResult.reason);
       }
-      try {
-        const data = await api(`/api/tasks/${activeTabId}/git/commits`);
+
+      if (commitsResult.status === "fulfilled") {
+        const data = commitsResult.value || {};
         currentGitCommits = Array.isArray(data.commits) ? data.commits : [];
         currentGitCommitsTotal = Number(data.commits_total || currentGitCommits.length || 0);
-      } catch (error) {
+      } else {
         currentGitCommits = [];
         currentGitCommitsTotal = 0;
-        console.error(error);
+        console.error(commitsResult.reason);
       }
       renderGitStatus();
+    }
+
+    function serializeGitChanges(list) {
+      return (Array.isArray(list) ? list : [])
+        .map((item) => {
+          const path = String(item?.path || "");
+          const status = String(item?.status || "");
+          const add = Number(item?.added || 0);
+          const del = Number(item?.deleted || 0);
+          return `${path}|${status}|${add}|${del}`;
+        })
+        .join(";");
+    }
+
+    function serializeGitCommits(list) {
+      return (Array.isArray(list) ? list : [])
+        .map((commit) => {
+          const hash = String(commit?.hash || "");
+          const message = String(commit?.message || "");
+          const files = (Array.isArray(commit?.files) ? commit.files : [])
+            .map((file) => {
+              const path = String(file?.path || "");
+              const add = Number(file?.added || 0);
+              const del = Number(file?.deleted || 0);
+              return `${path}|${add}|${del}`;
+            })
+            .join(",");
+          return `${hash}|${message}|${files}`;
+        })
+        .join(";");
+    }
+
+    function gitRenderSignature(taskLabel, staged, unstaged) {
+      const commitsTotal = Number(currentGitCommitsTotal || currentGitCommits.length || 0);
+      return [
+        String(activeTabId || ""),
+        String(taskLabel || ""),
+        String(changesViewMode || ""),
+        String(selectedPatchFile || ""),
+        String(commitsTotal),
+        serializeGitChanges(staged),
+        serializeGitChanges(unstaged),
+        serializeGitCommits(currentGitCommits),
+      ].join("::");
     }
 
     function SidebarSectionHeader(title, count) {
@@ -2500,12 +2561,18 @@
 
     function renderGitStatus() {
       const task = getTask(activeTabId);
-      if (gitTaskLabelEl) {
-        gitTaskLabelEl.textContent = task ? task.name : "No task";
-      }
-
+      const taskLabel = task ? task.name : "No task";
       const staged = currentGitStatus.staged || [];
       const unstaged = currentGitStatus.unstaged || [];
+      const signature = gitRenderSignature(taskLabel, staged, unstaged);
+      if (signature === lastGitRenderSignature) {
+        return;
+      }
+      lastGitRenderSignature = signature;
+
+      if (gitTaskLabelEl) {
+        gitTaskLabelEl.textContent = taskLabel;
+      }
 
       if (stagedCountChipEl) {
         stagedCountChipEl.textContent = SidebarSectionHeader("Staged", staged.length);
