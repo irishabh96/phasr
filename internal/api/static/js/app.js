@@ -1,14 +1,15 @@
     const AGENT_COMMANDS = {
-      claude: "claude",
-      codex: "codex --model gpt-5",
-      copilot: "copilot",
-      opencode: "opencode",
-      gemini: "gemini",
+      claude: "claude --dangerously-skip-permissions",
+      codex: "codex --model gpt-5 --sandbox danger-full-access --ask-for-approval never",
+      copilot: "copilot --allow-all-tools",
+      opencode: "opencode --dangerously-skip-permissions",
+      gemini: "gemini --yolo",
     };
 
     let tasksCache = [];
     let workspaces = [];
     let activeWorkspace = "";
+    let activeTaskGroupId = "";
     let openTabs = [];
     let activeTabId = "";
     let activeStream = null;
@@ -138,6 +139,7 @@
     let newTaskModalPromptTouched = false;
     let newTaskModalSubmitAttempted = false;
     let newTaskModalCreating = false;
+    let newTaskModalRootTaskId = "";
     const taskContextRepoMetaCache = new Map();
     let taskContextBranchLookupSeq = 0;
 
@@ -483,6 +485,27 @@
       return workspaces.find((workspace) => workspaceId(workspace).toLowerCase() === key) || null;
     }
 
+    function workspaceIdByName(name) {
+      const key = String(name || "").trim().toLowerCase();
+      if (!key) return "";
+      const workspace = workspaces.find((item) => String(item?.name || "").trim().toLowerCase() === key);
+      return workspaceId(workspace);
+    }
+
+    function taskRootId(task) {
+      const rootTaskID = String(task?.root_task_id || "").trim();
+      const taskID = String(task?.id || "").trim();
+      return rootTaskID || taskID;
+    }
+
+    function tabsForTaskGroup(rootTaskID) {
+      const key = String(rootTaskID || "").trim();
+      if (!key) return [];
+      return tasksCache
+        .filter((task) => taskRootId(task) === key)
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    }
+
     function activeWorkspaceRepoPath(workspaceName = activeWorkspace) {
       const workspace = getWorkspace(workspaceName);
       return workspace?.repo_path || "";
@@ -794,7 +817,7 @@
       updateNewTaskModalValidityUI();
     }
 
-    function openNewTaskModal(preferredWorkspace = activeWorkspace) {
+    function openNewTaskModal({ preferredWorkspace = activeWorkspace, rootTaskID = "" } = {}) {
       if (!newTaskModalBackdropEl || !newTaskModalPromptEl || !newTaskModalAgentEl) return;
       if (!workspaces.length) {
         openWorkspaceModal();
@@ -804,6 +827,7 @@
       const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : "codex";
       newTaskModalAgentEl.value = selectedAgent;
       populateNewTaskModalWorkspaceOptions(preferredWorkspace);
+      newTaskModalRootTaskId = String(rootTaskID || "").trim();
       resetNewTaskModalState();
       newTaskModalBackdropEl.classList.remove("hidden");
       setTimeout(() => {
@@ -844,9 +868,13 @@
 
       setNewTaskModalCreateLoading(true);
       try {
+        const rootTask = getTask(newTaskModalRootTaskId);
+        const rootWorkspaceID = rootTask ? workspaceIdByName(rootTask.workspace) : "";
+        const rootTaskID = rootWorkspaceID && rootWorkspaceID === state.workspace ? newTaskModalRootTaskId : "";
         await createQuickTaskForAgent(state.agent, {
           prompt: state.prompt,
           workspace: state.workspace,
+          rootTaskID,
           keepPromptInput: true,
         });
         closeNewTaskModal();
@@ -881,6 +909,24 @@
       return parts.length ? parts[parts.length - 1] : "";
     }
 
+    function normalizeRepoPathKey(path) {
+      return String(path || "")
+        .trim()
+        .replaceAll("\\", "/")
+        .replace(/\/+$/, "")
+        .toLowerCase();
+    }
+
+    function findExistingWorkspace(name, repoPath) {
+      const nameKey = String(name || "").trim().toLowerCase();
+      const repoKey = normalizeRepoPathKey(repoPath);
+      return workspaces.find((workspace) => {
+        const wsName = String(workspace?.name || "").trim().toLowerCase();
+        const wsRepo = normalizeRepoPathKey(workspace?.repo_path || "");
+        return (nameKey && wsName === nameKey) || (repoKey && wsRepo === repoKey);
+      }) || null;
+    }
+
     function syncWorkspaceNameWithRepoPath(repoPath) {
       const suggested = inferWorkspaceNameFromRepoPath(repoPath);
       const currentName = String(workspaceModalNameEl.value || "").trim();
@@ -905,6 +951,43 @@
       return tasksCache
         .filter((task) => String(task.workspace || "").trim().toLowerCase() === workspaceName.toLowerCase())
         .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    }
+
+    function openFirstTaskForWorkspace(workspaceID) {
+      const tasks = tasksForWorkspace(workspaceID);
+      if (!tasks.length) return;
+      const firstTask = tasks[0];
+      openTaskGroup(taskRootId(firstTask), firstTask.id);
+    }
+
+    function taskGroupsForWorkspace(workspaceID) {
+      const grouped = new Map();
+      for (const task of tasksForWorkspace(workspaceID)) {
+        const rootTaskID = taskRootId(task);
+        if (!rootTaskID) continue;
+        const existing = grouped.get(rootTaskID) || {
+          rootTaskID,
+          tasks: [],
+          latestUpdatedAt: "",
+          latestUpdatedAtMs: 0,
+        };
+        existing.tasks.push(task);
+        const updatedAtMs = new Date(task.updated_at).getTime() || 0;
+        if (updatedAtMs >= existing.latestUpdatedAtMs) {
+          existing.latestUpdatedAtMs = updatedAtMs;
+          existing.latestUpdatedAt = task.updated_at;
+        }
+        grouped.set(rootTaskID, existing);
+      }
+      return [...grouped.values()]
+        .map((group) => {
+          const rootTask = group.tasks.find((task) => task.id === group.rootTaskID) || group.tasks[0] || null;
+          return {
+            ...group,
+            rootTask,
+          };
+        })
+        .sort((a, b) => b.latestUpdatedAtMs - a.latestUpdatedAtMs);
     }
 
     function ensureTerminal() {
@@ -996,8 +1079,8 @@
       return `
         <summary class="workspace-summary list-none cursor-pointer h-[56px] flex items-center gap-3 px-[14px] bg-[#1A1615] hover:bg-[#1E1B19]" data-workspace-summary="${escapeHtml(id)}">
           <span class="w-[30px] h-[30px] flex-none rounded-[6px] bg-[#2A2624] flex items-center justify-center text-[13px] font-semibold text-[rgba(255,255,255,0.72)]">${workspaceInitial(name)}</span>
-          <span class="text-[15px] font-semibold text-[rgba(255,255,255,0.88)] truncate">${escapeHtml(name)}</span>
-          <span class="text-[14px] font-medium text-[rgba(255,255,255,0.32)]">(${taskCount})</span>
+          <span class="text-[14px] font-semibold text-[rgba(255,255,255,0.88)] truncate">${escapeHtml(name)}</span>
+          <span class="text-[12px] font-medium text-[rgba(255,255,255,0.32)]">(${taskCount})</span>
           <div class="ml-auto flex items-center gap-1.5 flex-none">
             <button
               class="workspace-add-tab-btn inline-flex items-center justify-center border border-border-subtle rounded-sm min-h-[27px] w-[27px] p-0 bg-tab-bg text-amber cursor-pointer text-sm flex-none"
@@ -1013,7 +1096,6 @@
               aria-label="Delete workspace ${escapeHtml(name)}"
               title="Delete workspace ${escapeHtml(name)}"
             >&times;</button>
-            <span class="ws-chevron w-[22px] h-[22px] flex items-center justify-center text-[rgba(255,255,255,0.46)] text-[14px] ${isOpen ? "rotate-90" : ""}">&#9656;</span>
           </div>
         </summary>`;
     }
@@ -1045,8 +1127,8 @@
       return `
         <div class="sidebar-row flex items-center gap-3 h-[56px] px-[14px] ${leftAccent} cursor-pointer hover:bg-[rgba(255,255,255,0.03)] ${bg}" ${attr}>
           <div class="min-w-0 flex-1 flex flex-col justify-center gap-[2px]">
-            <span class="text-[14px] font-medium ${titleColor} truncate leading-tight">${escapeHtml(title)}</span>
-            ${subtitle ? `<span class="text-[12px] text-[rgba(255,255,255,0.42)] font-mono truncate leading-tight">${escapeHtml(subtitle)}</span>` : ""}
+            <span class="text-[13px] font-medium ${titleColor} truncate leading-tight">${escapeHtml(title)}</span>
+            ${subtitle ? `<span class="text-[11px] text-[rgba(255,255,255,0.42)] font-mono truncate leading-tight">${escapeHtml(subtitle)}</span>` : ""}
           </div>
           ${dot}
         </div>`;
@@ -1057,40 +1139,57 @@
         workspaceListEl.innerHTML = `<div class="px-[14px] py-5 text-[13px] text-[rgba(255,255,255,0.32)]">No workspaces</div>`;
         return;
       }
-      workspaceListEl.innerHTML = workspaces.map((workspace, idx) => {
+      const workspaceRows = workspaces.map((workspace, idx) => {
         const id = workspaceId(workspace);
         const name = String(workspace.name || "").trim();
-        if (!id || !name) return "";
+        if (!id || !name) {
+          return { html: "", latestUpdatedAtMs: 0, originalIndex: idx };
+        }
         const isActive = id === activeWorkspace;
         const activeClass = isActive ? "active" : "";
         const isOpen = expandedWorkspaces.has(id);
-        const tasks = tasksForWorkspace(id);
+        const taskGroups = taskGroupsForWorkspace(id);
+        const workspaceUpdatedAtMs = new Date(workspace.updated_at || workspace.created_at || 0).getTime() || 0;
+        const latestUpdatedAtMs = taskGroups[0]?.latestUpdatedAtMs || workspaceUpdatedAtMs;
 
-        const taskRows = tasks.map((task) => {
-          const isOpenTab = task.id === activeTabId;
+        const taskRows = taskGroups.map((group) => {
+          const task = group.rootTask;
+          if (!task) return "";
+          const isSelectedTask = group.rootTaskID === activeTaskGroupId;
           return SidebarRow({
             id: task.id,
             title: task.name || "untitled",
-            subtitle: task.id ? task.id.slice(0, 8) : "",
-            isSelected: isOpenTab,
-            dataAttr: `data-open-tab="${task.id}"`,
+            subtitle: String(task.branch || "").trim() || "-",
+            isSelected: isSelectedTask,
+            dataAttr: `data-open-task="${group.rootTaskID}"`,
             status: task.status,
-            updatedAt: task.updated_at,
+            updatedAt: group.latestUpdatedAt,
           });
         }).join("");
 
         const divider = idx > 0 ? `<div class="h-px bg-[rgba(255,255,255,0.06)]"></div>` : "";
 
-        return `
+        const html = `
           ${divider}
           <details class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(id)}" ${isOpen ? "open" : ""}>
-            ${WorkspaceHeader(id, name, tasks.length, isOpen)}
+            ${WorkspaceHeader(id, name, taskGroups.length, isOpen)}
             <div class="workspace-children bg-[#141110]">
               ${taskRows || `<div class="px-[58px] py-3 text-[12px] text-[rgba(255,255,255,0.34)]">No tasks</div>`}
             </div>
           </details>
         `;
-      }).join("");
+        return { html, latestUpdatedAtMs, originalIndex: idx };
+      });
+
+      workspaceListEl.innerHTML = workspaceRows
+        .sort((a, b) => {
+          if (b.latestUpdatedAtMs !== a.latestUpdatedAtMs) {
+            return b.latestUpdatedAtMs - a.latestUpdatedAtMs;
+          }
+          return a.originalIndex - b.originalIndex;
+        })
+        .map((row) => row.html)
+        .join("");
     }
 
     function renderWorkspaceTasks() {
@@ -1176,6 +1275,7 @@
         return;
       }
       if (!openTabs.length) {
+        activeTaskGroupId = "";
         detachStream();
         activeTabId = "";
         gitTaskLabelEl.textContent = "No task";
@@ -1199,11 +1299,44 @@
       selectTab(openTabs[openTabs.length - 1]).catch((error) => alert(error.message || String(error)));
     }
 
-    function openTab(taskId) {
-      if (!openTabs.includes(taskId)) {
-        openTabs.push(taskId);
+    function openTaskGroup(rootTaskID, preferredTabID = "") {
+      const groupID = String(rootTaskID || "").trim();
+      if (!groupID) return;
+
+      activeTaskGroupId = groupID;
+      const tabs = tabsForTaskGroup(groupID);
+      openTabs = tabs.map((task) => task.id);
+
+      if (!openTabs.length) {
+        activeTabId = "";
+        renderWorkspaces();
+        renderTabs();
+        updateTaskHeader(null);
+        updateTaskContextBar(null);
+        return;
       }
-      selectTab(taskId).catch((error) => alert(error.message || String(error)));
+
+      const workspaceMatch = tabs[0] ? workspaceIdByName(tabs[0].workspace) : "";
+      if (workspaceMatch) {
+        activeWorkspace = workspaceMatch;
+      }
+      if (activeWorkspace) {
+        expandedWorkspaces.add(activeWorkspace);
+      }
+
+      renderWorkspaces();
+      renderWorkspaceTasks();
+
+      const target = openTabs.includes(preferredTabID)
+        ? preferredTabID
+        : (openTabs.includes(activeTabId) ? activeTabId : openTabs[0]);
+      selectTab(target).catch((error) => alert(error.message || String(error)));
+    }
+
+    function openTab(taskId) {
+      const task = getTask(taskId);
+      if (!task) return;
+      openTaskGroup(taskRootId(task), task.id);
     }
 
     function detachStream() {
@@ -1218,6 +1351,7 @@
       const task = getTask(taskId);
       if (!task) return;
 
+      activeTaskGroupId = taskRootId(task);
       activeTabId = taskId;
       renderTabs();
 
@@ -1363,11 +1497,38 @@
         }
       }
 
-      openTabs = openTabs.filter((id) => !!getTask(id));
       if (!keepTab) {
         activeTabId = "";
       } else if (activeTabId && !getTask(activeTabId)) {
-        activeTabId = openTabs[0] || "";
+        activeTabId = "";
+      }
+
+      if (activeTabId) {
+        const activeTask = getTask(activeTabId);
+        if (activeTask) {
+          activeTaskGroupId = taskRootId(activeTask);
+        }
+      }
+
+      if (activeTaskGroupId && tabsForTaskGroup(activeTaskGroupId).length === 0) {
+        activeTaskGroupId = "";
+      }
+
+      const groups = activeWorkspace ? taskGroupsForWorkspace(activeWorkspace) : [];
+      if (activeTaskGroupId && !groups.some((group) => group.rootTaskID === activeTaskGroupId)) {
+        activeTaskGroupId = "";
+      }
+
+      if (activeTaskGroupId) {
+        openTabs = tabsForTaskGroup(activeTaskGroupId).map((task) => task.id);
+      } else {
+        openTabs = [];
+      }
+
+      if (!openTabs.length) {
+        activeTabId = "";
+      } else if (!openTabs.includes(activeTabId)) {
+        activeTabId = openTabs[0];
       }
 
       renderWorkspaces();
@@ -1751,7 +1912,15 @@
         const command = AGENT_COMMANDS[selectedAgent] || commandInputEl.value.trim();
         commandInputEl.value = command;
 
-        const targetWorkspaceID = String(options.workspace || activeWorkspace || "").trim();
+        const hasRootTaskOverride = Object.prototype.hasOwnProperty.call(options, "rootTaskID");
+        const defaultRootTaskID = String(
+          activeTaskGroupId || taskRootId(getTask(activeTabId)) || ""
+        ).trim();
+        const rootTaskID = String(hasRootTaskOverride ? options.rootTaskID : defaultRootTaskID).trim();
+        const rootTask = rootTaskID ? getTask(rootTaskID) : null;
+        const useExistingWorktree = Boolean(rootTaskID && rootTask);
+        const fallbackWorkspaceID = rootTask ? workspaceIdByName(rootTask.workspace) : "";
+        const targetWorkspaceID = String(options.workspace || fallbackWorkspaceID || activeWorkspace || "").trim();
         if (!targetWorkspaceID) {
           openWorkspaceModal();
           return;
@@ -1764,9 +1933,12 @@
         }
         const workspaceRepoPath = String(targetWorkspace?.repo_path || "").trim();
         const manualRepoPath = String(repoInputEl.value || "").trim();
+        const rootTaskPath = String(taskCodePath(rootTask) || "").trim();
         const activeTaskPath = String(taskCodePath(getTask(activeTabId)) || "").trim();
-        const resolvedRepoPath = workspaceRepoPath || manualRepoPath || activeTaskPath;
-        if (!resolvedRepoPath) {
+        const resolvedRepoPath = useExistingWorktree
+          ? (rootTaskPath || workspaceRepoPath || manualRepoPath || activeTaskPath)
+          : (workspaceRepoPath || manualRepoPath || activeTaskPath);
+        if (!resolvedRepoPath && !rootTaskID) {
           throw new Error("Repo path is required. Select a workspace with a repo, or set Repo Path first.");
         }
 
@@ -1778,7 +1950,8 @@
           command,
           prompt: promptSnapshot,
           preset: presetSelectEl.value,
-          direct_repo: false,
+          direct_repo: useExistingWorktree,
+          root_task_id: rootTaskID,
         };
 
         const result = await api("/api/tasks", {
@@ -1801,7 +1974,12 @@
     }
 
     async function createTaskFromNewTab() {
-      openNewTaskModal();
+      const activeTask = getTask(activeTabId);
+      const rootTaskID = activeTaskGroupId || taskRootId(activeTask);
+      openNewTaskModal({
+        preferredWorkspace: activeWorkspace,
+        rootTaskID,
+      });
     }
 
     async function runTaskAction(action, taskId) {
@@ -1829,10 +2007,6 @@
     async function deleteWorkspace(workspaceID) {
       const target = String(workspaceID || "").trim();
       if (!target) return;
-      const workspace = getWorkspace(target);
-      const label = String(workspace?.name || target).trim();
-      const confirmed = window.confirm(`Delete workspace "${label}"?`);
-      if (!confirmed) return;
       await api(`/api/workspaces/${encodeURIComponent(target)}`, { method: "DELETE" });
       if (activeWorkspace === target) {
         activeWorkspace = "";
@@ -2011,13 +2185,33 @@
         }
 
         setWorkspaceModalError("");
+        const existingWorkspace = findExistingWorkspace(cleanName, repoPath);
+        if (existingWorkspace) {
+          activeWorkspace = workspaceId(existingWorkspace) || activeWorkspace;
+          if (activeWorkspace) {
+            expandedWorkspaces.add(activeWorkspace);
+          }
+          closeWorkspaceModal();
+          await loadWorkspaces();
+          await loadTasks({ keepTab: true });
+          openFirstTaskForWorkspace(activeWorkspace);
+          return;
+        }
         setWorkspaceModalCreateLoading(true);
         try {
+          const existingWorkspaceIDs = new Set(workspaces.map((workspace) => workspaceId(workspace).toLowerCase()));
           const data = await api("/api/workspaces", {
             method: "POST",
             body: JSON.stringify({ name: cleanName, repo_path: repoPath, init_git: false }),
           });
-          const createdTask = await autoCreateTaskForWorkspace(data.workspace);
+          const returnedWorkspaceID = workspaceId(data.workspace);
+          const workspaceAlreadyExisted = Boolean(
+            returnedWorkspaceID && existingWorkspaceIDs.has(returnedWorkspaceID.toLowerCase())
+          );
+          let createdTask = null;
+          if (!workspaceAlreadyExisted) {
+            createdTask = await autoCreateTaskForWorkspace(data.workspace);
+          }
 
           workspaces = data.workspaces || workspaces;
           activeWorkspace = workspaceId(data.workspace) || activeWorkspace;
@@ -2027,6 +2221,8 @@
           await loadTasks({ keepTab: true });
           if (createdTask?.id) {
             openTab(createdTask.id);
+          } else {
+            openFirstTaskForWorkspace(activeWorkspace);
           }
         } catch (error) {
           const message = error.message || String(error);
@@ -2201,22 +2397,22 @@
       });
 
       workspaceListEl.addEventListener("click", async (event) => {
-        const openBtn = event.target.closest("[data-open-tab]");
+        const openBtn = closestFromEvent(event, "[data-open-task]");
         if (openBtn) {
-          openTab(openBtn.dataset.openTab);
+          openTaskGroup(openBtn.dataset.openTask);
           return;
         }
 
-        const newWorkspaceTabBtn = event.target.closest("button[data-new-workspace-tab]");
+        const newWorkspaceTabBtn = closestFromEvent(event, "button[data-new-workspace-tab]");
         if (newWorkspaceTabBtn) {
           event.preventDefault();
           event.stopPropagation();
-          const workspaceName = String(newWorkspaceTabBtn.dataset.newWorkspaceTab || "").trim();
-          openNewTaskModal(workspaceName || activeWorkspace);
+          const workspaceID = String(newWorkspaceTabBtn.dataset.newWorkspaceTab || "").trim();
+          openNewTaskModal({ preferredWorkspace: workspaceID || activeWorkspace, rootTaskID: "" });
           return;
         }
 
-        const deleteWorkspaceBtn = event.target.closest("button[data-delete-workspace]");
+        const deleteWorkspaceBtn = closestFromEvent(event, "button[data-delete-workspace]");
         if (deleteWorkspaceBtn) {
           event.preventDefault();
           event.stopPropagation();
@@ -2230,25 +2426,25 @@
           return;
         }
 
-        const editorBtn = event.target.closest("button[data-open-editor]");
+        const editorBtn = closestFromEvent(event, "button[data-open-editor]");
         if (editorBtn) {
           await runTaskAction("open-editor", editorBtn.dataset.openEditor);
           return;
         }
 
-        const stopBtn = event.target.closest("button[data-stop]");
+        const stopBtn = closestFromEvent(event, "button[data-stop]");
         if (stopBtn) {
           await runTaskAction("stop", stopBtn.dataset.stop);
           return;
         }
 
-        const resumeBtn = event.target.closest("button[data-resume]");
+        const resumeBtn = closestFromEvent(event, "button[data-resume]");
         if (resumeBtn) {
           await runTaskAction("resume", resumeBtn.dataset.resume);
           return;
         }
 
-        const summary = event.target.closest("summary[data-workspace-summary]");
+        const summary = closestFromEvent(event, "summary[data-workspace-summary]");
         if (!summary) return;
         event.preventDefault();
         const workspaceID = String(summary.dataset.workspaceSummary || "").trim();

@@ -105,13 +105,18 @@ func normalizeWorkspaces(workspaces []domain.Workspace) []domain.Workspace {
 		seenByName[nameKey] = struct{}{}
 		seenByID[idKey] = struct{}{}
 		out = append(out, domain.Workspace{
-			ID:       id,
-			Name:     name,
-			RepoPath: strings.TrimSpace(workspace.RepoPath),
+			ID:        id,
+			Name:      name,
+			RepoPath:  strings.TrimSpace(workspace.RepoPath),
+			CreatedAt: workspace.CreatedAt,
+			UpdatedAt: workspace.UpdatedAt,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out
 }

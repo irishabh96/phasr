@@ -44,6 +44,7 @@ type CreateRequest struct {
 	Command    string   `json:"command"`
 	Preset     string   `json:"preset"`
 	DirectRepo bool     `json:"direct_repo"`
+	RootTaskID string   `json:"root_task_id"`
 }
 
 type Manager struct {
@@ -99,6 +100,10 @@ func NewManager(opts Options) (*Manager, error) {
 			t.Workspace = defaultWorkspace
 			mutated = true
 		}
+		if strings.TrimSpace(t.RootTaskID) == "" {
+			t.RootTaskID = t.ID
+			mutated = true
+		}
 		if m.ensureWorkspaceLocked(domain.Workspace{Name: t.Workspace}) {
 			mutated = true
 		}
@@ -131,11 +136,39 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return domain.Task{}, errors.New("command is required")
 	}
+
+	rootTaskID := strings.TrimSpace(req.RootTaskID)
+	var rootTask *domain.Task
+	if rootTaskID != "" {
+		m.mu.RLock()
+		root, ok := m.tasks[rootTaskID]
+		if ok {
+			copy := tCopy(*root)
+			rootTask = &copy
+		}
+		m.mu.RUnlock()
+		if rootTask == nil {
+			return domain.Task{}, fmt.Errorf("root task %q not found", rootTaskID)
+		}
+	}
+
 	workspaceName := normalizedWorkspace(req.Workspace)
+	if workspaceName == "" && rootTask != nil {
+		workspaceName = normalizedWorkspace(rootTask.Workspace)
+	}
 	if workspaceName == "" {
 		return domain.Task{}, errors.New("workspace is required")
 	}
 	repoInput := strings.TrimSpace(req.RepoPath)
+	directRepo := req.DirectRepo
+	if rootTask != nil {
+		// Tabs under an existing task must reuse the same worktree/repo.
+		directRepo = true
+		repoInput = strings.TrimSpace(rootTask.WorktreePath)
+		if repoInput == "" {
+			repoInput = strings.TrimSpace(rootTask.RepoPath)
+		}
+	}
 	if repoInput == "" {
 		m.mu.RLock()
 		workspace, ok := m.workspaces[strings.ToLower(workspaceName)]
@@ -164,7 +197,7 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 		worktreePath string
 	)
 
-	if req.DirectRepo {
+	if directRepo {
 		branch = currentRepoBranch(repoPath)
 		worktreePath = repoPath
 	} else {
@@ -176,12 +209,16 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 
 	now := time.Now().UTC()
 	workspace := workspaceName
+	if rootTaskID == "" {
+		rootTaskID = taskID
+	}
 	t := &domain.Task{
 		ID:             taskID,
+		RootTaskID:     rootTaskID,
 		Name:           taskName,
 		Workspace:      workspace,
 		Tags:           normalizedTags(req.Tags),
-		DirectRepo:     req.DirectRepo,
+		DirectRepo:     directRepo,
 		RepoPath:       repoPath,
 		Branch:         branch,
 		WorktreePath:   worktreePath,
@@ -417,7 +454,10 @@ func (m *Manager) Workspaces() []domain.Workspace {
 		items = append(items, workspace)
 	}
 	sort.Slice(items, func(i, j int) bool {
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
 	})
 	return items
 }
@@ -462,19 +502,55 @@ func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.W
 		}
 	}
 
-	workspace := domain.Workspace{
-		ID:       newWorkspaceID(workspaceName),
-		Name:     workspaceName,
-		RepoPath: absRepoPath,
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	canonicalRepoPath := strings.ToLower(filepath.Clean(absRepoPath))
+	for key, existing := range m.workspaces {
+		sameName := strings.EqualFold(strings.TrimSpace(existing.Name), workspaceName)
+		sameRepo := strings.TrimSpace(existing.RepoPath) != "" &&
+			strings.EqualFold(filepath.Clean(existing.RepoPath), canonicalRepoPath)
+		if !sameName && !sameRepo {
+			continue
+		}
+
+		mutated := false
+		now := time.Now().UTC()
+		if existing.CreatedAt.IsZero() {
+			existing.CreatedAt = now
+			mutated = true
+		}
+		if existing.UpdatedAt.IsZero() {
+			existing.UpdatedAt = existing.CreatedAt
+			mutated = true
+		}
+		if strings.TrimSpace(existing.RepoPath) == "" {
+			existing.RepoPath = absRepoPath
+			existing.UpdatedAt = now
+			mutated = true
+		}
+		if mutated {
+			m.workspaces[key] = existing
+			if err := m.persistWorkspacesLocked(); err != nil {
+				return domain.Workspace{}, err
+			}
+		}
+		return existing, nil
 	}
 
-	m.mu.Lock()
+	now := time.Now().UTC()
+	workspace := domain.Workspace{
+		ID:        newWorkspaceID(workspaceName),
+		Name:      workspaceName,
+		RepoPath:  absRepoPath,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
 	m.ensureWorkspaceLocked(workspace)
 	if err := m.persistWorkspacesLocked(); err != nil {
-		m.mu.Unlock()
 		return domain.Workspace{}, err
 	}
-	m.mu.Unlock()
 	return workspace, nil
 }
 
@@ -483,11 +559,11 @@ func (m *Manager) DeleteWorkspace(workspaceID string) error {
 	if targetID == "" {
 		return errors.New("workspace id is required")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
+	m.mu.RLock()
 	var target domain.Workspace
 	found := false
+	taskIDs := make([]string, 0)
 	for _, workspace := range m.workspaces {
 		if strings.EqualFold(strings.TrimSpace(workspace.ID), targetID) {
 			target = workspace
@@ -495,20 +571,32 @@ func (m *Manager) DeleteWorkspace(workspaceID string) error {
 			break
 		}
 	}
+	if found {
+		for _, task := range m.tasks {
+			if strings.EqualFold(strings.TrimSpace(task.Workspace), target.Name) {
+				taskIDs = append(taskIDs, task.ID)
+			}
+		}
+	}
+	m.mu.RUnlock()
+
 	if !found {
 		return fmt.Errorf("workspace %q not found", targetID)
 	}
 
-	for _, task := range m.tasks {
-		if strings.EqualFold(strings.TrimSpace(task.Workspace), target.Name) {
-			return errors.New("workspace has tasks; remove tasks from this workspace first")
+	for _, id := range taskIDs {
+		if err := m.Delete(id); err != nil {
+			return fmt.Errorf("delete task %q while deleting workspace: %w", id, err)
 		}
 	}
 
+	m.mu.Lock()
 	delete(m.workspaces, strings.ToLower(target.Name))
 	if err := m.persistWorkspacesLocked(); err != nil {
+		m.mu.Unlock()
 		return err
 	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -697,7 +785,10 @@ func (m *Manager) persistWorkspacesLocked() error {
 		items = append(items, workspace)
 	}
 	sort.Slice(items, func(i, j int) bool {
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
 	})
 	return m.workspaceStore.Save(items)
 }
@@ -727,8 +818,15 @@ func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
 	if workspace.Name == "" {
 		return false
 	}
+	now := time.Now().UTC()
 	workspace.ID = normalizedWorkspaceID(workspace.ID, workspace.Name)
 	workspace.RepoPath = strings.TrimSpace(workspace.RepoPath)
+	if workspace.CreatedAt.IsZero() {
+		workspace.CreatedAt = now
+	}
+	if workspace.UpdatedAt.IsZero() {
+		workspace.UpdatedAt = workspace.CreatedAt
+	}
 	key := strings.ToLower(workspace.Name)
 
 	existing, ok := m.workspaces[key]
@@ -741,8 +839,17 @@ func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
 		existing.ID = workspace.ID
 		mutated = true
 	}
+	if existing.CreatedAt.IsZero() {
+		existing.CreatedAt = workspace.CreatedAt
+		mutated = true
+	}
+	if existing.UpdatedAt.IsZero() {
+		existing.UpdatedAt = existing.CreatedAt
+		mutated = true
+	}
 	if existing.RepoPath == "" && workspace.RepoPath != "" {
 		existing.RepoPath = workspace.RepoPath
+		existing.UpdatedAt = now
 		mutated = true
 	}
 	if mutated {

@@ -294,7 +294,7 @@
               <div class="muted text-text-secondary text-sm">Stage files and commit from this panel.</div>
               <button
                 id="commitBtn"
-                class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
+                class="btn-primary bg-[#2A2321] p-2 border-border-strong text-[#F2EBE4] font-semibold"
                 type="button"
               >
                 Commit
@@ -403,12 +403,7 @@
         <div
           class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
         >
-          <h3
-            id="workspaceModalTitle"
-            class="m-0 text-[15px] font-medium text-text-secondary"
-          >
-            Create Workspace
-          </h3>
+          <h3 id="workspaceModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">Create Workspace</h3>
           <button
             id="workspaceModalCloseBtn"
             class="btn-ghost bg-transparent border-border-default text-text-secondary"
@@ -443,12 +438,19 @@
                 title="Browse local folder"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.1c.4 0 .78.16 1.06.44l1.4 1.4c.28.28.66.44 1.06.44h7.37A1.5 1.5 0 0 1 21 9.78V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V7.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-                  <path d="M3 10h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  <path
+                    d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.1c.4 0 .78.16 1.06.44l1.4 1.4c.28.28.66.44 1.06.44h7.37A1.5 1.5 0 0 1 21 9.78V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V7.5Z"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linejoin="round"
+                  />
+                  <path d="M3 10h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
                 </svg>
               </button>
             </div>
-            <div id="workspaceModalRepoHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite">Select the root folder of your git repository.</div>
+            <div id="workspaceModalRepoHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite">
+              Select the root folder of your git repository.
+            </div>
           </div>
           <div id="workspaceModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
           <div
@@ -514,12 +516,7 @@
         <div
           class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
         >
-          <h3
-            id="newTaskModalTitle"
-            class="m-0 text-[15px] font-medium text-text-secondary"
-          >
-            New Tab Task
-          </h3>
+          <h3 id="newTaskModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">New Tab Task</h3>
           <button
             id="newTaskModalCloseBtn"
             class="btn-ghost bg-transparent border-border-default text-text-secondary"
@@ -552,7 +549,9 @@
             </select>
           </div>
           <div class="workspace-modal-field grid gap-1">
-            <label class="workspace-modal-label" for="newTaskModalWorkspace">Which workspace should this tab use?</label>
+            <label class="workspace-modal-label" for="newTaskModalWorkspace"
+              >Which workspace should this tab use?</label
+            >
             <select
               id="newTaskModalWorkspace"
               class="new-task-modal-select w-full min-h-[42px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"

@@ -29,27 +29,37 @@ func (m *WorktreeManager) Create(repoPath, taskName, taskID string) (string, str
 	if err := m.ensureRepo(repoPath); err != nil {
 		return "", "", err
 	}
+	_, _ = runGit("-C", repoPath, "worktree", "prune")
 
 	slug := sanitize(taskName)
 	if slug == "" {
 		slug = "task"
 	}
 
-	branchName := fmt.Sprintf("staq/%s-%s", slug, shortID(taskID))
+	idToken := compactTaskToken(taskID)
+	branchName := fmt.Sprintf("task/%s", slug)
 	if m.branchExists(repoPath, branchName) {
-		branchName = fmt.Sprintf("%s-%d", branchName, time.Now().Unix())
+		branchName = fmt.Sprintf("%s-%s", branchName, idToken)
+		if m.branchExists(repoPath, branchName) {
+			branchName = fmt.Sprintf("%s-%d", branchName, time.Now().Unix())
+		}
 	}
 
 	if err := os.MkdirAll(m.baseDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("create worktree root: %w", err)
 	}
 
-	worktreePath := filepath.Join(m.baseDir, fmt.Sprintf("%s-%s", shortID(taskID), slug))
+	worktreePath := filepath.Join(m.baseDir, fmt.Sprintf("%s-%s", idToken, slug))
 	if _, err := os.Stat(worktreePath); err == nil {
 		worktreePath = worktreePath + fmt.Sprintf("-%d", time.Now().Unix())
 	}
 
-	if out, err := runGit("-C", repoPath, "worktree", "add", "-b", branchName, worktreePath); err != nil {
+	out, err := runGit("-C", repoPath, "worktree", "add", "-b", branchName, worktreePath)
+	if err != nil && strings.Contains(strings.ToLower(out), "already registered worktree") {
+		_, _ = runGit("-C", repoPath, "worktree", "prune")
+		out, err = runGit("-C", repoPath, "worktree", "add", "-f", "-b", branchName, worktreePath)
+	}
+	if err != nil {
 		return "", "", fmt.Errorf("create worktree: %w (%s)", err, strings.TrimSpace(out))
 	}
 
@@ -101,9 +111,14 @@ func sanitize(value string) string {
 	return value
 }
 
-func shortID(value string) string {
-	if len(value) > 8 {
-		return value[:8]
+func compactTaskToken(value string) string {
+	clean := strings.ToLower(strings.TrimSpace(value))
+	if clean == "" {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
-	return value
+	clean = strings.NewReplacer("-", "", "_", "", "/", "", " ", "").Replace(clean)
+	if len(clean) > 16 {
+		return clean[len(clean)-16:]
+	}
+	return clean
 }
