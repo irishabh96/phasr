@@ -81,7 +81,9 @@
         <main
           class="panel center-col bg-[#120F0E] border border-border-subtle rounded-md min-h-0 min-w-0 flex flex-col overflow-hidden flex-1"
         >
-          <div class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap hide-scrollbar">
+          <div
+            class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap hide-scrollbar"
+          >
             <div id="tabBar" class="tab-bar flex items-center justify-between gap-2.5 min-w-full"></div>
           </div>
 
@@ -193,14 +195,17 @@
               <span
                 id="taskHeaderChip"
                 class="chip inline-flex items-center gap-1 border border-border-default rounded-full bg-[#241E1C] text-text-secondary px-2 h-5 text-2xs whitespace-nowrap font-mono"
-              >live transcript</span>
+                >live transcript</span
+              >
               <button
                 id="taskStopBtn"
                 class="hidden icon-btn ghost-action inline-flex items-center gap-1 px-2 h-6 rounded text-2xs font-mono text-red-400 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-colors"
                 type="button"
                 title="Stop task"
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <rect x="3" y="3" width="10" height="10" rx="1.5" />
+                </svg>
                 <span>Stop</span>
               </button>
               <button
@@ -209,7 +214,9 @@
                 type="button"
                 title="Resume task"
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <polygon points="4,2 14,8 4,14" />
+                </svg>
                 <span>Resume</span>
               </button>
             </div>
@@ -415,15 +422,7 @@
         </div>
         <div class="context-item relative">
           <span class="context-label">Branch</span>
-          <button
-            id="taskContextBranch"
-            class="context-branch-btn"
-            type="button"
-            title=""
-            disabled
-          >
-            -
-          </button>
+          <button id="taskContextBranch" class="context-branch-btn" type="button" title="" disabled>-</button>
           <div
             id="taskContextBranchMenu"
             class="hidden absolute bottom-full right-0 mb-1 min-w-[180px] p-1 rounded-md border border-border-default bg-[#1A1514] shadow-lg z-30"
@@ -633,7 +632,7 @@
         <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
           <button
             id="newTaskModalCancelBtn"
-            class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary"
+            class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
             type="button"
           >
             Cancel
@@ -649,6 +648,52 @@
               aria-hidden="true"
             ></span>
             <span id="newTaskModalCreateLabel">Create Tab</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="newTabTypeModalBackdrop"
+      class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3120] p-3.5"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="newTabTypeModalTitle"
+    >
+      <div
+        class="modal w-[min(460px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+      >
+        <div
+          class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
+        >
+          <h3 id="newTabTypeModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">Open New Tab</h3>
+          <button
+            id="newTabTypeModalCloseBtn"
+            class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+        <div class="modal-body px-3 py-[13px] grid gap-3.5">
+          <div class="new-tab-type-grid">
+            <button id="newTabTypeTerminalBtn" class="new-tab-type-option" type="button">
+              <span class="new-tab-type-title">Terminal</span>
+              <span class="new-tab-type-desc">Open a shell tab in the workspace.</span>
+            </button>
+            <button id="newTabTypeTaskBtn" class="new-tab-type-option" type="button">
+              <span class="new-tab-type-title">Existing Flow</span>
+              <span class="new-tab-type-desc">Use the current New Tab Task form.</span>
+            </button>
+          </div>
+        </div>
+        <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
+          <button
+            id="newTabTypeModalCancelBtn"
+            class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
+            type="button"
+          >
+            Cancel
           </button>
         </div>
       </div>

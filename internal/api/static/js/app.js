@@ -5,6 +5,7 @@
       opencode: "opencode --dangerously-skip-permissions",
       gemini: "gemini --yolo",
     };
+    const TERMINAL_TAB_COMMAND = "zsh -il";
 
     let tasksCache = [];
     let workspaces = [];
@@ -139,6 +140,11 @@
     const newTaskModalCreateBtnEl = document.getElementById("newTaskModalCreateBtn");
     const newTaskModalCreateLabelEl = document.getElementById("newTaskModalCreateLabel");
     const newTaskModalCreateSpinnerEl = document.getElementById("newTaskModalCreateSpinner");
+    const newTabTypeModalBackdropEl = document.getElementById("newTabTypeModalBackdrop");
+    const newTabTypeModalCloseBtnEl = document.getElementById("newTabTypeModalCloseBtn");
+    const newTabTypeModalCancelBtnEl = document.getElementById("newTabTypeModalCancelBtn");
+    const newTabTypeTerminalBtnEl = document.getElementById("newTabTypeTerminalBtn");
+    const newTabTypeTaskBtnEl = document.getElementById("newTabTypeTaskBtn");
 
     let pendingWorkspaceCreate = null;
     let autoWorkspaceNameValue = "";
@@ -158,6 +164,7 @@
     let newTaskModalSubmitAttempted = false;
     let newTaskModalCreating = false;
     let newTaskModalRootTaskId = "";
+    let newTabTypeSelection = { preferredWorkspace: "", rootTaskID: "" };
     const taskContextRepoMetaCache = new Map();
     let taskContextBranchLookupSeq = 0;
 
@@ -750,6 +757,111 @@
 
     function isNewTaskModalOpen() {
       return Boolean(newTaskModalBackdropEl) && !newTaskModalBackdropEl.classList.contains("hidden");
+    }
+
+    function isNewTabTypeModalOpen() {
+      return Boolean(newTabTypeModalBackdropEl) && !newTabTypeModalBackdropEl.classList.contains("hidden");
+    }
+
+    function resolveNewTabContext(options = {}) {
+      const hasRootTaskOverride = Object.prototype.hasOwnProperty.call(options, "rootTaskID");
+      const activeTask = getTask(activeTabId);
+      const defaultRootTaskID = String(activeTaskGroupId || taskRootId(activeTask) || "").trim();
+      const rootTaskID = String(hasRootTaskOverride ? options.rootTaskID : defaultRootTaskID).trim();
+      const rootTask = rootTaskID ? getTask(rootTaskID) : null;
+      const fallbackWorkspaceID = rootTask ? workspaceIdByName(rootTask.workspace) : "";
+      const preferredWorkspace = String(options.preferredWorkspace || fallbackWorkspaceID || activeWorkspace || "").trim();
+      return { preferredWorkspace, rootTaskID };
+    }
+
+    function closeNewTabTypeModal() {
+      if (!newTabTypeModalBackdropEl) return;
+      newTabTypeModalBackdropEl.classList.add("hidden");
+    }
+
+    function openNewTabTypeModal(options = {}) {
+      if (!newTabTypeModalBackdropEl) {
+        openNewTaskModal(resolveNewTabContext(options));
+        return;
+      }
+      if (!workspaces.length) {
+        openWorkspaceModal();
+        return;
+      }
+      newTabTypeSelection = resolveNewTabContext(options);
+      newTabTypeModalBackdropEl.classList.remove("hidden");
+      setTimeout(() => {
+        newTabTypeTerminalBtnEl?.focus();
+      }, 0);
+    }
+
+    async function createTerminalTab(options = {}) {
+      const context = resolveNewTabContext(options);
+      const rootTaskID = String(context.rootTaskID || "").trim();
+      const rootTask = rootTaskID ? getTask(rootTaskID) : null;
+      const targetWorkspaceID = String(context.preferredWorkspace || "").trim();
+      if (!targetWorkspaceID) {
+        openWorkspaceModal();
+        return;
+      }
+      const targetWorkspace = getWorkspace(targetWorkspaceID);
+      const targetWorkspaceName = String(targetWorkspace?.name || "").trim();
+      if (!targetWorkspace || !targetWorkspaceName) {
+        openWorkspaceModal();
+        throw new Error("Selected workspace was not found.");
+      }
+
+      const rootWorkspaceID = rootTask ? workspaceIdByName(rootTask.workspace) : "";
+      const sameWorkspaceRoot = Boolean(
+        rootTaskID
+        && rootTask
+        && rootWorkspaceID
+        && rootWorkspaceID.toLowerCase() === targetWorkspaceID.toLowerCase()
+      );
+      const normalizedRootTaskID = sameWorkspaceRoot ? rootTaskID : "";
+
+      const workspaceRepoPath = String(targetWorkspace?.repo_path || "").trim();
+      const manualRepoPath = String(repoInputEl.value || "").trim();
+      const rootTaskPath = String(taskCodePath(rootTask) || "").trim();
+      const activeTaskPath = String(taskCodePath(getTask(activeTabId)) || "").trim();
+      const resolvedRepoPath = sameWorkspaceRoot
+        ? (rootTaskPath || workspaceRepoPath || manualRepoPath || activeTaskPath)
+        : (workspaceRepoPath || manualRepoPath || activeTaskPath);
+      if (!resolvedRepoPath && !normalizedRootTaskID) {
+        throw new Error("Repo path is required. Select a workspace with a repo, or set Repo Path first.");
+      }
+
+      const payload = {
+        name: "Terminal",
+        workspace: targetWorkspaceName,
+        tags: [],
+        repo_path: resolvedRepoPath,
+        command: TERMINAL_TAB_COMMAND,
+        prompt: "",
+        preset: "none",
+        direct_repo: true,
+        root_task_id: normalizedRootTaskID,
+        ...taskStartTerminalSize(),
+      };
+
+      const result = await api("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await loadTasks({ keepTab: true });
+      await loadWorkspaces();
+      if (result.task && result.task.id) {
+        openTab(result.task.id);
+      }
+    }
+
+    function openExistingNewTabFlow() {
+      const options = {
+        preferredWorkspace: newTabTypeSelection.preferredWorkspace,
+        rootTaskID: newTabTypeSelection.rootTaskID,
+      };
+      closeNewTabTypeModal();
+      openNewTaskModal(options);
     }
 
     function setNewTaskModalError(message) {
@@ -2419,7 +2531,7 @@
     async function createTaskFromNewTab() {
       const activeTask = getTask(activeTabId);
       const rootTaskID = activeTaskGroupId || taskRootId(activeTask);
-      openNewTaskModal({
+      openNewTabTypeModal({
         preferredWorkspace: activeWorkspace,
         rootTaskID,
       });
@@ -2585,6 +2697,30 @@
       newTaskModalBackdropEl.addEventListener("click", (event) => {
         if (event.target === newTaskModalBackdropEl) {
           closeNewTaskModal();
+        }
+      });
+      newTabTypeModalCloseBtnEl?.addEventListener("click", closeNewTabTypeModal);
+      newTabTypeModalCancelBtnEl?.addEventListener("click", closeNewTabTypeModal);
+      newTabTypeModalBackdropEl?.addEventListener("click", (event) => {
+        if (event.target === newTabTypeModalBackdropEl) {
+          closeNewTabTypeModal();
+        }
+      });
+      newTabTypeTaskBtnEl?.addEventListener("click", (event) => {
+        event.preventDefault();
+        openExistingNewTabFlow();
+      });
+      newTabTypeTerminalBtnEl?.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const options = {
+          preferredWorkspace: newTabTypeSelection.preferredWorkspace,
+          rootTaskID: newTabTypeSelection.rootTaskID,
+        };
+        closeNewTabTypeModal();
+        try {
+          await createTerminalTab(options);
+        } catch (error) {
+          alert(error.message || String(error));
         }
       });
       newTaskModalPromptEl.addEventListener("input", () => {
@@ -2883,7 +3019,7 @@
           event.preventDefault();
           event.stopPropagation();
           const workspaceID = String(newWorkspaceTabBtn.dataset.newWorkspaceTab || "").trim();
-          openNewTaskModal({ preferredWorkspace: workspaceID || activeWorkspace, rootTaskID: "" });
+          openNewTabTypeModal({ preferredWorkspace: workspaceID || activeWorkspace, rootTaskID: "" });
           return;
         }
 
@@ -3011,7 +3147,7 @@
       });
       // ⌘↵ global shortcut
       window.addEventListener("keydown", async (event) => {
-        if (isWorkspaceModalOpen() || isNewTaskModalOpen()) return;
+        if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
           event.preventDefault();
           try {
