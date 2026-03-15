@@ -13,7 +13,7 @@
     let activeTaskGroupId = "";
     let openTabs = [];
     let activeTabId = "";
-    const closedTabIds = new Set();
+    const closedTabsByGroup = new Map();
     let activeStream = null;
     let launchingAgent = false;
     let rightPanelMode = "changes";
@@ -34,6 +34,8 @@
     const pendingTaskStarts = new Set();
 
     let currentGitStatus = { staged: [], unstaged: [] };
+    let currentGitCommits = [];
+    let currentGitCommitsTotal = 0;
     let selectedPatchFile = "";
     let centerViewMode = "terminal";
     let changesViewMode = "grouped";
@@ -97,8 +99,10 @@
     const unstagedCountChipEl = document.getElementById("unstagedCountChip");
     const stagedSectionLabelEl = document.getElementById("stagedSectionLabel");
     const unstagedSectionLabelEl = document.getElementById("unstagedSectionLabel");
+    const commitsSectionLabelEl = document.getElementById("commitsSectionLabel");
     const unstagedListEl = document.getElementById("unstagedList");
     const stagedListEl = document.getElementById("stagedList");
+    const commitsListEl = document.getElementById("commitsList");
     const rightTabChangesEl = document.getElementById("rightTabChanges");
     const rightTabFilesEl = document.getElementById("rightTabFiles");
     const changeViewModeBtnEl = document.getElementById("changeViewModeBtn");
@@ -109,6 +113,7 @@
     const repoFilesTreeEl = document.getElementById("repoFilesTree");
     const patchPreviewEl = document.getElementById("patchPreview");
     const terminalPanelEl = document.getElementById("terminalPanel");
+    const centerEmptyStateEl = document.getElementById("centerEmptyState");
     const providerBarEl = document.getElementById("providerBar");
     const runAgentBtnEl = document.getElementById("runAgentBtn");
 
@@ -245,6 +250,13 @@
       taskContextBranchMenuEl.classList.add("hidden");
     }
 
+    function releaseTabMemory(taskId) {
+      const key = String(taskId || "").trim();
+      if (!key) return;
+      bootstrappedTerminalTasks.delete(key);
+      pendingTaskStarts.delete(key);
+    }
+
     function setTaskContextBranchActions({ provider = "", baseBranch = "", branchUrl = "", prUrl = "" } = {}) {
       if (!taskContextBranchEl || !taskContextOpenPrBtnEl || !taskContextOpenBranchBtnEl) return;
 
@@ -344,6 +356,15 @@
 
     function setMainViewMode(mode) {
       centerViewMode = mode === "diff" ? "diff" : "terminal";
+      const hasActiveTab = Boolean(String(activeTabId || "").trim());
+      if (centerEmptyStateEl) {
+        centerEmptyStateEl.classList.toggle("hidden", hasActiveTab);
+      }
+      if (!hasActiveTab) {
+        patchPreviewEl.classList.add("hidden");
+        terminalPanelEl.classList.add("hidden");
+        return;
+      }
       const showDiff = centerViewMode === "diff";
       patchPreviewEl.classList.toggle("hidden", !showDiff);
       terminalPanelEl.classList.toggle("hidden", showDiff);
@@ -545,6 +566,44 @@
       const rootTaskID = String(task?.root_task_id || "").trim();
       const taskID = String(task?.id || "").trim();
       return rootTaskID || taskID;
+    }
+
+    function closedTabsForGroup(groupID) {
+      const key = String(groupID || "").trim();
+      if (!key) return new Set();
+      if (!closedTabsByGroup.has(key)) {
+        closedTabsByGroup.set(key, new Set());
+      }
+      return closedTabsByGroup.get(key);
+    }
+
+    function pruneClosedTabsByGroup() {
+      const groupTaskIDs = new Map();
+      for (const task of tasksCache) {
+        const groupID = taskRootId(task);
+        const taskID = String(task?.id || "").trim();
+        if (!groupID || !taskID) continue;
+        if (!groupTaskIDs.has(groupID)) {
+          groupTaskIDs.set(groupID, new Set());
+        }
+        groupTaskIDs.get(groupID).add(taskID);
+      }
+
+      for (const [groupID, closedSet] of closedTabsByGroup.entries()) {
+        const validTaskIDs = groupTaskIDs.get(groupID);
+        if (!validTaskIDs) {
+          closedTabsByGroup.delete(groupID);
+          continue;
+        }
+        for (const tabID of [...closedSet]) {
+          if (!validTaskIDs.has(tabID)) {
+            closedSet.delete(tabID);
+          }
+        }
+        if (closedSet.size === 0) {
+          closedTabsByGroup.delete(groupID);
+        }
+      }
     }
 
     function tabsForTaskGroup(rootTaskID) {
@@ -926,7 +985,7 @@
       const workspaceValid = Boolean(workspace);
       return {
         prompt,
-        agent: agentValid ? agent : "codex",
+        agent,
         workspace,
         promptValid,
         agentValid,
@@ -978,7 +1037,7 @@
         return;
       }
       newTaskModalPromptEl.value = String(promptInputEl.value || "");
-      const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : "codex";
+      const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : "";
       newTaskModalAgentEl.value = selectedAgent;
       populateNewTaskModalWorkspaceOptions(preferredWorkspace);
       newTaskModalRootTaskId = String(rootTaskID || "").trim();
@@ -1639,7 +1698,12 @@
     }
 
     function closeTab(taskId) {
-      closedTabIds.add(taskId);
+      const task = getTask(taskId);
+      const groupID = taskRootId(task) || activeTaskGroupId;
+      if (groupID) {
+        closedTabsForGroup(groupID).add(taskId);
+      }
+      releaseTabMemory(taskId);
       openTabs = openTabs.filter((id) => id !== taskId);
       if (activeTabId !== taskId) {
         renderTabs();
@@ -1649,15 +1713,20 @@
         activeTaskGroupId = "";
         detachStream();
         activeTabId = "";
+        if (terminal) {
+          terminal.clear();
+        }
         if (gitTaskLabelEl) {
           gitTaskLabelEl.textContent = "No task";
         }
         currentGitStatus = { staged: [], unstaged: [] };
+        currentGitCommits = [];
+        currentGitCommitsTotal = 0;
         renderGitStatus();
         setPatchPreviewMessage("Select a changed file to open a diff view.");
         updateTaskHeader(null);
+        setTerminalOverlay("", false);
         setMainViewMode("terminal");
-        setTerminalOverlay("Open a task in this workspace to attach terminal.", true);
         updateTaskContextBar(null);
         renderTabs();
         if (rightPanelMode === "files") {
@@ -1673,14 +1742,20 @@
       if (!groupID) return;
 
       activeTaskGroupId = groupID;
-      closedTabIds.clear();
       const tabs = tabsForTaskGroup(groupID);
-      openTabs = tabs.map((task) => task.id);
+      const closedSet = closedTabsForGroup(groupID);
+      openTabs = tabs.map((task) => task.id).filter((id) => !closedSet.has(id));
 
       if (!openTabs.length) {
+        detachStream();
         activeTabId = "";
+        if (terminal) {
+          terminal.clear();
+        }
+        setTerminalOverlay("", false);
         renderWorkspaces();
         renderTabs();
+        setMainViewMode("terminal");
         updateTaskHeader(null);
         updateTaskContextBar(null);
         return;
@@ -1714,6 +1789,10 @@
         activeStream.close();
         activeStream = null;
       }
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
       if (terminalFormatter) {
         terminalFormatter.reset();
       }
@@ -1728,7 +1807,6 @@
       const isAlreadyActive = activeTabId === taskId && activeStream;
       activeTaskGroupId = taskRootId(task);
       activeTabId = taskId;
-      closedTabIds.delete(taskId);
       renderTabs();
 
       if (isAlreadyActive) {
@@ -1879,6 +1957,7 @@
     async function loadTasks({ keepTab = true } = {}) {
       const data = await api("/api/tasks");
       tasksCache = data.tasks || [];
+      pruneClosedTabsByGroup();
 
       const currentWorkspace = getWorkspace(activeWorkspace);
       const currentWorkspaceName = String(currentWorkspace?.name || "").trim().toLowerCase();
@@ -1917,9 +1996,10 @@
 
       if (activeTaskGroupId) {
         const groupTabIds = tabsForTaskGroup(activeTaskGroupId).map((task) => task.id);
+        const closedSet = closedTabsForGroup(activeTaskGroupId);
         // Add new tabs from the group that weren't manually closed.
         for (const id of groupTabIds) {
-          if (!openTabs.includes(id) && !closedTabIds.has(id)) {
+          if (!openTabs.includes(id) && !closedSet.has(id)) {
             openTabs.push(id);
           }
         }
@@ -1927,7 +2007,6 @@
         openTabs = openTabs.filter((id) => groupTabIds.includes(id));
       } else {
         openTabs = [];
-        closedTabIds.clear();
       }
 
       if (!openTabs.length) {
@@ -1942,6 +2021,12 @@
       updateTaskHeader();
       updateTaskContextBar();
       if (!activeTabId) {
+        detachStream();
+        if (terminal) {
+          terminal.clear();
+        }
+        setTerminalOverlay("", false);
+        setMainViewMode("terminal");
         setPatchPreviewMessage("Select a changed file to open a diff view.");
       }
     }
@@ -1949,6 +2034,8 @@
     async function refreshGitStatus() {
       if (!activeTabId) {
         currentGitStatus = { staged: [], unstaged: [] };
+        currentGitCommits = [];
+        currentGitCommitsTotal = 0;
         renderGitStatus();
         return;
       }
@@ -1960,6 +2047,15 @@
         };
       } catch (error) {
         currentGitStatus = { staged: [], unstaged: [] };
+        console.error(error);
+      }
+      try {
+        const data = await api(`/api/tasks/${activeTabId}/git/commits`);
+        currentGitCommits = Array.isArray(data.commits) ? data.commits : [];
+        currentGitCommitsTotal = Number(data.commits_total || currentGitCommits.length || 0);
+      } catch (error) {
+        currentGitCommits = [];
+        currentGitCommitsTotal = 0;
         console.error(error);
       }
       renderGitStatus();
@@ -2097,6 +2193,67 @@
           </div>
         </div>
       `).join("");
+    }
+
+    function CommitFileRow(change, depth = 0) {
+      const path = String(change.path || "");
+      const parts = path.split("/").filter(Boolean);
+      const name = parts.length ? parts[parts.length - 1] : path;
+      const add = Number(change.added || 0);
+      const del = Number(change.deleted || 0);
+      return `
+        <div class="change-file-row commit-file-row flex items-center justify-between gap-2 min-h-[24px] px-1.5 rounded-[7px] bg-transparent" style="--change-depth:${depth};" title="${escapeHtml(path)}">
+          <div class="change-file-main min-w-0 flex items-center gap-[7px]">
+            <span class="change-status-icon modified w-[7px] h-[7px] rounded-full flex-none bg-[#8B7F77]" aria-hidden="true"></span>
+            <span class="change-file-name text-sm font-[450] text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(name)}</span>
+            <span class="change-inline-counts inline-flex items-center gap-1.5 text-xs font-mono ml-0.5 whitespace-nowrap">
+              <span class="add text-green-accent">+${add}</span>
+              <span class="del text-red-accent">-${del}</span>
+            </span>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCommitFiles(files, depth = 0) {
+      const list = Array.isArray(files) ? files : [];
+      if (!list.length) {
+        return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No files changed.</div>`;
+      }
+      return `
+        <div class="change-group-files ml-4 pl-2 border-l border-[rgba(58,49,48,0.35)] grid gap-0.5">
+          ${list.map((file) => CommitFileRow(file, depth + 1)).join("")}
+        </div>
+      `;
+    }
+
+    function commitDisplayLabel(commit) {
+      const hash = String(commit?.hash || "").trim().slice(0, 8);
+      const message = String(commit?.message || "").trim();
+      if (!hash) return message || "unknown";
+      if (!message) return hash;
+      return `${hash}_${message}`;
+    }
+
+    function renderCommitsList(commits) {
+      const list = Array.isArray(commits) ? commits : [];
+      if (!list.length) {
+        return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No commits in this branch.</div>`;
+      }
+      return list.map((commit) => {
+        const files = Array.isArray(commit.files) ? commit.files : [];
+        return `
+          <details class="commit-history-item change-tree-dir block">
+            <summary class="commit-history-summary list-none cursor-pointer min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#A79A91] text-sm rounded-sm bg-transparent hover:bg-[#201A18]">
+              ${TreeChevron()}
+              <span class="commit-history-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(commitDisplayLabel(commit))}</span>
+            </summary>
+            <div class="change-tree-children block">
+              ${renderCommitFiles(files, 0)}
+            </div>
+          </details>
+        `;
+      }).join("");
     }
 
     function createChangeTreeNode(name = "") {
@@ -2362,6 +2519,10 @@
       if (unstagedSectionLabelEl) {
         unstagedSectionLabelEl.textContent = SidebarSectionHeader("Unstaged", unstaged.length);
       }
+      if (commitsSectionLabelEl) {
+        const total = Number(currentGitCommitsTotal || currentGitCommits.length || 0);
+        commitsSectionLabelEl.textContent = `Commits ${total}`;
+      }
       const stageAllBtn = document.getElementById("stageAllBtn");
       if (stageAllBtn) {
         stageAllBtn.disabled = unstaged.length === 0;
@@ -2374,6 +2535,9 @@
 
       stagedListEl.innerHTML = renderChangeList(staged, "staged");
       unstagedListEl.innerHTML = renderChangeList(unstaged, "unstaged");
+      if (commitsListEl) {
+        commitsListEl.innerHTML = renderCommitsList(currentGitCommits);
+      }
     }
 
     async function loadPatch(path) {
@@ -2400,7 +2564,11 @@
     async function autoCreateTaskForWorkspace(workspace) {
       const workspaceName = String(workspace?.name || getWorkspace(activeWorkspace)?.name || "").trim();
       const workspaceRepoPath = workspace?.repo_path || "";
-      const command = commandInputEl.value.trim();
+      const selectedAgent = String(agentSelectEl.value || "").trim();
+      const command = AGENT_COMMANDS[selectedAgent] || commandInputEl.value.trim();
+      if (!AGENT_COMMANDS[selectedAgent]) {
+        throw new Error("Agent is required. Choose one in \"Run with\" first.");
+      }
       if (!command) {
         throw new Error("Agent command is required to auto-create workspace task.");
       }
@@ -2432,14 +2600,11 @@
 
     function setRunAgentBtnState(running) {
       const labelEl = document.getElementById("runAgentLabel");
-      const kbdEl = runAgentBtnEl?.querySelector(".run-agent-kbd");
       if (running) {
         if (labelEl) labelEl.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-text-dim border-t-text-primary rounded-full animate-spin"></span> Running\u2026`;
-        if (kbdEl) kbdEl.classList.add("hidden");
         if (runAgentBtnEl) runAgentBtnEl.disabled = true;
       } else {
         if (labelEl) labelEl.textContent = "Run Agent";
-        if (kbdEl) kbdEl.classList.remove("hidden");
         if (runAgentBtnEl) runAgentBtnEl.disabled = false;
       }
     }
@@ -2460,6 +2625,9 @@
 
       try {
         const selectedAgent = AGENT_COMMANDS[agent] ? agent : agentSelectEl.value;
+        if (!AGENT_COMMANDS[selectedAgent]) {
+          throw new Error("Agent is required. Choose one in \"Run with\" first.");
+        }
         agentSelectEl.value = selectedAgent;
         syncProviderPills();
 

@@ -572,6 +572,8 @@ func (s *server) handleTaskGit(w http.ResponseWriter, r *http.Request, id, subac
 		s.handleGitUnstage(w, r, id)
 	case "commit":
 		s.handleGitCommit(w, r, id)
+	case "commits":
+		s.handleGitCommits(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -784,6 +786,25 @@ func (s *server) handleGitCommit(w http.ResponseWriter, r *http.Request, id stri
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id": id,
 		"commit":  out,
+	})
+}
+
+func (s *server) handleGitCommits(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	commits, total, err := s.tasks.GitCommits(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":       id,
+		"commits":       commits,
+		"commits_n":     len(commits),
+		"commits_total": total,
 	})
 }
 

@@ -659,6 +659,14 @@ func (m *Manager) Commit(id, message string) (string, error) {
 	return m.diffs.Commit(t.WorktreePath, message)
 }
 
+func (m *Manager) GitCommits(id string) ([]diff.CommitHistoryItem, int, error) {
+	t, err := m.Get(id)
+	if err != nil {
+		return nil, 0, err
+	}
+	return m.diffs.CommitHistory(t.WorktreePath)
+}
+
 func (m *Manager) Logs(id string, tail int) (string, error) {
 	t, err := m.Get(id)
 	if err != nil {

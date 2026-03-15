@@ -439,6 +439,12 @@ kbd {
   background: rgba(255, 255, 255, 0.07);
 }
 
+.provider-icon-svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+
 .provider-icon-claude { background: rgba(199, 139, 74, 0.2); border-color: rgba(199, 139, 74, 0.5); }
 .provider-icon-codex { background: rgba(122, 162, 247, 0.2); border-color: rgba(122, 162, 247, 0.5); }
 .provider-icon-copilot { background: rgba(63, 165, 106, 0.2); border-color: rgba(63, 165, 106, 0.5); }
@@ -494,6 +500,11 @@ kbd {
 #terminalPanel,
 .terminal-box {
   background: #151110 !important;
+}
+
+.center-empty {
+  background: #151110 !important;
+  color: var(--text-muted) !important;
 }
 
 #terminal {
@@ -907,7 +918,8 @@ kbd {
   font-weight: 500 !important;
 }
 #stagedSectionLabel,
-#unstagedSectionLabel {
+#unstagedSectionLabel,
+#commitsSectionLabel {
   display: inline-flex;
   justify-content: flex-start;
   font-size: 12px !important;
@@ -1026,6 +1038,16 @@ kbd {
   margin-left: 8px;
   padding-left: 8px;
   border-left: 1px solid #2a2827;
+}
+.commit-history-summary {
+  font-size: 12px !important;
+  color: #a8a5a3 !important;
+}
+.commit-history-label {
+  color: #eae8e6 !important;
+}
+.commit-file-row {
+  cursor: default !important;
 }
 
 .files-toolbar {
