@@ -1,4 +1,4 @@
-.PHONY: build run desktop-build desktop-run desktop-export-macos fmt tidy ui-install ui-build ui-dev ui-version
+.PHONY: build run desktop-build desktop-run desktop-export-macos desktop-export-macos-installer fmt tidy ui-install ui-build ui-dev ui-version
 
 ui-install:
 	npm --prefix internal/api/frontend install
@@ -41,6 +41,9 @@ desktop-run:
 
 desktop-export-macos:
 	./scripts/export-macos-app.sh
+
+desktop-export-macos-installer:
+	./scripts/export-macos-installer.sh
 
 fmt:
 	gofmt -w ./cmd ./internal
