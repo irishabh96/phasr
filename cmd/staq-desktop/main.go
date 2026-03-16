@@ -23,7 +23,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("staq-desktop: %v", err)
+		log.Fatalf("phasr.sh desktop: %v", err)
 	}
 }
 
@@ -41,9 +41,9 @@ func run() error {
 	)
 
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP listen address")
-	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "Staq data directory")
+	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "phasr.sh data directory")
 	flag.StringVar(&cfg.DefaultEditor, "editor", cfg.DefaultEditor, "Default editor command (code/cursor/zed/vim/open)")
-	flag.StringVar(&title, "title", "Staq", "Desktop window title")
+	flag.StringVar(&title, "title", "phasr.sh", "Desktop window title")
 	flag.IntVar(&width, "width", 1500, "Desktop window width")
 	flag.IntVar(&height, "height", 980, "Desktop window height")
 	flag.BoolVar(&debug, "debug", false, "Enable webview devtools")
@@ -101,7 +101,7 @@ func run() error {
 		shutdown()
 	}()
 
-	fmt.Printf("Staq desktop listening on %s\n", appURL)
+	fmt.Printf("phasr.sh desktop listening on %s\n", appURL)
 	fmt.Printf("Data dir: %s\n", runtime.Config.DataDir)
 
 	w.Run()

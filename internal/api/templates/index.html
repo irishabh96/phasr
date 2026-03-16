@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Staq | Multi-Workspace Terminal</title>
+    <title>phasr.sh | Multi-Workspace Terminal</title>
+    <link rel="icon" type="image/svg+xml" href="/static/assets/brand/phasr-sh.svg" />
     <script src="/static/dist/build-meta.js"></script>
     <script>
       window.__STAQ_UI_BUILD_META__ = window.__STAQ_UI_BUILD_META__ || null;
@@ -28,7 +29,7 @@
   <body>
     <div id="react-root">
       <div id="bootFallback" class="boot-fallback" role="status" aria-live="polite">
-        <div class="boot-fallback-title">Loading Staq UI…</div>
+        <div class="boot-fallback-title">Loading phasr.sh UI…</div>
         <div class="boot-fallback-meta">Preparing desktop interface</div>
       </div>
     </div>
@@ -82,9 +83,9 @@
         })();
 
         if (uiBuildMeta) {
-          console.info("[staq-ui] build", uiBuildMeta);
+          console.info("[phasr-ui] build", uiBuildMeta);
         } else {
-          console.warn("[staq-ui] build metadata not found (/static/dist/build-meta.js)");
+          console.warn("[phasr-ui] build metadata not found (/static/dist/build-meta.js)");
         }
 
         function loadAppScript() {

@@ -1,4 +1,4 @@
-.PHONY: build run desktop-build desktop-run fmt tidy ui-install ui-build ui-dev ui-version
+.PHONY: build run desktop-build desktop-run desktop-export-macos fmt tidy ui-install ui-build ui-dev ui-version
 
 ui-install:
 	npm --prefix internal/api/frontend install
@@ -38,6 +38,9 @@ desktop-run:
 		sleep 1; \
 	fi
 	./bin/staq-desktop
+
+desktop-export-macos:
+	./scripts/export-macos-app.sh
 
 fmt:
 	gofmt -w ./cmd ./internal
