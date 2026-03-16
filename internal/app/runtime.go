@@ -22,6 +22,10 @@ type Runtime struct {
 }
 
 func New(cfg config.Config) (*Runtime, error) {
+	if err := ensureUIBundleFresh(); err != nil {
+		return nil, err
+	}
+
 	cfg.RefreshDerivedPaths()
 	if err := cfg.EnsureDirs(); err != nil {
 		return nil, err

@@ -26,13 +26,13 @@
     let terminalResizeObserver = null;
     let terminalFitTimer = null;
     let terminalBackendResizeTimer = null;
+    let terminalThemeObserver = null;
     let lastPtyCols = 0;
     let lastPtyRows = 0;
     let lastInterruptHandledAt = 0;
     const bootstrappedTerminalTasks = new Set();
     let inputBuffer = "";
     let flushTimer = null;
-    const pendingTaskStarts = new Set();
 
     let currentGitStatus = { staged: [], unstaged: [] };
     let currentGitCommits = [];
@@ -48,9 +48,9 @@
 
     // P0-A: ANSI color codes for severity highlighting
     const ANSI_RESET = "\x1b[0m";
-    const ANSI_RED = "\x1b[38;2;220;107;107m";     // ember #dc6b6b
-    const ANSI_YELLOW = "\x1b[38;2;229;192;123m";  // ember #e5c07b
-    const ANSI_GREEN = "\x1b[38;2;126;198;153m";   // ember #7ec699
+    const ANSI_RED = "\x1b[38;2;224;109;109m";     // danger #E06D6D
+    const ANSI_YELLOW = "\x1b[38;2;231;182;92m";   // warning #E7B65C
+    const ANSI_GREEN = "\x1b[38;2;86;194;136m";    // success #56C288
     const terminalFormatter = window.staqTerminalFormatter?.createFormatter
       ? window.staqTerminalFormatter.createFormatter()
       : null;
@@ -80,6 +80,74 @@
       return formatted.split("\n").map(colorizeLine).join("\n");
     }
 
+    function cssVar(name, fallback = "") {
+      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return value || fallback;
+    }
+
+    function buildTerminalTheme() {
+      return {
+        background: cssVar("--mockup-terminal-bg", "#0D1017"),
+        foreground: cssVar("--terminal-fg", "#E2E8F0"),
+        cursor: cssVar("--terminal-cursor", "#7C9BFF"),
+        cursorAccent: cssVar("--mockup-terminal-bg", "#0D1017"),
+        selectionBackground: cssVar("--terminal-selection", "rgba(124, 155, 255, 0.24)"),
+        black: cssVar("--terminal-black", "#0B0D12"),
+        red: cssVar("--terminal-red", "#E06D6D"),
+        green: cssVar("--terminal-green", "#56C288"),
+        yellow: cssVar("--terminal-yellow", "#E7B65C"),
+        blue: cssVar("--terminal-blue", "#7C9BFF"),
+        magenta: cssVar("--terminal-magenta", "#B39DFF"),
+        cyan: cssVar("--terminal-cyan", "#63C7D9"),
+        white: cssVar("--terminal-white", "#E2E8F0"),
+        brightBlack: cssVar("--terminal-bright-black", "#5D687A"),
+        brightRed: cssVar("--terminal-bright-red", "#EE8F8F"),
+        brightGreen: cssVar("--terminal-bright-green", "#88D8AA"),
+        brightYellow: cssVar("--terminal-bright-yellow", "#F1C977"),
+        brightBlue: cssVar("--terminal-bright-blue", "#A4B8FF"),
+        brightMagenta: cssVar("--terminal-bright-magenta", "#D2BEFF"),
+        brightCyan: cssVar("--terminal-bright-cyan", "#9BE2EE"),
+        brightWhite: cssVar("--terminal-bright-white", "#FFFFFF"),
+      };
+    }
+
+    function applyTerminalTheme() {
+      if (!terminal) return;
+      terminal.options.theme = buildTerminalTheme();
+      terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    }
+
+    function watchThemeChanges() {
+      if (terminalThemeObserver || typeof MutationObserver === "undefined") return;
+      terminalThemeObserver = new MutationObserver(() => {
+        applyTerminalTheme();
+      });
+      terminalThemeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+    }
+
+    function applyTheme(theme) {
+      const normalized = theme === "light" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", normalized);
+      try {
+        window.localStorage?.setItem("staq-theme", normalized);
+      } catch (_) {}
+    }
+
+    function initTheme() {
+      try {
+        const stored = window.localStorage?.getItem("staq-theme");
+        if (stored === "light" || stored === "dark") {
+          applyTheme(stored);
+        }
+      } catch (_) {}
+      window.staqSetTheme = applyTheme;
+    }
+
+    initTheme();
+
     const workspaceListEl = document.getElementById("workspaceList");
 
     const agentSelectEl = document.getElementById("agentSelect");
@@ -98,6 +166,7 @@
     const taskContextOpenPrBtnEl = document.getElementById("taskContextOpenPrBtn");
     const taskContextOpenBranchBtnEl = document.getElementById("taskContextOpenBranchBtn");
     const taskContextPathEl = document.getElementById("taskContextPath");
+    const uiBuildVersionEl = document.getElementById("uiBuildVersion");
 
     const gitTaskLabelEl = document.getElementById("gitTaskLabel");
     const stagedCountChipEl = document.getElementById("stagedCountChip");
@@ -188,12 +257,37 @@
         .replaceAll("'", "&#039;");
     }
 
+    function renderUiBuildVersion() {
+      if (!uiBuildVersionEl) return;
+      const meta = window.__STAQ_UI_BUILD_META__ && typeof window.__STAQ_UI_BUILD_META__ === "object"
+        ? window.__STAQ_UI_BUILD_META__
+        : null;
+      const version = String(
+        (meta && meta.version)
+          || window.__STAQ_ASSET_VERSION__
+          || "unknown"
+      ).trim() || "unknown";
+      const shortVersion = version.length > 18 ? `${version.slice(0, 18)}...` : version;
+      uiBuildVersionEl.textContent = shortVersion;
+      uiBuildVersionEl.title = version;
+      uiBuildVersionEl.dataset.version = version;
+    }
+
     function parseTags(input) {
       return String(input || "")
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean)
         .filter((item, idx, arr) => arr.findIndex((x) => x.toLowerCase() === item.toLowerCase()) === idx);
+    }
+
+    function reactBridge() {
+      const bridge = window.__STAQ_REACT_BRIDGE__;
+      if (!bridge) return null;
+      const hasWorkspaceRenderer = typeof bridge.renderWorkspaces === "function";
+      const hasTabRenderer = typeof bridge.renderTabs === "function";
+      if (!hasWorkspaceRenderer && !hasTabRenderer) return null;
+      return bridge;
     }
 
     function isCtrlC(event) {
@@ -229,9 +323,18 @@
     function syncProviderPills() {
       if (!providerBarEl) return;
       const selected = agentSelectEl.value;
-      providerBarEl.querySelectorAll("[data-provider-pill]").forEach((pill) => {
-        pill.classList.toggle("active", pill.dataset.providerPill === selected);
-      });
+      const pills = Array.from(providerBarEl.querySelectorAll("[data-provider-pill]"));
+      if (pills.length) {
+        pills.forEach((pill) => {
+          pill.classList.toggle("active", pill.dataset.providerPill === selected);
+        });
+        return;
+      }
+      const bridge = reactBridge();
+      if (bridge?.renderProviderBar) {
+        bridge.renderProviderBar({ selected });
+        return;
+      }
     }
 
     const taskHeaderEl = document.getElementById("taskHeader");
@@ -240,14 +343,24 @@
 
     function updateTaskHeader(task = null) {
       const nextTask = task || getTask(activeTabId);
+      const bridge = reactBridge();
       if (!nextTask) {
+        if (bridge?.renderTaskHeader) {
+          bridge.renderTaskHeader(null);
+        }
         taskHeaderEl.classList.add("hidden");
         return;
       }
-      taskTitleTextEl.textContent = nextTask.name || "untitled task";
-
       const isRunning = nextTask.status === "running" || nextTask.status === "pending";
-      taskStatusDotEl.classList.toggle("active", isRunning);
+      if (bridge?.renderTaskHeader) {
+        bridge.renderTaskHeader({
+          title: nextTask.name || "untitled task",
+          isRunning,
+        });
+      } else {
+        taskTitleTextEl.textContent = nextTask.name || "untitled task";
+        taskStatusDotEl.classList.toggle("active", isRunning);
+      }
 
       taskHeaderEl.classList.remove("hidden");
     }
@@ -265,7 +378,6 @@
       const key = String(taskId || "").trim();
       if (!key) return;
       bootstrappedTerminalTasks.delete(key);
-      pendingTaskStarts.delete(key);
     }
 
     function setTaskContextBranchActions({ provider = "", baseBranch = "", branchUrl = "", prUrl = "" } = {}) {
@@ -518,36 +630,36 @@
       const rows = buildSideBySideRows(patch);
       const rowsHtml = rows.length
         ? rows.map((row) => `
-            <div class="diff-sbs-row grid grid-cols-2 border-b border-[rgba(49,42,40,0.52)] last:border-b-0">
-              <div class="diff-cell left ${row.leftType} grid grid-cols-[44px_minmax(0,1fr)] items-stretch min-h-[22px] bg-transparent">
-                <span class="diff-ln text-[#7D726B] text-right select-none px-1 pr-2 border-r border-[rgba(49,42,40,0.68)] inline-flex items-center justify-end">${escapeHtml(row.leftNo || "")}</span>
-                <span class="diff-code text-[#E5DED8] px-2.5 whitespace-pre-wrap break-words inline-flex items-center min-h-[22px]">${escapeHtml(row.leftText || " ")}</span>
+            <div class="diff-sbs-row">
+              <div class="diff-cell left ${row.leftType}">
+                <span class="diff-ln">${escapeHtml(row.leftNo || "")}</span>
+                <span class="diff-code">${escapeHtml(row.leftText || " ")}</span>
               </div>
-              <div class="diff-cell right ${row.rightType} grid grid-cols-[44px_minmax(0,1fr)] items-stretch min-h-[22px] bg-transparent">
-                <span class="diff-ln text-[#7D726B] text-right select-none px-1 pr-2 border-r border-[rgba(49,42,40,0.68)] inline-flex items-center justify-end">${escapeHtml(row.rightNo || "")}</span>
-                <span class="diff-code text-[#E5DED8] px-2.5 whitespace-pre-wrap break-words inline-flex items-center min-h-[22px]">${escapeHtml(row.rightText || " ")}</span>
+              <div class="diff-cell right ${row.rightType}">
+                <span class="diff-ln">${escapeHtml(row.rightNo || "")}</span>
+                <span class="diff-code">${escapeHtml(row.rightText || " ")}</span>
               </div>
             </div>
           `).join("")
-        : `<div class="diff-empty text-text-tertiary p-3 text-sm">No line-level changes available for this selection.</div>`;
+        : `<div class="diff-empty">No line-level changes available for this selection.</div>`;
 
       return `
-        <div class="diff-editor-head flex items-center justify-between gap-2.5 px-2.5 py-2 border-b border-[#312A28] bg-[#24201D]">
-          <div class="diff-head-main min-w-0 grid gap-px">
-            <div class="diff-file-name text-text-primary text-base font-[560] whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(fileName)}</div>
-            <div class="diff-file-path text-[#9C8F86] text-xs font-mono whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(parentPath)}</div>
+        <div class="diff-editor-head">
+          <div class="diff-head-main">
+            <div class="diff-file-name">${escapeHtml(fileName)}</div>
+            <div class="diff-file-path">${escapeHtml(parentPath)}</div>
           </div>
-          <div class="diff-head-right inline-flex items-center gap-[9px] shrink-0">
-            <span class="diff-head-mode text-[#AA9D94] text-xs font-[560] tracking-[0.03em] uppercase">Changes</span>
-            ${statLine ? `<span class="diff-head-stat text-[#9C8F86] text-xs font-mono whitespace-nowrap max-w-[340px] overflow-hidden text-ellipsis">${escapeHtml(statLine)}</span>` : ""}
-            <button class="diff-close-btn min-h-[24px] px-2 rounded-sm border border-[#3A3130] bg-[#2A2421] text-[#CFC3BA] text-xs" data-diff-close type="button">Terminal</button>
+          <div class="diff-head-right">
+            <span class="diff-head-mode">Changes</span>
+            ${statLine ? `<span class="diff-head-stat">${escapeHtml(statLine)}</span>` : ""}
+            <button class="diff-close-btn" data-diff-close type="button">Terminal</button>
           </div>
         </div>
-        <div class="diff-columns-head grid grid-cols-2 border-b border-[#312A28] bg-[#201B19] text-[#9D9087] text-xs tracking-[0.03em] uppercase">
-          <div class="pane left px-2.5 py-1.5 flex items-center gap-1.5">Original</div>
-          <div class="pane right px-2.5 py-1.5 flex items-center gap-1.5">Current</div>
+        <div class="diff-columns-head">
+          <div class="pane left">Original</div>
+          <div class="pane right">Current</div>
         </div>
-        <div class="diff-scroll min-h-0 overflow-auto bg-[#181312] font-mono text-base leading-[1.52]">${rowsHtml}</div>
+        <div class="diff-scroll">${rowsHtml}</div>
       `;
     }
 
@@ -1020,7 +1132,7 @@
       newTaskModalCreating = Boolean(loading);
       newTaskModalCreateSpinnerEl.classList.toggle("hidden", !newTaskModalCreating);
       newTaskModalCreateSpinnerEl.classList.toggle("animate-spin", newTaskModalCreating);
-      newTaskModalCreateLabelEl.textContent = newTaskModalCreating ? "Creating…" : "Create Tab";
+      newTaskModalCreateLabelEl.textContent = newTaskModalCreating ? "Starting…" : "Start Task";
       updateNewTaskModalValidityUI();
     }
 
@@ -1047,7 +1159,7 @@
       newTaskModalPromptEl.setAttribute("aria-invalid", "false");
       newTaskModalCreateSpinnerEl.classList.add("hidden");
       newTaskModalCreateSpinnerEl.classList.remove("animate-spin");
-      newTaskModalCreateLabelEl.textContent = "Create Tab";
+      newTaskModalCreateLabelEl.textContent = "Start Task";
       updateNewTaskModalValidityUI();
     }
 
@@ -1058,7 +1170,7 @@
         return;
       }
       newTaskModalPromptEl.value = String(promptInputEl.value || "");
-      const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : "";
+      const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : "claude";
       newTaskModalAgentEl.value = selectedAgent;
       populateNewTaskModalWorkspaceOptions(preferredWorkspace);
       newTaskModalRootTaskId = String(rootTaskID || "").trim();
@@ -1184,7 +1296,12 @@
       if (!workspaceName) return [];
       return tasksCache
         .filter((task) => String(task.workspace || "").trim().toLowerCase() === workspaceName.toLowerCase())
-        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+        .sort((a, b) => {
+          const createdA = new Date(a.created_at || 0).getTime() || 0;
+          const createdB = new Date(b.created_at || 0).getTime() || 0;
+          if (createdB !== createdA) return createdB - createdA;
+          return String(b.id || "").localeCompare(String(a.id || ""));
+        });
     }
 
     function openFirstTaskForWorkspace(workspaceID) {
@@ -1214,6 +1331,7 @@
           tasks: [],
           latestUpdatedAt: "",
           latestUpdatedAtMs: 0,
+          latestCreatedAtMs: 0,
         };
         existing.tasks.push(task);
         const updatedAtMs = new Date(task.updated_at).getTime() || 0;
@@ -1221,17 +1339,28 @@
           existing.latestUpdatedAtMs = updatedAtMs;
           existing.latestUpdatedAt = task.updated_at;
         }
+        const createdAtMs = new Date(task.created_at).getTime() || 0;
+        if (createdAtMs >= existing.latestCreatedAtMs) {
+          existing.latestCreatedAtMs = createdAtMs;
+        }
         grouped.set(rootTaskID, existing);
       }
       return [...grouped.values()]
         .map((group) => {
           const rootTask = group.tasks.find((task) => task.id === group.rootTaskID) || group.tasks[0] || null;
+          const rootCreatedAtMs = new Date(rootTask?.created_at || 0).getTime() || 0;
           return {
             ...group,
             rootTask,
+            sortCreatedAtMs: rootCreatedAtMs || group.latestCreatedAtMs,
           };
         })
-        .sort((a, b) => b.latestUpdatedAtMs - a.latestUpdatedAtMs);
+        .sort((a, b) => {
+          if (b.sortCreatedAtMs !== a.sortCreatedAtMs) {
+            return b.sortCreatedAtMs - a.sortCreatedAtMs;
+          }
+          return String(b.rootTaskID || "").localeCompare(String(a.rootTaskID || ""));
+        });
     }
 
     function ensureTerminal() {
@@ -1241,38 +1370,17 @@
         cursorBlink: true,
         cursorStyle: "block",
         cursorInactiveStyle: "outline",
-        fontFamily: '"MesloLGM Nerd Font", "MesloLGM NF", "MesloLGS NF", "MesloLGS Nerd Font", "Hack Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", "CaskaydiaCove Nerd Font", Menlo, Monaco, "Courier New", monospace',
-        fontSize: 14,
+        fontFamily: '"JetBrains Mono", "SF Mono", "Roboto Mono", ui-monospace, monospace',
+        fontSize: 12,
         lineHeight: 1.2,
         allowProposedApi: true,
         macOptionIsMeta: false,
         screenReaderMode: false,
         scrollback: 5000,
         scrollbar: { showScrollbar: false },
-        theme: {
-          background: "#151110",
-          foreground: "#eae8e6",
-          cursor: "#e07850",
-          cursorAccent: "#151110",
-          selectionBackground: "rgba(224, 120, 80, 0.25)",
-          black: "#151110",
-          red: "#dc6b6b",
-          green: "#7ec699",
-          yellow: "#e5c07b",
-          blue: "#61afef",
-          magenta: "#c678dd",
-          cyan: "#56b6c2",
-          white: "#eae8e6",
-          brightBlack: "#5c5856",
-          brightRed: "#e88888",
-          brightGreen: "#98d1a8",
-          brightYellow: "#ecd08f",
-          brightBlue: "#7ec0f5",
-          brightMagenta: "#d494e6",
-          brightCyan: "#73c7d3",
-          brightWhite: "#ffffff",
-        },
+        theme: buildTerminalTheme(),
       });
+      watchThemeChanges();
 
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
@@ -1320,6 +1428,8 @@
 
       terminal.onData((data) => {
         if (!activeTabId) return;
+        const task = getTask(activeTabId);
+        if (!task || task.status !== "running") return;
         // Signal characters (Ctrl+C, Ctrl+Z, Ctrl+\) must bypass the
         // debounced buffer and be sent immediately so interrupts aren't delayed.
         if (data === "\x03" || data === "\x1a" || data === "\x1c") {
@@ -1498,34 +1608,9 @@
           const notRunning = message.includes("not running");
           if (!notRunning) {
             console.error(error);
-            return;
-          }
-          try {
-            await ensureTaskRunning(taskId);
-            await api(`/api/tasks/${taskId}/terminal/input`, {
-              method: "POST",
-              body: JSON.stringify({ input: chunk, append_newline: false }),
-            });
-          } catch (retryError) {
-            console.error(retryError);
           }
         }
       }, 25);
-    }
-
-    async function ensureTaskRunning(taskId) {
-      const key = String(taskId || "").trim();
-      if (!key) return;
-      const knownTask = getTask(key);
-      if (knownTask?.status === "running") return;
-      if (pendingTaskStarts.has(key)) return;
-      pendingTaskStarts.add(key);
-      try {
-        await api(`/api/tasks/${key}/resume`, { method: "POST" });
-        await loadTasks({ keepTab: true });
-      } finally {
-        pendingTaskStarts.delete(key);
-      }
     }
 
     function setTerminalOverlay(message, show = true) {
@@ -1578,11 +1663,14 @@
 
     function healthDotColor(status) {
       switch (String(status || "").toLowerCase()) {
-        case "running": return "bg-green-accent";
-        case "pending": return "bg-amber";
-        case "failed": return "bg-red-accent";
-        case "stopped": case "completed": return "bg-text-dim";
-        default: return "bg-text-dim";
+        case "running": return "status-running";
+        case "pending": return "status-pending";
+        case "failed": return "status-failed";
+        case "stopped":
+        case "completed":
+          return "status-stopped";
+        default:
+          return "status-stopped";
       }
     }
 
@@ -1609,63 +1697,111 @@
     }
 
     function renderWorkspaces() {
-      if (!workspaces.length) {
+      const rows = workspaces.map((workspace, idx) => {
+        const id = workspaceId(workspace);
+        const name = String(workspace.name || "").trim();
+        if (!id || !name) {
+          return null;
+        }
+        const isActive = id === activeWorkspace;
+        const isOpen = expandedWorkspaces.has(id);
+        const taskGroups = taskGroupsForWorkspace(id);
+        const workspaceUpdatedAtMs = new Date(workspace.updated_at || workspace.created_at || 0).getTime() || 0;
+        const latestUpdatedAtMs = taskGroups.reduce(
+          (max, group) => Math.max(max, Number(group.latestUpdatedAtMs || 0)),
+          workspaceUpdatedAtMs,
+        );
+        const tasks = taskGroups.map((group) => {
+          const task = group.rootTask;
+          if (!task) return null;
+          return {
+            rootTaskID: group.rootTaskID,
+            title: task.name || "untitled",
+            subtitle: String(task.branch || "").trim() || "-",
+            isSelected: group.rootTaskID === activeTaskGroupId,
+            rawStatus: task.status || "",
+            dotClass: healthDotColor(task.status || ""),
+            dotTooltip: healthDotTooltip(task.status, group.latestUpdatedAt),
+          };
+        }).filter(Boolean);
+
+        return {
+          id,
+          name,
+          initial: workspaceInitial(name),
+          isActive,
+          isOpen,
+          taskCount: taskGroups.length,
+          showDivider: idx > 0,
+          tasks,
+          latestUpdatedAtMs,
+          originalIndex: idx,
+        };
+      }).filter(Boolean);
+
+      const sortedRows = rows
+        .sort((a, b) => {
+          if (b.latestUpdatedAtMs !== a.latestUpdatedAtMs) {
+            return b.latestUpdatedAtMs - a.latestUpdatedAtMs;
+          }
+          return a.originalIndex - b.originalIndex;
+        });
+
+      const bridge = reactBridge();
+      if (bridge?.renderWorkspaces) {
+        const payload = {
+          empty: sortedRows.length === 0,
+          rows: sortedRows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            initial: row.initial,
+            isActive: row.isActive,
+            isOpen: row.isOpen,
+            taskCount: row.taskCount,
+            showDivider: row.showDivider,
+            tasks: row.tasks,
+          })),
+        };
+        const signature = JSON.stringify(payload);
+        if (signature === lastWorkspaceListHTML) return;
+        bridge.renderWorkspaces(payload);
+        lastWorkspaceListHTML = signature;
+        return;
+      }
+
+      if (!sortedRows.length) {
         const html = `<div class="sidebar-empty">No workspaces</div>`;
         if (html === lastWorkspaceListHTML) return;
         workspaceListEl.innerHTML = html;
         lastWorkspaceListHTML = html;
         return;
       }
-      const workspaceRows = workspaces.map((workspace, idx) => {
-        const id = workspaceId(workspace);
-        const name = String(workspace.name || "").trim();
-        if (!id || !name) {
-          return { html: "", latestUpdatedAtMs: 0, originalIndex: idx };
-        }
-        const isActive = id === activeWorkspace;
-        const activeClass = isActive ? "active" : "";
-        const isOpen = expandedWorkspaces.has(id);
-        const taskGroups = taskGroupsForWorkspace(id);
-        const workspaceUpdatedAtMs = new Date(workspace.updated_at || workspace.created_at || 0).getTime() || 0;
-        const latestUpdatedAtMs = taskGroups[0]?.latestUpdatedAtMs || workspaceUpdatedAtMs;
 
-        const taskRows = taskGroups.map((group) => {
-          const task = group.rootTask;
-          if (!task) return "";
-          const isSelectedTask = group.rootTaskID === activeTaskGroupId;
-          return SidebarRow({
-            id: task.id,
-            title: task.name || "untitled",
-            subtitle: String(task.branch || "").trim() || "-",
-            isSelected: isSelectedTask,
-            dataAttr: `data-open-task="${group.rootTaskID}"`,
-            status: task.status,
-            updatedAt: group.latestUpdatedAt,
-          });
-        }).join("");
+      const html = sortedRows
+        .map((row) => {
+          const divider = row.showDivider ? `<div class="workspace-divider"></div>` : "";
+          const tasksHtml = row.tasks.length
+            ? row.tasks.map((task) => SidebarRow({
+              id: task.rootTaskID,
+              title: task.title,
+              subtitle: task.subtitle,
+              isSelected: task.isSelected,
+              dataAttr: `data-open-task="${task.rootTaskID}"`,
+              status: task.rawStatus,
+              updatedAt: "",
+            })).join("")
+            : `<div class="sidebar-empty sidebar-empty-tasks">No tasks</div>`;
 
-        const divider = idx > 0 ? `<div class="workspace-divider"></div>` : "";
-
-        const html = `
-          ${divider}
-          <details class="workspace-node ${activeClass}" data-workspace-node="${escapeHtml(id)}" ${isOpen ? "open" : ""}>
-            ${WorkspaceHeader(id, name, taskGroups.length, isOpen)}
-            <div class="workspace-children">
-              ${taskRows || `<div class="sidebar-empty sidebar-empty-tasks">No tasks</div>`}
-            </div>
-          </details>
-        `;
-        return { html, latestUpdatedAtMs, originalIndex: idx };
-      });
-
-      const html = workspaceRows
-        .sort((a, b) => {
-          if (b.latestUpdatedAtMs !== a.latestUpdatedAtMs) {
-            return b.latestUpdatedAtMs - a.latestUpdatedAtMs;
-          }
-          return a.originalIndex - b.originalIndex;
+          return `
+            ${divider}
+            <details class="workspace-node ${row.isActive ? "active" : ""}" data-workspace-node="${escapeHtml(row.id)}" ${row.isOpen ? "open" : ""}>
+              ${WorkspaceHeader(row.id, row.name, row.taskCount, row.isOpen)}
+              <div class="workspace-children">
+                ${tasksHtml}
+              </div>
+            </details>
+          `;
         })
-        .map((row) => row.html)
         .join("");
       if (html === lastWorkspaceListHTML) return;
       workspaceListEl.innerHTML = html;
@@ -1687,51 +1823,54 @@
 
     function renderTabs() {
       const tasksWithIndex = openTabs.map((taskId, idx) => ({ task: getTask(taskId), idx })).filter(({ task }) => task);
-      const dynamicTabs = tasksWithIndex
-        .map(({ task, idx }) => {
-          const active = task.id === activeTabId ? "active" : "";
-          const label = tabLabel(task, idx);
-          return `
-            <div class="tab ${active}" data-tab="${task.id}" title="${escapeHtml(label.full)}">
-              <span class="tab-label">${escapeHtml(label.truncated)}</span>
-              <button class="tab-close" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
-            </div>
-          `;
-        })
-        .join("");
-
       const MAX_VISIBLE_TABS = 6;
-      const visibleTabs = dynamicTabs;
-      let overflowPill = "";
+      const allTabs = tasksWithIndex.map(({ task, idx }) => {
+        const label = tabLabel(task, idx);
+        return {
+          id: task.id,
+          label: label.truncated,
+          title: label.full,
+          active: task.id === activeTabId,
+          name: task.name || "untitled",
+        };
+      });
+
+      const bridge = reactBridge();
       if (tasksWithIndex.length > MAX_VISIBLE_TABS) {
         const overflowCount = tasksWithIndex.length - MAX_VISIBLE_TABS;
-        const visibleIds = new Set(tasksWithIndex.slice(0, MAX_VISIBLE_TABS).map(({ task }) => task.id));
-        // re-render only the visible portion
-        const visibleHtml = tasksWithIndex.slice(0, MAX_VISIBLE_TABS).map(({ task, idx }) => {
-          const active = task.id === activeTabId ? "active" : "";
-          const label = tabLabel(task, idx);
-          return `
-            <div class="tab ${active}" data-tab="${task.id}" title="${escapeHtml(label.full)}">
-              <span class="tab-label">${escapeHtml(label.truncated)}</span>
-              <button class="tab-close" data-close-tab="${task.id}" type="button" aria-label="Close tab">&times;</button>
-            </div>`;
-        }).join("");
-        const overflowItems = tasksWithIndex.slice(MAX_VISIBLE_TABS).map(({ task }) => {
-          return `<button class="tab-overflow-item" data-overflow-tab="${task.id}" type="button">${escapeHtml(task.name || "untitled")}</button>`;
-        }).join("");
-        overflowPill = `
-          <div class="tab-overflow-wrap">
-            <button class="tab-overflow-btn" type="button" aria-label="More tabs">+${overflowCount} more</button>
-            <div class="tab-overflow-menu hidden">
-              ${overflowItems}
-            </div>
-          </div>`;
+        const payload = {
+          tabs: allTabs.slice(0, MAX_VISIBLE_TABS),
+          overflow: allTabs.slice(MAX_VISIBLE_TABS).map((tab) => ({ id: tab.id, name: tab.name })),
+          overflowCount,
+          showEmptyHint: false,
+        };
 
-        const emptyHint = "";
+        if (bridge?.renderTabs) {
+          const signature = JSON.stringify(payload);
+          if (signature === lastTabBarHTML) return;
+          bridge.renderTabs(payload);
+          lastTabBarHTML = signature;
+          return;
+        }
+
+        const visibleHtml = payload.tabs.map((tab) => `
+          <div class="tab ${tab.active ? "active" : ""}" data-tab="${tab.id}" title="${escapeHtml(tab.title)}">
+            <span class="tab-label">${escapeHtml(tab.label)}</span>
+            <button class="tab-close" data-close-tab="${tab.id}" type="button" aria-label="Close tab">&times;</button>
+          </div>
+        `).join("");
+        const overflowItems = payload.overflow.map((tab) =>
+          `<button class="tab-overflow-item" data-overflow-tab="${tab.id}" type="button">${escapeHtml(tab.name)}</button>`
+        ).join("");
         const html = `
           <div class="tab-list">
             ${visibleHtml}
-            ${overflowPill}
+            <div class="tab-overflow-wrap">
+              <button class="tab-overflow-btn" type="button" aria-label="More tabs">+${overflowCount} more</button>
+              <div class="tab-overflow-menu hidden">
+                ${overflowItems}
+              </div>
+            </div>
             <button class="tab plus-tab" type="button" aria-label="New tab">+</button>
           </div>
         `;
@@ -1741,7 +1880,31 @@
         return;
       }
 
-      const emptyHint = openTabs.length ? "" : `<div class="tabs-empty">No open tabs</div>`;
+      const payload = {
+        tabs: allTabs,
+        overflow: [],
+        overflowCount: 0,
+        showEmptyHint: !openTabs.length,
+      };
+
+      if (bridge?.renderTabs) {
+        const signature = JSON.stringify(payload);
+        if (signature === lastTabBarHTML) return;
+        bridge.renderTabs(payload);
+        lastTabBarHTML = signature;
+        return;
+      }
+
+      const dynamicTabs = payload.tabs
+        .map((tab) => `
+          <div class="tab ${tab.active ? "active" : ""}" data-tab="${tab.id}" title="${escapeHtml(tab.title)}">
+            <span class="tab-label">${escapeHtml(tab.label)}</span>
+            <button class="tab-close" data-close-tab="${tab.id}" type="button" aria-label="Close tab">&times;</button>
+          </div>
+        `)
+        .join("");
+
+      const emptyHint = payload.showEmptyHint ? `<div class="tabs-empty">No open tabs</div>` : "";
       const html = `
         <div class="tab-list">
           ${dynamicTabs}
@@ -1908,6 +2071,10 @@
 
     function attachStream(taskId) {
       activeStream = new EventSource(`/api/tasks/${taskId}/events`);
+      // Track the end of bootstrap content to suppress duplicate log events
+      // that overlap with the bootstrap tail.
+      let bootstrapTail = "";
+      let bootstrapDone = false;
 
       activeStream.addEventListener("bootstrap", (event) => {
         if (activeTabId !== taskId) return;
@@ -1917,9 +2084,14 @@
           && data.logs.length > 0
           && !bootstrappedTerminalTasks.has(taskId)
         ) {
-          terminal.write(colorizeTerminalOutput(data.logs));
+          const output = colorizeTerminalOutput(data.logs);
+          terminal.write(output);
           bootstrappedTerminalTasks.add(taskId);
+          // Keep last 256 chars of bootstrap to detect overlap with early log events
+          const raw = String(data.logs || "");
+          bootstrapTail = raw.slice(-256);
         }
+        bootstrapDone = true;
         const task = getTask(taskId);
         if (task && task.status === "running") {
           setTerminalOverlay("", false);
@@ -1930,6 +2102,17 @@
         if (activeTabId !== taskId) return;
         const data = JSON.parse(event.data || "{}");
         if (!data.message) return;
+        // Suppress log events whose content was already in the bootstrap payload.
+        // This prevents the "duplicate welcome block" when the SSE subscribe channel
+        // has buffered events that overlap with the bootstrap log tail.
+        if (bootstrapTail && bootstrapDone) {
+          const msg = String(data.message || "");
+          if (bootstrapTail.includes(msg.slice(0, 128))) {
+            return;
+          }
+          // After the first non-overlapping log event, stop checking.
+          bootstrapTail = "";
+        }
         terminal.write(colorizeTerminalOutput(data.message));
         setTerminalOverlay("", false);
       });
@@ -2223,14 +2406,14 @@
     function FileIcon(name, kind = "file") {
       const icon = fileIconType(name, kind);
       const cls = icon.cls ? ` ${icon.cls}` : "";
-      return `<span class="file-icon${cls} w-[18px] min-w-[18px] h-[14px] inline-flex items-center justify-center text-[8px] leading-none lowercase tracking-[0.01em] border border-[#3C322F] rounded text-[#B4A79D] bg-[#221C1A]" aria-hidden="true">${icon.label}</span>`;
+      return `<span class="file-icon${cls}" aria-hidden="true">${icon.label}</span>`;
     }
 
     function FolderGroupLabel(label) {
       return `
-        <div class="change-group-label min-h-[22px] flex items-center gap-1.5 px-1.5 text-[#9F9288] text-xs bg-transparent font-mono tracking-[0.015em]">
+        <div class="change-group-label">
           ${FileIcon(label, "dir")}
-          <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(label)}</span>
+          <span class="tree-row-label">${escapeHtml(label)}</span>
         </div>
       `;
     }
@@ -2240,28 +2423,19 @@
       const parts = path.split("/").filter(Boolean);
       const name = parts.length ? parts[parts.length - 1] : path;
       const statusClassName = statusBadgeClass(change.status || "modified");
-      const actionClass = mode === "unstaged" ? "stage" : "unstage";
-      const actionSymbol = mode === "unstaged" ? "+" : "−";
-      const actionAttr = mode === "unstaged"
-        ? `data-stage-file="${escapeHtml(path)}"`
-        : `data-unstage-file="${escapeHtml(path)}"`;
-      const actionLabel = mode === "unstaged" ? "Stage file" : "Unstage file";
       const add = Number(change.added || 0);
       const del = Number(change.deleted || 0);
       const selectedClass = selectedPatchFile === path ? " selected" : "";
 
       return `
-        <div class="change-file-row${selectedClass} flex items-center justify-between gap-2 min-h-[24px] px-1.5 rounded-[7px] bg-transparent cursor-pointer hover:bg-[#211B19]" data-patch-file="${escapeHtml(path)}" style="--change-depth:${depth};">
-          <div class="change-file-main min-w-0 flex items-center gap-[7px]">
-            <span class="change-status-icon ${statusClassName} w-[7px] h-[7px] rounded-full flex-none bg-[#8B7F77]" aria-hidden="true"></span>
-            <span class="change-file-name text-sm font-[450] text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(name)}</span>
-            <span class="change-inline-counts inline-flex items-center gap-1.5 text-xs font-mono ml-0.5 whitespace-nowrap">
-              <span class="add text-green-accent">+${add}</span>
-              <span class="del text-red-accent">-${del}</span>
+        <div class="change-file-row${selectedClass}" data-patch-file="${escapeHtml(path)}" style="--change-depth:${depth};">
+          <div class="change-file-main">
+            <span class="change-status-icon ${statusClassName}" aria-hidden="true"></span>
+            <span class="change-file-name">${escapeHtml(name)}</span>
+            <span class="change-inline-counts">
+              <span class="add">+${add}</span>
+            <span class="del">-${del}</span>
             </span>
-          </div>
-          <div class="tree-row-right inline-flex items-center gap-1.5 shrink-0">
-            <button class="tree-action-btn ${actionClass} w-5 min-w-[20px] h-5 min-h-[20px] p-0 rounded-[5px] inline-flex items-center justify-center text-sm leading-none font-semibold border border-[#3C322F] bg-[#231D1B] text-[#CFC3BA] relative z-[1]" ${actionAttr} aria-label="${actionLabel}" type="button">${actionSymbol}</button>
           </div>
         </div>
       `;
@@ -2294,7 +2468,7 @@
 
     function renderChangeList(list, mode) {
       if (!list.length) {
-        return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No ${mode} changes.</div>`;
+        return `<div class="empty">No ${mode} changes.</div>`;
       }
 
       if (changesViewMode === "tree") {
@@ -2302,9 +2476,9 @@
       }
 
       return groupChangesByFolder(list).map((group) => `
-        <div class="change-group mb-1.5 last:mb-0">
+        <div class="change-group">
           ${FolderGroupLabel(group.folder)}
-          <div class="change-group-files ml-4 pl-2 border-l border-[rgba(58,49,48,0.35)] grid gap-0.5">
+          <div class="change-group-files">
             ${group.changes.map((change) => ChangedFileRow(change, mode)).join("")}
           </div>
         </div>
@@ -2318,13 +2492,13 @@
       const add = Number(change.added || 0);
       const del = Number(change.deleted || 0);
       return `
-        <div class="change-file-row commit-file-row flex items-center justify-between gap-2 min-h-[24px] px-1.5 rounded-[7px] bg-transparent" style="--change-depth:${depth};" title="${escapeHtml(path)}">
-          <div class="change-file-main min-w-0 flex items-center gap-[7px]">
-            <span class="change-status-icon modified w-[7px] h-[7px] rounded-full flex-none bg-[#8B7F77]" aria-hidden="true"></span>
-            <span class="change-file-name text-sm font-[450] text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(name)}</span>
-            <span class="change-inline-counts inline-flex items-center gap-1.5 text-xs font-mono ml-0.5 whitespace-nowrap">
-              <span class="add text-green-accent">+${add}</span>
-              <span class="del text-red-accent">-${del}</span>
+        <div class="change-file-row commit-file-row" style="--change-depth:${depth};" title="${escapeHtml(path)}">
+          <div class="change-file-main">
+            <span class="change-status-icon modified" aria-hidden="true"></span>
+            <span class="change-file-name">${escapeHtml(name)}</span>
+            <span class="change-inline-counts">
+              <span class="add">+${add}</span>
+              <span class="del">-${del}</span>
             </span>
           </div>
         </div>
@@ -2334,10 +2508,10 @@
     function renderCommitFiles(files, depth = 0) {
       const list = Array.isArray(files) ? files : [];
       if (!list.length) {
-        return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No files changed.</div>`;
+        return `<div class="empty">No files changed.</div>`;
       }
       return `
-        <div class="change-group-files ml-4 pl-2 border-l border-[rgba(58,49,48,0.35)] grid gap-0.5">
+        <div class="change-group-files">
           ${list.map((file) => CommitFileRow(file, depth + 1)).join("")}
         </div>
       `;
@@ -2354,17 +2528,17 @@
     function renderCommitsList(commits) {
       const list = Array.isArray(commits) ? commits : [];
       if (!list.length) {
-        return `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No commits in this branch.</div>`;
+        return `<div class="empty">No commits in this branch.</div>`;
       }
       return list.map((commit) => {
         const files = Array.isArray(commit.files) ? commit.files : [];
         return `
-          <details class="commit-history-item change-tree-dir block">
-            <summary class="commit-history-summary list-none cursor-pointer min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#A79A91] text-sm rounded-sm bg-transparent hover:bg-[#201A18]">
+          <details class="commit-history-item change-tree-dir">
+            <summary class="commit-history-summary">
               ${TreeChevron()}
-              <span class="commit-history-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis font-mono">${escapeHtml(commitDisplayLabel(commit))}</span>
+              <span class="commit-history-label tree-row-label mono">${escapeHtml(commitDisplayLabel(commit))}</span>
             </summary>
-            <div class="change-tree-children block">
+            <div class="change-tree-children">
               ${renderCommitFiles(files, 0)}
             </div>
           </details>
@@ -2414,13 +2588,13 @@
       });
 
       return `
-        <details class="change-tree-dir block" ${depth < 1 ? "open" : ""} style="--change-depth:${depth};">
-          <summary class="list-none cursor-pointer min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#A79A91] text-sm font-mono rounded-sm bg-transparent hover:bg-[#201A18]">
+        <details class="change-tree-dir" ${depth < 1 ? "open" : ""} style="--change-depth:${depth};">
+          <summary>
             ${TreeChevron()}
             ${FileIcon(name, "dir")}
-            <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(name)}</span>
+            <span class="tree-row-label">${escapeHtml(name)}</span>
           </summary>
-          <div class="change-tree-children block">${childParts.join("")}</div>
+          <div class="change-tree-children">${childParts.join("")}</div>
         </details>
       `;
     }
@@ -2433,9 +2607,9 @@
 
       if (rootFiles.length) {
         parts.push(`
-          <div class="change-group mb-1.5 last:mb-0">
+          <div class="change-group">
             ${FolderGroupLabel("(root)")}
-            <div class="change-group-files ml-4 pl-2 border-l border-[rgba(58,49,48,0.35)] grid gap-0.5">
+            <div class="change-group-files">
               ${rootFiles.map((change) => ChangedFileRow(change, mode, 0)).join("")}
             </div>
           </div>
@@ -2447,6 +2621,102 @@
       });
 
       return parts.join("");
+    }
+
+    function toChangeFileModel(change, mode, depth = 0) {
+      const path = String(change?.path || "");
+      const parts = path.split("/").filter(Boolean);
+      const name = parts.length ? parts[parts.length - 1] : path;
+      return {
+        path,
+        name,
+        statusClass: statusBadgeClass(change?.status || "modified"),
+        added: Number(change?.added || 0),
+        deleted: Number(change?.deleted || 0),
+        selected: selectedPatchFile === path,
+        depth,
+        mode,
+      };
+    }
+
+    function buildGroupedChangeModel(list, mode) {
+      return {
+        view: "grouped",
+        groups: groupChangesByFolder(list).map((group) => ({
+          folder: group.folder,
+          files: group.changes.map((change) => toChangeFileModel(change, mode, 0)),
+        })),
+      };
+    }
+
+    function buildChangeTreeNodeModel(name, node, depth, mode) {
+      const dirs = [...node.dirs.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([dirName, dirNode]) => buildChangeTreeNodeModel(dirName, dirNode, depth + 1, mode));
+      const files = [...node.files]
+        .sort((a, b) => String(a.path || "").localeCompare(String(b.path || "")))
+        .map((file) => toChangeFileModel(file, mode, depth + 1));
+
+      return {
+        name,
+        depth,
+        open: depth < 1,
+        dirs,
+        files,
+      };
+    }
+
+    function buildTreeChangeModel(list, mode) {
+      const tree = buildChangeTree(list);
+      const rootFiles = [...tree.files]
+        .sort((a, b) => String(a.path || "").localeCompare(String(b.path || "")))
+        .map((change) => toChangeFileModel(change, mode, 0));
+      const dirs = [...tree.dirs.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([dirName, dirNode]) => buildChangeTreeNodeModel(dirName, dirNode, 0, mode));
+
+      return {
+        view: "tree",
+        rootFiles,
+        dirs,
+      };
+    }
+
+    function buildChangeListModel(list, mode) {
+      const safeList = Array.isArray(list) ? list : [];
+      if (!safeList.length) {
+        return {
+          empty: true,
+          emptyText: `No ${mode} changes.`,
+        };
+      }
+      return changesViewMode === "tree"
+        ? buildTreeChangeModel(safeList, mode)
+        : buildGroupedChangeModel(safeList, mode);
+    }
+
+    function buildCommitsModel(commits) {
+      const list = Array.isArray(commits) ? commits : [];
+      if (!list.length) {
+        return {
+          empty: true,
+          emptyText: "No commits in this branch.",
+        };
+      }
+      return {
+        empty: false,
+        items: list.map((commit, commitIndex) => {
+          const files = Array.isArray(commit?.files) ? commit.files : [];
+          return {
+            key: `${String(commit?.hash || "commit")}-${commitIndex}`,
+            label: commitDisplayLabel(commit),
+            files: files.map((file) => ({
+              ...toChangeFileModel(file, "staged", 1),
+              selected: false,
+            })),
+          };
+        }),
+      };
     }
 
     function createRepoTreeNode(name = "") {
@@ -2488,20 +2758,20 @@
     function FileTreeRow({ name, kind = "file", depth = 0, open = false, children = "" }) {
       if (kind === "dir") {
         return `
-          <details class="repo-tree-dir block" ${open ? "open" : ""} style="--depth:${depth};">
-            <summary class="list-none cursor-pointer min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#A79A91] text-sm font-mono rounded-sm bg-transparent hover:bg-[#201A18]">
+          <details class="repo-tree-dir" ${open ? "open" : ""} style="--depth:${depth};">
+            <summary>
               ${TreeChevron()}
               ${FileIcon(name, "dir")}
-              <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(name)}</span>
+              <span class="tree-row-label">${escapeHtml(name)}</span>
             </summary>
-            <div class="repo-tree-children block">${children}</div>
+            <div class="repo-tree-children">${children}</div>
           </details>
         `;
       }
       return `
-        <div class="repo-tree-file min-h-[24px] flex items-center gap-1.5 pr-1.5 text-[#D7CDC4] text-sm font-mono rounded-sm bg-transparent whitespace-nowrap overflow-hidden text-ellipsis hover:bg-[#201A18]" style="--depth:${depth};">
+        <div class="repo-tree-file" style="--depth:${depth};">
           ${FileIcon(name, "file")}
-          <span class="tree-row-label inline-flex items-center min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(name)}</span>
+          <span class="tree-row-label">${escapeHtml(name)}</span>
         </div>
       `;
     }
@@ -2516,9 +2786,62 @@
       return FileTreeRow({ name, kind: "dir", depth, open: depth < 2, children });
     }
 
+    function buildRepoTreeNodeModel(name, node, depth = 0, keyPrefix = "") {
+      const dirs = [...node.dirs.values()]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((child) => buildRepoTreeNodeModel(child.name, child, depth + 1, `${keyPrefix}/${name}`));
+      const files = [...node.files]
+        .sort((a, b) => a.localeCompare(b))
+        .map((file) => ({ name: file, depth: depth + 1 }));
+
+      return {
+        key: `${keyPrefix}/${name}`.replace(/^\/+/, ""),
+        name,
+        depth,
+        open: depth < 2,
+        dirs,
+        files,
+      };
+    }
+
+    function buildRepoFilesTreeModel(entries) {
+      const safeEntries = Array.isArray(entries) ? entries : [];
+      if (!safeEntries.length) {
+        return {
+          empty: true,
+          emptyText: "No files found.",
+          nodes: [],
+        };
+      }
+
+      const rootTree = buildRepoTree(safeEntries);
+      const nodes = [];
+
+      if (rootTree.files.length) {
+        const rootNode = createRepoTreeNode("(root)");
+        rootNode.files = [...rootTree.files];
+        nodes.push(buildRepoTreeNodeModel("(root)", rootNode, 0, "root"));
+      }
+
+      const topDirs = [...rootTree.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
+      topDirs.forEach((node) => {
+        nodes.push(buildRepoTreeNodeModel(node.name, node, 0, "root"));
+      });
+
+      return {
+        empty: false,
+        nodes,
+      };
+    }
+
     function renderRepoFilesTree(entries) {
+      const bridge = reactBridge();
+      if (bridge?.renderRepoFilesTree) {
+        bridge.renderRepoFilesTree(buildRepoFilesTreeModel(entries));
+        return;
+      }
       if (!entries?.length) {
-        repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">No files found.</div>`;
+        repoFilesTreeEl.innerHTML = `<div class="empty">No files found.</div>`;
         return;
       }
       const rootTree = buildRepoTree(entries);
@@ -2576,7 +2899,12 @@
         repoFilesMetaEl.textContent = "No active workspace";
         repoFilesMetaEl.title = "No active workspace";
         repoFilesEntriesCache = [];
-        repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">Select a workspace to view files.</div>`;
+        const bridge = reactBridge();
+        if (bridge?.renderRepoFilesTree) {
+          bridge.renderRepoFilesTree({ empty: true, emptyText: "Select a workspace to view files.", nodes: [] });
+        } else {
+          repoFilesTreeEl.innerHTML = `<div class="empty">Select a workspace to view files.</div>`;
+        }
         return;
       }
 
@@ -2593,7 +2921,16 @@
         repoFilesMetaEl.textContent = "Files";
         repoFilesMetaEl.title = "Files";
         repoFilesEntriesCache = [];
-        repoFilesTreeEl.innerHTML = `<div class="empty text-[#9A8E86] text-sm border border-dashed border-[#413733] rounded-md p-2.5">${escapeHtml(error.message || String(error))}</div>`;
+        const bridge = reactBridge();
+        if (bridge?.renderRepoFilesTree) {
+          bridge.renderRepoFilesTree({
+            empty: true,
+            emptyText: String(error.message || String(error)),
+            nodes: [],
+          });
+        } else {
+          repoFilesTreeEl.innerHTML = `<div class="empty">${escapeHtml(error.message || String(error))}</div>`;
+        }
       }
     }
 
@@ -2655,10 +2992,17 @@
       }
       renderChangeViewModeButton();
 
-      stagedListEl.innerHTML = renderChangeList(staged, "staged");
-      unstagedListEl.innerHTML = renderChangeList(unstaged, "unstaged");
-      if (commitsListEl) {
-        commitsListEl.innerHTML = renderCommitsList(currentGitCommits);
+      const bridge = reactBridge();
+      if (bridge?.renderStagedChanges && bridge?.renderUnstagedChanges && bridge?.renderCommits) {
+        bridge.renderStagedChanges(buildChangeListModel(staged, "staged"));
+        bridge.renderUnstagedChanges(buildChangeListModel(unstaged, "unstaged"));
+        bridge.renderCommits(buildCommitsModel(currentGitCommits));
+      } else {
+        stagedListEl.innerHTML = renderChangeList(staged, "staged");
+        unstagedListEl.innerHTML = renderChangeList(unstaged, "unstaged");
+        if (commitsListEl) {
+          commitsListEl.innerHTML = renderCommitsList(currentGitCommits);
+        }
       }
     }
 
@@ -3463,20 +3807,27 @@
           .catch((error) => alert(error.message || String(error)));
       });
 
-      document.getElementById("commitBtn").addEventListener("click", () => {
-        commitChanges().catch((error) => alert(error.message || String(error)));
-      });
+      const commitBtn = document.getElementById("commitBtn");
+      if (commitBtn) {
+        commitBtn.addEventListener("click", () => {
+          commitChanges().catch((error) => alert(error.message || String(error)));
+        });
+      }
 
-      document.getElementById("suggestCommitBtn").addEventListener("click", () => {
-        const staged = currentGitStatus.staged || [];
-        if (staged.length === 0) return;
-        const files = staged.map((f) => f.path.split("/").pop()).slice(0, 5);
-        const prefix = staged.some((f) => f.status === "A") ? "feat" : "fix";
-        const msg = `${prefix}: update ${files.join(", ")}`;
-        const el = document.getElementById("commitMessage");
-        el.value = msg;
-        el.style.fontStyle = "normal";
-      });
+      const suggestCommitBtn = document.getElementById("suggestCommitBtn");
+      if (suggestCommitBtn) {
+        suggestCommitBtn.addEventListener("click", () => {
+          const staged = currentGitStatus.staged || [];
+          if (staged.length === 0) return;
+          const files = staged.map((f) => f.path.split("/").pop()).slice(0, 5);
+          const prefix = staged.some((f) => f.status === "A") ? "feat" : "fix";
+          const msg = `${prefix}: update ${files.join(", ")}`;
+          const el = document.getElementById("commitMessage");
+          if (!el) return;
+          el.value = msg;
+          el.style.fontStyle = "normal";
+        });
+      }
 
       rightTabChangesEl.addEventListener("click", () => {
         setRightPanelMode("changes");
@@ -3492,11 +3843,14 @@
         });
       }
 
-      document.getElementById("stageAllBtn").addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        await stageAllFiles();
-      });
+      const stageAllBtn = document.getElementById("stageAllBtn");
+      if (stageAllBtn) {
+        stageAllBtn.addEventListener("click", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          await stageAllFiles();
+        });
+      }
       const unstageAllBtn = document.getElementById("unstageAllBtn");
       if (unstageAllBtn) {
         unstageAllBtn.addEventListener("click", async (event) => {
@@ -3573,6 +3927,7 @@
     }
 
     async function boot() {
+      renderUiBuildVersion();
       ensureTerminal();
       setTerminalOverlay("Open a task in this workspace to attach terminal.", true);
       setPatchPreviewMessage("Select a changed file to open a diff view.");
