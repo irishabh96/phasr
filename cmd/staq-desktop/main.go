@@ -72,20 +72,6 @@ func run() error {
 		close(serveErrCh)
 	}()
 
-	w := webview.New(debug)
-	if w == nil {
-		return fmt.Errorf("failed to initialize webview")
-	}
-	defer w.Destroy()
-	w.SetTitle(title)
-	w.SetSize(width, height, webview.HintNone)
-
-	appURL := httpURL(listener.Addr().String())
-	w.Navigate(appURL)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	var shutdownOnce sync.Once
 	shutdown := func() {
 		shutdownOnce.Do(func() {
@@ -94,6 +80,37 @@ func run() error {
 			_ = srv.Shutdown(shutdownCtx)
 		})
 	}
+
+	w := webview.New(debug)
+	if w == nil {
+		return fmt.Errorf("failed to initialize webview")
+	}
+	defer w.Destroy()
+	w.SetTitle(title)
+	w.SetSize(width, height, webview.HintNone)
+	if err := w.Bind("desktopQuit", func() {
+		w.Terminate()
+		shutdown()
+	}); err != nil {
+		return fmt.Errorf("bind desktopQuit: %w", err)
+	}
+	w.Init(`
+		window.addEventListener("keydown", (event) => {
+			const key = String(event && event.key ? event.key : "").toLowerCase();
+			if (!event.metaKey || event.ctrlKey || event.altKey || key !== "q") return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (typeof window.desktopQuit === "function") {
+				window.desktopQuit().catch(() => {});
+			}
+		}, true);
+	`)
+
+	appURL := httpURL(listener.Addr().String())
+	w.Navigate(appURL)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	go func() {
 		<-ctx.Done()

@@ -492,14 +492,20 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="workspaceModalTitle"
+      aria-describedby="workspaceModalSubtitle"
     >
       <div
-        class="modal w-[min(560px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+        class="modal w-[min(720px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
       >
         <div
-          class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
+          class="modal-head px-4 py-3 border-b border-[#312927] flex items-start justify-between gap-3 bg-[#1C1715]"
         >
-          <h3 id="workspaceModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">Create Workspace</h3>
+          <div class="grid gap-1">
+            <h3 id="workspaceModalTitle" class="m-0 text-[16px] leading-tight font-semibold text-text-primary">Create Workspace</h3>
+            <p id="workspaceModalSubtitle" class="m-0 text-[12px] leading-[1.35] text-text-tertiary">
+              Add a git repository folder to start tasks in this workspace.
+            </p>
+          </div>
           <button
             id="workspaceModalCloseBtn"
             class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
@@ -508,7 +514,7 @@
             Close
           </button>
         </div>
-        <div class="modal-body px-3 py-[13px] grid gap-3.5">
+        <div class="modal-body px-4 py-3.5 grid gap-3.5">
           <div class="workspace-modal-field grid gap-1">
             <label class="workspace-modal-label" for="workspaceModalName">Workspace name</label>
             <input
@@ -574,7 +580,7 @@
             </div>
           </div>
         </div>
-        <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
+        <div class="modal-foot px-4 py-2.5 pb-3.5 border-t border-[#312927] flex items-center justify-end gap-2.5 bg-[#1C1715]">
           <button
             id="workspaceModalCancelBtn"
             class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
