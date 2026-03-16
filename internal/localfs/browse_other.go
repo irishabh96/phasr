@@ -19,3 +19,7 @@ func OpenURL(target string) error {
 func OpenInIDE(path, ide string) error {
 	return fmt.Errorf("open in ide is supported only on macOS desktop runtime")
 }
+
+func OpenInTerminal(path string) error {
+	return fmt.Errorf("open in terminal is supported only on macOS desktop runtime")
+}

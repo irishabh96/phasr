@@ -2020,7 +2020,7 @@ kbd {
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
-  min-width: 180px;
+  min-width: 208px;
   padding: var(--space-4);
   border-radius: var(--radius-8);
   border: 1px solid var(--border-default);
@@ -2038,6 +2038,9 @@ kbd {
   border-radius: var(--radius-6);
   background: transparent;
   color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
   text-align: left;
   padding: 0 var(--space-8);
   font-size: 12px;
@@ -2048,6 +2051,42 @@ kbd {
 .context-open-ide-item:hover {
   background: var(--surface-hover);
   color: var(--text-primary);
+}
+
+.context-open-ide-item-icon {
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--text-secondary) 90%, var(--text-tertiary));
+}
+
+.context-open-ide-item-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.context-open-ide-item-icon img {
+  width: 14px;
+  height: 14px;
+  display: block;
+  object-fit: contain;
+}
+
+.context-open-ide-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-open-ide-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 3px var(--space-4);
 }
 
 .toast-viewport {
@@ -2078,6 +2117,12 @@ kbd {
 .toast.toast-error {
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
+.toast.toast-success {
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 9%, var(--bg-secondary));
   color: var(--text-primary);
 }
 

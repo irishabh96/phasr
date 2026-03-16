@@ -93,6 +93,10 @@ func OpenInIDE(path, ide string) error {
 	return nil
 }
 
+func OpenInTerminal(path string) error {
+	return OpenInIDE(path, "Terminal")
+}
+
 func runAppleScript(script string) (string, error) {
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {

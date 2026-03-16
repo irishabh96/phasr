@@ -280,7 +280,11 @@
       const text = String(message || "").trim();
       if (!text) return;
       if (!toastViewportEl) {
-        console.error(text);
+        if (type === "error") {
+          console.error(text);
+        } else {
+          console.info(text);
+        }
         return;
       }
       const toast = document.createElement("div");
@@ -425,6 +429,51 @@
       } catch (error) {
         const message = String(error?.message || "Unable to open IDE");
         showToast(`Failed to open: ${message}`, "error");
+      }
+    }
+
+    async function openCurrentCodebaseInTerminal() {
+      const path = currentCodebasePath();
+      if (!path) {
+        showToast("Failed to open: No active workspace path found.", "error");
+        return;
+      }
+      try {
+        await api("/api/local/open-in-terminal", {
+          method: "POST",
+          body: JSON.stringify({ path }),
+        });
+      } catch (error) {
+        const message = String(error?.message || "Unable to open Terminal");
+        showToast(`Failed to open: ${message}`, "error");
+      }
+    }
+
+    async function copyCurrentCodebasePath() {
+      const path = currentCodebasePath();
+      if (!path) {
+        showToast("Failed to copy: No active workspace path found.", "error");
+        return;
+      }
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(path);
+        } else {
+          const tmp = document.createElement("textarea");
+          tmp.value = path;
+          tmp.setAttribute("readonly", "true");
+          tmp.style.position = "absolute";
+          tmp.style.left = "-9999px";
+          document.body.appendChild(tmp);
+          tmp.select();
+          const ok = document.execCommand("copy");
+          document.body.removeChild(tmp);
+          if (!ok) throw new Error("Clipboard write failed");
+        }
+        showToast("Path copied to clipboard.", "success", 2200);
+      } catch (error) {
+        const message = String(error?.message || "Clipboard write failed");
+        showToast(`Failed to copy: ${message}`, "error");
       }
     }
 
@@ -3589,11 +3638,20 @@
         openIdeBtnEl.setAttribute("aria-expanded", "true");
       });
       openIdeMenuEl?.addEventListener("click", async (event) => {
-        const target = closestFromEvent(event, "[data-open-ide]");
+        const target = closestFromEvent(event, "[data-open-ide], [data-open-action]");
         if (!target) return;
         event.preventDefault();
         event.stopPropagation();
         closeOpenIdeMenu();
+        const action = target.getAttribute("data-open-action") || target.dataset.openAction || "";
+        if (action === "open-terminal") {
+          await openCurrentCodebaseInTerminal();
+          return;
+        }
+        if (action === "copy-path") {
+          await copyCurrentCodebasePath();
+          return;
+        }
         const ide = target.getAttribute("data-open-ide") || target.dataset.openIde || "";
         await openCurrentCodebaseInIDE(ide);
       });

@@ -419,14 +419,67 @@
             Open
           </button>
           <div id="openIdeMenu" class="hidden context-open-ide-menu" role="menu">
-            <button type="button" class="context-open-ide-item" data-open-ide="Cursor" role="menuitem">Cursor</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="Visual Studio Code" role="menuitem">VS Code</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="Zed" role="menuitem">Zed</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="Windsurf" role="menuitem">Windsurf</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="IntelliJ IDEA" role="menuitem">IntelliJ IDEA</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="WebStorm" role="menuitem">WebStorm</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="Sublime Text" role="menuitem">Sublime Text</button>
-            <button type="button" class="context-open-ide-item" data-open-ide="Xcode" role="menuitem">Xcode</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Cursor" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/cursor.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Cursor</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Visual Studio Code" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/vscode.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">VS Code</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Zed" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/zed.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Zed</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Windsurf" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/windsurf.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Windsurf</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="IntelliJ IDEA" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/intellij-idea.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">IntelliJ IDEA</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="WebStorm" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/webstorm.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">WebStorm</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Sublime Text" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/sublime-text.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Sublime Text</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Xcode" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/ide/xcode.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Xcode</span>
+            </button>
+            <div class="context-open-ide-divider" role="separator"></div>
+            <button type="button" class="context-open-ide-item" data-open-action="open-terminal" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/actions/open-terminal.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Open in Terminal</span>
+            </button>
+            <button type="button" class="context-open-ide-item" data-open-action="copy-path" role="menuitem">
+              <span class="context-open-ide-item-icon" aria-hidden="true">
+                <img src="/static/assets/icons/actions/copy-path.svg" alt="" loading="lazy" decoding="async" />
+              </span>
+              <span class="context-open-ide-item-label">Copy Path</span>
+            </button>
           </div>
         </div>
       </div>
