@@ -414,8 +414,24 @@
           <span class="context-label">UI</span>
           <span id="uiBuildVersion" class="context-value">unknown</span>
         </div>
+        <div id="openIdeWrap" class="context-item context-open-ide-wrap relative">
+          <button id="openIdeBtn" class="context-open-ide-btn" type="button" aria-haspopup="menu" aria-expanded="false" disabled>
+            Open
+          </button>
+          <div id="openIdeMenu" class="hidden context-open-ide-menu" role="menu">
+            <button type="button" class="context-open-ide-item" data-open-ide="Cursor" role="menuitem">Cursor</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Visual Studio Code" role="menuitem">VS Code</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Zed" role="menuitem">Zed</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Windsurf" role="menuitem">Windsurf</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="IntelliJ IDEA" role="menuitem">IntelliJ IDEA</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="WebStorm" role="menuitem">WebStorm</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Sublime Text" role="menuitem">Sublime Text</button>
+            <button type="button" class="context-open-ide-item" data-open-ide="Xcode" role="menuitem">Xcode</button>
+          </div>
+        </div>
       </div>
     </div>
+    <div id="toastViewport" class="toast-viewport" aria-live="polite" aria-atomic="true"></div>
 
     <div
       id="workspaceModalBackdrop"

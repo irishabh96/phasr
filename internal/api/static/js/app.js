@@ -167,6 +167,9 @@
     const taskContextOpenBranchBtnEl = document.getElementById("taskContextOpenBranchBtn");
     const taskContextPathEl = document.getElementById("taskContextPath");
     const uiBuildVersionEl = document.getElementById("uiBuildVersion");
+    const openIdeBtnEl = document.getElementById("openIdeBtn");
+    const openIdeMenuEl = document.getElementById("openIdeMenu");
+    const toastViewportEl = document.getElementById("toastViewport");
 
     const gitTaskLabelEl = document.getElementById("gitTaskLabel");
     const stagedCountChipEl = document.getElementById("stagedCountChip");
@@ -273,6 +276,22 @@
       uiBuildVersionEl.dataset.version = version;
     }
 
+    function showToast(message, type = "error", timeoutMs = 4200) {
+      const text = String(message || "").trim();
+      if (!text) return;
+      if (!toastViewportEl) {
+        console.error(text);
+        return;
+      }
+      const toast = document.createElement("div");
+      toast.className = `toast toast-${type}`;
+      toast.textContent = text;
+      toastViewportEl.appendChild(toast);
+      window.setTimeout(() => {
+        toast.remove();
+      }, Math.max(1200, Number(timeoutMs) || 4200));
+    }
+
     function parseTags(input) {
       return String(input || "")
         .split(",")
@@ -374,6 +393,41 @@
       taskContextBranchMenuEl.classList.add("hidden");
     }
 
+    function closeOpenIdeMenu() {
+      if (!openIdeMenuEl) return;
+      openIdeMenuEl.classList.add("hidden");
+      if (openIdeBtnEl) {
+        openIdeBtnEl.setAttribute("aria-expanded", "false");
+      }
+    }
+
+    function currentCodebasePath() {
+      const contextPath = String(taskContextPathEl?.dataset.path || "").trim();
+      if (contextPath) return contextPath;
+      const activeTaskPath = taskCodePath(getTask(activeTabId));
+      if (activeTaskPath) return activeTaskPath;
+      return String(activeWorkspaceRepoPath() || "").trim();
+    }
+
+    async function openCurrentCodebaseInIDE(ideName) {
+      const ide = String(ideName || "").trim();
+      if (!ide) return;
+      const path = currentCodebasePath();
+      if (!path) {
+        showToast("Failed to open: No active workspace path found.", "error");
+        return;
+      }
+      try {
+        await api("/api/local/open-in-ide", {
+          method: "POST",
+          body: JSON.stringify({ path, ide }),
+        });
+      } catch (error) {
+        const message = String(error?.message || "Unable to open IDE");
+        showToast(`Failed to open: ${message}`, "error");
+      }
+    }
+
     function releaseTabMemory(taskId) {
       const key = String(taskId || "").trim();
       if (!key) return;
@@ -464,6 +518,11 @@
         taskContextPathEl.title = hasPath ? path : "";
         taskContextPathEl.dataset.path = hasPath ? path : "";
         taskContextPathEl.disabled = !hasPath;
+        if (openIdeBtnEl) {
+          openIdeBtnEl.disabled = !hasPath;
+          openIdeBtnEl.dataset.path = hasPath ? path : "";
+          openIdeBtnEl.title = hasPath ? path : "No active workspace path";
+        }
       }
 
       if (nextTask) {
@@ -3518,14 +3577,37 @@
         await openTaskContextLink(taskContextOpenBranchBtnEl.dataset.url);
         closeTaskContextBranchMenu();
       });
+      openIdeBtnEl?.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (openIdeBtnEl.disabled || !openIdeMenuEl) return;
+        const nextHidden = !openIdeMenuEl.classList.contains("hidden");
+        if (nextHidden) {
+          closeOpenIdeMenu();
+          return;
+        }
+        openIdeMenuEl.classList.remove("hidden");
+        openIdeBtnEl.setAttribute("aria-expanded", "true");
+      });
+      openIdeMenuEl?.addEventListener("click", async (event) => {
+        const target = closestFromEvent(event, "[data-open-ide]");
+        if (!target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeOpenIdeMenu();
+        const ide = target.getAttribute("data-open-ide") || target.dataset.openIde || "";
+        await openCurrentCodebaseInIDE(ide);
+      });
       document.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
           closeTaskContextBranchMenu();
+          closeOpenIdeMenu();
           return;
         }
-        if (target.closest("#taskContextBranch") || target.closest("#taskContextBranchMenu")) return;
-        closeTaskContextBranchMenu();
+        const inBranchMenu = Boolean(target.closest("#taskContextBranch") || target.closest("#taskContextBranchMenu"));
+        const inOpenIdeMenu = Boolean(target.closest("#openIdeWrap"));
+        if (!inBranchMenu) closeTaskContextBranchMenu();
+        if (!inOpenIdeMenu) closeOpenIdeMenu();
       });
 
       // Capture-phase Ctrl+C handler to guarantee interrupt delivery even when
@@ -3600,9 +3682,12 @@
           return;
         }
 
-        if (event.key === "Escape" && !taskContextBranchMenuEl.classList.contains("hidden")) {
-          closeTaskContextBranchMenu();
-          if (!isWorkspaceModalOpen() && !isNewTaskModalOpen()) return;
+        if (event.key === "Escape") {
+          const branchMenuOpen = !taskContextBranchMenuEl.classList.contains("hidden");
+          const ideMenuOpen = openIdeMenuEl ? !openIdeMenuEl.classList.contains("hidden") : false;
+          if (branchMenuOpen) closeTaskContextBranchMenu();
+          if (ideMenuOpen) closeOpenIdeMenu();
+          if ((branchMenuOpen || ideMenuOpen) && !isWorkspaceModalOpen() && !isNewTaskModalOpen()) return;
         }
 
         if (isNewTaskModalOpen()) {

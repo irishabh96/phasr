@@ -15,3 +15,7 @@ func OpenDirectory(path string) error {
 func OpenURL(target string) error {
 	return fmt.Errorf("open url is supported only on macOS desktop runtime")
 }
+
+func OpenInIDE(path, ide string) error {
+	return fmt.Errorf("open in ide is supported only on macOS desktop runtime")
+}

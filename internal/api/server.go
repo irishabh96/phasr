@@ -59,6 +59,7 @@ func NewServer(opts Options) (http.Handler, error) {
 	mux.HandleFunc("/api/local/git-metadata", s.handleGitMetadata)
 	mux.HandleFunc("/api/local/open-directory", s.handleOpenDirectory)
 	mux.HandleFunc("/api/local/open-url", s.handleOpenURL)
+	mux.HandleFunc("/api/local/open-in-ide", s.handleOpenInIDE)
 	mux.HandleFunc("/api/local/validate-directory", s.handleValidateDirectory)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
@@ -186,6 +187,54 @@ func (s *server) handleOpenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"opened": rawURL})
+}
+
+func (s *server) handleOpenInIDE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var payload struct {
+		Path string `json:"path"`
+		IDE  string `json:"ide"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	ide := strings.TrimSpace(payload.IDE)
+	if ide == "" {
+		writeError(w, http.StatusBadRequest, "ide is required")
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusBadRequest, "path does not exist")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	if err := localfs.OpenInIDE(path, ide); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opened": path, "ide": ide})
 }
 
 func (s *server) handleValidateDirectory(w http.ResponseWriter, r *http.Request) {

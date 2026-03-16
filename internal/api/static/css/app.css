@@ -750,9 +750,11 @@ kbd {
 }
 
 #runAgentBtn {
-  min-width: 120px !important;
-  padding: 0 12px !important;
-  align-self: stretch;
+  min-width: 104px !important;
+  min-height: 32px !important;
+  height: 32px !important;
+  padding: 0 10px !important;
+  align-self: center;
 }
 
 #runAgentBtn:hover,
@@ -1977,6 +1979,106 @@ kbd {
 
 #uiBuildVersion {
   letter-spacing: 0.015em;
+}
+
+.context-open-ide-wrap {
+  position: relative;
+}
+
+.context-open-ide-btn {
+  min-height: 20px;
+  height: 20px;
+  border-radius: var(--radius-6);
+  border: 1px solid var(--border-default);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 0 var(--space-8);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.context-open-ide-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.context-open-ide-btn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.context-open-ide-btn:disabled:hover {
+  border-color: var(--border-default);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.context-open-ide-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 180px;
+  padding: var(--space-4);
+  border-radius: var(--radius-8);
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-elevated);
+  display: grid;
+  gap: 2px;
+  z-index: 40;
+}
+
+.context-open-ide-item {
+  width: 100%;
+  min-height: 28px;
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  padding: 0 var(--space-8);
+  font-size: 12px;
+  line-height: 1.2;
+  font-family: var(--font-sans);
+}
+
+.context-open-ide-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.toast-viewport {
+  position: fixed;
+  right: var(--space-12);
+  bottom: var(--space-12);
+  z-index: 5200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 280px;
+  max-width: 420px;
+  border-radius: var(--radius-8);
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  box-shadow: var(--shadow-elevated);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+
+.toast.toast-error {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-secondary));
+  color: var(--text-primary);
 }
 
 .context-label {
