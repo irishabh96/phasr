@@ -297,6 +297,7 @@ func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) e
 		command = inlineCommand
 		promptSeed = ""
 	}
+	keepShellAlive := shouldKeepShellAlive(command)
 	worktreePath := t.WorktreePath
 	logFile := t.LogFile
 	preCommands := []string{}
@@ -311,13 +312,14 @@ func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) e
 	m.mu.Unlock()
 
 	pid, err := m.process.Start(process.StartSpec{
-		TaskID:      id,
-		Command:     command,
-		WorkDir:     worktreePath,
-		LogFile:     logFile,
-		PreCommands: preCommands,
-		Cols:        cols,
-		Rows:        rows,
+		TaskID:         id,
+		Command:        command,
+		WorkDir:        worktreePath,
+		LogFile:        logFile,
+		PreCommands:    preCommands,
+		KeepShellAlive: keepShellAlive,
+		Cols:           cols,
+		Rows:           rows,
 	})
 	if err != nil {
 		return err
@@ -364,6 +366,26 @@ func appendPromptAsArgument(command, prompt string) (string, bool) {
 		return baseCommand + " " + shellQuoteArg(basePrompt), true
 	default:
 		return "", false
+	}
+}
+
+func shouldKeepShellAlive(command string) bool {
+	baseCommand := strings.TrimSpace(command)
+	if baseCommand == "" {
+		return false
+	}
+
+	parts := strings.Fields(baseCommand)
+	if len(parts) == 0 {
+		return false
+	}
+
+	binary := strings.ToLower(filepath.Base(parts[0]))
+	switch binary {
+	case "codex", "claude", "gemini", "copilot", "opencode":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -802,10 +824,20 @@ func (m *Manager) SendInput(id, input string) error {
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
 	}
-	if t.Status != domain.StatusRunning {
+	if t.Status != domain.StatusRunning && t.Status != domain.StatusPending && !m.process.IsRunning(id) {
 		return fmt.Errorf("task %s is not running", id)
 	}
 	return m.process.WriteInput(id, input)
+}
+
+func (m *Manager) Interrupt(id string) error {
+	m.mu.RLock()
+	_, ok := m.tasks[id]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	return m.process.Interrupt(id)
 }
 
 func (m *Manager) ResizeTerminal(id string, cols, rows uint16) error {

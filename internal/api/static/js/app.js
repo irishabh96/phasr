@@ -28,6 +28,7 @@
     let terminalBackendResizeTimer = null;
     let lastPtyCols = 0;
     let lastPtyRows = 0;
+    let lastInterruptHandledAt = 0;
     const bootstrappedTerminalTasks = new Set();
     let inputBuffer = "";
     let flushTimer = null;
@@ -38,6 +39,8 @@
     let currentGitCommitsTotal = 0;
     let gitStatusRefreshSeq = 0;
     let lastGitRenderSignature = "";
+    let lastWorkspaceListHTML = "";
+    let lastTabBarHTML = "";
     let selectedPatchFile = "";
     let centerViewMode = "terminal";
     let changesViewMode = "grouped";
@@ -174,6 +177,7 @@
     let newTabTypeSelection = { preferredWorkspace: "", rootTaskID: "" };
     const taskContextRepoMetaCache = new Map();
     let taskContextBranchLookupSeq = 0;
+    let taskContextBranchLookupKey = "";
 
     function escapeHtml(value) {
       return String(value || "")
@@ -192,6 +196,32 @@
         .filter((item, idx, arr) => arr.findIndex((x) => x.toLowerCase() === item.toLowerCase()) === idx);
     }
 
+    function isCtrlC(event) {
+      const key = String(event?.key || "").toLowerCase();
+      const code = String(event?.code || "");
+      const keyCode = Number(event?.keyCode || 0);
+      const which = Number(event?.which || 0);
+      const charCode = Number(event?.charCode || 0);
+      const isControl = !!(event?.ctrlKey || event?.getModifierState?.("Control"));
+      return isControl
+        && !event?.metaKey
+        && !event?.altKey
+        && !event?.shiftKey
+        && (key === "c" || key === "\x03" || code === "KeyC" || keyCode === 67 || which === 67 || charCode === 3);
+    }
+
+    function interruptOrStopActiveTask() {
+      const taskId = String(activeTabId || "").trim();
+      if (!taskId) return false;
+      const task = getTask(taskId);
+      if (!task) return false;
+      const status = String(task.status || "").toLowerCase();
+      const isRunningLike = status === "running" || status === "pending";
+      if (!isRunningLike) return false;
+      flushInputImmediately("\x03");
+      return true;
+    }
+
     function statusClass(status) {
       return `status-${status || "pending"}`;
     }
@@ -207,9 +237,6 @@
     const taskHeaderEl = document.getElementById("taskHeader");
     const taskTitleTextEl = document.getElementById("taskTitleText");
     const taskStatusDotEl = document.getElementById("taskStatusDot");
-    const taskHeaderChipEl = document.getElementById("taskHeaderChip");
-    const taskStopBtnEl = document.getElementById("taskStopBtn");
-    const taskResumeBtnEl = document.getElementById("taskResumeBtn");
 
     function updateTaskHeader(task = null) {
       const nextTask = task || getTask(activeTabId);
@@ -220,25 +247,7 @@
       taskTitleTextEl.textContent = nextTask.name || "untitled task";
 
       const isRunning = nextTask.status === "running" || nextTask.status === "pending";
-      const isStopped = nextTask.status === "completed" || nextTask.status === "failed" || nextTask.status === "stopped";
       taskStatusDotEl.classList.toggle("active", isRunning);
-
-      // Chip label
-      if (isRunning) {
-        taskHeaderChipEl.textContent = "live transcript";
-        taskHeaderChipEl.classList.remove("hidden");
-      } else {
-        taskHeaderChipEl.textContent = nextTask.status || "done";
-        taskHeaderChipEl.classList.remove("hidden");
-      }
-
-      // Stop button (visible when running/pending)
-      taskStopBtnEl.classList.toggle("hidden", !isRunning);
-      taskStopBtnEl.dataset.stop = nextTask.id;
-
-      // Resume button (visible when stopped/completed/failed)
-      taskResumeBtnEl.classList.toggle("hidden", !isStopped);
-      taskResumeBtnEl.dataset.resume = nextTask.id;
 
       taskHeaderEl.classList.remove("hidden");
     }
@@ -288,17 +297,25 @@
     async function loadTaskContextBranchActions(pathValue, branchValue) {
       const path = String(pathValue || "").trim();
       const branch = String(branchValue || "").trim();
-      const lookupSeq = ++taskContextBranchLookupSeq;
-      setTaskContextBranchActions({});
 
-      if (!path || !branch || branch === "-") return;
+      if (!path || !branch || branch === "-") {
+        taskContextBranchLookupKey = "";
+        setTaskContextBranchActions({});
+        return;
+      }
 
       const cacheKey = `${path}::${branch}`;
+      if (cacheKey === taskContextBranchLookupKey) return;
+      taskContextBranchLookupKey = cacheKey;
+
       const cached = taskContextRepoMetaCache.get(cacheKey);
       if (cached) {
         setTaskContextBranchActions(cached);
         return;
       }
+
+      const lookupSeq = ++taskContextBranchLookupSeq;
+      setTaskContextBranchActions({});
 
       try {
         const data = await api("/api/local/git-metadata", {
@@ -306,6 +323,7 @@
           body: JSON.stringify({ path, branch }),
         });
         if (lookupSeq !== taskContextBranchLookupSeq) return;
+        if (cacheKey !== taskContextBranchLookupKey) return;
         const nextActions = {
           provider: String(data.provider || ""),
           baseBranch: String(data.base_branch || ""),
@@ -316,6 +334,7 @@
         setTaskContextBranchActions(nextActions);
       } catch (_) {
         if (lookupSeq !== taskContextBranchLookupSeq) return;
+        if (cacheKey !== taskContextBranchLookupKey) return;
         setTaskContextBranchActions({});
       }
     }
@@ -1175,6 +1194,16 @@
       openTaskGroup(taskRootId(firstTask), firstTask.id);
     }
 
+    async function openOrCreateDefaultTaskForWorkspace(workspaceID) {
+      const tasks = tasksForWorkspace(workspaceID);
+      if (tasks.length) {
+        const firstTask = tasks[0];
+        openTaskGroup(taskRootId(firstTask), firstTask.id);
+        return;
+      }
+      await createTerminalTab({ preferredWorkspace: workspaceID, rootTaskID: "" });
+    }
+
     function taskGroupsForWorkspace(workspaceID) {
       const grouped = new Map();
       for (const task of tasksForWorkspace(workspaceID)) {
@@ -1306,6 +1335,15 @@
       terminal.attachCustomKeyEventHandler((event) => {
         if (event.type !== "keydown") return true;
 
+        // Force Ctrl+C to PTY to preserve terminal interrupt behavior in webview.
+        if (isCtrlC(event)) {
+          if (interruptOrStopActiveTask()) {
+            lastInterruptHandledAt = Date.now();
+            event.preventDefault();
+            return false;
+          }
+        }
+
         // Cmd+Backspace: clear line (Ctrl+U + left arrow)
         if (event.key === "Backspace" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
           event.preventDefault();
@@ -1433,6 +1471,11 @@
           body: JSON.stringify({ input: data, append_newline: false }),
         });
       } catch (_) {
+        if (data === "\x03") {
+          try {
+            await api(`/api/tasks/${taskId}/terminal/interrupt`, { method: "POST" });
+          } catch (_) {}
+        }
         // Signal on a non-running task is intentionally dropped — don't restart.
       }
     }
@@ -1567,7 +1610,10 @@
 
     function renderWorkspaces() {
       if (!workspaces.length) {
-        workspaceListEl.innerHTML = `<div class="sidebar-empty">No workspaces</div>`;
+        const html = `<div class="sidebar-empty">No workspaces</div>`;
+        if (html === lastWorkspaceListHTML) return;
+        workspaceListEl.innerHTML = html;
+        lastWorkspaceListHTML = html;
         return;
       }
       const workspaceRows = workspaces.map((workspace, idx) => {
@@ -1612,7 +1658,7 @@
         return { html, latestUpdatedAtMs, originalIndex: idx };
       });
 
-      workspaceListEl.innerHTML = workspaceRows
+      const html = workspaceRows
         .sort((a, b) => {
           if (b.latestUpdatedAtMs !== a.latestUpdatedAtMs) {
             return b.latestUpdatedAtMs - a.latestUpdatedAtMs;
@@ -1621,6 +1667,9 @@
         })
         .map((row) => row.html)
         .join("");
+      if (html === lastWorkspaceListHTML) return;
+      workspaceListEl.innerHTML = html;
+      lastWorkspaceListHTML = html;
     }
 
     function renderWorkspaceTasks() {
@@ -1679,24 +1728,30 @@
           </div>`;
 
         const emptyHint = "";
-        tabBarEl.innerHTML = `
+        const html = `
           <div class="tab-list">
             ${visibleHtml}
             ${overflowPill}
             <button class="tab plus-tab" type="button" aria-label="New tab">+</button>
           </div>
         `;
+        if (html === lastTabBarHTML) return;
+        tabBarEl.innerHTML = html;
+        lastTabBarHTML = html;
         return;
       }
 
       const emptyHint = openTabs.length ? "" : `<div class="tabs-empty">No open tabs</div>`;
-      tabBarEl.innerHTML = `
+      const html = `
         <div class="tab-list">
           ${dynamicTabs}
           <button class="tab plus-tab" type="button" aria-label="New tab">+</button>
         </div>
         ${emptyHint}
       `;
+      if (html === lastTabBarHTML) return;
+      tabBarEl.innerHTML = html;
+      lastTabBarHTML = html;
     }
 
     function closeTab(taskId) {
@@ -2628,43 +2683,6 @@
       }
     }
 
-    async function autoCreateTaskForWorkspace(workspace) {
-      const workspaceName = String(workspace?.name || getWorkspace(activeWorkspace)?.name || "").trim();
-      const workspaceRepoPath = workspace?.repo_path || "";
-      const selectedAgent = String(agentSelectEl.value || "").trim();
-      const command = AGENT_COMMANDS[selectedAgent] || commandInputEl.value.trim();
-      if (!AGENT_COMMANDS[selectedAgent]) {
-        throw new Error("Agent is required. Choose one in \"Run with\" first.");
-      }
-      if (!command) {
-        throw new Error("Agent command is required to auto-create workspace task.");
-      }
-      if (!workspaceName) {
-        throw new Error("Workspace name is missing.");
-      }
-      if (!workspaceRepoPath) {
-        throw new Error("Workspace repo path is missing.");
-      }
-
-      const payload = {
-        name: `${workspaceName}-session`,
-        workspace: workspaceName,
-        tags: [],
-        repo_path: workspaceRepoPath,
-        command,
-        prompt: promptInputEl.value,
-        preset: presetSelectEl.value,
-        direct_repo: false,
-        ...taskStartTerminalSize(),
-      };
-
-      const result = await api("/api/tasks", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      return result.task || null;
-    }
-
     function setRunAgentBtnState(running) {
       const labelEl = document.getElementById("runAgentLabel");
       if (running) {
@@ -2697,7 +2715,6 @@
         }
         agentSelectEl.value = selectedAgent;
         syncProviderPills();
-
         const command = AGENT_COMMANDS[selectedAgent] || commandInputEl.value.trim();
         commandInputEl.value = command;
 
@@ -3045,19 +3062,10 @@
         }
         setWorkspaceModalCreateLoading(true);
         try {
-          const existingWorkspaceIDs = new Set(workspaces.map((workspace) => workspaceId(workspace).toLowerCase()));
           const data = await api("/api/workspaces", {
             method: "POST",
             body: JSON.stringify({ name: cleanName, repo_path: repoPath, init_git: false }),
           });
-          const returnedWorkspaceID = workspaceId(data.workspace);
-          const workspaceAlreadyExisted = Boolean(
-            returnedWorkspaceID && existingWorkspaceIDs.has(returnedWorkspaceID.toLowerCase())
-          );
-          let createdTask = null;
-          if (!workspaceAlreadyExisted) {
-            createdTask = await autoCreateTaskForWorkspace(data.workspace);
-          }
 
           workspaces = data.workspaces || workspaces;
           activeWorkspace = workspaceId(data.workspace) || activeWorkspace;
@@ -3065,11 +3073,7 @@
           closeWorkspaceModal();
           await loadWorkspaces();
           await loadTasks({ keepTab: true });
-          if (createdTask?.id) {
-            openTab(createdTask.id);
-          } else {
-            openFirstTaskForWorkspace(activeWorkspace);
-          }
+          await openOrCreateDefaultTaskForWorkspace(activeWorkspace);
         } catch (error) {
           const message = error.message || String(error);
           const isNotGitRepo = message.toLowerCase().includes("not a git repo");
@@ -3105,16 +3109,13 @@
             method: "POST",
             body: JSON.stringify({ name, repo_path: repoPath, init_git: true }),
           });
-          const createdTask = await autoCreateTaskForWorkspace(data.workspace);
           workspaces = data.workspaces || workspaces;
           activeWorkspace = workspaceId(data.workspace) || activeWorkspace;
           expandedWorkspaces.add(activeWorkspace);
           closeWorkspaceModal();
           await loadWorkspaces();
           await loadTasks({ keepTab: true });
-          if (createdTask?.id) {
-            openTab(createdTask.id);
-          }
+          await openOrCreateDefaultTaskForWorkspace(activeWorkspace);
         } catch (error) {
           setWorkspaceModalError(error.message || String(error));
         } finally {
@@ -3183,6 +3184,32 @@
         closeTaskContextBranchMenu();
       });
 
+      // Capture-phase Ctrl+C handler to guarantee interrupt delivery even when
+      // focus/propagation inside xterm or overlays is inconsistent.
+      document.addEventListener("keydown", (event) => {
+        if (Date.now() - lastInterruptHandledAt < 25) return;
+        if (!isCtrlC(event)) return;
+
+        const target = event.target instanceof Element ? event.target : null;
+        const inTerminal = !!target?.closest("#terminalPanel");
+        const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+        const terminalFocused = !!activeElement?.closest("#terminalPanel");
+        if (inTerminal || terminalFocused) return;
+        const isEditable = !inTerminal && !!target?.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+        const shouldInterrupt = centerViewMode === "terminal"
+          && Boolean(activeTabId)
+          && !isWorkspaceModalOpen()
+          && !isNewTaskModalOpen()
+          && !isNewTabTypeModalOpen()
+          && !isEditable;
+
+        if (!shouldInterrupt) return;
+        if (!interruptOrStopActiveTask()) return;
+        lastInterruptHandledAt = Date.now();
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+
       taskContextPathEl.addEventListener("click", async () => {
         const path = String(taskContextPathEl.dataset.path || "").trim();
         if (!path) return;
@@ -3197,7 +3224,32 @@
       });
 
       window.addEventListener("keydown", (event) => {
+        if (Date.now() - lastInterruptHandledAt < 25) return;
         const key = String(event.key || "").toLowerCase();
+
+        // Global fallback: Ctrl+C should still interrupt the active terminal task
+        // even if the xterm textarea temporarily lost focus.
+        if (isCtrlC(event)) {
+          const target = event.target instanceof Element ? event.target : null;
+          const inTerminal = !!target?.closest("#terminalPanel");
+          const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+          const terminalFocused = !!activeElement?.closest("#terminalPanel");
+          if (inTerminal || terminalFocused) return;
+          const isEditableOutsideTerminal = !inTerminal && !!target?.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+          const shouldInterrupt = centerViewMode === "terminal"
+            && Boolean(activeTabId)
+            && !isWorkspaceModalOpen()
+            && !isNewTaskModalOpen()
+            && !isNewTabTypeModalOpen()
+            && !isEditableOutsideTerminal;
+
+          if (!shouldInterrupt) return;
+          if (!interruptOrStopActiveTask()) return;
+          lastInterruptHandledAt = Date.now();
+          event.preventDefault();
+          return;
+        }
+
         if ((event.metaKey || event.ctrlKey) && key === "n") {
           event.preventDefault();
           openWorkspaceModal();
@@ -3401,18 +3453,6 @@
           alert(error.message || String(error));
         }
       });
-
-
-      taskStopBtnEl.addEventListener("click", async () => {
-        const taskId = taskStopBtnEl.dataset.stop;
-        if (taskId) await runTaskAction("stop", taskId);
-      });
-
-      taskResumeBtnEl.addEventListener("click", async () => {
-        const taskId = taskResumeBtnEl.dataset.resume;
-        if (taskId) await runTaskAction("resume", taskId);
-      });
-
       document.getElementById("refreshGitBtn").addEventListener("click", () => {
         refreshGitStatus()
           .then(async () => {

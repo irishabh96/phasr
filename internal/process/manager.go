@@ -36,13 +36,14 @@ type Event struct {
 }
 
 type StartSpec struct {
-	TaskID      string
-	Command     string
-	WorkDir     string
-	LogFile     string
-	PreCommands []string
-	Cols        uint16
-	Rows        uint16
+	TaskID         string
+	Command        string
+	WorkDir        string
+	LogFile        string
+	PreCommands    []string
+	KeepShellAlive bool
+	Cols           uint16
+	Rows           uint16
 }
 
 type ExitResult struct {
@@ -101,7 +102,7 @@ func (m *Manager) Start(spec StartSpec) (int, error) {
 		return 0, fmt.Errorf("open log file: %w", err)
 	}
 
-	script := buildScript(spec.WorkDir, spec.PreCommands, spec.Command)
+	script := buildScript(spec.WorkDir, spec.PreCommands, spec.Command, spec.KeepShellAlive)
 	cmd := exec.Command("zsh", "-lc", script)
 	cmd.Dir = spec.WorkDir
 	cmd.Env = appendDefaultUTF8Env(append(os.Environ(), "TERM=xterm-256color"))
@@ -160,6 +161,31 @@ func (m *Manager) Stop(taskID string, force bool) error {
 		Timestamp: time.Now().UTC(),
 	})
 
+	return nil
+}
+
+func (m *Manager) Interrupt(taskID string) error {
+	m.mu.RLock()
+	rp, ok := m.running[taskID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("task %s is not running", taskID)
+	}
+
+	if err := syscall.Kill(-rp.cmd.Process.Pid, syscall.SIGINT); err != nil && !errors.Is(err, syscall.ESRCH) {
+		// Fallback to direct process signal if process-group signal is unavailable.
+		if err2 := syscall.Kill(rp.cmd.Process.Pid, syscall.SIGINT); err2 != nil && !errors.Is(err2, syscall.ESRCH) {
+			return fmt.Errorf("interrupt task process: %w", err2)
+		}
+	}
+
+	m.Publish(Event{
+		TaskID:    taskID,
+		Type:      EventStatus,
+		Status:    domain.StatusRunning,
+		Message:   "interrupt signal sent",
+		Timestamp: time.Now().UTC(),
+	})
 	return nil
 }
 
@@ -414,7 +440,7 @@ func exitCodeFromError(err error) int {
 	return -1
 }
 
-func buildScript(workDir string, preCommands []string, command string) string {
+func buildScript(workDir string, preCommands []string, command string, keepShellAlive bool) string {
 	lines := []string{"set -e"}
 	if strings.TrimSpace(workDir) != "" {
 		lines = append(lines, "cd -- "+shellQuote(workDir))
@@ -426,7 +452,15 @@ func buildScript(workDir string, preCommands []string, command string) string {
 		}
 		lines = append(lines, trimmed)
 	}
-	lines = append(lines, strings.TrimSpace(command))
+	trimmedCommand := strings.TrimSpace(command)
+	if keepShellAlive {
+		// Keep setup strict, but don't exit the PTY if the main command returns non-zero.
+		lines = append(lines, "set +e")
+	}
+	lines = append(lines, trimmedCommand)
+	if keepShellAlive {
+		lines = append(lines, "exec zsh -il")
+	}
 	return strings.Join(lines, "\n")
 }
 

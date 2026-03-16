@@ -53,7 +53,8 @@ func NewServer(opts Options) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load static assets: %w", err)
 	}
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	staticHandler := http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))
+	mux.Handle("/static/", withNoStore(staticHandler))
 	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
 	mux.HandleFunc("/api/local/git-metadata", s.handleGitMetadata)
 	mux.HandleFunc("/api/local/open-directory", s.handleOpenDirectory)
@@ -557,6 +558,8 @@ func (s *server) handleTaskTerminal(w http.ResponseWriter, r *http.Request, id, 
 		s.handleTerminalInput(w, r, id)
 	case "resize":
 		s.handleTerminalResize(w, r, id)
+	case "interrupt":
+		s.handleTerminalInterrupt(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -865,6 +868,18 @@ func (s *server) handleTerminalResize(w http.ResponseWriter, r *http.Request, id
 	})
 }
 
+func (s *server) handleTerminalInterrupt(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if err := s.tasks.Interrupt(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "interrupted": true})
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -884,5 +899,14 @@ func requestLog(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+func withNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
 	})
 }
