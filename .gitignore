@@ -6,5 +6,5 @@ internal/api/frontend/.vite/
 dist/
 internal/api/static/dist/
 internal/api/static/ui-build-counter.json
-staq
-staq-desktop
+phasr
+phasr-desktop

@@ -48,7 +48,7 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-cp bin/staq-desktop "$MACOS_DIR/$APP_EXECUTABLE"
+cp bin/phasr-desktop "$MACOS_DIR/$APP_EXECUTABLE"
 chmod +x "$MACOS_DIR/$APP_EXECUTABLE"
 cp "$ICON_ICNS" "$RESOURCES_DIR/AppIcon.icns"
 
