@@ -54,6 +54,12 @@ type GitStatus struct {
 	Unstaged []FileChange `json:"unstaged"`
 }
 
+type CommitHistoryItem struct {
+	Hash    string       `json:"hash"`
+	Message string       `json:"message"`
+	Files   []FileChange `json:"files"`
+}
+
 func (s *Service) WorkingTreeStatus(worktreePath string) (GitStatus, error) {
 	statusOut, err := runGit("-C", worktreePath, "status", "--porcelain")
 	if err != nil {
@@ -143,10 +149,27 @@ func (s *Service) UnstageFile(worktreePath, path string) error {
 		return fmt.Errorf("path is required")
 	}
 	out, err := runGit("-C", worktreePath, "restore", "--staged", "--", path)
-	if err != nil {
-		return fmt.Errorf("git restore --staged: %w (%s)", err, strings.TrimSpace(out))
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// In repos without an initial commit, `restore --staged` can fail because HEAD
+	// does not exist yet. Fall back to removing the entry from index.
+	if _, headErr := runGit("-C", worktreePath, "rev-parse", "--verify", "HEAD"); headErr != nil {
+		fallbackOut, fallbackErr := runGit("-C", worktreePath, "rm", "--cached", "-r", "--", path)
+		if fallbackErr == nil {
+			return nil
+		}
+		return fmt.Errorf(
+			"git restore --staged: %w (%s); fallback git rm --cached failed: %v (%s)",
+			err,
+			strings.TrimSpace(out),
+			fallbackErr,
+			strings.TrimSpace(fallbackOut),
+		)
+	}
+
+	return fmt.Errorf("git restore --staged: %w (%s)", err, strings.TrimSpace(out))
 }
 
 func (s *Service) Commit(worktreePath, message string) (string, error) {
@@ -159,6 +182,113 @@ func (s *Service) Commit(worktreePath, message string) (string, error) {
 		return "", fmt.Errorf("git commit: %w (%s)", err, strings.TrimSpace(out))
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func (s *Service) CommitHistory(worktreePath string) ([]CommitHistoryItem, int, error) {
+	if strings.TrimSpace(worktreePath) == "" {
+		return []CommitHistoryItem{}, 0, nil
+	}
+
+	// Branches without any commits have no HEAD yet.
+	if _, headErr := runGit("-C", worktreePath, "rev-parse", "--verify", "HEAD"); headErr != nil {
+		return []CommitHistoryItem{}, 0, nil
+	}
+
+	rangeSpec := commitHistoryRangeSpec(worktreePath)
+
+	countOut, err := runGit("-C", worktreePath, "rev-list", "--count", rangeSpec)
+	if err != nil {
+		return nil, 0, fmt.Errorf("git rev-list --count: %w (%s)", err, strings.TrimSpace(countOut))
+	}
+	total, convErr := strconv.Atoi(strings.TrimSpace(countOut))
+	if convErr != nil {
+		return nil, 0, fmt.Errorf("parse commit count: %w", convErr)
+	}
+
+	logOut, err := runGit(
+		"-C", worktreePath,
+		"log",
+		"--pretty=format:__COMMIT__%H\t%s",
+		"--numstat",
+		"--no-color",
+		rangeSpec,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("git log --numstat: %w (%s)", err, strings.TrimSpace(logOut))
+	}
+
+	return parseCommitHistory(logOut), total, nil
+}
+
+func commitHistoryRangeSpec(worktreePath string) string {
+	// Default: all commits reachable from HEAD.
+	defaultSpec := "HEAD"
+
+	currentBranchOut, err := runGit("-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return defaultSpec
+	}
+	currentBranch := strings.TrimSpace(currentBranchOut)
+	if currentBranch == "" || currentBranch == "HEAD" {
+		return defaultSpec
+	}
+
+	seen := map[string]struct{}{}
+	candidates := make([]string, 0, 8)
+	addCandidate := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		if _, ok := seen[ref]; ok {
+			return
+		}
+		seen[ref] = struct{}{}
+		candidates = append(candidates, ref)
+	}
+
+	// 1) Upstream of current branch (if configured)
+	if upstreamOut, upstreamErr := runGit(
+		"-C", worktreePath,
+		"rev-parse",
+		"--abbrev-ref",
+		"--symbolic-full-name",
+		"@{upstream}",
+	); upstreamErr == nil {
+		addCandidate(upstreamOut)
+	}
+
+	// 2) Remote default branch (origin/HEAD -> origin/main|master)
+	if originHeadOut, originHeadErr := runGit(
+		"-C", worktreePath,
+		"symbolic-ref",
+		"--quiet",
+		"--short",
+		"refs/remotes/origin/HEAD",
+	); originHeadErr == nil {
+		addCandidate(originHeadOut)
+	}
+
+	// 3) Conventional local/remote default branches
+	for _, base := range []string{"main", "master"} {
+		addCandidate(base)
+		addCandidate("origin/" + base)
+	}
+
+	for _, candidate := range candidates {
+		if candidate == currentBranch {
+			continue
+		}
+		if _, verifyErr := runGit("-C", worktreePath, "rev-parse", "--verify", candidate); verifyErr != nil {
+			continue
+		}
+		if _, mergeBaseErr := runGit("-C", worktreePath, "merge-base", "HEAD", candidate); mergeBaseErr != nil {
+			continue
+		}
+		return fmt.Sprintf("%s..HEAD", candidate)
+	}
+
+	return defaultSpec
 }
 
 func parsePorcelain(output string) []Change {
@@ -235,6 +365,81 @@ func normalizedPathFromPorcelain(path string) string {
 		value = strings.TrimSpace(parts[len(parts)-1])
 	}
 	return strings.Trim(value, "\"")
+}
+
+func normalizedPathFromNumStat(path string) string {
+	value := strings.TrimSpace(path)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, " => ") {
+		parts := strings.Split(value, " => ")
+		value = strings.TrimSpace(parts[len(parts)-1])
+		value = strings.ReplaceAll(value, "{", "")
+		value = strings.ReplaceAll(value, "}", "")
+	}
+	return strings.Trim(value, "\"")
+}
+
+func parseCommitHistory(output string) []CommitHistoryItem {
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	commits := make([]CommitHistoryItem, 0, 64)
+	var current *CommitHistoryItem
+
+	flush := func() {
+		if current == nil {
+			return
+		}
+		if current.Files == nil {
+			current.Files = []FileChange{}
+		}
+		commits = append(commits, *current)
+		current = nil
+	}
+
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r")
+		if strings.HasPrefix(line, "__COMMIT__") {
+			flush()
+			payload := strings.TrimPrefix(line, "__COMMIT__")
+			parts := strings.SplitN(payload, "\t", 2)
+			hash := strings.TrimSpace(parts[0])
+			message := ""
+			if len(parts) > 1 {
+				message = strings.TrimSpace(parts[1])
+			}
+			current = &CommitHistoryItem{
+				Hash:    hash,
+				Message: message,
+				Files:   []FileChange{},
+			}
+			continue
+		}
+		if current == nil || strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		path := normalizedPathFromNumStat(parts[2])
+		if path == "" {
+			continue
+		}
+		current.Files = append(current.Files, FileChange{
+			Path:    path,
+			Status:  "M",
+			Added:   parseNumStatCell(parts[0]),
+			Deleted: parseNumStatCell(parts[1]),
+		})
+	}
+
+	flush()
+	if len(commits) == 0 {
+		return []CommitHistoryItem{}
+	}
+	return commits
 }
 
 func mapToSortedChanges(items map[string]FileChange) []FileChange {

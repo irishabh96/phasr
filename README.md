@@ -71,6 +71,18 @@ make build
 # or: make run
 ```
 
+`make build` and `make run` compile a fresh React frontend bundle every time.
+`make run`/`make desktop-run` also stop any existing process listening on `127.0.0.1:7777` before launching the newly built binary, so you do not stay on stale assets.
+Each UI build writes version metadata to `internal/api/static/dist/build-meta.json`.
+
+Check the embedded UI build version:
+
+```bash
+make ui-version
+```
+
+Startup guard: if frontend sources are newer than `internal/api/static/dist/*`, the app refuses to open and asks you to run `make ui-build` first.
+
 2. Open dashboard:
 
 - `http://127.0.0.1:7777`
@@ -94,6 +106,13 @@ Build desktop binary:
 ```bash
 make desktop-build
 ./bin/staq-desktop
+```
+
+If you are working on UI only:
+
+```bash
+make ui-install
+make ui-dev
 ```
 
 Common desktop flags:

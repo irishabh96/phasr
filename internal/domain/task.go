@@ -15,6 +15,7 @@ const (
 
 type Task struct {
 	ID             string     `json:"id"`
+	RootTaskID     string     `json:"root_task_id,omitempty"`
 	Name           string     `json:"name"`
 	Workspace      string     `json:"workspace"`
 	Tags           []string   `json:"tags"`

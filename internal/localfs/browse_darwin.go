@@ -33,6 +33,30 @@ POSIX path of (choose folder with prompt "Select a git repository folder")`
 	return "", fmt.Errorf("browse directory failed: %v; fallback failed: %v", err, swiftErr)
 }
 
+func OpenDirectory(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	cmd := exec.Command("open", path)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("open directory %q: %w", path, err)
+	}
+	return nil
+}
+
+func OpenURL(target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("url is required")
+	}
+	cmd := exec.Command("open", target)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("open url %q: %w", target, err)
+	}
+	return nil
+}
+
 func runAppleScript(script string) (string, error) {
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {

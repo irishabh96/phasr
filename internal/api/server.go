@@ -2,11 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,9 +53,15 @@ func NewServer(opts Options) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load static assets: %w", err)
 	}
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	staticHandler := http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))
+	mux.Handle("/static/", withNoStore(staticHandler))
 	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
+	mux.HandleFunc("/api/local/git-metadata", s.handleGitMetadata)
+	mux.HandleFunc("/api/local/open-directory", s.handleOpenDirectory)
+	mux.HandleFunc("/api/local/open-url", s.handleOpenURL)
+	mux.HandleFunc("/api/local/validate-directory", s.handleValidateDirectory)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
 	mux.HandleFunc("/api/presets", s.handlePresets)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
@@ -97,6 +108,140 @@ func (s *server) handleBrowseDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": path})
+}
+
+func (s *server) handleOpenDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusBadRequest, "path does not exist")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	if err := localfs.OpenDirectory(path); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opened": path})
+}
+
+func (s *server) handleOpenURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	rawURL := strings.TrimSpace(payload.URL)
+	if rawURL == "" {
+		writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed == nil || parsed.Host == "" {
+		writeError(w, http.StatusBadRequest, "invalid url")
+		return
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if scheme != "https" && scheme != "http" {
+		writeError(w, http.StatusBadRequest, "only http/https urls are allowed")
+		return
+	}
+
+	if err := localfs.OpenURL(rawURL); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opened": rawURL})
+}
+
+func (s *server) handleValidateDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":    "",
+			"exists":  false,
+			"is_dir":  false,
+			"valid":   false,
+			"message": "Path is required.",
+		})
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"path":    path,
+				"exists":  false,
+				"is_dir":  false,
+				"valid":   false,
+				"message": "Path does not exist.",
+			})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	isDir := info.IsDir()
+	message := ""
+	if !isDir {
+		message = "Path exists but is not a directory."
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":    path,
+		"exists":  true,
+		"is_dir":  isDir,
+		"valid":   isDir,
+		"message": message,
+	})
 }
 
 func (s *server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +295,49 @@ func (s *server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) handleWorkspaceByName(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
+	suffix = strings.Trim(suffix, "/")
+	if suffix == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	parts := strings.SplitN(suffix, "/", 2)
+	workspaceID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace path")
+		return
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	if action == "" {
+		if r.Method != http.MethodDelete {
+			methodNotAllowed(w)
+			return
+		}
+		if err := s.tasks.DeleteWorkspace(workspaceID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted":    workspaceID,
+			"workspaces": s.tasks.Workspaces(),
+		})
+		return
+	}
+
+	switch action {
+	case "files":
+		s.handleWorkspaceFiles(w, r, workspaceID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 func (s *server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	suffix := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
 	suffix = strings.Trim(suffix, "/")
@@ -193,6 +381,8 @@ func (s *server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		s.handleTaskTerminal(w, r, id, subaction)
 	case "git":
 		s.handleTaskGit(w, r, id, subaction)
+	case "files":
+		s.handleTaskFiles(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -368,6 +558,8 @@ func (s *server) handleTaskTerminal(w http.ResponseWriter, r *http.Request, id, 
 		s.handleTerminalInput(w, r, id)
 	case "resize":
 		s.handleTerminalResize(w, r, id)
+	case "interrupt":
+		s.handleTerminalInterrupt(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -383,9 +575,141 @@ func (s *server) handleTaskGit(w http.ResponseWriter, r *http.Request, id, subac
 		s.handleGitUnstage(w, r, id)
 	case "commit":
 		s.handleGitCommit(w, r, id)
+	case "commits":
+		s.handleGitCommits(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *server) handleTaskFiles(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	taskInfo, err := s.tasks.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	root := strings.TrimSpace(taskInfo.WorktreePath)
+	if root == "" {
+		root = strings.TrimSpace(taskInfo.RepoPath)
+	}
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "task repository path is missing")
+		return
+	}
+
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "task repository path is not a directory")
+		return
+	}
+
+	entries, truncated, err := collectRepoFiles(root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":   id,
+		"root":      root,
+		"entries":   entries,
+		"truncated": truncated,
+		"entries_n": len(entries),
+	})
+}
+
+func (s *server) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	workspace, err := s.tasks.Workspace(workspaceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	root := strings.TrimSpace(workspace.RepoPath)
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "workspace repository path is missing")
+		return
+	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "workspace repository path is not a directory")
+		return
+	}
+
+	entries, truncated, err := collectRepoFiles(root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workspace": workspace.ID,
+		"root":      root,
+		"entries":   entries,
+		"truncated": truncated,
+		"entries_n": len(entries),
+	})
+}
+
+type repoFileItem struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+func collectRepoFiles(root string) ([]repoFileItem, bool, error) {
+	const maxEntries = 30000
+	entries := make([]repoFileItem, 0, 1024)
+	truncated := false
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if len(entries) >= maxEntries {
+			truncated = true
+			return fs.SkipAll
+		}
+
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+
+		kind := "file"
+		if d.IsDir() {
+			kind = "dir"
+		}
+		entries = append(entries, repoFileItem{Path: rel, Kind: kind})
+		return nil
+	})
+	if err != nil && err != fs.SkipAll {
+		return nil, truncated, err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Path == entries[j].Path {
+			return entries[i].Kind < entries[j].Kind
+		}
+		return entries[i].Path < entries[j].Path
+	})
+
+	return entries, truncated, nil
 }
 
 func (s *server) handleGitStatus(w http.ResponseWriter, r *http.Request, id string) {
@@ -468,6 +792,25 @@ func (s *server) handleGitCommit(w http.ResponseWriter, r *http.Request, id stri
 	})
 }
 
+func (s *server) handleGitCommits(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	commits, total, err := s.tasks.GitCommits(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":       id,
+		"commits":       commits,
+		"commits_n":     len(commits),
+		"commits_total": total,
+	})
+}
+
 func (s *server) handleTerminalInput(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -525,6 +868,18 @@ func (s *server) handleTerminalResize(w http.ResponseWriter, r *http.Request, id
 	})
 }
 
+func (s *server) handleTerminalInterrupt(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if err := s.tasks.Interrupt(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "interrupted": true})
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -544,5 +899,14 @@ func requestLog(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+func withNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
 	})
 }

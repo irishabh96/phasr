@@ -44,6 +44,9 @@ type CreateRequest struct {
 	Command    string   `json:"command"`
 	Preset     string   `json:"preset"`
 	DirectRepo bool     `json:"direct_repo"`
+	RootTaskID string   `json:"root_task_id"`
+	Cols       uint16   `json:"cols"`
+	Rows       uint16   `json:"rows"`
 }
 
 type Manager struct {
@@ -87,7 +90,6 @@ func NewManager(opts Options) (*Manager, error) {
 		logsDir:        opts.LogsDir,
 	}
 
-	m.ensureWorkspaceLocked(domain.Workspace{Name: defaultWorkspace})
 	for _, workspace := range storedWorkspaces {
 		m.ensureWorkspaceLocked(workspace)
 	}
@@ -98,6 +100,10 @@ func NewManager(opts Options) (*Manager, error) {
 		t.Workspace = normalizedWorkspace(t.Workspace)
 		if t.Workspace == "" {
 			t.Workspace = defaultWorkspace
+			mutated = true
+		}
+		if strings.TrimSpace(t.RootTaskID) == "" {
+			t.RootTaskID = t.ID
 			mutated = true
 		}
 		if m.ensureWorkspaceLocked(domain.Workspace{Name: t.Workspace}) {
@@ -132,8 +138,39 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return domain.Task{}, errors.New("command is required")
 	}
+
+	rootTaskID := strings.TrimSpace(req.RootTaskID)
+	var rootTask *domain.Task
+	if rootTaskID != "" {
+		m.mu.RLock()
+		root, ok := m.tasks[rootTaskID]
+		if ok {
+			copy := tCopy(*root)
+			rootTask = &copy
+		}
+		m.mu.RUnlock()
+		if rootTask == nil {
+			return domain.Task{}, fmt.Errorf("root task %q not found", rootTaskID)
+		}
+	}
+
 	workspaceName := normalizedWorkspace(req.Workspace)
+	if workspaceName == "" && rootTask != nil {
+		workspaceName = normalizedWorkspace(rootTask.Workspace)
+	}
+	if workspaceName == "" {
+		return domain.Task{}, errors.New("workspace is required")
+	}
 	repoInput := strings.TrimSpace(req.RepoPath)
+	directRepo := req.DirectRepo
+	if rootTask != nil {
+		// Tabs under an existing task must reuse the same worktree/repo.
+		directRepo = true
+		repoInput = strings.TrimSpace(rootTask.WorktreePath)
+		if repoInput == "" {
+			repoInput = strings.TrimSpace(rootTask.RepoPath)
+		}
+	}
 	if repoInput == "" {
 		m.mu.RLock()
 		workspace, ok := m.workspaces[strings.ToLower(workspaceName)]
@@ -162,24 +199,36 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 		worktreePath string
 	)
 
-	if req.DirectRepo {
+	if directRepo {
 		branch = currentRepoBranch(repoPath)
 		worktreePath = repoPath
 	} else {
-		branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID)
-		if err != nil {
-			return domain.Task{}, err
+		// Repos without a commit cannot produce a usable detached worktree with tracked files.
+		// Fall back to running directly in repo so files remain visible/editable.
+		if !repoHasCommits(repoPath) {
+			directRepo = true
+			branch = currentRepoBranch(repoPath)
+			worktreePath = repoPath
+		} else {
+			branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID)
+			if err != nil {
+				return domain.Task{}, err
+			}
 		}
 	}
 
 	now := time.Now().UTC()
 	workspace := workspaceName
+	if rootTaskID == "" {
+		rootTaskID = taskID
+	}
 	t := &domain.Task{
 		ID:             taskID,
+		RootTaskID:     rootTaskID,
 		Name:           taskName,
 		Workspace:      workspace,
 		Tags:           normalizedTags(req.Tags),
-		DirectRepo:     req.DirectRepo,
+		DirectRepo:     directRepo,
 		RepoPath:       repoPath,
 		Branch:         branch,
 		WorktreePath:   worktreePath,
@@ -206,7 +255,7 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 	}
 	m.mu.Unlock()
 
-	if err := m.start(t.ID, true); err != nil {
+	if err := m.start(t.ID, true, req.Cols, req.Rows); err != nil {
 		m.mu.Lock()
 		t.Status = domain.StatusFailed
 		t.LastError = err.Error()
@@ -220,13 +269,13 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 }
 
 func (m *Manager) Start(id string) (domain.Task, error) {
-	if err := m.start(id, false); err != nil {
+	if err := m.start(id, false, 0, 0); err != nil {
 		return domain.Task{}, err
 	}
 	return m.Get(id)
 }
 
-func (m *Manager) start(id string, includePresetSetup bool) error {
+func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) error {
 	m.mu.Lock()
 	t, ok := m.tasks[id]
 	if !ok {
@@ -243,6 +292,12 @@ func (m *Manager) start(id string, includePresetSetup bool) error {
 	}
 
 	command := t.Command
+	promptSeed := strings.TrimSpace(t.Prompt)
+	if inlineCommand, ok := appendPromptAsArgument(command, promptSeed); ok {
+		command = inlineCommand
+		promptSeed = ""
+	}
+	keepShellAlive := shouldKeepShellAlive(command)
 	worktreePath := t.WorktreePath
 	logFile := t.LogFile
 	preCommands := []string{}
@@ -257,13 +312,14 @@ func (m *Manager) start(id string, includePresetSetup bool) error {
 	m.mu.Unlock()
 
 	pid, err := m.process.Start(process.StartSpec{
-		TaskID:      id,
-		Command:     command,
-		WorkDir:     worktreePath,
-		LogFile:     logFile,
-		PreCommands: preCommands,
-		Cols:        120,
-		Rows:        40,
+		TaskID:         id,
+		Command:        command,
+		WorkDir:        worktreePath,
+		LogFile:        logFile,
+		PreCommands:    preCommands,
+		KeepShellAlive: keepShellAlive,
+		Cols:           cols,
+		Rows:           rows,
 	})
 	if err != nil {
 		return err
@@ -280,7 +336,93 @@ func (m *Manager) start(id string, includePresetSetup bool) error {
 	t.UpdatedAt = now
 	err = m.persistLocked()
 	m.mu.Unlock()
-	return err
+	if err != nil {
+		return err
+	}
+
+	if promptSeed != "" {
+		go m.deliverPromptWhenReady(id, promptSeed)
+	}
+	return nil
+}
+
+func appendPromptAsArgument(command, prompt string) (string, bool) {
+	baseCommand := strings.TrimSpace(command)
+	basePrompt := strings.TrimSpace(prompt)
+	if baseCommand == "" || basePrompt == "" {
+		return "", false
+	}
+
+	parts := strings.Fields(baseCommand)
+	if len(parts) == 0 {
+		return "", false
+	}
+
+	binary := strings.ToLower(filepath.Base(parts[0]))
+	switch binary {
+	case "codex", "claude", "gemini":
+		// These CLIs support an initial prompt argument; passing it inline avoids
+		// PTY timing races at startup.
+		return baseCommand + " " + shellQuoteArg(basePrompt), true
+	default:
+		return "", false
+	}
+}
+
+func shouldKeepShellAlive(command string) bool {
+	baseCommand := strings.TrimSpace(command)
+	if baseCommand == "" {
+		return false
+	}
+
+	parts := strings.Fields(baseCommand)
+	if len(parts) == 0 {
+		return false
+	}
+
+	binary := strings.ToLower(filepath.Base(parts[0]))
+	switch binary {
+	case "codex", "claude", "gemini", "copilot", "opencode":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellQuoteArg(value string) string {
+	// Single-quote shell escaping: abc'def -> 'abc'"'"'def'
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func (m *Manager) deliverPromptWhenReady(taskID, prompt string) {
+	seed := strings.TrimSpace(prompt)
+	if seed == "" {
+		return
+	}
+
+	events, cancel := m.process.Subscribe(taskID)
+	defer cancel()
+
+	timeout := time.NewTimer(12 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case event := <-events:
+			if event.Type == process.EventLog {
+				if m.process.IsRunning(taskID) {
+					_ = m.process.WriteInput(taskID, seed+"\n")
+				}
+				return
+			}
+		case <-timeout.C:
+			// Fallback in case startup produced no logs yet.
+			if m.process.IsRunning(taskID) {
+				_ = m.process.WriteInput(taskID, seed+"\n")
+			}
+			return
+		}
+	}
 }
 
 func (m *Manager) Stop(id string, force bool) (domain.Task, error) {
@@ -407,9 +549,28 @@ func (m *Manager) Workspaces() []domain.Workspace {
 		items = append(items, workspace)
 	}
 	sort.Slice(items, func(i, j int) bool {
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
 	})
 	return items
+}
+
+func (m *Manager) Workspace(workspaceID string) (domain.Workspace, error) {
+	targetID := strings.TrimSpace(workspaceID)
+	if targetID == "" {
+		return domain.Workspace{}, errors.New("workspace id is required")
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, workspace := range m.workspaces {
+		if strings.EqualFold(strings.TrimSpace(workspace.ID), targetID) {
+			return workspace, nil
+		}
+	}
+	return domain.Workspace{}, fmt.Errorf("workspace %q not found", targetID)
 }
 
 func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.Workspace, error) {
@@ -436,16 +597,102 @@ func (m *Manager) CreateWorkspace(name, repoPath string, initGit bool) (domain.W
 		}
 	}
 
-	workspace := domain.Workspace{Name: workspaceName, RepoPath: absRepoPath}
-
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	canonicalRepoPath := strings.ToLower(filepath.Clean(absRepoPath))
+	for key, existing := range m.workspaces {
+		sameName := strings.EqualFold(strings.TrimSpace(existing.Name), workspaceName)
+		sameRepo := strings.TrimSpace(existing.RepoPath) != "" &&
+			strings.EqualFold(filepath.Clean(existing.RepoPath), canonicalRepoPath)
+		if !sameName && !sameRepo {
+			continue
+		}
+
+		mutated := false
+		now := time.Now().UTC()
+		if existing.CreatedAt.IsZero() {
+			existing.CreatedAt = now
+			mutated = true
+		}
+		if existing.UpdatedAt.IsZero() {
+			existing.UpdatedAt = existing.CreatedAt
+			mutated = true
+		}
+		if strings.TrimSpace(existing.RepoPath) == "" {
+			existing.RepoPath = absRepoPath
+			existing.UpdatedAt = now
+			mutated = true
+		}
+		if mutated {
+			m.workspaces[key] = existing
+			if err := m.persistWorkspacesLocked(); err != nil {
+				return domain.Workspace{}, err
+			}
+		}
+		return existing, nil
+	}
+
+	now := time.Now().UTC()
+	workspace := domain.Workspace{
+		ID:        newWorkspaceID(workspaceName),
+		Name:      workspaceName,
+		RepoPath:  absRepoPath,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
 	m.ensureWorkspaceLocked(workspace)
 	if err := m.persistWorkspacesLocked(); err != nil {
-		m.mu.Unlock()
 		return domain.Workspace{}, err
 	}
-	m.mu.Unlock()
 	return workspace, nil
+}
+
+func (m *Manager) DeleteWorkspace(workspaceID string) error {
+	targetID := strings.TrimSpace(workspaceID)
+	if targetID == "" {
+		return errors.New("workspace id is required")
+	}
+
+	m.mu.RLock()
+	var target domain.Workspace
+	found := false
+	taskIDs := make([]string, 0)
+	for _, workspace := range m.workspaces {
+		if strings.EqualFold(strings.TrimSpace(workspace.ID), targetID) {
+			target = workspace
+			found = true
+			break
+		}
+	}
+	if found {
+		for _, task := range m.tasks {
+			if strings.EqualFold(strings.TrimSpace(task.Workspace), target.Name) {
+				taskIDs = append(taskIDs, task.ID)
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	if !found {
+		return fmt.Errorf("workspace %q not found", targetID)
+	}
+
+	for _, id := range taskIDs {
+		if err := m.Delete(id); err != nil {
+			return fmt.Errorf("delete task %q while deleting workspace: %w", id, err)
+		}
+	}
+
+	m.mu.Lock()
+	delete(m.workspaces, strings.ToLower(target.Name))
+	if err := m.persistWorkspacesLocked(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) Diff(id, file string) ([]diff.Change, string, string, error) {
@@ -495,6 +742,14 @@ func (m *Manager) Commit(id, message string) (string, error) {
 		return "", err
 	}
 	return m.diffs.Commit(t.WorktreePath, message)
+}
+
+func (m *Manager) GitCommits(id string) ([]diff.CommitHistoryItem, int, error) {
+	t, err := m.Get(id)
+	if err != nil {
+		return nil, 0, err
+	}
+	return m.diffs.CommitHistory(t.WorktreePath)
 }
 
 func (m *Manager) Logs(id string, tail int) (string, error) {
@@ -569,10 +824,20 @@ func (m *Manager) SendInput(id, input string) error {
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
 	}
-	if t.Status != domain.StatusRunning {
+	if t.Status != domain.StatusRunning && t.Status != domain.StatusPending && !m.process.IsRunning(id) {
 		return fmt.Errorf("task %s is not running", id)
 	}
 	return m.process.WriteInput(id, input)
+}
+
+func (m *Manager) Interrupt(id string) error {
+	m.mu.RLock()
+	_, ok := m.tasks[id]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	return m.process.Interrupt(id)
 }
 
 func (m *Manager) ResizeTerminal(id string, cols, rows uint16) error {
@@ -633,7 +898,10 @@ func (m *Manager) persistWorkspacesLocked() error {
 		items = append(items, workspace)
 	}
 	sort.Slice(items, func(i, j int) bool {
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
 	})
 	return m.workspaceStore.Save(items)
 }
@@ -655,11 +923,7 @@ func normalizedPreset(name string) string {
 const defaultWorkspace = "default"
 
 func normalizedWorkspace(workspace string) string {
-	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
-		return defaultWorkspace
-	}
-	return workspace
+	return strings.TrimSpace(workspace)
 }
 
 func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
@@ -667,7 +931,15 @@ func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
 	if workspace.Name == "" {
 		return false
 	}
+	now := time.Now().UTC()
+	workspace.ID = normalizedWorkspaceID(workspace.ID, workspace.Name)
 	workspace.RepoPath = strings.TrimSpace(workspace.RepoPath)
+	if workspace.CreatedAt.IsZero() {
+		workspace.CreatedAt = now
+	}
+	if workspace.UpdatedAt.IsZero() {
+		workspace.UpdatedAt = workspace.CreatedAt
+	}
 	key := strings.ToLower(workspace.Name)
 
 	existing, ok := m.workspaces[key]
@@ -675,12 +947,40 @@ func (m *Manager) ensureWorkspaceLocked(workspace domain.Workspace) bool {
 		m.workspaces[key] = workspace
 		return true
 	}
+	mutated := false
+	if strings.TrimSpace(existing.ID) == "" && strings.TrimSpace(workspace.ID) != "" {
+		existing.ID = workspace.ID
+		mutated = true
+	}
+	if existing.CreatedAt.IsZero() {
+		existing.CreatedAt = workspace.CreatedAt
+		mutated = true
+	}
+	if existing.UpdatedAt.IsZero() {
+		existing.UpdatedAt = existing.CreatedAt
+		mutated = true
+	}
 	if existing.RepoPath == "" && workspace.RepoPath != "" {
 		existing.RepoPath = workspace.RepoPath
-		m.workspaces[key] = existing
-		return true
+		existing.UpdatedAt = now
+		mutated = true
 	}
-	return false
+	if mutated {
+		m.workspaces[key] = existing
+	}
+	return mutated
+}
+
+func normalizedWorkspaceID(id, name string) string {
+	cleanID := strings.TrimSpace(id)
+	if cleanID != "" {
+		return cleanID
+	}
+	return newWorkspaceID(name)
+}
+
+func newWorkspaceID(name string) string {
+	return "ws-" + strings.ToLower(strings.TrimSpace(name))
 }
 
 func ensureGitRepo(repoPath string) error {
@@ -712,6 +1012,11 @@ func currentRepoBranch(repoPath string) string {
 		return "HEAD"
 	}
 	return branch
+}
+
+func repoHasCommits(repoPath string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "HEAD")
+	return cmd.Run() == nil
 }
 
 func normalizedTags(tags []string) []string {

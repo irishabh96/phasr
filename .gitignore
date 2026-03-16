@@ -1,3 +1,5 @@
 bin/
 .DS_Store
 .env
+internal/api/frontend/node_modules/
+internal/api/frontend/.vite/
