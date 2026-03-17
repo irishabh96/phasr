@@ -1,4 +1,4 @@
-module staq
+module phasr
 
 go 1.25.0
 

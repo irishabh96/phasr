@@ -52,8 +52,8 @@ const ANSI_RESET = '\x1b[0m';
 const ANSI_RED = '\x1b[38;2;224;109;109m'; // danger #E06D6D
 const ANSI_YELLOW = '\x1b[38;2;231;182;92m'; // warning #E7B65C
 const ANSI_GREEN = '\x1b[38;2;86;194;136m'; // success #56C288
-const terminalFormatter = window.staqTerminalFormatter?.createFormatter
-  ? window.staqTerminalFormatter.createFormatter()
+const terminalFormatter = window.phasrTerminalFormatter?.createFormatter
+  ? window.phasrTerminalFormatter.createFormatter()
   : null;
 
 const SEVERITY_PATTERNS = [
@@ -133,18 +133,18 @@ function applyTheme(theme) {
   const normalized = theme === 'light' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', normalized);
   try {
-    window.localStorage?.setItem('staq-theme', normalized);
+    window.localStorage?.setItem('phasr-theme', normalized);
   } catch (_) {}
 }
 
 function initTheme() {
   try {
-    const stored = window.localStorage?.getItem('staq-theme');
+    const stored = window.localStorage?.getItem('phasr-theme');
     if (stored === 'light' || stored === 'dark') {
       applyTheme(stored);
     }
   } catch (_) {}
-  window.staqSetTheme = applyTheme;
+  window.phasrSetTheme = applyTheme;
 }
 
 initTheme();
@@ -264,10 +264,10 @@ function escapeHtml(value) {
 function renderUiBuildVersion() {
   if (!uiBuildVersionEl) return;
   const meta =
-    window.__STAQ_UI_BUILD_META__ && typeof window.__STAQ_UI_BUILD_META__ === 'object'
-      ? window.__STAQ_UI_BUILD_META__
+    window.__PHASR_UI_BUILD_META__ && typeof window.__PHASR_UI_BUILD_META__ === 'object'
+      ? window.__PHASR_UI_BUILD_META__
       : null;
-  const version = String((meta && meta.version) || window.__STAQ_ASSET_VERSION__ || 'unknown').trim() || 'unknown';
+  const version = String((meta && meta.version) || window.__PHASR_ASSET_VERSION__ || 'unknown').trim() || 'unknown';
   const shortVersion = version.length > 18 ? `${version.slice(0, 18)}...` : version;
   uiBuildVersionEl.textContent = shortVersion;
   uiBuildVersionEl.title = version;
@@ -306,7 +306,7 @@ function parseTags(input) {
 }
 
 function reactBridge() {
-  const bridge = window.__STAQ_REACT_BRIDGE__;
+  const bridge = window.__PHASR_REACT_BRIDGE__;
   if (!bridge) return null;
   const hasWorkspaceRenderer = typeof bridge.renderWorkspaces === 'function';
   const hasTabRenderer = typeof bridge.renderTabs === 'function';

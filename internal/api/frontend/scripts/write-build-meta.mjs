@@ -96,7 +96,7 @@ writeFileSync(resolve(distDir, 'build-meta.json'), `${JSON.stringify(buildMeta, 
 
 writeFileSync(
   resolve(distDir, 'build-meta.js'),
-  `window.__STAQ_UI_BUILD_META__ = ${JSON.stringify(buildMeta)};\nwindow.__STAQ_ASSET_VERSION__ = String(window.__STAQ_UI_BUILD_META__.version || "");\n`,
+  `window.__PHASR_UI_BUILD_META__ = ${JSON.stringify(buildMeta)};\nwindow.__PHASR_ASSET_VERSION__ = String(window.__PHASR_UI_BUILD_META__.version || "");\n`,
   'utf8',
 );
 

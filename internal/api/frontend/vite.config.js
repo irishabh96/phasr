@@ -15,7 +15,7 @@ export default defineConfig({
     cssCodeSplit: false,
     lib: {
       entry: resolve(__dirname, "src/main.jsx"),
-      name: "StaqReactUI",
+      name: "PhasrReactUI",
       formats: ["iife"],
       fileName: () => "react-ui.js",
     },

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"staq/internal/localfs"
-	"staq/internal/task"
+	"phasr/internal/localfs"
+	"phasr/internal/task"
 )
 
 type Options struct {

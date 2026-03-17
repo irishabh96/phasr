@@ -329,7 +329,7 @@ export function setupReactBridge() {
   const commitsRoot = commitsHost ? createRoot(commitsHost) : null;
   const repoFilesRoot = repoFilesHost ? createRoot(repoFilesHost) : null;
 
-  window.__STAQ_REACT_BRIDGE__ = {
+  window.__PHASR_REACT_BRIDGE__ = {
     renderWorkspaces(model) {
       if (!workspaceRoot) return;
       workspaceRoot.render(<WorkspaceListView model={model} />);

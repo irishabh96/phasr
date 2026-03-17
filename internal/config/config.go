@@ -25,9 +25,9 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Addr:          envOrDefault("STAQ_ADDR", "127.0.0.1:7777"),
-		DataDir:       envOrDefault("STAQ_DATA_DIR", filepath.Join(home, ".staq")),
-		DefaultEditor: envOrDefault("STAQ_DEFAULT_EDITOR", "code"),
+		Addr:          envOrDefault("PHASR_ADDR", "127.0.0.1:7777"),
+		DataDir:       envOrDefault("PHASR_DATA_DIR", filepath.Join(home, ".phasr")),
+		DefaultEditor: envOrDefault("PHASR_DEFAULT_EDITOR", "code"),
 	}
 	cfg.RefreshDerivedPaths()
 	return cfg, nil

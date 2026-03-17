@@ -16,5 +16,5 @@ if (rootEl) {
     );
   });
   setupReactBridge();
-  window.__STAQ_REACT_BOOTED__ = true;
+  window.__PHASR_REACT_BOOTED__ = true;
 }

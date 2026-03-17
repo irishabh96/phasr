@@ -12,7 +12,7 @@ ui-dev:
 build:
 	$(MAKE) ui-build
 	mkdir -p bin
-	go build -o bin/phasr ./cmd/staq
+	go build -o bin/phasr ./cmd/phasr
 
 run:
 	$(MAKE) build
@@ -27,7 +27,7 @@ run:
 desktop-build:
 	$(MAKE) ui-build
 	mkdir -p bin
-	CGO_ENABLED=1 go build -o bin/phasr-desktop ./cmd/staq-desktop
+	CGO_ENABLED=1 go build -o bin/phasr-desktop ./cmd/phasr-desktop
 
 desktop-run:
 	$(MAKE) desktop-build
