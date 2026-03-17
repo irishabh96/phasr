@@ -510,8 +510,15 @@ func (m *Manager) Delete(id string) error {
 	_ = m.process.Stop(id, true)
 	if !copy.DirectRepo {
 		if err := m.worktree.Remove(copy.RepoPath, copy.WorktreePath, true); err != nil {
-			return err
+			// Fallback cleanup for stale or detached registrations: if this is a
+			// managed local worktree path, remove it directly from disk.
+			if cleanupErr := m.worktree.RemoveManagedPath(copy.WorktreePath); cleanupErr != nil {
+				return err
+			}
 		}
+	}
+	if err := m.worktree.RemoveManagedPath(copy.WorktreePath); err != nil {
+		return err
 	}
 	_ = os.Remove(copy.LogFile)
 

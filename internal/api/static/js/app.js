@@ -233,6 +233,10 @@ const newTabTypeModalCloseBtnEl = document.getElementById('newTabTypeModalCloseB
 const newTabTypeModalCancelBtnEl = document.getElementById('newTabTypeModalCancelBtn');
 const newTabTypeTerminalBtnEl = document.getElementById('newTabTypeTerminalBtn');
 const newTabTypeTaskBtnEl = document.getElementById('newTabTypeTaskBtn');
+const closeTaskModalBackdropEl = document.getElementById('closeTaskModalBackdrop');
+const closeTaskModalTaskNameEl = document.getElementById('closeTaskModalTaskName');
+const closeTaskModalCancelBtnEl = document.getElementById('closeTaskModalCancelBtn');
+const closeTaskModalDeleteBtnEl = document.getElementById('closeTaskModalDeleteBtn');
 
 let pendingWorkspaceCreate = null;
 let autoWorkspaceNameValue = '';
@@ -253,6 +257,8 @@ let newTaskModalSubmitAttempted = false;
 let newTaskModalCreating = false;
 let newTaskModalRootTaskId = '';
 let newTabTypeSelection = { preferredWorkspace: '', rootTaskID: '' };
+let closeTaskModalSelection = { rootTaskID: '', taskName: '' };
+let closeTaskModalBusy = false;
 const taskContextRepoMetaCache = new Map();
 let taskContextBranchLookupSeq = 0;
 let taskContextBranchLookupKey = '';
@@ -1229,6 +1235,62 @@ function isNewTabTypeModalOpen() {
   return Boolean(newTabTypeModalBackdropEl) && !newTabTypeModalBackdropEl.classList.contains('hidden');
 }
 
+function isCloseTaskModalOpen() {
+  return Boolean(closeTaskModalBackdropEl) && !closeTaskModalBackdropEl.classList.contains('hidden');
+}
+
+function setCloseTaskModalBusy(isBusy) {
+  closeTaskModalBusy = Boolean(isBusy);
+  const disabled = closeTaskModalBusy;
+  if (closeTaskModalCancelBtnEl) closeTaskModalCancelBtnEl.disabled = disabled;
+  if (closeTaskModalDeleteBtnEl) closeTaskModalDeleteBtnEl.disabled = disabled;
+}
+
+function closeCloseTaskModal(force = false) {
+  if (!closeTaskModalBackdropEl) return;
+  if (closeTaskModalBusy && !force) return;
+  closeTaskModalBackdropEl.classList.add('hidden');
+  closeTaskModalSelection = { rootTaskID: '', taskName: '' };
+  if (closeTaskModalTaskNameEl) {
+    closeTaskModalTaskNameEl.textContent = '';
+  }
+  setCloseTaskModalBusy(false);
+}
+
+function taskGroupTasks(rootTaskID) {
+  const groupID = String(rootTaskID || '').trim();
+  if (!groupID) return [];
+  return tabsForTaskGroup(groupID);
+}
+
+function openCloseTaskModal(taskID) {
+  if (!closeTaskModalBackdropEl) {
+    closeTab(taskID);
+    return;
+  }
+
+  const task = getTask(taskID);
+  if (!task) return;
+
+  const rootTaskID = taskRootId(task);
+  if (!rootTaskID) return;
+
+  const groupTasks = taskGroupTasks(rootTaskID);
+  const rootTask = groupTasks.find((item) => String(item?.id || '').trim() === rootTaskID) || task;
+  const taskName = String(rootTask?.name || task?.name || 'Untitled task').trim() || 'Untitled task';
+
+  closeTaskModalSelection = { rootTaskID, taskName };
+  if (closeTaskModalTaskNameEl) {
+    closeTaskModalTaskNameEl.textContent = taskName;
+    closeTaskModalTaskNameEl.title = taskName;
+  }
+  closeTaskModalBackdropEl.classList.remove('hidden');
+  setCloseTaskModalBusy(false);
+  setTimeout(() => {
+    closeTaskModalCancelBtnEl?.focus();
+  }, 0);
+}
+
 function resolveNewTabContext(options = {}) {
   const hasRootTaskOverride = Object.prototype.hasOwnProperty.call(options, 'rootTaskID');
   const activeTask = getTask(activeTabId);
@@ -1945,19 +2007,21 @@ function WorkspaceHeader(id, name, taskCount, isOpen) {
           <span class="workspace-count">(${taskCount})</span>
           <div class="workspace-actions">
             <button
-              class="icon-btn ghost-action workspace-add-tab-btn"
+              class="icon-btn ghost-action workspace-add-tab-btn p-1 rounded hover:bg-muted transition-colors shrink-0 ml-1"
               type="button"
               data-new-workspace-tab="${escapeHtml(id)}"
               aria-label="New tab in ${escapeHtml(name)}"
+              data-state="closed"
+              data-slot="tooltip-trigger"
               title="New tab in ${escapeHtml(name)}"
-            >+</button>
+            ><svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 20 20" aria-hidden="true" class="workspace-add-tab-icon size-4 text-muted-foreground" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z"></path></svg></button>
             <button
               class="icon-btn ghost-action workspace-delete-btn"
               type="button"
               data-delete-workspace="${escapeHtml(id)}"
               aria-label="Delete workspace ${escapeHtml(name)}"
               title="Delete workspace ${escapeHtml(name)}"
-            >&times;</button>
+            ><svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 20 20" aria-hidden="true" class="sidebar-task-close-icon size-3.5" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"></path></svg></button>
           </div>
         </summary>`;
 }
@@ -1988,19 +2052,19 @@ function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updated
   const selectedClass = isSelected ? 'selected' : '';
   const attr = dataAttr || '';
   const closeBtn = canCloseWorktree
-    ? `<button class="sidebar-task-close" type="button" data-close-worktree-task="${escapeHtml(closeTaskID || id)}" aria-label="Close ${escapeHtml(title)}" title="Close ${escapeHtml(title)}">&times;</button>`
+    ? `<button class="sidebar-task-close flex items-center justify-center text-muted-foreground hover:text-foreground" type="button" data-close-worktree-task="${escapeHtml(closeTaskID || id)}" aria-label="Close ${escapeHtml(title)}" data-state="closed" data-slot="tooltip-trigger" title="Close ${escapeHtml(title)}"><svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 20 20" aria-hidden="true" class="sidebar-task-close-icon size-3.5" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"></path></svg></button>`
     : '';
   const dot = status
     ? `<span class="sidebar-status-dot ${healthDotColor(status)}" title="${escapeHtml(healthDotTooltip(status, updatedAt))}"></span>`
     : '';
   return `
         <div class="sidebar-row ${selectedClass}" ${attr}>
-          ${closeBtn}
           <div class="sidebar-row-content">
             <span class="sidebar-row-title">${escapeHtml(title)}</span>
             ${subtitle ? `<span class="sidebar-row-subtitle">${escapeHtml(subtitle)}</span>` : ''}
           </div>
           ${dot}
+          ${closeBtn}
         </div>`;
 }
 
@@ -3544,6 +3608,49 @@ async function runTaskAction(action, taskId) {
   }
 }
 
+function sortTaskGroupForDelete(tasks, rootTaskID) {
+  const rootID = String(rootTaskID || '').trim();
+  return [...tasks].sort((a, b) => {
+    const aID = String(a?.id || '').trim();
+    const bID = String(b?.id || '').trim();
+    if (aID === rootID && bID !== rootID) return -1;
+    if (bID === rootID && aID !== rootID) return 1;
+    const createdA = new Date(a?.created_at || 0).getTime() || 0;
+    const createdB = new Date(b?.created_at || 0).getTime() || 0;
+    if (createdA !== createdB) return createdA - createdB;
+    return aID.localeCompare(bID);
+  });
+}
+
+async function runCloseTaskModalAction() {
+  const rootTaskID = String(closeTaskModalSelection.rootTaskID || '').trim();
+  if (!rootTaskID || closeTaskModalBusy) return;
+
+  const groupTasks = taskGroupTasks(rootTaskID);
+  if (!groupTasks.length) {
+    closeCloseTaskModal(true);
+    return;
+  }
+
+  setCloseTaskModalBusy(true);
+  try {
+    const ordered = sortTaskGroupForDelete(groupTasks, rootTaskID);
+    for (const task of ordered) {
+      const taskID = String(task?.id || '').trim();
+      if (!taskID) continue;
+      await api(`/api/tasks/${encodeURIComponent(taskID)}`, { method: 'DELETE' });
+    }
+
+    closeCloseTaskModal(true);
+    await loadTasks({ keepTab: true });
+    await loadWorkspaces();
+    await refreshGitStatus();
+  } catch (error) {
+    setCloseTaskModalBusy(false);
+    alert(error.message || String(error));
+  }
+}
+
 async function deleteWorkspace(workspaceID) {
   const target = String(workspaceID || '').trim();
   if (!target) return;
@@ -3710,6 +3817,16 @@ function installEventHandlers() {
     if (event.target === newTabTypeModalBackdropEl) {
       closeNewTabTypeModal();
     }
+  });
+  closeTaskModalCancelBtnEl?.addEventListener('click', closeCloseTaskModal);
+  closeTaskModalBackdropEl?.addEventListener('click', (event) => {
+    if (event.target === closeTaskModalBackdropEl) {
+      closeCloseTaskModal();
+    }
+  });
+  closeTaskModalDeleteBtnEl?.addEventListener('click', async (event) => {
+    event.preventDefault();
+    await runCloseTaskModalAction();
   });
   newTabTypeTaskBtnEl?.addEventListener('click', (event) => {
     event.preventDefault();
@@ -4034,6 +4151,7 @@ function installEventHandlers() {
         !isWorkspaceModalOpen() &&
         !isNewTaskModalOpen() &&
         !isNewTabTypeModalOpen() &&
+        !isCloseTaskModalOpen() &&
         !isEditable;
 
       if (!shouldInterrupt) return;
@@ -4078,6 +4196,7 @@ function installEventHandlers() {
         !isWorkspaceModalOpen() &&
         !isNewTaskModalOpen() &&
         !isNewTabTypeModalOpen() &&
+        !isCloseTaskModalOpen() &&
         !isEditableOutsideTerminal;
 
       if (!shouldInterrupt) return;
@@ -4095,7 +4214,7 @@ function installEventHandlers() {
 
     const isMetaShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
     if (isMetaShortcut && key === 't') {
-      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen() || isCloseTaskModalOpen()) return;
       event.preventDefault();
       const activeTask = getTask(activeTabId);
       const rootTaskID = String(activeTaskGroupId || taskRootId(activeTask) || '').trim();
@@ -4106,7 +4225,7 @@ function installEventHandlers() {
       return;
     }
     if (isMetaShortcut && key === 'w') {
-      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen() || isCloseTaskModalOpen()) return;
       const currentTab = String(activeTabId || '').trim();
       if (!currentTab) return;
       event.preventDefault();
@@ -4121,9 +4240,22 @@ function installEventHandlers() {
       if (branchMenuOpen) closeTaskContextBranchMenu();
       if (publishMenuOpen) closePublishActionMenu();
       if (ideMenuOpen) closeOpenIdeMenu();
-      if ((branchMenuOpen || publishMenuOpen || ideMenuOpen) && !isWorkspaceModalOpen() && !isNewTaskModalOpen()) {
+      if (
+        (branchMenuOpen || publishMenuOpen || ideMenuOpen) &&
+        !isWorkspaceModalOpen() &&
+        !isNewTaskModalOpen() &&
+        !isCloseTaskModalOpen()
+      ) {
         return;
       }
+    }
+
+    if (isCloseTaskModalOpen()) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCloseTaskModal();
+      }
+      return;
     }
 
     if (isNewTaskModalOpen()) {
@@ -4166,7 +4298,7 @@ function installEventHandlers() {
       event.stopPropagation();
       const taskID = String(closeWorktreeTaskBtn.dataset.closeWorktreeTask || '').trim();
       if (taskID) {
-        closeTab(taskID);
+        openCloseTaskModal(taskID);
       }
       return;
     }
@@ -4310,7 +4442,7 @@ function installEventHandlers() {
   });
   // ⌘↵ global shortcut
   window.addEventListener('keydown', async (event) => {
-    if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+    if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen() || isCloseTaskModalOpen()) return;
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
       try {

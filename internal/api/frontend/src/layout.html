@@ -749,3 +749,45 @@
     </div>
   </div>
 </div>
+
+<div
+  id="closeTaskModalBackdrop"
+  class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3140] p-3.5"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="closeTaskModalTitle"
+  aria-describedby="closeTaskModalDescription"
+>
+  <div
+    class="modal close-task-modal w-[min(340px,94vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+  >
+    <div class="modal-head close-task-modal-head px-4 py-3 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]">
+      <h3 id="closeTaskModalTitle" class="close-task-modal-title m-0 text-[15px] font-medium text-text-primary">
+        Remove task "<span id="closeTaskModalTaskName" class="close-task-modal-task-name"></span>"?
+      </h3>
+    </div>
+    <div class="modal-body close-task-modal-body px-4 py-3.5 grid gap-3">
+      <p id="closeTaskModalDescription" class="close-task-modal-description m-0 text-[12px] leading-[1.45] text-text-tertiary">
+        Deleting will permanently remove the worktree.
+      </p>
+    </div>
+    <div
+      class="modal-foot close-task-modal-foot px-4 py-2.5 pb-3.5 border-t border-[#312927] flex items-center justify-end gap-2.5 bg-[#1C1715]"
+    >
+      <button
+        id="closeTaskModalCancelBtn"
+        class="btn-ghost close-task-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
+        type="button"
+      >
+        Cancel
+      </button>
+      <button
+        id="closeTaskModalDeleteBtn"
+        class="btn-primary close-task-modal-delete-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2"
+        type="button"
+      >
+        Delete
+      </button>
+    </div>
+  </div>
+</div>
