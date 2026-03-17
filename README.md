@@ -1,233 +1,90 @@
-# Phasr (Go MVP)
+# Phasr
 
-Phasr is a Go-first reconstruction of the Superset-style coding-agent workspace: run multiple CLI agents in parallel, isolate each task in a git worktree, and monitor logs/diffs from a single dashboard.
+Phasr is a desktop workspace for running multiple coding agents in parallel, each in its own isolated git worktree.
 
-## What This MVP Includes
+Website: https://phasr.sh
 
-- Multi-agent dashboard (running/completed/archived tasks)
-- Workspace + tag metadata for task organization/filtering (workspace stores repo path)
-- Workspace sidebar with active highlight + create workspace action
-- Per-task git worktree + branch isolation
-- Concurrent CLI agent runner with PTY-backed terminal sessions + real-time streaming (SSE)
-- Interactive ANSI terminal pane (`xterm`) with tabbed task sessions
-- Git sidebar with staged/unstaged changes, line counts, stage/unstage, and commit action
-- Task lifecycle: create, stop, resume, archive, delete
-- Editor launcher integration (`code`, `cursor`, `zed`, `vim`, `open`, custom command)
-- Presets/templates for setup commands before agent execution
-- Local persistence (`tasks.json`, per-task logs)
-- Interactive terminal input per running task (including `Ctrl+C`)
+## Why Phasr
 
-## Superset Concepts Translated to Go Services
+Most agent workflows break down when you need multiple streams of work at once. Phasr gives you one place to launch, track, and ship parallel agent tasks without branch collisions.
 
-This implementation mirrors the product concepts, not the JavaScript code:
+## Highlights
 
-- `task manager` -> `internal/task`
-  - Task lifecycle, persistence orchestration, status transitions
-- `process manager` -> `internal/process`
-  - Runs arbitrary shell commands, tracks PID/exit, publishes events
-- `git worktree manager` -> `internal/gitops`
-  - Creates/removes isolated worktrees + branches per task
-- `diff service` -> `internal/diff`
-  - `git status --porcelain` parsing + patch generation
-- `preset/template manager` -> `internal/preset`
-  - Built-in presets plus optional `~/.phasr/presets.json`
-- `editor launcher` -> `internal/editor`
-  - Open task worktree in your preferred editor command
-- `config/settings manager` -> `internal/config`
-  - Env + flags + derived storage paths
-- `dashboard/api` -> `internal/api`
-  - Server-rendered UI + JSON API + SSE stream
+- Parallel agent runs from one dashboard
+- Per-task git worktree and branch isolation
+- Live terminal streaming with interactive input
+- Staged/unstaged git view with commit flow
+- Open worktrees quickly in your editor
+- Local-first storage (`~/.phasr`)
+- Native macOS desktop mode
 
-## Architecture
+## Install (macOS)
 
-```
-cmd/phasr/main.go            # app bootstrap
-internal/config             # env + runtime settings
-internal/domain             # core task model
-internal/store              # JSON task persistence
-internal/preset             # preset loading and defaults
-internal/gitops             # git worktree orchestration
-internal/process            # process runtime + events
-internal/diff               # git diff/status inspection
-internal/task               # orchestration layer
-internal/api                # HTTP API + dashboard template
-```
-
-## Requirements (macOS-first)
-
-- Go 1.25+
-- Node.js 18+ and `npm` (for React UI build)
-- `git`
-- `zsh`
-- At least one editor CLI if using open-editor actions (`code`, `cursor`, etc.)
-- For desktop mode: Xcode Command Line Tools (for CGO) + macOS WebKit runtime
-
-## Setup (First Time)
-
-1. Clone the repo and enter it:
+One-step install:
 
 ```bash
-git clone <your-repo-url> phasr
-cd phasr
+./scripts/install-macos.sh
 ```
 
-2. Install frontend dependencies:
+This builds and installs `phasr.sh.app` to `/Applications` (or `~/Applications` fallback) and creates a `phasr-desktop` CLI symlink when possible.
+
+## Run From Source
 
 ```bash
 make ui-install
+make desktop-run
 ```
 
-3. Configure environment variables (optional, defaults are usually fine):
-
-```bash
-cp .env.example .env
-# the app reads shell environment variables directly
-# export values you want to override, for example:
-export PHASR_ADDR=127.0.0.1:7777
-export PHASR_DATA_DIR="$HOME/.phasr"
-export PHASR_DEFAULT_EDITOR=code
-```
-
-4. Build and run:
+CLI mode is also available:
 
 ```bash
 make run
 ```
 
+## Requirements
+
+- macOS
+- Go 1.25+
+- Node.js 18+
+- npm
+- git
+- zsh
+- Xcode Command Line Tools
+
 ## Quick Start
 
-1. Build and run CLI server:
+1. Launch the app.
+2. Add a local repository path.
+3. Pick an agent command.
+4. Start tasks and monitor logs/diffs in parallel.
+
+## Production Release (macOS)
+
+For distributable builds (Gatekeeper-safe), use Developer ID signing + notarization:
 
 ```bash
-make build
-./bin/phasr
-# or: make run
+export PHASR_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export PHASR_NOTARY_PROFILE="phasr-notary-profile"
+make desktop-production-dmg
 ```
 
-`make build` and `make run` compile a fresh React frontend bundle every time.
-`make run`/`make desktop-run` also stop any existing process listening on `127.0.0.1:7777` before launching the newly built binary, so you do not stay on stale assets.
-Each UI build writes version metadata to `internal/api/static/dist/build-meta.json`.
+The target prints `DMG_PATH=...` on success.
 
-Check the embedded UI build version:
+## Project Layout
 
-```bash
-make ui-version
+```text
+cmd/phasr                 # CLI app
+cmd/phasr-desktop         # macOS desktop app
+internal/task             # task lifecycle orchestration
+internal/gitops           # git worktree management
+internal/process          # process + PTY runtime
+internal/api              # dashboard + HTTP server
+scripts/                  # build/export/install scripts
 ```
-
-Startup guard: if frontend sources are newer than `internal/api/static/dist/*`, the app refuses to open and asks you to run `make ui-build` first.
-
-2. Open dashboard:
-
-- `http://127.0.0.1:7777`
-
-3. Create a task:
-
-- `Repo Path`: absolute path to an existing local git repository
-- `Agent Command`: any CLI coding agent command
-- Optional `Workspace`, `Tags`, preset, and prompt
-
-## Desktop App Mode (macOS)
-
-Run Phasr in a native desktop window (webview shell over the same Go backend):
-
-```bash
-make desktop-run
-```
-
-Build desktop binary:
-
-```bash
-make desktop-build
-./bin/phasr-desktop
-```
-
-If you are working on UI only:
-
-```bash
-make ui-install
-make ui-dev
-```
-
-Common desktop flags:
-
-- `-addr 127.0.0.1:7777`
-- `-data-dir ~/.phasr`
-- `-editor code`
-- `-width 1500 -height 980`
-- `-debug`
-
-## API Surface (MVP)
-
-- `GET /api/tasks`
-- `POST /api/tasks`
-- `GET /api/tasks/{id}`
-- `POST /api/tasks/{id}/stop`
-- `POST /api/tasks/{id}/resume`
-- `POST /api/tasks/{id}/archive`
-- `DELETE /api/tasks/{id}`
-- `GET /api/tasks/{id}/logs?tail=200`
-- `GET /api/tasks/{id}/diff?file=<path>`
-- `GET /api/tasks/{id}/events` (SSE)
-- `POST /api/tasks/{id}/open-editor`
-- `POST /api/tasks/{id}/terminal/input`
-- `POST /api/tasks/{id}/terminal/resize`
-- `GET /api/presets`
-- `GET /api/workspaces`
-- `POST /api/workspaces`
-- `POST /api/local/browse-directory` (macOS folder picker)
-- `GET /api/tasks/{id}/git/status`
-- `POST /api/tasks/{id}/git/stage`
-- `POST /api/tasks/{id}/git/unstage`
-- `POST /api/tasks/{id}/git/commit`
-
-## Presets File (Optional)
-
-Create `~/.phasr/presets.json` to define custom setup templates:
-
-```json
-{
-  "presets": [
-    {
-      "name": "python-bootstrap",
-      "description": "Prepare virtualenv and deps",
-      "setup_commands": [
-        "python3 -m venv .venv",
-        "source .venv/bin/activate && pip install -r requirements.txt"
-      ]
-    }
-  ]
-}
-```
-
-## Data Layout
-
-Default directory: `~/.phasr`
-
-- `tasks.json`
-- `workspaces.json`
-- `logs/<task-id>.log`
-- `worktrees/<task-id>-<name>/`
-- `presets.json` (optional)
-
-## Known Limitations (MVP)
-
-- No auth/multi-user model (local workstation only)
-- No remote runners
-- Desktop/web UI currently attaches one live terminal stream at a time (selected task)
-- Restart does not reattach running processes; tasks marked `stopped`
-- Diff view uses standard `git diff` output only
-
-## Next Improvements
-
-1. Add websocket multiplexing + richer terminal stream metadata
-2. Add multi-task split terminal view with synchronized terminal tabs
-3. Add workspace snapshot/export and task sharing
-4. Add policy controls for repo allow-lists and command safelists
-5. Add unit/integration tests around task + worktree lifecycle
 
 ## Open Source
 
-- License: MIT (`LICENSE`)
-- Contribution guide: `CONTRIBUTING.md`
-- Security reporting: `SECURITY.md`
-- Community expectations: `CODE_OF_CONDUCT.md`
+- License: [MIT](LICENSE)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security: [SECURITY.md](SECURITY.md)
+- Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
