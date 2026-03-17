@@ -78,26 +78,40 @@ function TaskHeaderView({ model }) {
 function SidebarTaskRow({ task }) {
   return (
     <div className={cx("sidebar-row", task.isSelected && "selected")} data-open-task={task.rootTaskID}>
+      <div className="sidebar-row-content">
+        <span className="sidebar-row-title">{task.title}</span>
+        {task.subtitle ? <span className="sidebar-row-subtitle">{task.subtitle}</span> : null}
+      </div>
+      {task.dotClass ? <span className={cx("sidebar-status-dot", task.dotClass)} title={task.dotTooltip || ""} /> : null}
       {task.canCloseWorktree ? (
         <button
-          className="sidebar-task-close"
+          className="sidebar-task-close flex items-center justify-center text-muted-foreground hover:text-foreground"
           type="button"
           data-close-worktree-task={task.closeTaskID || task.rootTaskID}
           aria-label={`Close ${task.title}`}
+          data-state="closed"
+          data-slot="tooltip-trigger"
           title={`Close ${task.title}`}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
           }}
         >
-          &times;
+          <svg
+            stroke="currentColor"
+            fill="currentColor"
+            strokeWidth="0"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+            className="sidebar-task-close-icon size-3.5"
+            height="1em"
+            width="1em"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
+          </svg>
         </button>
       ) : null}
-      <div className="sidebar-row-content">
-        <span className="sidebar-row-title">{task.title}</span>
-        {task.subtitle ? <span className="sidebar-row-subtitle">{task.subtitle}</span> : null}
-      </div>
-      {task.dotClass ? <span className={cx("sidebar-status-dot", task.dotClass)} title={task.dotTooltip || ""} /> : null}
     </div>
   );
 }
@@ -113,13 +127,27 @@ function WorkspaceItem({ row }) {
           <span className="workspace-count">({row.taskCount})</span>
           <div className="workspace-actions">
             <button
-              className="icon-btn ghost-action workspace-add-tab-btn"
+              className="icon-btn ghost-action workspace-add-tab-btn p-1 rounded hover:bg-muted transition-colors shrink-0 ml-1"
               type="button"
               data-new-workspace-tab={row.id}
               aria-label={`New tab in ${row.name}`}
+              data-state="closed"
+              data-slot="tooltip-trigger"
               title={`New tab in ${row.name}`}
             >
-              +
+              <svg
+                stroke="currentColor"
+                fill="currentColor"
+                strokeWidth="0"
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+                className="workspace-add-tab-icon size-4 text-muted-foreground"
+                height="1em"
+                width="1em"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z" />
+              </svg>
             </button>
             <button
               className="icon-btn ghost-action workspace-delete-btn"
@@ -128,7 +156,19 @@ function WorkspaceItem({ row }) {
               aria-label={`Delete workspace ${row.name}`}
               title={`Delete workspace ${row.name}`}
             >
-              &times;
+              <svg
+                stroke="currentColor"
+                fill="currentColor"
+                strokeWidth="0"
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+                className="sidebar-task-close-icon size-3.5"
+                height="1em"
+                width="1em"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
+              </svg>
             </button>
           </div>
         </summary>

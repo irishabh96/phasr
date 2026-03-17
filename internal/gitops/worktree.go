@@ -86,6 +86,47 @@ func (m *WorktreeManager) Remove(repoPath, worktreePath string, force bool) erro
 	return nil
 }
 
+func (m *WorktreeManager) RemoveManagedPath(path string) error {
+	managedPath, ok := m.managedPath(path)
+	if !ok {
+		return nil
+	}
+	if err := os.RemoveAll(managedPath); err != nil {
+		return fmt.Errorf("remove managed worktree path: %w", err)
+	}
+	return nil
+}
+
+func (m *WorktreeManager) managedPath(path string) (string, bool) {
+	target := strings.TrimSpace(path)
+	if target == "" {
+		return "", false
+	}
+	base := strings.TrimSpace(m.baseDir)
+	if base == "" {
+		return "", false
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", false
+	}
+	absPath, err := filepath.Abs(target)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return "", false
+	}
+	if rel == "." || rel == "" {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return absPath, true
+}
+
 func (m *WorktreeManager) ensureRepo(repoPath string) error {
 	if out, err := runGit("-C", repoPath, "rev-parse", "--is-inside-work-tree"); err != nil {
 		return fmt.Errorf("path is not a git repo: %w (%s)", err, strings.TrimSpace(out))
