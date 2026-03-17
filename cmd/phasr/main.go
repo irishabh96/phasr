@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"staq/internal/app"
-	"staq/internal/config"
+	"phasr/internal/app"
+	"phasr/internal/config"
 )
 
 func main() {

@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"net/http"
 
-	"staq/internal/api"
-	"staq/internal/config"
-	"staq/internal/diff"
-	"staq/internal/editor"
-	"staq/internal/gitops"
-	"staq/internal/preset"
-	"staq/internal/process"
-	"staq/internal/store"
-	"staq/internal/task"
+	"phasr/internal/api"
+	"phasr/internal/config"
+	"phasr/internal/diff"
+	"phasr/internal/editor"
+	"phasr/internal/gitops"
+	"phasr/internal/preset"
+	"phasr/internal/process"
+	"phasr/internal/store"
+	"phasr/internal/task"
 )
 
 type Runtime struct {

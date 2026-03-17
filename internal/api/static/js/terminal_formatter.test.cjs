@@ -18,7 +18,7 @@ test('snapshot: wraps long skill item with hanging indentation at 80/100/120 col
 });
 
 test('long filesystem path is rendered on dedicated path line with safe truncation', () => {
-  const line = '- x: desc (file: /Users/rishabh/.superset/worktrees/Staq/build-a-desktop-first-dark-mode-developer-tool-ui/provider-logic-or-existing-workflows.-the-app-sho/SKILL.md)';
+  const line = '- x: desc (file: /Users/rishabh/.superset/worktrees/Phasr/build-a-desktop-first-dark-mode-developer-tool-ui/provider-logic-or-existing-workflows.-the-app-sho/SKILL.md)';
   const output = formatter.formatStructuredLine(line, 40);
 
   assert.equal(output, '- x: desc\n  path: /Users/rishabh/...p-sho/SKILL.md');

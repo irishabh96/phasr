@@ -7,15 +7,15 @@
     <link rel="icon" type="image/svg+xml" href="/static/assets/brand/phasr-sh.svg" />
     <script src="/static/dist/build-meta.js"></script>
     <script>
-      window.__STAQ_UI_BUILD_META__ = window.__STAQ_UI_BUILD_META__ || null;
-      window.__STAQ_ASSET_VERSION__ = String(
-        window.__STAQ_ASSET_VERSION__ || (window.__STAQ_UI_BUILD_META__ && window.__STAQ_UI_BUILD_META__.version) || '',
+      window.__PHASR_UI_BUILD_META__ = window.__PHASR_UI_BUILD_META__ || null;
+      window.__PHASR_ASSET_VERSION__ = String(
+        window.__PHASR_ASSET_VERSION__ || (window.__PHASR_UI_BUILD_META__ && window.__PHASR_UI_BUILD_META__.version) || '',
       );
     </script>
     <link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
     <script>
       (function injectVersionedCss() {
-        const version = String(window.__STAQ_ASSET_VERSION__ || '');
+        const version = String(window.__PHASR_ASSET_VERSION__ || '');
         const suffix = version ? '?v=' + encodeURIComponent(version) : '';
         document.write('<link rel="stylesheet" href="/static/css/app.css' + suffix + '" />');
       })();
@@ -39,29 +39,29 @@
       if (!window.process) window.process = {};
       if (!window.process.env) window.process.env = {};
       if (!window.process.env.NODE_ENV) window.process.env.NODE_ENV = 'production';
-      window.__STAQ_REACT_BUNDLE_ERROR__ = false;
-      window.__STAQ_REACT_RUNTIME_ERROR__ = '';
+      window.__PHASR_REACT_BUNDLE_ERROR__ = false;
+      window.__PHASR_REACT_RUNTIME_ERROR__ = '';
       window.addEventListener('error', function (event) {
         const filename = String(event && event.filename ? event.filename : '');
         if (!filename.includes('/static/dist/react-ui.js')) return;
-        window.__STAQ_REACT_RUNTIME_ERROR__ = String(event && event.message ? event.message : 'React UI runtime error');
+        window.__PHASR_REACT_RUNTIME_ERROR__ = String(event && event.message ? event.message : 'React UI runtime error');
       });
     </script>
     <script>
       (function injectVersionedReactBundle() {
-        const version = String(window.__STAQ_ASSET_VERSION__ || '');
+        const version = String(window.__PHASR_ASSET_VERSION__ || '');
         const suffix = version ? '?v=' + encodeURIComponent(version) : '';
         const bundle = document.createElement('script');
         bundle.src = '/static/dist/react-ui.js' + suffix;
         bundle.onerror = function () {
-          window.__STAQ_REACT_BUNDLE_ERROR__ = true;
+          window.__PHASR_REACT_BUNDLE_ERROR__ = true;
         };
         document.body.appendChild(bundle);
       })();
     </script>
     <script>
       (function () {
-        const uiBuildMeta = window.__STAQ_UI_BUILD_META__;
+        const uiBuildMeta = window.__PHASR_UI_BUILD_META__;
         const uiVersion = String(uiBuildMeta && uiBuildMeta.version ? uiBuildMeta.version : 'unknown');
 
         function showBootMessage(title, meta) {
@@ -88,10 +88,10 @@
         }
 
         function loadAppScript() {
-          if (window.__STAQ_APP_BOOTSTRAPPED__) return;
-          window.__STAQ_APP_BOOTSTRAPPED__ = true;
+          if (window.__PHASR_APP_BOOTSTRAPPED__) return;
+          window.__PHASR_APP_BOOTSTRAPPED__ = true;
           const script = document.createElement('script');
-          const version = String(window.__STAQ_ASSET_VERSION__ || '');
+          const version = String(window.__PHASR_ASSET_VERSION__ || '');
           script.src = version ? '/static/js/app.js?v=' + encodeURIComponent(version) : '/static/js/app.js';
           script.onerror = function () {
             showBootMessage('Application boot failed.', 'Could not load /static/js/app.js');
@@ -99,7 +99,7 @@
           document.body.appendChild(script);
         }
 
-        if (window.__STAQ_REACT_BUNDLE_ERROR__) {
+        if (window.__PHASR_REACT_BUNDLE_ERROR__) {
           showBootMessage(
             'UI bundle missing.',
             'Run `make ui-build` (or `npm --prefix internal/api/frontend run build`) and restart the app.',
@@ -110,15 +110,15 @@
         let waitingHintShown = false;
         const startedAt = Date.now();
         const timer = window.setInterval(function () {
-          if (window.__STAQ_REACT_BOOTED__) {
+          if (window.__PHASR_REACT_BOOTED__) {
             window.clearInterval(timer);
             loadAppScript();
             return;
           }
 
-          if (window.__STAQ_REACT_RUNTIME_ERROR__) {
+          if (window.__PHASR_REACT_RUNTIME_ERROR__) {
             window.clearInterval(timer);
-            showBootMessage('UI initialization failed.', 'React error: ' + window.__STAQ_REACT_RUNTIME_ERROR__);
+            showBootMessage('UI initialization failed.', 'React error: ' + window.__PHASR_REACT_RUNTIME_ERROR__);
             return;
           }
 

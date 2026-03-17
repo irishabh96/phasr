@@ -1,6 +1,6 @@
-# Staq (Go MVP)
+# Phasr (Go MVP)
 
-Staq is a Go-first reconstruction of the Superset-style coding-agent workspace: run multiple CLI agents in parallel, isolate each task in a git worktree, and monitor logs/diffs from a single dashboard.
+Phasr is a Go-first reconstruction of the Superset-style coding-agent workspace: run multiple CLI agents in parallel, isolate each task in a git worktree, and monitor logs/diffs from a single dashboard.
 
 ## What This MVP Includes
 
@@ -30,7 +30,7 @@ This implementation mirrors the product concepts, not the JavaScript code:
 - `diff service` -> `internal/diff`
   - `git status --porcelain` parsing + patch generation
 - `preset/template manager` -> `internal/preset`
-  - Built-in presets plus optional `~/.staq/presets.json`
+  - Built-in presets plus optional `~/.phasr/presets.json`
 - `editor launcher` -> `internal/editor`
   - Open task worktree in your preferred editor command
 - `config/settings manager` -> `internal/config`
@@ -41,7 +41,7 @@ This implementation mirrors the product concepts, not the JavaScript code:
 ## Architecture
 
 ```
-cmd/staq/main.go            # app bootstrap
+cmd/phasr/main.go            # app bootstrap
 internal/config             # env + runtime settings
 internal/domain             # core task model
 internal/store              # JSON task persistence
@@ -56,10 +56,43 @@ internal/api                # HTTP API + dashboard template
 ## Requirements (macOS-first)
 
 - Go 1.25+
+- Node.js 18+ and `npm` (for React UI build)
 - `git`
 - `zsh`
 - At least one editor CLI if using open-editor actions (`code`, `cursor`, etc.)
 - For desktop mode: Xcode Command Line Tools (for CGO) + macOS WebKit runtime
+
+## Setup (First Time)
+
+1. Clone the repo and enter it:
+
+```bash
+git clone <your-repo-url> phasr
+cd phasr
+```
+
+2. Install frontend dependencies:
+
+```bash
+make ui-install
+```
+
+3. Configure environment variables (optional, defaults are usually fine):
+
+```bash
+cp .env.example .env
+# the app reads shell environment variables directly
+# export values you want to override, for example:
+export PHASR_ADDR=127.0.0.1:7777
+export PHASR_DATA_DIR="$HOME/.phasr"
+export PHASR_DEFAULT_EDITOR=code
+```
+
+4. Build and run:
+
+```bash
+make run
+```
 
 ## Quick Start
 
@@ -67,7 +100,7 @@ internal/api                # HTTP API + dashboard template
 
 ```bash
 make build
-./bin/staq
+./bin/phasr
 # or: make run
 ```
 
@@ -95,7 +128,7 @@ Startup guard: if frontend sources are newer than `internal/api/static/dist/*`, 
 
 ## Desktop App Mode (macOS)
 
-Run Staq in a native desktop window (webview shell over the same Go backend):
+Run Phasr in a native desktop window (webview shell over the same Go backend):
 
 ```bash
 make desktop-run
@@ -105,7 +138,7 @@ Build desktop binary:
 
 ```bash
 make desktop-build
-./bin/staq-desktop
+./bin/phasr-desktop
 ```
 
 If you are working on UI only:
@@ -118,7 +151,7 @@ make ui-dev
 Common desktop flags:
 
 - `-addr 127.0.0.1:7777`
-- `-data-dir ~/.staq`
+- `-data-dir ~/.phasr`
 - `-editor code`
 - `-width 1500 -height 980`
 - `-debug`
@@ -149,7 +182,7 @@ Common desktop flags:
 
 ## Presets File (Optional)
 
-Create `~/.staq/presets.json` to define custom setup templates:
+Create `~/.phasr/presets.json` to define custom setup templates:
 
 ```json
 {
@@ -168,7 +201,7 @@ Create `~/.staq/presets.json` to define custom setup templates:
 
 ## Data Layout
 
-Default directory: `~/.staq`
+Default directory: `~/.phasr`
 
 - `tasks.json`
 - `workspaces.json`

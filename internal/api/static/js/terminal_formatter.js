@@ -4,7 +4,7 @@
 //     module.exports = api;
 //   }
 //   if (root) {
-//     root.staqTerminalFormatter = api;
+//     root.phasrTerminalFormatter = api;
 //   }
 // })(typeof globalThis !== "undefined" ? globalThis : this, function () {
 //   const ANSI_SGR_RE = /\x1b\[([0-9;]*)m/g;

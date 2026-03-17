@@ -16,7 +16,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"staq/internal/domain"
+	"phasr/internal/domain"
 )
 
 type EventType string

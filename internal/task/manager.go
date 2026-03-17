@@ -15,13 +15,13 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"staq/internal/diff"
-	"staq/internal/domain"
-	"staq/internal/editor"
-	"staq/internal/gitops"
-	"staq/internal/preset"
-	"staq/internal/process"
-	"staq/internal/store"
+	"phasr/internal/diff"
+	"phasr/internal/domain"
+	"phasr/internal/editor"
+	"phasr/internal/gitops"
+	"phasr/internal/preset"
+	"phasr/internal/process"
+	"phasr/internal/store"
 )
 
 type Options struct {

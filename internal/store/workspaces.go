@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"staq/internal/domain"
+	"phasr/internal/domain"
 )
 
 type WorkspaceStore struct {

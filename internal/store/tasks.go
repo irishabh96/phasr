@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"staq/internal/domain"
+	"phasr/internal/domain"
 )
 
 type TaskStore struct {

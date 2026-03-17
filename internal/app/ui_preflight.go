@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const skipUIBuildCheckEnv = "STAQ_SKIP_UI_BUILD_CHECK"
+const skipUIBuildCheckEnv = "PHASR_SKIP_UI_BUILD_CHECK"
 
 func ensureUIBundleFresh() error {
 	if strings.TrimSpace(os.Getenv(skipUIBuildCheckEnv)) == "1" {
