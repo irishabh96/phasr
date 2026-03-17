@@ -221,7 +221,11 @@ const newTaskModalBackdropEl = document.getElementById('newTaskModalBackdrop');
 const newTaskModalPromptEl = document.getElementById('newTaskModalPrompt');
 const newTaskModalPromptHelpEl = document.getElementById('newTaskModalPromptHelp');
 const newTaskModalAgentEl = document.getElementById('newTaskModalAgent');
+const newTaskModalAgentIconEl = document.getElementById('newTaskModalAgentIcon');
 const newTaskModalWorkspaceEl = document.getElementById('newTaskModalWorkspace');
+const newTaskModalBaseBranchEl = document.getElementById('newTaskModalBaseBranch');
+const newTaskModalBranchPrefixEl = document.getElementById('newTaskModalBranchPrefix');
+const newTaskModalBranchNameEl = document.getElementById('newTaskModalBranchName');
 const newTaskModalErrorEl = document.getElementById('newTaskModalError');
 const newTaskModalCloseBtnEl = document.getElementById('newTaskModalCloseBtn');
 const newTaskModalCancelBtnEl = document.getElementById('newTaskModalCancelBtn');
@@ -256,6 +260,10 @@ let newTaskModalPromptTouched = false;
 let newTaskModalSubmitAttempted = false;
 let newTaskModalCreating = false;
 let newTaskModalRootTaskId = '';
+let newTaskModalBranchEdited = false;
+let newTaskModalBranchLookupSeq = 0;
+const newTaskModalBaseBranchCache = new Map();
+const NEW_TASK_BRANCH_PREFIXES = ['task', 'feature', 'hotfix', 'bug-fix'];
 let newTabTypeSelection = { preferredWorkspace: '', rootTaskID: '' };
 let closeTaskModalSelection = { rootTaskID: '', taskName: '' };
 let closeTaskModalBusy = false;
@@ -1389,6 +1397,172 @@ function openExistingNewTabFlow() {
   openNewTaskModal(options);
 }
 
+function sanitizeBranchSlugForPreview(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function deriveBranchSlugSuggestion() {
+  const selectedAgent = String(newTaskModalAgentEl?.value || 'task').trim() || 'task';
+  const prompt = String(newTaskModalPromptEl?.value || '');
+  const fallbackTaskName = `${selectedAgent}-session`;
+  const taskName = taskNameFromPrompt(prompt, fallbackTaskName);
+  return sanitizeBranchSlugForPreview(taskName) || 'task';
+}
+
+function setNewTaskModalAgentIcon(agent) {
+  if (!newTaskModalAgentIconEl) return;
+  const key = String(agent || '').trim().toLowerCase();
+  if (!key) {
+    newTaskModalAgentIconEl.innerHTML = '';
+    return;
+  }
+  const pillIconEl = document.querySelector(`[data-provider-pill="${key}"] .provider-icon`);
+  if (pillIconEl) {
+    const sourceImg = pillIconEl.querySelector('img.provider-icon-svg');
+    const source = String(sourceImg?.getAttribute('src') || '').trim();
+    if (source) {
+      newTaskModalAgentIconEl.innerHTML = `<img class="new-task-agent-icon-svg" src="${escapeHtml(source)}" alt="" />`;
+      return;
+    }
+    const sourceText = String(pillIconEl.textContent || '').trim();
+    if (sourceText) {
+      const text = sourceText.slice(0, 2).toUpperCase();
+      newTaskModalAgentIconEl.innerHTML = `<span class="new-task-agent-icon-fallback">${escapeHtml(text)}</span>`;
+      return;
+    }
+  }
+  const fallback = key.slice(0, 2).toUpperCase();
+  newTaskModalAgentIconEl.innerHTML = `<span class="new-task-agent-icon-fallback">${escapeHtml(fallback)}</span>`;
+}
+
+function normalizeBranchOptionList(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const branch = String(value || '').trim();
+    if (!branch) continue;
+    const key = branch.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(branch);
+  }
+  return out;
+}
+
+function currentNewTaskBranchPrefix() {
+  const selected = String(newTaskModalBranchPrefixEl?.value || 'task').trim().toLowerCase();
+  if (NEW_TASK_BRANCH_PREFIXES.includes(selected)) return selected;
+  return 'task';
+}
+
+function setNewTaskModalBaseBranchOptions(values, selectedValue = '') {
+  if (!newTaskModalBaseBranchEl) return;
+  const options = normalizeBranchOptionList(values);
+  const effectiveOptions = options.length ? options : ['current'];
+  const requested = String(selectedValue || '').trim();
+  const current = String(newTaskModalBaseBranchEl.value || '').trim();
+  const preferred = requested || current || effectiveOptions[0];
+  let selected = effectiveOptions[0];
+  for (const option of effectiveOptions) {
+    if (option.toLowerCase() === preferred.toLowerCase()) {
+      selected = option;
+      break;
+    }
+  }
+  newTaskModalBaseBranchEl.innerHTML = effectiveOptions
+    .map((branch) => {
+      const selectedAttr = branch.toLowerCase() === selected.toLowerCase() ? ' selected' : '';
+      return `<option value="${escapeHtml(branch)}"${selectedAttr}>${escapeHtml(branch)}</option>`;
+    })
+    .join('');
+  newTaskModalBaseBranchEl.title = selected;
+}
+
+function setNewTaskModalBranchNameLabel(value) {
+  if (!newTaskModalBranchNameEl) return;
+  const text = sanitizeBranchSlugForPreview(value) || 'task';
+  newTaskModalBranchNameEl.value = text;
+  newTaskModalBranchNameEl.title = `${currentNewTaskBranchPrefix()}/${text}`;
+}
+
+function updateNewTaskModalBranchPreview(force = false) {
+  if (newTaskModalBranchEdited && !force) return;
+  setNewTaskModalBranchNameLabel(deriveBranchSlugSuggestion());
+}
+
+function workspaceBranchHintForNewTaskModal(workspaceID) {
+  const wsID = String(workspaceID || '').trim();
+  if (!wsID) return '';
+
+  const activeTask = getTask(activeTabId);
+  if (activeTask) {
+    const activeTaskWorkspaceID = workspaceIdByName(activeTask.workspace);
+    const activeTaskBranch = String(activeTask.branch || '').trim();
+    if (activeTaskWorkspaceID && activeTaskWorkspaceID.toLowerCase() === wsID.toLowerCase() && activeTaskBranch && activeTaskBranch !== '-') {
+      return activeTaskBranch;
+    }
+  }
+
+  for (const task of tasksForWorkspace(wsID)) {
+    const branch = String(task?.branch || '').trim();
+    if (branch && branch !== '-') return branch;
+  }
+  return '';
+}
+
+async function refreshNewTaskModalBaseBranch() {
+  if (!newTaskModalBaseBranchEl) return;
+
+  const rootTask = getTask(newTaskModalRootTaskId);
+  if (rootTask) {
+    const rootBranch = String(rootTask.branch || '').trim() || 'current';
+    setNewTaskModalBaseBranchOptions([rootBranch], rootBranch);
+    return;
+  }
+
+  const workspaceID = String(newTaskModalWorkspaceEl?.value || activeWorkspace || '').trim();
+  const workspace = getWorkspace(workspaceID);
+  const repoPath = String(workspace?.repo_path || '').trim();
+  const branchHint = workspaceBranchHintForNewTaskModal(workspaceID);
+  if (!repoPath) {
+    setNewTaskModalBaseBranchOptions([branchHint || 'current'], branchHint || 'current');
+    return;
+  }
+  const cacheKey = repoPath.toLowerCase();
+  if (newTaskModalBaseBranchCache.has(cacheKey)) {
+    const cached = newTaskModalBaseBranchCache.get(cacheKey) || {};
+    const branches = normalizeBranchOptionList([cached.baseBranch, cached.current, ...(cached.branches || []), branchHint]);
+    const selected = String(cached.baseBranch || '').trim() || branchHint || String(cached.current || '').trim();
+    setNewTaskModalBaseBranchOptions(branches, selected);
+    return;
+  }
+
+  const seq = ++newTaskModalBranchLookupSeq;
+  setNewTaskModalBaseBranchOptions(['Detecting...'], 'Detecting...');
+  try {
+    const data = await api('/api/local/git-branches', {
+      method: 'POST',
+      body: JSON.stringify({ path: repoPath }),
+    });
+    if (seq !== newTaskModalBranchLookupSeq || !isNewTaskModalOpen()) return;
+    const baseBranch = String(data.base_branch || '').trim();
+    const currentBranch = String(data.current || '').trim();
+    const listedBranches = Array.isArray(data.branches) ? data.branches : [];
+    const branches = normalizeBranchOptionList([baseBranch, currentBranch, ...listedBranches, branchHint]);
+    const selected = baseBranch || branchHint || currentBranch || branches[0] || 'current';
+    newTaskModalBaseBranchCache.set(cacheKey, { baseBranch, current: currentBranch, branches });
+    setNewTaskModalBaseBranchOptions(branches, selected);
+  } catch (_) {
+    if (seq !== newTaskModalBranchLookupSeq || !isNewTaskModalOpen()) return;
+    setNewTaskModalBaseBranchOptions([branchHint || 'current'], branchHint || 'current');
+  }
+}
+
 function setNewTaskModalError(message) {
   if (!newTaskModalErrorEl) return;
   const text = String(message || '').trim();
@@ -1448,17 +1622,26 @@ function newTaskModalSnapshot() {
   const prompt = String(newTaskModalPromptEl?.value || '').trim();
   const agent = String(newTaskModalAgentEl?.value || '').trim();
   const workspace = String(newTaskModalWorkspaceEl?.value || activeWorkspace || '').trim();
+  const baseBranch = String(newTaskModalBaseBranchEl?.value || '').trim();
+  const branchPrefix = currentNewTaskBranchPrefix();
+  const branchSlug = sanitizeBranchSlugForPreview(newTaskModalBranchNameEl?.value || '');
   const promptValid = Boolean(prompt);
   const agentValid = Boolean(AGENT_COMMANDS[agent]);
   const workspaceValid = Boolean(workspace);
+  const branchValid = Boolean(branchPrefix) && Boolean(branchSlug);
   return {
     prompt,
     agent,
     workspace,
+    baseBranch,
+    branchPrefix,
+    branchSlug,
+    newBranchName: `${branchPrefix}/${branchSlug}`,
     promptValid,
     agentValid,
     workspaceValid,
-    canSubmit: promptValid && agentValid && workspaceValid && !newTaskModalCreating && !launchingAgent,
+    branchValid,
+    canSubmit: promptValid && agentValid && workspaceValid && branchValid && !newTaskModalCreating && !launchingAgent,
   };
 }
 
@@ -1477,8 +1660,19 @@ function updateNewTaskModalValidityUI() {
   const showPromptError = (newTaskModalPromptTouched || newTaskModalSubmitAttempted) && !state.promptValid;
   newTaskModalPromptEl.classList.toggle('new-task-modal-input-invalid', showPromptError);
   newTaskModalPromptEl.setAttribute('aria-invalid', showPromptError ? 'true' : 'false');
-  newTaskModalPromptHelpEl.textContent = showPromptError ? 'Task instructions are required.' : '';
-  newTaskModalPromptHelpEl.classList.toggle('workspace-modal-help-error', showPromptError);
+  const showBranchError = newTaskModalSubmitAttempted && !state.branchValid;
+  if (newTaskModalBranchNameEl) {
+    newTaskModalBranchNameEl.classList.toggle('new-task-modal-input-invalid', showBranchError);
+    newTaskModalBranchNameEl.setAttribute('aria-invalid', showBranchError ? 'true' : 'false');
+  }
+  if (showPromptError) {
+    newTaskModalPromptHelpEl.textContent = 'Task instructions are required.';
+  } else if (showBranchError) {
+    newTaskModalPromptHelpEl.textContent = 'New branch slug is required.';
+  } else {
+    newTaskModalPromptHelpEl.textContent = '';
+  }
+  newTaskModalPromptHelpEl.classList.toggle('workspace-modal-help-error', showPromptError || showBranchError);
   newTaskModalCreateBtnEl.disabled = !state.canSubmit;
 }
 
@@ -1494,14 +1688,27 @@ function resetNewTaskModalState() {
   newTaskModalPromptTouched = false;
   newTaskModalSubmitAttempted = false;
   newTaskModalCreating = false;
+  newTaskModalBranchEdited = false;
+  newTaskModalBranchLookupSeq += 1;
   setNewTaskModalError('');
   newTaskModalPromptHelpEl.textContent = '';
   newTaskModalPromptHelpEl.classList.remove('workspace-modal-help-error');
   newTaskModalPromptEl.classList.remove('new-task-modal-input-invalid');
   newTaskModalPromptEl.setAttribute('aria-invalid', 'false');
+  if (newTaskModalBranchNameEl) {
+    newTaskModalBranchNameEl.classList.remove('new-task-modal-input-invalid');
+    newTaskModalBranchNameEl.setAttribute('aria-invalid', 'false');
+  }
   newTaskModalCreateSpinnerEl.classList.add('hidden');
   newTaskModalCreateSpinnerEl.classList.remove('animate-spin');
   newTaskModalCreateLabelEl.textContent = 'Start Task';
+  if (newTaskModalBranchPrefixEl) {
+    newTaskModalBranchPrefixEl.value = 'task';
+    newTaskModalBranchPrefixEl.title = 'task';
+  }
+  setNewTaskModalAgentIcon(newTaskModalAgentEl?.value || 'claude');
+  setNewTaskModalBaseBranchOptions(['current'], 'current');
+  updateNewTaskModalBranchPreview(true);
   updateNewTaskModalValidityUI();
 }
 
@@ -1518,6 +1725,9 @@ function openNewTaskModal({ preferredWorkspace = activeWorkspace, rootTaskID = '
   newTaskModalRootTaskId = String(rootTaskID || '').trim();
   resetNewTaskModalState();
   newTaskModalBackdropEl.classList.remove('hidden');
+  setNewTaskModalAgentIcon(selectedAgent);
+  updateNewTaskModalBranchPreview(true);
+  void refreshNewTaskModalBaseBranch();
   setTimeout(() => {
     newTaskModalPromptEl.focus();
   }, 0);
@@ -1525,6 +1735,8 @@ function openNewTaskModal({ preferredWorkspace = activeWorkspace, rootTaskID = '
 
 function closeNewTaskModal() {
   if (!newTaskModalBackdropEl) return;
+  newTaskModalBranchLookupSeq += 1;
+  newTaskModalRootTaskId = '';
   newTaskModalBackdropEl.classList.add('hidden');
 }
 
@@ -1550,6 +1762,10 @@ async function submitNewTaskModal() {
     newTaskModalWorkspaceEl?.focus();
     return;
   }
+  if (!state.branchValid) {
+    newTaskModalBranchNameEl?.focus();
+    return;
+  }
   if (!state.canSubmit) {
     return;
   }
@@ -1562,6 +1778,8 @@ async function submitNewTaskModal() {
     await createQuickTaskForAgent(state.agent, {
       prompt: state.prompt,
       workspace: state.workspace,
+      baseBranch: state.baseBranch,
+      newBranchName: state.newBranchName,
       rootTaskID,
       keepPromptInput: true,
     });
@@ -3555,6 +3773,8 @@ async function createQuickTaskForAgent(agent, options = {}) {
       preset: presetSelectEl.value,
       direct_repo: useExistingWorktree,
       root_task_id: rootTaskID,
+      base_branch: String(options.baseBranch || '').trim(),
+      new_branch_name: String(options.newBranchName || '').trim(),
       ...taskStartTerminalSize(),
     };
 
@@ -3848,14 +4068,45 @@ function installEventHandlers() {
   newTaskModalPromptEl.addEventListener('input', () => {
     newTaskModalPromptTouched = true;
     setNewTaskModalError('');
+    updateNewTaskModalBranchPreview();
     updateNewTaskModalValidityUI();
   });
   newTaskModalAgentEl.addEventListener('change', () => {
     setNewTaskModalError('');
+    setNewTaskModalAgentIcon(newTaskModalAgentEl.value);
+    updateNewTaskModalBranchPreview();
     updateNewTaskModalValidityUI();
   });
   newTaskModalWorkspaceEl.addEventListener('change', () => {
     setNewTaskModalError('');
+    void refreshNewTaskModalBaseBranch();
+    updateNewTaskModalValidityUI();
+  });
+  newTaskModalBaseBranchEl?.addEventListener('change', () => {
+    newTaskModalBaseBranchEl.title = String(newTaskModalBaseBranchEl.value || '').trim();
+    setNewTaskModalError('');
+  });
+  newTaskModalBranchPrefixEl?.addEventListener('change', () => {
+    const prefix = currentNewTaskBranchPrefix();
+    newTaskModalBranchPrefixEl.value = prefix;
+    newTaskModalBranchPrefixEl.title = prefix;
+    setNewTaskModalError('');
+    setNewTaskModalBranchNameLabel(newTaskModalBranchNameEl?.value || '');
+    updateNewTaskModalValidityUI();
+  });
+  newTaskModalBranchNameEl?.addEventListener('input', () => {
+    const clean = sanitizeBranchSlugForPreview(newTaskModalBranchNameEl.value);
+    newTaskModalBranchNameEl.value = clean;
+    const prefix = currentNewTaskBranchPrefix();
+    newTaskModalBranchNameEl.title = clean ? `${prefix}/${clean}` : `${prefix}/`;
+    newTaskModalBranchEdited = true;
+    setNewTaskModalError('');
+    updateNewTaskModalValidityUI();
+  });
+  newTaskModalBranchNameEl?.addEventListener('blur', () => {
+    const clean = sanitizeBranchSlugForPreview(newTaskModalBranchNameEl.value) || 'task';
+    newTaskModalBranchNameEl.value = clean;
+    newTaskModalBranchNameEl.title = `${currentNewTaskBranchPrefix()}/${clean}`;
     updateNewTaskModalValidityUI();
   });
   newTaskModalCreateBtnEl.addEventListener('click', async () => {

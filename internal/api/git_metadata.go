@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -23,6 +24,13 @@ type gitMetadataResponse struct {
 	Branch     string `json:"branch"`
 	BranchURL  string `json:"branch_url"`
 	PRURL      string `json:"pr_url"`
+}
+
+type gitBranchesResponse struct {
+	Path       string   `json:"path"`
+	Current    string   `json:"current"`
+	BaseBranch string   `json:"base_branch"`
+	Branches   []string `json:"branches"`
 }
 
 func (s *server) handleGitMetadata(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +59,33 @@ func (s *server) handleGitMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	branches, err := resolveGitBranches(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, branches)
 }
 
 func resolveGitMetadata(path, branch string) (gitMetadataResponse, error) {
@@ -98,6 +133,76 @@ func resolveGitMetadata(path, branch string) (gitMetadataResponse, error) {
 		Branch:     branch,
 		BranchURL:  branchURL,
 		PRURL:      prURL,
+	}, nil
+}
+
+func resolveGitBranches(path string) (gitBranchesResponse, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return gitBranchesResponse{}, fmt.Errorf("resolve path: %w", err)
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return gitBranchesResponse{}, errors.New("path does not exist")
+		}
+		return gitBranchesResponse{}, err
+	}
+	if !info.IsDir() {
+		return gitBranchesResponse{}, errors.New("path is not a directory")
+	}
+
+	if _, err := runGitInPath(absPath, "rev-parse", "--is-inside-work-tree"); err != nil {
+		return gitBranchesResponse{}, errors.New("path is not a git repository")
+	}
+
+	branchesOut, err := runGitInPath(absPath, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return gitBranchesResponse{}, fmt.Errorf("list branches: %w", err)
+	}
+	branches := uniqueNonEmptyLines(branchesOut)
+
+	currentBranch, _ := runGitInPath(absPath, "rev-parse", "--abbrev-ref", "HEAD")
+	currentBranch = strings.TrimSpace(currentBranch)
+	if currentBranch == "HEAD" {
+		currentBranch = ""
+	}
+
+	remoteName, _, remoteErr := gitRemote(absPath)
+	baseBranch := ""
+	if remoteErr == nil {
+		baseBranch = strings.TrimSpace(detectBaseBranch(absPath, remoteName))
+	}
+
+	merged := make([]string, 0, len(branches)+2)
+	seen := map[string]struct{}{}
+	add := func(name string) {
+		branch := strings.TrimSpace(name)
+		if branch == "" {
+			return
+		}
+		key := strings.ToLower(branch)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, branch)
+	}
+	add(baseBranch)
+	add(currentBranch)
+	for _, branch := range branches {
+		add(branch)
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return strings.ToLower(merged[i]) < strings.ToLower(merged[j])
+	})
+
+	return gitBranchesResponse{
+		Path:       absPath,
+		Current:    currentBranch,
+		BaseBranch: baseBranch,
+		Branches:   merged,
 	}, nil
 }
 
@@ -162,6 +267,25 @@ func runGitInPath(repoPath string, args ...string) (string, error) {
 		return "", fmt.Errorf("%w (%s)", err, output)
 	}
 	return output, nil
+}
+
+func uniqueNonEmptyLines(raw string) []string {
+	parts := strings.Split(raw, "\n")
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, line := range parts {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func detectProvider(host string) string {
