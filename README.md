@@ -224,3 +224,10 @@ Default directory: `~/.phasr`
 3. Add workspace snapshot/export and task sharing
 4. Add policy controls for repo allow-lists and command safelists
 5. Add unit/integration tests around task + worktree lifecycle
+
+## Open Source
+
+- License: MIT (`LICENSE`)
+- Contribution guide: `CONTRIBUTING.md`
+- Security reporting: `SECURITY.md`
+- Community expectations: `CODE_OF_CONDUCT.md`
