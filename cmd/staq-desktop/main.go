@@ -23,7 +23,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("staq-desktop: %v", err)
+		log.Fatalf("phasr.sh desktop: %v", err)
 	}
 }
 
@@ -41,9 +41,9 @@ func run() error {
 	)
 
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP listen address")
-	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "Staq data directory")
+	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "phasr.sh data directory")
 	flag.StringVar(&cfg.DefaultEditor, "editor", cfg.DefaultEditor, "Default editor command (code/cursor/zed/vim/open)")
-	flag.StringVar(&title, "title", "Staq", "Desktop window title")
+	flag.StringVar(&title, "title", "phasr.sh", "Desktop window title")
 	flag.IntVar(&width, "width", 1500, "Desktop window width")
 	flag.IntVar(&height, "height", 980, "Desktop window height")
 	flag.BoolVar(&debug, "debug", false, "Enable webview devtools")
@@ -72,20 +72,6 @@ func run() error {
 		close(serveErrCh)
 	}()
 
-	w := webview.New(debug)
-	if w == nil {
-		return fmt.Errorf("failed to initialize webview")
-	}
-	defer w.Destroy()
-	w.SetTitle(title)
-	w.SetSize(width, height, webview.HintNone)
-
-	appURL := httpURL(listener.Addr().String())
-	w.Navigate(appURL)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	var shutdownOnce sync.Once
 	shutdown := func() {
 		shutdownOnce.Do(func() {
@@ -95,13 +81,44 @@ func run() error {
 		})
 	}
 
+	w := webview.New(debug)
+	if w == nil {
+		return fmt.Errorf("failed to initialize webview")
+	}
+	defer w.Destroy()
+	w.SetTitle(title)
+	w.SetSize(width, height, webview.HintNone)
+	if err := w.Bind("desktopQuit", func() {
+		w.Terminate()
+		shutdown()
+	}); err != nil {
+		return fmt.Errorf("bind desktopQuit: %w", err)
+	}
+	w.Init(`
+		window.addEventListener("keydown", (event) => {
+			const key = String(event && event.key ? event.key : "").toLowerCase();
+			if (!event.metaKey || event.ctrlKey || event.altKey || key !== "q") return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (typeof window.desktopQuit === "function") {
+				window.desktopQuit().catch(() => {});
+			}
+		}, true);
+	`)
+
+	appURL := httpURL(listener.Addr().String())
+	w.Navigate(appURL)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	go func() {
 		<-ctx.Done()
 		w.Terminate()
 		shutdown()
 	}()
 
-	fmt.Printf("Staq desktop listening on %s\n", appURL)
+	fmt.Printf("phasr.sh desktop listening on %s\n", appURL)
 	fmt.Printf("Data dir: %s\n", runtime.Config.DataDir)
 
 	w.Run()

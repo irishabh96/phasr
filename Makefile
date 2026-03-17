@@ -1,4 +1,4 @@
-.PHONY: build run desktop-build desktop-run fmt tidy ui-install ui-build ui-dev ui-version
+.PHONY: build run desktop-build desktop-run desktop-export-macos desktop-export-macos-installer fmt tidy ui-install ui-build ui-dev ui-version
 
 ui-install:
 	npm --prefix internal/api/frontend install
@@ -12,7 +12,7 @@ ui-dev:
 build:
 	$(MAKE) ui-build
 	mkdir -p bin
-	go build -o bin/staq ./cmd/staq
+	go build -o bin/phasr ./cmd/staq
 
 run:
 	$(MAKE) build
@@ -22,12 +22,12 @@ run:
 		kill $$pids; \
 		sleep 1; \
 	fi
-	./bin/staq
+	./bin/phasr
 
 desktop-build:
 	$(MAKE) ui-build
 	mkdir -p bin
-	CGO_ENABLED=1 go build -o bin/staq-desktop ./cmd/staq-desktop
+	CGO_ENABLED=1 go build -o bin/phasr-desktop ./cmd/staq-desktop
 
 desktop-run:
 	$(MAKE) desktop-build
@@ -37,7 +37,13 @@ desktop-run:
 		kill $$pids; \
 		sleep 1; \
 	fi
-	./bin/staq-desktop
+	./bin/phasr-desktop
+
+desktop-export-macos:
+	./scripts/export-macos-app.sh
+
+desktop-export-macos-installer:
+	./scripts/export-macos-installer.sh
 
 fmt:
 	gofmt -w ./cmd ./internal

@@ -3,22 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Staq | Multi-Workspace Terminal</title>
+    <title>phasr.sh | Multi-Workspace Terminal</title>
+    <link rel="icon" type="image/svg+xml" href="/static/assets/brand/phasr-sh.svg" />
     <script src="/static/dist/build-meta.js"></script>
     <script>
       window.__STAQ_UI_BUILD_META__ = window.__STAQ_UI_BUILD_META__ || null;
       window.__STAQ_ASSET_VERSION__ = String(
-        window.__STAQ_ASSET_VERSION__
-          || (window.__STAQ_UI_BUILD_META__ && window.__STAQ_UI_BUILD_META__.version)
-          || "",
+        window.__STAQ_ASSET_VERSION__ || (window.__STAQ_UI_BUILD_META__ && window.__STAQ_UI_BUILD_META__.version) || '',
       );
     </script>
     <link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
     <script>
       (function injectVersionedCss() {
-        const version = String(window.__STAQ_ASSET_VERSION__ || "");
-        const suffix = version ? ("?v=" + encodeURIComponent(version)) : "";
-        document.write("<link rel=\"stylesheet\" href=\"/static/css/app.css" + suffix + "\" />");
+        const version = String(window.__STAQ_ASSET_VERSION__ || '');
+        const suffix = version ? '?v=' + encodeURIComponent(version) : '';
+        document.write('<link rel="stylesheet" href="/static/css/app.css' + suffix + '" />');
       })();
     </script>
     <noscript>
@@ -28,7 +27,7 @@
   <body>
     <div id="react-root">
       <div id="bootFallback" class="boot-fallback" role="status" aria-live="polite">
-        <div class="boot-fallback-title">Loading Staq UI…</div>
+        <div class="boot-fallback-title">Loading phasr.sh UI…</div>
         <div class="boot-fallback-meta">Preparing desktop interface</div>
       </div>
     </div>
@@ -39,21 +38,21 @@
     <script>
       if (!window.process) window.process = {};
       if (!window.process.env) window.process.env = {};
-      if (!window.process.env.NODE_ENV) window.process.env.NODE_ENV = "production";
+      if (!window.process.env.NODE_ENV) window.process.env.NODE_ENV = 'production';
       window.__STAQ_REACT_BUNDLE_ERROR__ = false;
-      window.__STAQ_REACT_RUNTIME_ERROR__ = "";
-      window.addEventListener("error", function (event) {
-        const filename = String(event && event.filename ? event.filename : "");
-        if (!filename.includes("/static/dist/react-ui.js")) return;
-        window.__STAQ_REACT_RUNTIME_ERROR__ = String(event && event.message ? event.message : "React UI runtime error");
+      window.__STAQ_REACT_RUNTIME_ERROR__ = '';
+      window.addEventListener('error', function (event) {
+        const filename = String(event && event.filename ? event.filename : '');
+        if (!filename.includes('/static/dist/react-ui.js')) return;
+        window.__STAQ_REACT_RUNTIME_ERROR__ = String(event && event.message ? event.message : 'React UI runtime error');
       });
     </script>
     <script>
       (function injectVersionedReactBundle() {
-        const version = String(window.__STAQ_ASSET_VERSION__ || "");
-        const suffix = version ? ("?v=" + encodeURIComponent(version)) : "";
-        const bundle = document.createElement("script");
-        bundle.src = "/static/dist/react-ui.js" + suffix;
+        const version = String(window.__STAQ_ASSET_VERSION__ || '');
+        const suffix = version ? '?v=' + encodeURIComponent(version) : '';
+        const bundle = document.createElement('script');
+        bundle.src = '/static/dist/react-ui.js' + suffix;
         bundle.onerror = function () {
           window.__STAQ_REACT_BUNDLE_ERROR__ = true;
         };
@@ -63,46 +62,47 @@
     <script>
       (function () {
         const uiBuildMeta = window.__STAQ_UI_BUILD_META__;
-        const uiVersion = String(uiBuildMeta && uiBuildMeta.version ? uiBuildMeta.version : "unknown");
+        const uiVersion = String(uiBuildMeta && uiBuildMeta.version ? uiBuildMeta.version : 'unknown');
 
         function showBootMessage(title, meta) {
-          const root = document.getElementById("react-root");
+          const root = document.getElementById('react-root');
           if (!root) return;
-          root.innerHTML = "<div class=\"boot-fallback boot-fallback-error\"><div class=\"boot-fallback-title\"></div><div class=\"boot-fallback-meta\"></div></div>";
-          const titleEl = root.querySelector(".boot-fallback-title");
-          const metaEl = root.querySelector(".boot-fallback-meta");
+          root.innerHTML =
+            '<div class="boot-fallback boot-fallback-error"><div class="boot-fallback-title"></div><div class="boot-fallback-meta"></div></div>';
+          const titleEl = root.querySelector('.boot-fallback-title');
+          const metaEl = root.querySelector('.boot-fallback-meta');
           if (titleEl) titleEl.textContent = title;
           if (metaEl) metaEl.textContent = meta;
         }
 
         (function showBuildVersionHint() {
-          const metaEl = document.querySelector("#bootFallback .boot-fallback-meta");
+          const metaEl = document.querySelector('#bootFallback .boot-fallback-meta');
           if (!metaEl) return;
-          metaEl.textContent = "Preparing desktop interface · UI build " + uiVersion;
+          metaEl.textContent = 'Preparing desktop interface · UI build ' + uiVersion;
         })();
 
         if (uiBuildMeta) {
-          console.info("[staq-ui] build", uiBuildMeta);
+          console.info('[phasr-ui] build', uiBuildMeta);
         } else {
-          console.warn("[staq-ui] build metadata not found (/static/dist/build-meta.js)");
+          console.warn('[phasr-ui] build metadata not found (/static/dist/build-meta.js)');
         }
 
         function loadAppScript() {
           if (window.__STAQ_APP_BOOTSTRAPPED__) return;
           window.__STAQ_APP_BOOTSTRAPPED__ = true;
-          const script = document.createElement("script");
-          const version = String(window.__STAQ_ASSET_VERSION__ || "");
-          script.src = version ? ("/static/js/app.js?v=" + encodeURIComponent(version)) : "/static/js/app.js";
+          const script = document.createElement('script');
+          const version = String(window.__STAQ_ASSET_VERSION__ || '');
+          script.src = version ? '/static/js/app.js?v=' + encodeURIComponent(version) : '/static/js/app.js';
           script.onerror = function () {
-            showBootMessage("Application boot failed.", "Could not load /static/js/app.js");
+            showBootMessage('Application boot failed.', 'Could not load /static/js/app.js');
           };
           document.body.appendChild(script);
         }
 
         if (window.__STAQ_REACT_BUNDLE_ERROR__) {
           showBootMessage(
-            "UI bundle missing.",
-            "Run `make ui-build` (or `npm --prefix internal/api/frontend run build`) and restart the app."
+            'UI bundle missing.',
+            'Run `make ui-build` (or `npm --prefix internal/api/frontend run build`) and restart the app.',
           );
           return;
         }
@@ -118,19 +118,16 @@
 
           if (window.__STAQ_REACT_RUNTIME_ERROR__) {
             window.clearInterval(timer);
-            showBootMessage(
-              "UI initialization failed.",
-              "React error: " + window.__STAQ_REACT_RUNTIME_ERROR__
-            );
+            showBootMessage('UI initialization failed.', 'React error: ' + window.__STAQ_REACT_RUNTIME_ERROR__);
             return;
           }
 
           const elapsed = Date.now() - startedAt;
           if (!waitingHintShown && elapsed > 10000) {
             waitingHintShown = true;
-            const metaEl = document.querySelector("#bootFallback .boot-fallback-meta");
+            const metaEl = document.querySelector('#bootFallback .boot-fallback-meta');
             if (metaEl) {
-              metaEl.textContent = "Still initializing UI. This can take a bit on first launch.";
+              metaEl.textContent = 'Still initializing UI. This can take a bit on first launch.';
             }
           }
         }, 50);

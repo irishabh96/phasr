@@ -1,626 +1,709 @@
-    <div class="app-shell h-full grid grid-rows-[minmax(0,1fr)_auto] gap-0 p-0 bg-window-bg">
-      <div class="app min-h-0 h-full flex gap-0">
-        <aside
-          class="panel left-col bg-[#141110] border-0 rounded-none min-h-0 min-w-0 flex flex-col overflow-hidden w-[240px] min-w-[200px] max-w-[360px] resize-x"
+<div class="app-shell h-full grid grid-rows-[minmax(0,1fr)_auto] gap-0 p-0 bg-window-bg">
+  <div class="app min-h-0 h-full flex gap-0">
+    <aside
+      class="panel left-col bg-[#141110] border-0 rounded-none min-h-0 min-w-0 flex flex-col overflow-hidden w-[240px] min-w-[200px] max-w-[360px] resize-x"
+    >
+      <div id="workspaceList" class="workspace-list min-h-0 flex-1 overflow-y-auto"></div>
+
+      <div class="border-t border-border-subtle px-3 py-2.5">
+        <button
+          id="createWorkspaceBtn"
+          class="w-full flex items-center gap-2.5 bg-transparent border border-[rgba(255,255,255,0.08)] text-[rgba(255,255,255,0.68)] min-h-[34px] px-3 text-[13px] font-medium rounded-md hover:bg-[rgba(255,255,255,0.04)] hover:border-[rgba(255,255,255,0.12)]"
+          type="button"
         >
-          <div id="workspaceList" class="workspace-list min-h-0 flex-1 overflow-y-auto"></div>
-
-          <div class="border-t border-border-subtle px-3 py-2.5">
-            <button
-              id="createWorkspaceBtn"
-              class="w-full flex items-center gap-2.5 bg-transparent border border-[rgba(255,255,255,0.08)] text-[rgba(255,255,255,0.68)] min-h-[34px] px-3 text-[13px] font-medium rounded-md hover:bg-[rgba(255,255,255,0.04)] hover:border-[rgba(255,255,255,0.12)]"
-              type="button"
-            >
-              <span class="workspace-create-main">
-                <span class="workspace-create-icon" aria-hidden="true">
-                  <svg stroke="currentColor" fill="none" stroke-width="1.5" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M12 10v6"></path><path d="M9 13h6"></path><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>
-                </span>
-                <span class="workspace-create-label">New Workspace</span>
-              </span>
-              <kbd class="workspace-create-shortcut">&#x2318; N</kbd>
-            </button>
-          </div>
-        </aside>
-
-        <main
-          class="panel center-col bg-[#120F0E] border-0 rounded-none min-h-0 min-w-0 flex flex-col overflow-hidden flex-1"
-        >
-          <div
-            class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap hide-scrollbar"
-          >
-            <div id="tabBar" class="tab-bar flex items-center justify-between gap-2.5 min-w-full"></div>
-          </div>
-
-          <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
-            <div class="provider-row flex items-center justify-between gap-2.5">
-              <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
-                <span class="text-2xs text-text-dim font-mono mr-0.5">Run with:</span>
-                <button
-                  type="button"
-                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
-                  data-provider-pill="claude"
-                  title="Anthropic Claude — autonomous coding agent"
-                >
-                  <span class="provider-icon provider-icon-claude" aria-hidden="true">
-                    <img
-                      class="provider-icon-svg"
-                      src="data:image/svg+xml,%3csvg%20height='1em'%20style='flex:none;line-height:1'%20viewBox='0%200%2024%2024'%20width='1em'%20xmlns='http://www.w3.org/2000/svg'%3e%3ctitle%3eClaude%3c/title%3e%3cpath%20d='M4.709%2015.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0%2011.784l.055-.352.48-.321.686.06%201.52.103%202.278.158%201.652.097%202.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686%201.908%201.476%202.491%201.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97%202.97%200%2001-.104-.729L6.283.134%206.696%200l.996.134.42.364.62%201.414%201.002%202.229%201.555%203.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286%201.851-.559%202.903-.364%201.942h.212l.243-.242.985-1.306%201.652-2.064.73-.82.85-.904.547-.431h1.033l.76%201.129-.34%201.166-1.064%201.347-.881%201.142-1.264%201.7-.79%201.36.073.11.188-.02%202.856-.606%201.543-.28%201.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061%201.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093%201.068%202.006%201.81%202.509%202.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649%202.345%203.521.122%201.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674%207.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434%201.967-2.18%202.945-1.726%201.845-.414.164-.717-.37.067-.662.401-.589%202.388-3.036%201.44-1.882.93-1.086-.006-.158h-.055L4.132%2018.56l-1.13.146-.487-.456.061-.746.231-.243%201.908-1.312-.006.006z'%20fill='%23D97757'%20fill-rule='nonzero'%3e%3c/path%3e%3c/svg%3e"
-                      alt=""
-                    />
-                  </span>
-                  <span>claude</span>
-                </button>
-                <button
-                  type="button"
-                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
-                  data-provider-pill="codex"
-                  title="OpenAI Codex — GPT-powered coding agent"
-                >
-                  <span class="provider-icon provider-icon-codex" aria-hidden="true">
-                    <img
-                      class="provider-icon-svg"
-                      src="data:image/svg+xml,%3csvg%20width='721'%20height='721'%20viewBox='0%200%20721%20721'%20fill='none'%20xmlns='http://www.w3.org/2000/svg'%3e%3cg%20clip-path='url(%23clip0_1637_2935)'%3e%3cg%20clip-path='url(%23clip1_1637_2935)'%3e%3cpath%20d='M304.246%20295.411V249.828C304.246%20245.989%20305.687%20243.109%20309.044%20241.191L400.692%20188.412C413.167%20181.215%20428.042%20177.858%20443.394%20177.858C500.971%20177.858%20537.44%20222.482%20537.44%20269.982C537.44%20273.34%20537.44%20277.179%20536.959%20281.018L441.954%20225.358C436.197%20222%20430.437%20222%20424.68%20225.358L304.246%20295.411ZM518.245%20472.945V364.024C518.245%20357.304%20515.364%20352.507%20509.608%20349.149L389.174%20279.096L428.519%20256.543C431.877%20254.626%20434.757%20254.626%20438.115%20256.543L529.762%20309.323C556.154%20324.679%20573.905%20357.304%20573.905%20388.971C573.905%20425.436%20552.315%20459.024%20518.245%20472.941V472.945ZM275.937%20376.982L236.592%20353.952C233.235%20352.034%20231.794%20349.154%20231.794%20345.315V239.756C231.794%20188.416%20271.139%20149.548%20324.4%20149.548C344.555%20149.548%20363.264%20156.268%20379.102%20168.262L284.578%20222.964C278.822%20226.321%20275.942%20231.119%20275.942%20237.838V376.986L275.937%20376.982ZM360.626%20425.922L304.246%20394.255V327.083L360.626%20295.416L417.002%20327.083V394.255L360.626%20425.922ZM396.852%20571.789C376.698%20571.789%20357.989%20565.07%20342.151%20553.075L436.674%20498.374C442.431%20495.017%20445.311%20490.219%20445.311%20483.499V344.352L485.138%20367.382C488.495%20369.299%20489.936%20372.179%20489.936%20376.018V481.577C489.936%20532.917%20450.109%20571.785%20396.852%20571.785V571.789ZM283.134%20464.79L191.486%20412.01C165.094%20396.654%20147.343%20364.029%20147.343%20332.362C147.343%20295.416%20169.415%20262.309%20203.48%20248.393V357.791C203.48%20364.51%20206.361%20369.308%20212.117%20372.665L332.074%20442.237L292.729%20464.79C289.372%20466.707%20286.491%20466.707%20283.134%20464.79ZM277.859%20543.48C223.639%20543.48%20183.813%20502.695%20183.813%20452.314C183.813%20448.475%20184.294%20444.636%20184.771%20440.797L279.295%20495.498C285.051%20498.856%20290.812%20498.856%20296.568%20495.498L417.002%20425.927V471.509C417.002%20475.349%20415.562%20478.229%20412.204%20480.146L320.557%20532.926C308.081%20540.122%20293.206%20543.48%20277.854%20543.48H277.859ZM396.852%20600.576C454.911%20600.576%20503.37%20559.313%20514.41%20504.612C568.149%20490.696%20602.696%20440.315%20602.696%20388.976C602.696%20355.387%20588.303%20322.762%20562.392%20299.25C564.791%20289.173%20566.231%20279.096%20566.231%20269.024C566.231%20200.411%20510.571%20149.067%20446.274%20149.067C433.322%20149.067%20420.846%20150.984%20408.37%20155.305C386.775%20134.192%20357.026%20120.758%20324.4%20120.758C266.342%20120.758%20217.883%20162.02%20206.843%20216.721C153.104%20230.637%20118.557%20281.018%20118.557%20332.357C118.557%20365.946%20132.95%20398.571%20158.861%20422.083C156.462%20432.16%20155.022%20442.237%20155.022%20452.309C155.022%20520.922%20210.682%20572.266%20274.978%20572.266C287.931%20572.266%20300.407%20570.349%20312.883%20566.028C334.473%20587.141%20364.222%20600.576%20396.852%20600.576Z'%20fill='white'/%3e%3c/g%3e%3c/g%3e%3cdefs%3e%3cclipPath%20id='clip0_1637_2935'%3e%3crect%20width='720'%20height='720'%20fill='white'%20transform='translate(0.606934%200.899902)'/%3e%3c/clipPath%3e%3cclipPath%20id='clip1_1637_2935'%3e%3crect%20width='484.139'%20height='479.818'%20fill='white'%20transform='translate(118.557%20120.758)'/%3e%3c/clipPath%3e%3c/defs%3e%3c/svg%3e"
-                      alt=""
-                    />
-                  </span>
-                  <span>codex</span>
-                </button>
-                <button
-                  type="button"
-                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
-                  data-provider-pill="copilot"
-                  title="GitHub Copilot — AI pair programmer"
-                >
-                  <span class="provider-icon provider-icon-copilot" aria-hidden="true">
-                    <img
-                      class="provider-icon-svg"
-                      src="data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='%23fff'%3e%3cpath%20d='M23.922%2016.992c-.861%201.495-5.859%205.023-11.922%205.023-6.063%200-11.061-3.528-11.922-5.023A.641.641%200%200%201%200%2016.736v-2.869a.841.841%200%200%201%20.053-.22c.372-.935%201.347-2.292%202.605-2.656.167-.429.414-1.055.644-1.517a10.195%2010.195%200%200%201-.052-1.086c0-1.331.282-2.499%201.132-3.368.397-.406.89-.717%201.474-.952%201.399-1.136%203.392-2.093%206.122-2.093%202.731%200%204.767.957%206.166%202.093.584.235%201.077.546%201.474.952.85.869%201.132%202.037%201.132%203.368%200%20.368-.014.733-.052%201.086.23.462.477%201.088.644%201.517%201.258.364%202.233%201.721%202.605%202.656a.832.832%200%200%201%20.053.22v2.869a.641.641%200%200%201-.078.256ZM12.172%2011h-.344a4.323%204.323%200%200%201-.355.508C10.703%2012.455%209.555%2013%207.965%2013c-1.725%200-2.989-.359-3.782-1.259a2.005%202.005%200%200%201-.085-.104L4%2011.741v6.585c1.435.779%204.514%202.179%208%202.179%203.486%200%206.565-1.4%208-2.179v-6.585l-.098-.104s-.033.045-.085.104c-.793.9-2.057%201.259-3.782%201.259-1.59%200-2.738-.545-3.508-1.492a4.323%204.323%200%200%201-.355-.508h-.016.016Zm.641-2.935c.136%201.057.403%201.913.878%202.497.442.544%201.134.938%202.344.938%201.573%200%202.292-.337%202.657-.751.384-.435.558-1.15.558-2.361%200-1.14-.243-1.847-.705-2.319-.477-.488-1.319-.862-2.824-1.025-1.487-.161-2.192.138-2.533.529-.269.307-.437.808-.438%201.578v.021c0%20.265.021.562.063.893Zm-1.626%200c.042-.331.063-.628.063-.894v-.02c-.001-.77-.169-1.271-.438-1.578-.341-.391-1.046-.69-2.533-.529-1.505.163-2.347.537-2.824%201.025-.462.472-.705%201.179-.705%202.319%200%201.211.175%201.926.558%202.361.365.414%201.084.751%202.657.751%201.21%200%201.902-.394%202.344-.938.475-.584.742-1.44.878-2.497Z'/%3e%3cpath%20d='M14.5%2014.25a1%201%200%200%201%201%201v2a1%201%200%200%201-2%200v-2a1%201%200%200%201%201-1Zm-5%200a1%201%200%200%201%201%201v2a1%201%200%200%201-2%200v-2a1%201%200%200%201%201-1Z'/%3e%3c/svg%3e"
-                      alt=""
-                    />
-                  </span>
-                  <span>copilot</span>
-                </button>
-                <button
-                  type="button"
-                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
-                  data-provider-pill="opencode"
-                  title="OpenCode — open-source coding assistant"
-                >
-                  <span class="provider-icon provider-icon-opencode" aria-hidden="true">
-                    <img
-                      class="provider-icon-svg"
-                      src="data:image/svg+xml,%3c?xml%20version='1.0'%20encoding='UTF-8'?%3e%3csvg%20id='Ebene_1'%20xmlns='http://www.w3.org/2000/svg'%20version='1.1'%20viewBox='0%200%20466.73%20533.32'%3e%3c!--%20Generator:%20Adobe%20Illustrator%2029.6.1,%20SVG%20Export%20Plug-In%20.%20SVG%20Version:%202.1.1%20Build%209)%20--%3e%3cdefs%3e%3cstyle%3e%20.st0%20{%20fill:%20%2372716d;%20}%20.st1%20{%20fill:%20%2355544f;%20}%20.st2%20{%20fill:%20%23fff;%20}%20.st3%20{%20fill:%20%2343413c;%20}%20.st4%20{%20fill:%20%23d6d5d2;%20}%20%3c/style%3e%3c/defs%3e%3cpath%20class='st0'%20d='M233.37,266.66l231.16,133.46c-1.42,2.46-3.48,4.56-6.03,6.03l-216.06,124.74c-5.61,3.24-12.53,3.24-18.14,0L8.24,406.15c-2.55-1.47-4.61-3.57-6.03-6.03l231.16-133.46h0Z'/%3e%3cpath%20class='st1'%20d='M233.37,0v266.66L2.21,400.12c-1.42-2.46-2.21-5.3-2.21-8.24v-250.44c0-5.89,3.14-11.32,8.24-14.27L224.29,2.43c2.81-1.62,5.94-2.43,9.07-2.43h.01Z'/%3e%3cpath%20class='st3'%20d='M464.52,133.2c-1.42-2.46-3.48-4.56-6.03-6.03L242.43,2.43c-2.8-1.62-5.93-2.43-9.06-2.43v266.66l231.16,133.46c1.42-2.46,2.21-5.3,2.21-8.24v-250.44c0-2.95-.78-5.77-2.21-8.24h-.01Z'/%3e%3cpath%20class='st4'%20d='M448.35,142.54c1.31,2.26,1.49,5.16,0,7.74l-209.83,363.42c-1.41,2.46-5.16,1.45-5.16-1.38v-239.48c0-1.91-.51-3.75-1.44-5.36l216.42-124.95h.01Z'/%3e%3cpath%20class='st2'%20d='M448.35,142.54l-216.42,124.95c-.92-1.6-2.26-2.96-3.92-3.92L20.62,143.83c-2.46-1.41-1.45-5.16,1.38-5.16h419.65c2.98,0,5.4,1.61,6.7,3.87Z'/%3e%3c/svg%3e"
-                      alt=""
-                    />
-                  </span>
-                  <span>opencode</span>
-                </button>
-                <button
-                  type="button"
-                  class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
-                  data-provider-pill="gemini"
-                  title="Google Gemini — multimodal AI agent"
-                >
-                  <span class="provider-icon provider-icon-gemini" aria-hidden="true">
-                    <img
-                      class="provider-icon-svg"
-                      src="data:image/svg+xml,%3csvg%20height='1em'%20style='flex:none;line-height:1'%20viewBox='0%200%2024%2024'%20width='1em'%20xmlns='http://www.w3.org/2000/svg'%3e%3ctitle%3eGemini%3c/title%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='%233186FF'%3e%3c/path%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='url(%23lobe-icons-gemini-fill-0)'%3e%3c/path%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='url(%23lobe-icons-gemini-fill-1)'%3e%3c/path%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='url(%23lobe-icons-gemini-fill-2)'%3e%3c/path%3e%3cdefs%3e%3clinearGradient%20gradientUnits='userSpaceOnUse'%20id='lobe-icons-gemini-fill-0'%20x1='7'%20x2='11'%20y1='15.5'%20y2='12'%3e%3cstop%20stop-color='%2308B962'%3e%3c/stop%3e%3cstop%20offset='1'%20stop-color='%2308B962'%20stop-opacity='0'%3e%3c/stop%3e%3c/linearGradient%3e%3clinearGradient%20gradientUnits='userSpaceOnUse'%20id='lobe-icons-gemini-fill-1'%20x1='8'%20x2='11.5'%20y1='5.5'%20y2='11'%3e%3cstop%20stop-color='%23F94543'%3e%3c/stop%3e%3cstop%20offset='1'%20stop-color='%23F94543'%20stop-opacity='0'%3e%3c/stop%3e%3c/linearGradient%3e%3clinearGradient%20gradientUnits='userSpaceOnUse'%20id='lobe-icons-gemini-fill-2'%20x1='3.5'%20x2='17.5'%20y1='13.5'%20y2='12'%3e%3cstop%20stop-color='%23FABC12'%3e%3c/stop%3e%3cstop%20offset='.46'%20stop-color='%23FABC12'%20stop-opacity='0'%3e%3c/stop%3e%3c/linearGradient%3e%3c/defs%3e%3c/svg%3e"
-                      alt=""
-                    />
-                  </span>
-                  <span>gemini</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="hidden-controls hidden">
-              <label for="agentSelect">Provider</label>
-              <select id="agentSelect" required>
-                <option value="" selected>Select provider</option>
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-                <option value="copilot">copilot</option>
-                <option value="opencode">opencode</option>
-                <option value="gemini">gemini</option>
-              </select>
-              <label for="commandInput">Agent Command</label>
-              <input id="commandInput" required />
-              <label for="presetSelect">Preset</label>
-              <select id="presetSelect"></select>
-              <label for="repoInput">Repo Path</label>
-              <input id="repoInput" placeholder="Leave empty to use active workspace repo" />
-              <label for="taskNameInput">Task Name</label>
-              <input id="taskNameInput" placeholder="fix-auth-bug" />
-              <label for="tagInput">Tags</label>
-              <input id="tagInput" placeholder="backend, urgent" />
-            </div>
-
-            <div class="prompt-row grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
-              <textarea
-                id="promptInput"
-                class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] resize-y border-border-default bg-input-bg"
-                placeholder="Run /review on my current changes"
-              ></textarea>
-              <button
-                id="runAgentBtn"
-                class="btn-primary min-w-[120px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold inline-flex items-center justify-center gap-1.5"
-                type="button"
+          <span class="workspace-create-main">
+            <span class="workspace-create-icon" aria-hidden="true">
+              <svg
+                stroke="currentColor"
+                fill="none"
+                stroke-width="1.5"
+                viewBox="0 0 24 24"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class="w-4 h-4"
+                height="1em"
+                width="1em"
+                xmlns="http://www.w3.org/2000/svg"
               >
-                <span id="runAgentLabel">Run Agent</span>
-              </button>
-            </div>
-          </form>
-
-          <div
-            id="taskHeader"
-            class="task-header hidden flex items-center justify-start gap-2 px-2.5 py-[7px] border-b border-border-subtle bg-toolbar-bg"
-          >
-            <div class="task-header-main inline-flex items-center gap-2 min-w-0">
-              <span
-                id="taskStatusDot"
-                class="status-dot active w-2 h-2 rounded-full bg-[#4A413E] border border-black/45 flex-none"
-              ></span>
-              <h2
-                id="taskTitleText"
-                class="task-header-title m-0 text-base font-semibold text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono"
-              ></h2>
-            </div>
-          </div>
-
-          <div class="transcript-wrap flex-1 min-h-0 overflow-hidden flex flex-col bg-[#151110]">
-            <div
-              id="centerEmptyState"
-              class="center-empty hidden flex flex-1 min-h-0 items-center justify-center px-4 text-center text-xs text-text-tertiary font-mono"
-            >
-              Open a task to start a terminal session.
-            </div>
-            <div
-              id="terminalPanel"
-              class="terminal-box relative min-h-0 flex flex-col bg-[#151110] overflow-hidden flex-1"
-            >
-              <div id="terminal" class="w-full h-full flex-1 overflow-hidden p-2"></div>
-              <div
-                id="terminalOverlay"
-                class="terminal-banner hidden absolute top-0 left-0 right-0 h-7 flex items-center justify-center gap-2 text-text-secondary text-xs font-mono bg-[#1a1716] border-b border-border-subtle z-[2]"
-              >
-                <span id="terminalOverlayText"></span>
-              </div>
-            </div>
-
-            <div
-              id="patchPreview"
-              class="diff-editor hidden min-h-0 border border-[#312A28] rounded-md bg-[#181312] overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)] flex-1"
-            ></div>
-          </div>
-        </main>
-
-        <aside
-          class="panel right-col bg-sidebar-bg border-0 rounded-none min-h-0 min-w-0 grid overflow-hidden w-[300px] min-w-[240px] max-w-[460px] resize-x grid-rows-[auto_auto_minmax(0,1fr)]"
-        >
-          <div
-            class="head right-head flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border-subtle bg-toolbar-bg"
-          >
-            <div class="right-tabs inline-flex items-center gap-1">
-              <button
-                id="rightTabChanges"
-                class="right-tab active border border-transparent bg-transparent text-text-tertiary rounded-sm min-h-[24px] px-2 text-sm"
-                type="button"
-              >
-                Changes
-              </button>
-              <button
-                id="rightTabFiles"
-                class="right-tab border border-transparent bg-transparent text-text-tertiary rounded-sm min-h-[24px] px-2 text-sm"
-                type="button"
-              >
-                Files
-              </button>
-            </div>
-            <div class="right-head-actions inline-flex items-center gap-1">
-              <button
-                id="changeViewModeBtn"
-                class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
-                type="button"
-                title="Switch to tree view"
-                aria-label="Switch to tree view"
-              >
-                &#x2630;
-              </button>
-              <button
-                id="refreshGitBtn"
-                class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
-                type="button"
-                title="Refresh changes"
-                aria-label="Refresh changes"
-              >
-                &#x21BB;
-              </button>
-            </div>
-          </div>
-
-          <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
-            <div class="commit-message-wrap">
-              <div class="commit-message-head">
-                <label for="commitMessage">Commit Message</label>
-                <button
-                  id="suggestCommitBtn"
-                  class="text-2xs text-blue-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
-                  type="button"
-                >
-                  Suggest
-                </button>
-              </div>
-              <textarea
-                id="commitMessage"
-                class="min-h-[52px] p-2 rounded-md bg-input-bg border-border-default placeholder:text-text-dim placeholder:italic"
-                placeholder="feat: concise message"
-              ></textarea>
-            </div>
-            <button
-              class="publish-btn w-full"
-              type="button"
-            >
-              Publish Branch &#9662;
-            </button>
-          </div>
-
-          <div id="changesPanel" class="changes-wrap min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
-            <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
-              <summary
-                class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
-              >
-                <svg
-                  stroke="currentColor"
-                  fill="currentColor"
-                  stroke-width="0"
-                  viewBox="0 0 16 16"
-                  class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
-                  height="1em"
-                  width="1em"
-                  xmlns="http://www.w3.org/2000/svg"
-                  aria-hidden="true"
-                >
-                  <path
-                    fill-rule="evenodd"
-                    clip-rule="evenodd"
-                    d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
-                  ></path>
-                </svg>
-                <span id="stagedSectionLabel">Staged</span>
-              </summary>
-              <div id="stagedList" class="change-list block pt-0.5 bg-transparent"></div>
-            </details>
-
-            <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
-              <summary
-                class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
-              >
-                <svg
-                  stroke="currentColor"
-                  fill="currentColor"
-                  stroke-width="0"
-                  viewBox="0 0 16 16"
-                  class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
-                  height="1em"
-                  width="1em"
-                  xmlns="http://www.w3.org/2000/svg"
-                  aria-hidden="true"
-                >
-                  <path
-                    fill-rule="evenodd"
-                    clip-rule="evenodd"
-                    d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
-                  ></path>
-                </svg>
-                <span id="unstagedSectionLabel">Unstaged</span>
-              </summary>
-              <div id="unstagedList" class="change-list block pt-0.5 bg-transparent"></div>
-            </details>
-
-            <details class="change-section border-0 rounded-none bg-transparent overflow-visible">
-              <summary
-                class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
-              >
-                <svg
-                  stroke="currentColor"
-                  fill="currentColor"
-                  stroke-width="0"
-                  viewBox="0 0 16 16"
-                  class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
-                  height="1em"
-                  width="1em"
-                  xmlns="http://www.w3.org/2000/svg"
-                  aria-hidden="true"
-                >
-                  <path
-                    fill-rule="evenodd"
-                    clip-rule="evenodd"
-                    d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
-                  ></path>
-                </svg>
-                <span id="commitsSectionLabel">Commits 0</span>
-              </summary>
-              <div id="commitsList" class="change-list block pt-0.5 bg-transparent"></div>
-            </details>
-          </div>
-
-          <div
-            id="filesPanel"
-            class="changes-wrap hidden min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent"
-          >
-            <div class="files-toolbar px-1.5 pb-1 grid gap-1">
-              <div id="repoFilesMeta" class="muted text-xs text-[#9A8D84] font-mono"></div>
-              <input
-                id="repoFilesSearch"
-                class="files-search"
-                type="text"
-                placeholder="Search files..."
-                autocomplete="off"
-              />
-            </div>
-            <div
-              id="repoFilesTree"
-              class="repo-tree-list block border-t border-[rgba(58,49,48,0.35)] bg-transparent pt-1 min-h-0 flex-auto overflow-auto"
-            ></div>
-          </div>
-        </aside>
+                <path d="M12 10v6"></path>
+                <path d="M9 13h6"></path>
+                <path
+                  d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+                ></path>
+              </svg>
+            </span>
+            <span class="workspace-create-label">New Workspace</span>
+          </span>
+          <kbd class="workspace-create-shortcut">&#x2318; N</kbd>
+        </button>
       </div>
+    </aside>
+
+    <main
+      class="panel center-col bg-[#120F0E] border-0 rounded-none min-h-0 min-w-0 flex flex-col overflow-hidden flex-1"
+    >
       <div
-        id="taskContextBar"
-        class="h-8 min-h-8 border-0 rounded-none bg-[#151211] px-2.5 flex items-center gap-2.5 text-xs text-text-secondary font-mono"
+        class="tabs px-2 py-1.5 border-b border-border-subtle bg-toolbar-bg overflow-x-auto whitespace-nowrap hide-scrollbar"
       >
-        <div class="context-item">
-          <span class="context-label">Task</span>
-          <span id="taskContextTask" class="context-value whitespace-nowrap">none</span>
-        </div>
-        <div class="context-item relative">
-          <span class="context-label">Branch</span>
-          <button id="taskContextBranch" class="context-branch-btn" type="button" title="" disabled>-</button>
-          <div
-            id="taskContextBranchMenu"
-            class="hidden absolute bottom-full right-0 mb-1 min-w-[180px] p-1 rounded-md border border-border-default bg-[#1A1514] shadow-lg z-30"
-          >
+        <div id="tabBar" class="tab-bar flex items-center justify-between gap-2.5 min-w-full"></div>
+      </div>
+
+      <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
+        <div class="provider-row flex items-center justify-between gap-2.5">
+          <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
+            <span class="text-2xs text-text-dim font-mono mr-0.5">Run with:</span>
             <button
-              id="taskContextOpenPrBtn"
-              class="w-full text-left px-2 py-1 rounded-sm bg-transparent border-0 text-text-secondary hover:bg-hover-bg hover:text-text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
               type="button"
-              disabled
+              class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+              data-provider-pill="claude"
+              title="Anthropic Claude — autonomous coding agent"
             >
-              Open PR
+              <span class="provider-icon provider-icon-claude" aria-hidden="true">
+                <img
+                  class="provider-icon-svg"
+                  src="data:image/svg+xml,%3csvg%20height='1em'%20style='flex:none;line-height:1'%20viewBox='0%200%2024%2024'%20width='1em'%20xmlns='http://www.w3.org/2000/svg'%3e%3ctitle%3eClaude%3c/title%3e%3cpath%20d='M4.709%2015.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0%2011.784l.055-.352.48-.321.686.06%201.52.103%202.278.158%201.652.097%202.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686%201.908%201.476%202.491%201.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97%202.97%200%2001-.104-.729L6.283.134%206.696%200l.996.134.42.364.62%201.414%201.002%202.229%201.555%203.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286%201.851-.559%202.903-.364%201.942h.212l.243-.242.985-1.306%201.652-2.064.73-.82.85-.904.547-.431h1.033l.76%201.129-.34%201.166-1.064%201.347-.881%201.142-1.264%201.7-.79%201.36.073.11.188-.02%202.856-.606%201.543-.28%201.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061%201.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093%201.068%202.006%201.81%202.509%202.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649%202.345%203.521.122%201.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674%207.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434%201.967-2.18%202.945-1.726%201.845-.414.164-.717-.37.067-.662.401-.589%202.388-3.036%201.44-1.882.93-1.086-.006-.158h-.055L4.132%2018.56l-1.13.146-.487-.456.061-.746.231-.243%201.908-1.312-.006.006z'%20fill='%23D97757'%20fill-rule='nonzero'%3e%3c/path%3e%3c/svg%3e"
+                  alt=""
+                />
+              </span>
+              <span>claude</span>
             </button>
             <button
-              id="taskContextOpenBranchBtn"
-              class="w-full text-left px-2 py-1 rounded-sm bg-transparent border-0 text-text-secondary hover:bg-hover-bg hover:text-text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
               type="button"
-              disabled
+              class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+              data-provider-pill="codex"
+              title="OpenAI Codex — GPT-powered coding agent"
             >
-              Open branch
+              <span class="provider-icon provider-icon-codex" aria-hidden="true">
+                <img
+                  class="provider-icon-svg"
+                  src="data:image/svg+xml,%3csvg%20width='721'%20height='721'%20viewBox='0%200%20721%20721'%20fill='none'%20xmlns='http://www.w3.org/2000/svg'%3e%3cg%20clip-path='url(%23clip0_1637_2935)'%3e%3cg%20clip-path='url(%23clip1_1637_2935)'%3e%3cpath%20d='M304.246%20295.411V249.828C304.246%20245.989%20305.687%20243.109%20309.044%20241.191L400.692%20188.412C413.167%20181.215%20428.042%20177.858%20443.394%20177.858C500.971%20177.858%20537.44%20222.482%20537.44%20269.982C537.44%20273.34%20537.44%20277.179%20536.959%20281.018L441.954%20225.358C436.197%20222%20430.437%20222%20424.68%20225.358L304.246%20295.411ZM518.245%20472.945V364.024C518.245%20357.304%20515.364%20352.507%20509.608%20349.149L389.174%20279.096L428.519%20256.543C431.877%20254.626%20434.757%20254.626%20438.115%20256.543L529.762%20309.323C556.154%20324.679%20573.905%20357.304%20573.905%20388.971C573.905%20425.436%20552.315%20459.024%20518.245%20472.941V472.945ZM275.937%20376.982L236.592%20353.952C233.235%20352.034%20231.794%20349.154%20231.794%20345.315V239.756C231.794%20188.416%20271.139%20149.548%20324.4%20149.548C344.555%20149.548%20363.264%20156.268%20379.102%20168.262L284.578%20222.964C278.822%20226.321%20275.942%20231.119%20275.942%20237.838V376.986L275.937%20376.982ZM360.626%20425.922L304.246%20394.255V327.083L360.626%20295.416L417.002%20327.083V394.255L360.626%20425.922ZM396.852%20571.789C376.698%20571.789%20357.989%20565.07%20342.151%20553.075L436.674%20498.374C442.431%20495.017%20445.311%20490.219%20445.311%20483.499V344.352L485.138%20367.382C488.495%20369.299%20489.936%20372.179%20489.936%20376.018V481.577C489.936%20532.917%20450.109%20571.785%20396.852%20571.785V571.789ZM283.134%20464.79L191.486%20412.01C165.094%20396.654%20147.343%20364.029%20147.343%20332.362C147.343%20295.416%20169.415%20262.309%20203.48%20248.393V357.791C203.48%20364.51%20206.361%20369.308%20212.117%20372.665L332.074%20442.237L292.729%20464.79C289.372%20466.707%20286.491%20466.707%20283.134%20464.79ZM277.859%20543.48C223.639%20543.48%20183.813%20502.695%20183.813%20452.314C183.813%20448.475%20184.294%20444.636%20184.771%20440.797L279.295%20495.498C285.051%20498.856%20290.812%20498.856%20296.568%20495.498L417.002%20425.927V471.509C417.002%20475.349%20415.562%20478.229%20412.204%20480.146L320.557%20532.926C308.081%20540.122%20293.206%20543.48%20277.854%20543.48H277.859ZM396.852%20600.576C454.911%20600.576%20503.37%20559.313%20514.41%20504.612C568.149%20490.696%20602.696%20440.315%20602.696%20388.976C602.696%20355.387%20588.303%20322.762%20562.392%20299.25C564.791%20289.173%20566.231%20279.096%20566.231%20269.024C566.231%20200.411%20510.571%20149.067%20446.274%20149.067C433.322%20149.067%20420.846%20150.984%20408.37%20155.305C386.775%20134.192%20357.026%20120.758%20324.4%20120.758C266.342%20120.758%20217.883%20162.02%20206.843%20216.721C153.104%20230.637%20118.557%20281.018%20118.557%20332.357C118.557%20365.946%20132.95%20398.571%20158.861%20422.083C156.462%20432.16%20155.022%20442.237%20155.022%20452.309C155.022%20520.922%20210.682%20572.266%20274.978%20572.266C287.931%20572.266%20300.407%20570.349%20312.883%20566.028C334.473%20587.141%20364.222%20600.576%20396.852%20600.576Z'%20fill='white'/%3e%3c/g%3e%3c/g%3e%3cdefs%3e%3cclipPath%20id='clip0_1637_2935'%3e%3crect%20width='720'%20height='720'%20fill='white'%20transform='translate(0.606934%200.899902)'/%3e%3c/clipPath%3e%3cclipPath%20id='clip1_1637_2935'%3e%3crect%20width='484.139'%20height='479.818'%20fill='white'%20transform='translate(118.557%20120.758)'/%3e%3c/clipPath%3e%3c/defs%3e%3c/svg%3e"
+                  alt=""
+                />
+              </span>
+              <span>codex</span>
+            </button>
+            <button
+              type="button"
+              class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+              data-provider-pill="copilot"
+              title="GitHub Copilot — AI pair programmer"
+            >
+              <span class="provider-icon provider-icon-copilot" aria-hidden="true">
+                <img
+                  class="provider-icon-svg"
+                  src="data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='%23fff'%3e%3cpath%20d='M23.922%2016.992c-.861%201.495-5.859%205.023-11.922%205.023-6.063%200-11.061-3.528-11.922-5.023A.641.641%200%200%201%200%2016.736v-2.869a.841.841%200%200%201%20.053-.22c.372-.935%201.347-2.292%202.605-2.656.167-.429.414-1.055.644-1.517a10.195%2010.195%200%200%201-.052-1.086c0-1.331.282-2.499%201.132-3.368.397-.406.89-.717%201.474-.952%201.399-1.136%203.392-2.093%206.122-2.093%202.731%200%204.767.957%206.166%202.093.584.235%201.077.546%201.474.952.85.869%201.132%202.037%201.132%203.368%200%20.368-.014.733-.052%201.086.23.462.477%201.088.644%201.517%201.258.364%202.233%201.721%202.605%202.656a.832.832%200%200%201%20.053.22v2.869a.641.641%200%200%201-.078.256ZM12.172%2011h-.344a4.323%204.323%200%200%201-.355.508C10.703%2012.455%209.555%2013%207.965%2013c-1.725%200-2.989-.359-3.782-1.259a2.005%202.005%200%200%201-.085-.104L4%2011.741v6.585c1.435.779%204.514%202.179%208%202.179%203.486%200%206.565-1.4%208-2.179v-6.585l-.098-.104s-.033.045-.085.104c-.793.9-2.057%201.259-3.782%201.259-1.59%200-2.738-.545-3.508-1.492a4.323%204.323%200%200%201-.355-.508h-.016.016Zm.641-2.935c.136%201.057.403%201.913.878%202.497.442.544%201.134.938%202.344.938%201.573%200%202.292-.337%202.657-.751.384-.435.558-1.15.558-2.361%200-1.14-.243-1.847-.705-2.319-.477-.488-1.319-.862-2.824-1.025-1.487-.161-2.192.138-2.533.529-.269.307-.437.808-.438%201.578v.021c0%20.265.021.562.063.893Zm-1.626%200c.042-.331.063-.628.063-.894v-.02c-.001-.77-.169-1.271-.438-1.578-.341-.391-1.046-.69-2.533-.529-1.505.163-2.347.537-2.824%201.025-.462.472-.705%201.179-.705%202.319%200%201.211.175%201.926.558%202.361.365.414%201.084.751%202.657.751%201.21%200%201.902-.394%202.344-.938.475-.584.742-1.44.878-2.497Z'/%3e%3cpath%20d='M14.5%2014.25a1%201%200%200%201%201%201v2a1%201%200%200%201-2%200v-2a1%201%200%200%201%201-1Zm-5%200a1%201%200%200%201%201%201v2a1%201%200%200%201-2%200v-2a1%201%200%200%201%201-1Z'/%3e%3c/svg%3e"
+                  alt=""
+                />
+              </span>
+              <span>copilot</span>
+            </button>
+            <button
+              type="button"
+              class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+              data-provider-pill="opencode"
+              title="OpenCode — open-source coding assistant"
+            >
+              <span class="provider-icon provider-icon-opencode" aria-hidden="true">
+                <img
+                  class="provider-icon-svg"
+                  src="data:image/svg+xml,%3c?xml%20version='1.0'%20encoding='UTF-8'?%3e%3csvg%20id='Ebene_1'%20xmlns='http://www.w3.org/2000/svg'%20version='1.1'%20viewBox='0%200%20466.73%20533.32'%3e%3c!--%20Generator:%20Adobe%20Illustrator%2029.6.1,%20SVG%20Export%20Plug-In%20.%20SVG%20Version:%202.1.1%20Build%209)%20--%3e%3cdefs%3e%3cstyle%3e%20.st0%20{%20fill:%20%2372716d;%20}%20.st1%20{%20fill:%20%2355544f;%20}%20.st2%20{%20fill:%20%23fff;%20}%20.st3%20{%20fill:%20%2343413c;%20}%20.st4%20{%20fill:%20%23d6d5d2;%20}%20%3c/style%3e%3c/defs%3e%3cpath%20class='st0'%20d='M233.37,266.66l231.16,133.46c-1.42,2.46-3.48,4.56-6.03,6.03l-216.06,124.74c-5.61,3.24-12.53,3.24-18.14,0L8.24,406.15c-2.55-1.47-4.61-3.57-6.03-6.03l231.16-133.46h0Z'/%3e%3cpath%20class='st1'%20d='M233.37,0v266.66L2.21,400.12c-1.42-2.46-2.21-5.3-2.21-8.24v-250.44c0-5.89,3.14-11.32,8.24-14.27L224.29,2.43c2.81-1.62,5.94-2.43,9.07-2.43h.01Z'/%3e%3cpath%20class='st3'%20d='M464.52,133.2c-1.42-2.46-3.48-4.56-6.03-6.03L242.43,2.43c-2.8-1.62-5.93-2.43-9.06-2.43v266.66l231.16,133.46c1.42-2.46,2.21-5.3,2.21-8.24v-250.44c0-2.95-.78-5.77-2.21-8.24h-.01Z'/%3e%3cpath%20class='st4'%20d='M448.35,142.54c1.31,2.26,1.49,5.16,0,7.74l-209.83,363.42c-1.41,2.46-5.16,1.45-5.16-1.38v-239.48c0-1.91-.51-3.75-1.44-5.36l216.42-124.95h.01Z'/%3e%3cpath%20class='st2'%20d='M448.35,142.54l-216.42,124.95c-.92-1.6-2.26-2.96-3.92-3.92L20.62,143.83c-2.46-1.41-1.45-5.16,1.38-5.16h419.65c2.98,0,5.4,1.61,6.7,3.87Z'/%3e%3c/svg%3e"
+                  alt=""
+                />
+              </span>
+              <span>opencode</span>
+            </button>
+            <button
+              type="button"
+              class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
+              data-provider-pill="gemini"
+              title="Google Gemini — multimodal AI agent"
+            >
+              <span class="provider-icon provider-icon-gemini" aria-hidden="true">
+                <img
+                  class="provider-icon-svg"
+                  src="data:image/svg+xml,%3csvg%20height='1em'%20style='flex:none;line-height:1'%20viewBox='0%200%2024%2024'%20width='1em'%20xmlns='http://www.w3.org/2000/svg'%3e%3ctitle%3eGemini%3c/title%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='%233186FF'%3e%3c/path%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='url(%23lobe-icons-gemini-fill-0)'%3e%3c/path%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='url(%23lobe-icons-gemini-fill-1)'%3e%3c/path%3e%3cpath%20d='M20.616%2010.835a14.147%2014.147%200%2001-4.45-3.001%2014.111%2014.111%200%2001-3.678-6.452.503.503%200%2000-.975%200%2014.134%2014.134%200%2001-3.679%206.452%2014.155%2014.155%200%2001-4.45%203.001c-.65.28-1.318.505-2.002.678a.502.502%200%20000%20.975c.684.172%201.35.397%202.002.677a14.147%2014.147%200%20014.45%203.001%2014.112%2014.112%200%20013.679%206.453.502.502%200%2000.975%200c.172-.685.397-1.351.677-2.003a14.145%2014.145%200%20013.001-4.45%2014.113%2014.113%200%20016.453-3.678.503.503%200%20000-.975%2013.245%2013.245%200%2001-2.003-.678z'%20fill='url(%23lobe-icons-gemini-fill-2)'%3e%3c/path%3e%3cdefs%3e%3clinearGradient%20gradientUnits='userSpaceOnUse'%20id='lobe-icons-gemini-fill-0'%20x1='7'%20x2='11'%20y1='15.5'%20y2='12'%3e%3cstop%20stop-color='%2308B962'%3e%3c/stop%3e%3cstop%20offset='1'%20stop-color='%2308B962'%20stop-opacity='0'%3e%3c/stop%3e%3c/linearGradient%3e%3clinearGradient%20gradientUnits='userSpaceOnUse'%20id='lobe-icons-gemini-fill-1'%20x1='8'%20x2='11.5'%20y1='5.5'%20y2='11'%3e%3cstop%20stop-color='%23F94543'%3e%3c/stop%3e%3cstop%20offset='1'%20stop-color='%23F94543'%20stop-opacity='0'%3e%3c/stop%3e%3c/linearGradient%3e%3clinearGradient%20gradientUnits='userSpaceOnUse'%20id='lobe-icons-gemini-fill-2'%20x1='3.5'%20x2='17.5'%20y1='13.5'%20y2='12'%3e%3cstop%20stop-color='%23FABC12'%3e%3c/stop%3e%3cstop%20offset='.46'%20stop-color='%23FABC12'%20stop-opacity='0'%3e%3c/stop%3e%3c/linearGradient%3e%3c/defs%3e%3c/svg%3e"
+                  alt=""
+                />
+              </span>
+              <span>gemini</span>
             </button>
           </div>
         </div>
-        <div class="context-item context-path-item min-w-0 flex-1">
-          <span class="context-label">Path</span>
+
+        <div class="hidden-controls hidden">
+          <label for="agentSelect">Provider</label>
+          <select id="agentSelect" required>
+            <option value="" selected>Select provider</option>
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+            <option value="copilot">copilot</option>
+            <option value="opencode">opencode</option>
+            <option value="gemini">gemini</option>
+          </select>
+          <label for="commandInput">Agent Command</label>
+          <input id="commandInput" required />
+          <label for="presetSelect">Preset</label>
+          <select id="presetSelect"></select>
+          <label for="repoInput">Repo Path</label>
+          <input id="repoInput" placeholder="Leave empty to use active workspace repo" />
+          <label for="taskNameInput">Task Name</label>
+          <input id="taskNameInput" placeholder="fix-auth-bug" />
+          <label for="tagInput">Tags</label>
+          <input id="tagInput" placeholder="backend, urgent" />
+        </div>
+
+        <div class="prompt-row grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
+          <textarea
+            id="promptInput"
+            class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] resize-y border-border-default bg-input-bg"
+            placeholder="Run /review on my current changes"
+          ></textarea>
           <button
-            id="taskContextPath"
-            class="context-path-btn min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-left hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
+            id="runAgentBtn"
+            class="btn-primary min-w-[120px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold inline-flex items-center justify-center gap-1.5"
             type="button"
-            title=""
-            disabled
           >
-            -
+            <span id="runAgentLabel">Run Agent</span>
           </button>
         </div>
-        <div id="uiBuildVersionWrap" class="context-item context-build-item">
-          <span class="context-label">UI</span>
-          <span id="uiBuildVersion" class="context-value">unknown</span>
+      </form>
+
+      <div
+        id="taskHeader"
+        class="task-header hidden flex items-center justify-start gap-2 px-2.5 py-[7px] border-b border-border-subtle bg-toolbar-bg"
+      >
+        <div class="task-header-main inline-flex items-center gap-2 min-w-0">
+          <span
+            id="taskStatusDot"
+            class="status-dot active w-2 h-2 rounded-full bg-[#4A413E] border border-black/45 flex-none"
+          ></span>
+          <h2
+            id="taskTitleText"
+            class="task-header-title m-0 text-base font-semibold text-text-primary whitespace-nowrap overflow-hidden text-ellipsis font-mono"
+          ></h2>
+        </div>
+      </div>
+
+      <div class="transcript-wrap flex-1 min-h-0 overflow-hidden flex flex-col bg-[#151110]">
+        <div
+          id="centerEmptyState"
+          class="center-empty hidden flex flex-1 min-h-0 items-center justify-center px-4 text-center text-xs text-text-tertiary font-mono"
+        >
+          Open a task to start a terminal session.
+        </div>
+        <div id="terminalPanel" class="terminal-box relative min-h-0 flex flex-col bg-[#151110] overflow-hidden flex-1">
+          <div id="terminal" class="w-full h-full flex-1 overflow-hidden p-2"></div>
+          <div
+            id="terminalOverlay"
+            class="terminal-banner hidden absolute top-0 left-0 right-0 h-7 flex items-center justify-center gap-2 text-text-secondary text-xs font-mono bg-[#1a1716] border-b border-border-subtle z-[2]"
+          >
+            <span id="terminalOverlayText"></span>
+          </div>
+        </div>
+
+        <div
+          id="patchPreview"
+          class="diff-editor hidden min-h-0 border border-[#312A28] rounded-md bg-[#181312] overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)] flex-1"
+        ></div>
+      </div>
+    </main>
+
+    <aside
+      class="panel right-col bg-sidebar-bg border-0 rounded-none min-h-0 min-w-0 grid overflow-hidden w-[300px] min-w-[240px] max-w-[460px] resize-x grid-rows-[auto_auto_minmax(0,1fr)]"
+    >
+      <div
+        class="head right-head flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border-subtle bg-toolbar-bg"
+      >
+        <div class="right-tabs inline-flex items-center gap-1">
+          <button
+            id="rightTabChanges"
+            class="right-tab active border border-transparent bg-transparent text-text-tertiary rounded-sm min-h-[24px] px-2 text-sm"
+            type="button"
+          >
+            Changes
+          </button>
+          <button
+            id="rightTabFiles"
+            class="right-tab border border-transparent bg-transparent text-text-tertiary rounded-sm min-h-[24px] px-2 text-sm"
+            type="button"
+          >
+            Files
+          </button>
+        </div>
+        <div class="right-head-actions inline-flex items-center gap-1">
+          <button
+            id="changeViewModeBtn"
+            class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
+            type="button"
+            title="Switch to tree view"
+            aria-label="Switch to tree view"
+          >
+            &#x2630;
+          </button>
+          <button
+            id="refreshGitBtn"
+            class="icon-btn btn-ghost w-[22px] h-[22px] rounded-sm p-0 inline-flex items-center justify-center text-sm text-text-secondary bg-transparent border-border-default"
+            type="button"
+            title="Refresh changes"
+            aria-label="Refresh changes"
+          >
+            &#x21BB;
+          </button>
+        </div>
+      </div>
+
+      <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
+        <div class="commit-message-wrap">
+          <div class="commit-message-head">
+            <label for="commitMessage">Commit Message</label>
+            <button
+              id="suggestCommitBtn"
+              class="text-2xs text-blue-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
+              type="button"
+            >
+              Suggest
+            </button>
+          </div>
+          <textarea
+            id="commitMessage"
+            class="min-h-[52px] p-2 rounded-md bg-input-bg border-border-default placeholder:text-text-dim placeholder:italic"
+            placeholder="feat: concise message"
+          ></textarea>
+        </div>
+        <button class="publish-btn w-full" type="button">Publish Branch &#9662;</button>
+      </div>
+
+      <div id="changesPanel" class="changes-wrap min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
+        <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
+          <summary
+            class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+          >
+            <svg
+              stroke="currentColor"
+              fill="currentColor"
+              stroke-width="0"
+              viewBox="0 0 16 16"
+              class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
+              height="1em"
+              width="1em"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
+              ></path>
+            </svg>
+            <span id="stagedSectionLabel">Staged</span>
+          </summary>
+          <div id="stagedList" class="change-list block pt-0.5 bg-transparent"></div>
+        </details>
+
+        <details class="change-section border-0 rounded-none bg-transparent overflow-visible" open>
+          <summary
+            class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+          >
+            <svg
+              stroke="currentColor"
+              fill="currentColor"
+              stroke-width="0"
+              viewBox="0 0 16 16"
+              class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
+              height="1em"
+              width="1em"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
+              ></path>
+            </svg>
+            <span id="unstagedSectionLabel">Unstaged</span>
+          </summary>
+          <div id="unstagedList" class="change-list block pt-0.5 bg-transparent"></div>
+        </details>
+
+        <details class="change-section border-0 rounded-none bg-transparent overflow-visible">
+          <summary
+            class="change-section-summary cursor-pointer list-none flex items-center justify-between gap-2 px-1 py-1.5 text-[#C4B8AF] text-sm font-semibold tracking-[0.02em] bg-transparent"
+          >
+            <svg
+              stroke="currentColor"
+              fill="currentColor"
+              stroke-width="0"
+              viewBox="0 0 16 16"
+              class="tree-chevron size-3 text-muted-foreground shrink-0 transition-transform duration-150"
+              height="1em"
+              width="1em"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M10.072 8.024L5.715 3.667l.618-.62L11 7.716v.618L6.333 13l-.618-.619 4.357-4.357z"
+              ></path>
+            </svg>
+            <span id="commitsSectionLabel">Commits 0</span>
+          </summary>
+          <div id="commitsList" class="change-list block pt-0.5 bg-transparent"></div>
+        </details>
+      </div>
+
+      <div id="filesPanel" class="changes-wrap hidden min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
+        <div class="files-toolbar px-1.5 pb-1 grid gap-1">
+          <div id="repoFilesMeta" class="muted text-xs text-[#9A8D84] font-mono"></div>
+          <input
+            id="repoFilesSearch"
+            class="files-search"
+            type="text"
+            placeholder="Search files..."
+            autocomplete="off"
+          />
+        </div>
+        <div
+          id="repoFilesTree"
+          class="repo-tree-list block border-t border-[rgba(58,49,48,0.35)] bg-transparent pt-1 min-h-0 flex-auto overflow-auto"
+        ></div>
+      </div>
+    </aside>
+  </div>
+  <div
+    id="taskContextBar"
+    class="h-8 min-h-8 border-0 rounded-none bg-[#151211] px-2.5 flex items-center gap-2.5 text-xs text-text-secondary font-mono"
+  >
+    <div class="context-item">
+      <span class="context-label">Task</span>
+      <span id="taskContextTask" class="context-value whitespace-nowrap">none</span>
+    </div>
+    <div class="context-item relative">
+      <span class="context-label">Branch</span>
+      <button id="taskContextBranch" class="context-branch-btn" type="button" title="" disabled>-</button>
+      <div
+        id="taskContextBranchMenu"
+        class="hidden absolute bottom-full right-0 mb-1 min-w-[180px] p-1 rounded-md border border-border-default bg-[#1A1514] shadow-lg z-30"
+      >
+        <button
+          id="taskContextOpenPrBtn"
+          class="w-full text-left px-2 py-1 rounded-sm bg-transparent border-0 text-text-secondary hover:bg-hover-bg hover:text-text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
+          type="button"
+          disabled
+        >
+          Open PR
+        </button>
+        <button
+          id="taskContextOpenBranchBtn"
+          class="w-full text-left px-2 py-1 rounded-sm bg-transparent border-0 text-text-secondary hover:bg-hover-bg hover:text-text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
+          type="button"
+          disabled
+        >
+          Open branch
+        </button>
+      </div>
+    </div>
+    <div class="context-item context-path-item min-w-0 flex-1">
+      <span class="context-label">Path</span>
+      <button
+        id="taskContextPath"
+        class="context-path-btn min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-left hover:text-blue-accent disabled:hover:text-text-secondary disabled:cursor-default"
+        type="button"
+        title=""
+        disabled
+      >
+        -
+      </button>
+    </div>
+    <div id="uiBuildVersionWrap" class="context-item context-build-item">
+      <span class="context-label">UI</span>
+      <span id="uiBuildVersion" class="context-value">unknown</span>
+    </div>
+    <div id="openIdeWrap" class="context-item context-open-ide-wrap relative">
+      <button
+        id="openIdeBtn"
+        class="context-open-ide-btn"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded="false"
+        disabled
+      >
+        Open
+      </button>
+      <div id="openIdeMenu" class="hidden context-open-ide-menu" role="menu">
+        <button type="button" class="context-open-ide-item" data-open-ide="Cursor" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/cursor.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Cursor</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="Visual Studio Code" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/vscode.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">VS Code</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="Zed" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/zed.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Zed</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="Windsurf" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/windsurf.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Windsurf</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="IntelliJ IDEA" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/intellij-idea.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">IntelliJ IDEA</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="WebStorm" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/webstorm.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">WebStorm</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="Sublime Text" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/sublime-text.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Sublime Text</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-ide="Xcode" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/ide/xcode.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Xcode</span>
+        </button>
+        <div class="context-open-ide-divider" role="separator"></div>
+        <button type="button" class="context-open-ide-item" data-open-action="open-terminal" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/actions/open-terminal.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Open in Terminal</span>
+        </button>
+        <button type="button" class="context-open-ide-item" data-open-action="copy-path" role="menuitem">
+          <span class="context-open-ide-item-icon" aria-hidden="true">
+            <img src="/static/assets/icons/actions/copy-path.svg" alt="" loading="lazy" decoding="async" />
+          </span>
+          <span class="context-open-ide-item-label">Copy Path</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toastViewport" class="toast-viewport" aria-live="polite" aria-atomic="true"></div>
+
+<div
+  id="workspaceModalBackdrop"
+  class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3000] p-3.5"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="workspaceModalTitle"
+  aria-describedby="workspaceModalSubtitle"
+>
+  <div
+    class="modal w-[min(720px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+  >
+    <div class="modal-head px-4 py-3 border-b border-[#312927] flex items-start justify-between gap-3 bg-[#1C1715]">
+      <div class="grid gap-1">
+        <h3 id="workspaceModalTitle" class="m-0 text-[16px] leading-tight font-semibold text-text-primary">
+          Create Workspace
+        </h3>
+        <p id="workspaceModalSubtitle" class="m-0 text-[12px] leading-[1.35] text-text-tertiary">
+          Add a git repository folder to start tasks in this workspace.
+        </p>
+      </div>
+      <button
+        id="workspaceModalCloseBtn"
+        class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
+        type="button"
+      >
+        Close
+      </button>
+    </div>
+    <div class="modal-body px-4 py-3.5 grid gap-3.5">
+      <div class="workspace-modal-field grid gap-1">
+        <label class="workspace-modal-label" for="workspaceModalName">Workspace name</label>
+        <input
+          id="workspaceModalName"
+          class="workspace-modal-input w-full min-h-[42px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
+          placeholder="e.g. my-project"
+        />
+        <div id="workspaceModalNameHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite"></div>
+      </div>
+      <div class="workspace-modal-field grid gap-1">
+        <label class="workspace-modal-label" for="workspaceModalRepo">Git repo path</label>
+        <div class="workspace-repo-input-wrap relative">
+          <input
+            id="workspaceModalRepo"
+            class="workspace-modal-input workspace-modal-input-with-action w-full min-h-[42px] px-3 pr-12 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
+            placeholder="/Users/you/projects/repo"
+          />
+          <button
+            id="workspaceModalBrowseBtn"
+            class="workspace-modal-browse-btn absolute right-0 top-0 h-full w-10 border-0 border-l border-border-default bg-transparent text-text-secondary inline-flex items-center justify-center"
+            type="button"
+            aria-label="Browse local folder"
+            title="Browse local folder"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.1c.4 0 .78.16 1.06.44l1.4 1.4c.28.28.66.44 1.06.44h7.37A1.5 1.5 0 0 1 21 9.78V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V7.5Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+              <path d="M3 10h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div id="workspaceModalRepoHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite">
+          Select the root folder of your git repository.
+        </div>
+      </div>
+      <div id="workspaceModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
+      <div
+        id="workspaceInitPrompt"
+        class="inline-prompt hidden border border-[#4A3F3A] rounded-md p-2 bg-[rgba(213,155,26,0.08)] grid gap-2"
+      >
+        <div class="muted text-text-secondary text-sm">
+          Selected folder is not a git repo. Initialize git in this folder?
+        </div>
+        <div class="actions flex gap-2 justify-end">
+          <button
+            id="workspaceInitPromptBrowseBtn"
+            class="btn-ghost bg-transparent border-border-default text-text-secondary"
+            type="button"
+          >
+            Browse Again
+          </button>
+          <button
+            id="workspaceInitPromptYesBtn"
+            class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
+            type="button"
+          >
+            Yes, Init Git
+          </button>
         </div>
       </div>
     </div>
-
     <div
-      id="workspaceModalBackdrop"
-      class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3000] p-3.5"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="workspaceModalTitle"
+      class="modal-foot px-4 py-2.5 pb-3.5 border-t border-[#312927] flex items-center justify-end gap-2.5 bg-[#1C1715]"
     >
-      <div
-        class="modal w-[min(560px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+      <button
+        id="workspaceModalCancelBtn"
+        class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
+        type="button"
       >
-        <div
-          class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
-        >
-          <h3 id="workspaceModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">Create Workspace</h3>
-          <button
-            id="workspaceModalCloseBtn"
-            class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
-            type="button"
-          >
-            Close
-          </button>
-        </div>
-        <div class="modal-body px-3 py-[13px] grid gap-3.5">
-          <div class="workspace-modal-field grid gap-1">
-            <label class="workspace-modal-label" for="workspaceModalName">Workspace name</label>
-            <input
-              id="workspaceModalName"
-              class="workspace-modal-input w-full min-h-[42px] px-3 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
-              placeholder="e.g. my-project"
-            />
-            <div id="workspaceModalNameHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite"></div>
+        Cancel
+      </button>
+      <button
+        id="workspaceModalCreateBtn"
+        class="btn-primary workspace-modal-create-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2 inline-flex items-center justify-center gap-2"
+        type="button"
+        disabled
+      >
+        <span
+          id="workspaceModalCreateSpinner"
+          class="workspace-btn-spinner hidden w-3.5 h-3.5 rounded-full border-2 border-[#8F837A] border-t-[#F2EBE4]"
+          aria-hidden="true"
+        ></span>
+        <span id="workspaceModalCreateLabel">Create Workspace</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div
+  id="newTaskModalBackdrop"
+  class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3100] p-3.5"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="newTaskModalTitle"
+>
+  <div
+    class="modal new-task-modal w-[min(480px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+  >
+    <div class="modal-body new-task-modal-body">
+      <div class="new-task-compose">
+        <textarea
+          id="newTaskModalPrompt"
+          class="new-task-modal-textarea new-task-compose-textarea"
+          placeholder="Describe what the agent should do..."
+          rows="4"
+        ></textarea>
+        <div class="new-task-compose-bar">
+          <div class="new-task-compose-selects">
+            <select id="newTaskModalAgent" required class="new-task-inline-select">
+              <option value="claude" selected>claude</option>
+              <option value="codex">codex</option>
+              <option value="copilot">copilot</option>
+              <option value="opencode">opencode</option>
+              <option value="gemini">gemini</option>
+            </select>
+            <span class="new-task-compose-sep"></span>
+            <select id="newTaskModalWorkspace" class="new-task-inline-select"></select>
           </div>
-          <div class="workspace-modal-field grid gap-1">
-            <label class="workspace-modal-label" for="workspaceModalRepo">Git repo path</label>
-            <div class="workspace-repo-input-wrap relative">
-              <input
-                id="workspaceModalRepo"
-                class="workspace-modal-input workspace-modal-input-with-action w-full min-h-[42px] px-3 pr-12 py-2.5 rounded-md border-border-default bg-input-bg text-sm leading-[1.2]"
-                placeholder="/Users/you/projects/repo"
-              />
-              <button
-                id="workspaceModalBrowseBtn"
-                class="workspace-modal-browse-btn absolute right-0 top-0 h-full w-10 border-0 border-l border-border-default bg-transparent text-text-secondary inline-flex items-center justify-center"
-                type="button"
-                aria-label="Browse local folder"
-                title="Browse local folder"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path
-                    d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.1c.4 0 .78.16 1.06.44l1.4 1.4c.28.28.66.44 1.06.44h7.37A1.5 1.5 0 0 1 21 9.78V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V7.5Z"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linejoin="round"
-                  />
-                  <path d="M3 10h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                </svg>
-              </button>
-            </div>
-            <div id="workspaceModalRepoHelp" class="workspace-modal-help min-h-[16px]" aria-live="polite">
-              Select the root folder of your git repository.
-            </div>
-          </div>
-          <div id="workspaceModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
-          <div
-            id="workspaceInitPrompt"
-            class="inline-prompt hidden border border-[#4A3F3A] rounded-md p-2 bg-[rgba(213,155,26,0.08)] grid gap-2"
-          >
-            <div class="muted text-text-secondary text-sm">
-              Selected folder is not a git repo. Initialize git in this folder?
-            </div>
-            <div class="actions flex gap-2 justify-end">
-              <button
-                id="workspaceInitPromptBrowseBtn"
-                class="btn-ghost bg-transparent border-border-default text-text-secondary"
-                type="button"
-              >
-                Browse Again
-              </button>
-              <button
-                id="workspaceInitPromptYesBtn"
-                class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
-                type="button"
-              >
-                Yes, Init Git
-              </button>
-            </div>
-          </div>
-        </div>
-        <div class="modal-foot px-3 py-2.5 pb-3 border-t border-[#312927] flex justify-end gap-2 bg-[#1C1715]">
           <button
-            id="workspaceModalCancelBtn"
-            class="btn-ghost workspace-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
+            id="newTaskModalCreateBtn"
+            class="btn-primary new-task-modal-create-btn new-task-start-btn"
             type="button"
-          >
-            Cancel
-          </button>
-          <button
-            id="workspaceModalCreateBtn"
-            class="btn-primary workspace-modal-create-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2 inline-flex items-center justify-center gap-2"
-            type="button"
-            disabled
           >
             <span
-              id="workspaceModalCreateSpinner"
-              class="workspace-btn-spinner hidden w-3.5 h-3.5 rounded-full border-2 border-[#8F837A] border-t-[#F2EBE4]"
+              id="newTaskModalCreateSpinner"
+              class="workspace-btn-spinner hidden w-3.5 h-3.5 rounded-full border-2 border-[rgba(255,255,255,0.35)] border-t-white"
               aria-hidden="true"
             ></span>
-            <span id="workspaceModalCreateLabel">Create Workspace</span>
+            <span id="newTaskModalCreateLabel">Start Task</span>
           </button>
         </div>
       </div>
+      <div id="newTaskModalPromptHelp" class="workspace-modal-help" aria-live="polite"></div>
+      <div id="newTaskModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
     </div>
+    <button id="newTaskModalCloseBtn" class="new-task-modal-close-x" type="button" aria-label="Close">&#x2715;</button>
+    <button id="newTaskModalCancelBtn" class="hidden" type="button" aria-hidden="true"></button>
+    <h3 id="newTaskModalTitle" class="hidden">New Agent Task</h3>
+  </div>
+</div>
 
-    <div
-      id="newTaskModalBackdrop"
-      class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3100] p-3.5"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="newTaskModalTitle"
-    >
-      <div
-        class="modal new-task-modal w-[min(480px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+<div
+  id="newTabTypeModalBackdrop"
+  class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3120] p-3.5"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="newTabTypeModalTitle"
+>
+  <div
+    class="modal w-[min(460px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+  >
+    <div class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]">
+      <h3 id="newTabTypeModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">Open New Tab</h3>
+      <button
+        id="newTabTypeModalCloseBtn"
+        class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
+        type="button"
       >
-        <div class="modal-body new-task-modal-body">
-          <div class="new-task-compose">
-            <textarea
-              id="newTaskModalPrompt"
-              class="new-task-modal-textarea new-task-compose-textarea"
-              placeholder="Describe what the agent should do..."
-              rows="4"
-            ></textarea>
-            <div class="new-task-compose-bar">
-              <div class="new-task-compose-selects">
-                <select id="newTaskModalAgent" required class="new-task-inline-select">
-                  <option value="claude" selected>claude</option>
-                  <option value="codex">codex</option>
-                  <option value="copilot">copilot</option>
-                  <option value="opencode">opencode</option>
-                  <option value="gemini">gemini</option>
-                </select>
-                <span class="new-task-compose-sep"></span>
-                <select id="newTaskModalWorkspace" class="new-task-inline-select"></select>
-              </div>
-              <button
-                id="newTaskModalCreateBtn"
-                class="btn-primary new-task-modal-create-btn new-task-start-btn"
-                type="button"
-              >
-                <span
-                  id="newTaskModalCreateSpinner"
-                  class="workspace-btn-spinner hidden w-3.5 h-3.5 rounded-full border-2 border-[rgba(255,255,255,0.35)] border-t-white"
-                  aria-hidden="true"
-                ></span>
-                <span id="newTaskModalCreateLabel">Start Task</span>
-              </button>
-            </div>
-          </div>
-          <div id="newTaskModalPromptHelp" class="workspace-modal-help" aria-live="polite"></div>
-          <div id="newTaskModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
-        </div>
-        <button
-          id="newTaskModalCloseBtn"
-          class="new-task-modal-close-x"
-          type="button"
-          aria-label="Close"
-        >&#x2715;</button>
-        <button id="newTaskModalCancelBtn" class="hidden" type="button" aria-hidden="true"></button>
-        <h3 id="newTaskModalTitle" class="hidden">New Agent Task</h3>
+        Close
+      </button>
+    </div>
+    <div class="modal-body px-3 py-[13px] grid gap-3.5">
+      <div class="new-tab-type-grid">
+        <button id="newTabTypeTaskBtn" class="new-tab-type-option" type="button">
+          <span class="new-tab-type-title">Agent Task</span>
+          <span class="new-tab-type-desc">Ask an AI agent to perform a task in the current workspace</span>
+        </button>
+        <button id="newTabTypeTerminalBtn" class="new-tab-type-option" type="button">
+          <span class="new-tab-type-title">Terminal</span>
+          <span class="new-tab-type-desc">Open a shell in the current workspace</span>
+        </button>
       </div>
     </div>
-
-    <div
-      id="newTabTypeModalBackdrop"
-      class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3120] p-3.5"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="newTabTypeModalTitle"
-    >
-      <div
-        class="modal w-[min(460px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
-      >
-        <div
-          class="modal-head px-3 py-2.5 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
-        >
-          <h3 id="newTabTypeModalTitle" class="m-0 text-[15px] font-medium text-text-secondary">Open New Tab</h3>
-          <button
-            id="newTabTypeModalCloseBtn"
-            class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
-            type="button"
-          >
-            Close
-          </button>
-        </div>
-        <div class="modal-body px-3 py-[13px] grid gap-3.5">
-          <div class="new-tab-type-grid">
-            <button id="newTabTypeTaskBtn" class="new-tab-type-option" type="button">
-              <span class="new-tab-type-title">Agent Task</span>
-              <span class="new-tab-type-desc">Ask an AI agent to perform a task in the current workspace</span>
-            </button>
-            <button id="newTabTypeTerminalBtn" class="new-tab-type-option" type="button">
-              <span class="new-tab-type-title">Terminal</span>
-              <span class="new-tab-type-desc">Open a shell in the current workspace</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+  </div>
+</div>

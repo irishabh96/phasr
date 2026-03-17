@@ -57,6 +57,46 @@ func OpenURL(target string) error {
 	return nil
 }
 
+func OpenInIDE(path, ide string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	ide = strings.TrimSpace(ide)
+	if ide == "" {
+		return fmt.Errorf("ide is required")
+	}
+
+	validateCmd := exec.Command("open", "-Ra", ide)
+	if out, err := validateCmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = strings.TrimSpace(err.Error())
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("Unable to find application named %q", ide)
+		}
+		return fmt.Errorf("%s", msg)
+	}
+
+	cmd := exec.Command("open", "-a", ide, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = strings.TrimSpace(err.Error())
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("failed to open path in %q", ide)
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+func OpenInTerminal(path string) error {
+	return OpenInIDE(path, "Terminal")
+}
+
 func runAppleScript(script string) (string, error) {
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {

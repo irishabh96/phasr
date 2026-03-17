@@ -17,7 +17,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("staq: %v", err)
+		log.Fatalf("phasr.sh: %v", err)
 	}
 }
 
@@ -28,7 +28,7 @@ func run() error {
 	}
 
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP listen address")
-	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "Staq data directory")
+	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "phasr.sh data directory")
 	flag.StringVar(&cfg.DefaultEditor, "editor", cfg.DefaultEditor, "Default editor command (code/cursor/zed/vim/open)")
 	flag.Parse()
 
@@ -53,7 +53,7 @@ func run() error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Printf("Staq listening on http://%s\n", runtime.Config.Addr)
+	fmt.Printf("phasr.sh listening on http://%s\n", runtime.Config.Addr)
 	fmt.Printf("Data dir: %s\n", runtime.Config.DataDir)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
