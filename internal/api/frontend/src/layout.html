@@ -670,28 +670,67 @@
   aria-labelledby="newTaskModalTitle"
 >
   <div
-    class="modal new-task-modal w-[min(480px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+    class="modal new-task-modal w-[min(900px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
   >
     <div class="modal-body new-task-modal-body">
       <div class="new-task-compose">
-        <textarea
-          id="newTaskModalPrompt"
-          class="new-task-modal-textarea new-task-compose-textarea"
-          placeholder="Describe what the agent should do..."
-          rows="4"
-        ></textarea>
-        <div class="new-task-compose-bar">
-          <div class="new-task-compose-selects">
-            <select id="newTaskModalAgent" required class="new-task-inline-select">
-              <option value="claude" selected>claude</option>
-              <option value="codex">codex</option>
-              <option value="copilot">copilot</option>
-              <option value="opencode">opencode</option>
-              <option value="gemini">gemini</option>
-            </select>
-            <span class="new-task-compose-sep"></span>
+        <div class="new-task-controls-grid">
+          <div class="new-task-control-field">
+            <label class="workspace-modal-label" for="newTaskModalAgent">Agent</label>
+            <div class="new-task-agent-select-wrap">
+              <span id="newTaskModalAgentIcon" class="new-task-agent-icon" aria-hidden="true"></span>
+              <select id="newTaskModalAgent" required class="new-task-inline-select new-task-agent-select">
+                <option value="claude" selected>claude</option>
+                <option value="codex">codex</option>
+                <option value="copilot">copilot</option>
+                <option value="opencode">opencode</option>
+                <option value="gemini">gemini</option>
+              </select>
+            </div>
+          </div>
+          <div class="new-task-control-field">
+            <label class="workspace-modal-label" for="newTaskModalWorkspace">Workspace</label>
             <select id="newTaskModalWorkspace" class="new-task-inline-select"></select>
           </div>
+        </div>
+        <div class="new-task-prompt-wrap">
+          <label class="workspace-modal-label" for="newTaskModalPrompt">Prompt</label>
+          <textarea
+            id="newTaskModalPrompt"
+            class="new-task-modal-textarea new-task-compose-textarea"
+            placeholder="Describe what the agent should do..."
+            rows="5"
+          ></textarea>
+        </div>
+        <div class="new-task-branch-grid">
+          <div class="new-task-branch-field">
+            <label class="workspace-modal-label" for="newTaskModalBaseBranch">Branch name</label>
+            <select id="newTaskModalBaseBranch" class="new-task-inline-select new-task-base-branch-select">
+              <option value="current" selected>current</option>
+            </select>
+          </div>
+          <div class="new-task-branch-field">
+            <label class="workspace-modal-label" for="newTaskModalBranchName">New branch name</label>
+            <div class="new-task-branch-slug-wrap">
+              <select id="newTaskModalBranchPrefix" class="new-task-branch-prefix-select">
+                <option value="task" selected>task/</option>
+                <option value="feature">feature/</option>
+                <option value="hotfix">hotfix/</option>
+                <option value="bug-fix">bug-fix/</option>
+              </select>
+              <input
+                id="newTaskModalBranchName"
+                class="new-task-branch-input new-task-branch-input-mono"
+                type="text"
+                value="task"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="new-task-compose-footer">
           <button
             id="newTaskModalCreateBtn"
             class="btn-primary new-task-modal-create-btn new-task-start-btn"

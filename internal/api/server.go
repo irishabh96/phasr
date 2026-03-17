@@ -57,6 +57,7 @@ func NewServer(opts Options) (http.Handler, error) {
 	mux.Handle("/static/", withNoStore(staticHandler))
 	mux.HandleFunc("/api/local/browse-directory", s.handleBrowseDirectory)
 	mux.HandleFunc("/api/local/git-metadata", s.handleGitMetadata)
+	mux.HandleFunc("/api/local/git-branches", s.handleGitBranches)
 	mux.HandleFunc("/api/local/open-directory", s.handleOpenDirectory)
 	mux.HandleFunc("/api/local/open-url", s.handleOpenURL)
 	mux.HandleFunc("/api/local/open-in-ide", s.handleOpenInIDE)
