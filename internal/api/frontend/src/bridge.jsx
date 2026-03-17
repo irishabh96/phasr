@@ -78,6 +78,21 @@ function TaskHeaderView({ model }) {
 function SidebarTaskRow({ task }) {
   return (
     <div className={cx("sidebar-row", task.isSelected && "selected")} data-open-task={task.rootTaskID}>
+      {task.canCloseWorktree ? (
+        <button
+          className="sidebar-task-close"
+          type="button"
+          data-close-worktree-task={task.closeTaskID || task.rootTaskID}
+          aria-label={`Close ${task.title}`}
+          title={`Close ${task.title}`}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          &times;
+        </button>
+      ) : null}
       <div className="sidebar-row-content">
         <span className="sidebar-row-title">{task.title}</span>
         {task.subtitle ? <span className="sidebar-row-subtitle">{task.subtitle}</span> : null}

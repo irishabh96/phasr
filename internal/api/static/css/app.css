@@ -1167,6 +1167,28 @@ kbd {
   gap: 2px;
 }
 
+.sidebar-task-close {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--text-tertiary);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sidebar-task-close:hover {
+  background: var(--surface-hover);
+  color: var(--danger);
+}
+
 .sidebar-row-title {
   font-size: 12px;
   line-height: 1.3;

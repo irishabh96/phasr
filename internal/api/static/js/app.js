@@ -1984,14 +1984,18 @@ function healthDotTooltip(status, updatedAt) {
   return `${state} \u00b7 last active ${time}`;
 }
 
-function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updatedAt }) {
+function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updatedAt, canCloseWorktree, closeTaskID }) {
   const selectedClass = isSelected ? 'selected' : '';
   const attr = dataAttr || '';
+  const closeBtn = canCloseWorktree
+    ? `<button class="sidebar-task-close" type="button" data-close-worktree-task="${escapeHtml(closeTaskID || id)}" aria-label="Close ${escapeHtml(title)}" title="Close ${escapeHtml(title)}">&times;</button>`
+    : '';
   const dot = status
     ? `<span class="sidebar-status-dot ${healthDotColor(status)}" title="${escapeHtml(healthDotTooltip(status, updatedAt))}"></span>`
     : '';
   return `
         <div class="sidebar-row ${selectedClass}" ${attr}>
+          ${closeBtn}
           <div class="sidebar-row-content">
             <span class="sidebar-row-title">${escapeHtml(title)}</span>
             ${subtitle ? `<span class="sidebar-row-subtitle">${escapeHtml(subtitle)}</span>` : ''}
@@ -2025,6 +2029,8 @@ function renderWorkspaces() {
             title: task.name || 'untitled',
             subtitle: String(task.branch || '').trim() || '-',
             isSelected: group.rootTaskID === activeTaskGroupId,
+            canCloseWorktree: !Boolean(task.direct_repo),
+            closeTaskID: group.rootTaskID,
             rawStatus: task.status || '',
             dotClass: healthDotColor(task.status || ''),
             dotTooltip: healthDotTooltip(task.status, group.latestUpdatedAt),
@@ -2096,6 +2102,8 @@ function renderWorkspaces() {
                 subtitle: task.subtitle,
                 isSelected: task.isSelected,
                 dataAttr: `data-open-task="${task.rootTaskID}"`,
+                canCloseWorktree: task.canCloseWorktree,
+                closeTaskID: task.closeTaskID,
                 status: task.rawStatus,
                 updatedAt: '',
               }),
@@ -4085,6 +4093,27 @@ function installEventHandlers() {
       return;
     }
 
+    const isMetaShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
+    if (isMetaShortcut && key === 't') {
+      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+      event.preventDefault();
+      const activeTask = getTask(activeTabId);
+      const rootTaskID = String(activeTaskGroupId || taskRootId(activeTask) || '').trim();
+      const preferredWorkspace = rootTaskID
+        ? String(workspaceIdByName(activeTask?.workspace) || activeWorkspace || '').trim()
+        : String(activeWorkspace || '').trim();
+      createTerminalTab({ preferredWorkspace, rootTaskID }).catch((error) => alert(error.message || String(error)));
+      return;
+    }
+    if (isMetaShortcut && key === 'w') {
+      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+      const currentTab = String(activeTabId || '').trim();
+      if (!currentTab) return;
+      event.preventDefault();
+      closeTab(currentTab);
+      return;
+    }
+
     if (event.key === 'Escape') {
       const branchMenuOpen = !taskContextBranchMenuEl.classList.contains('hidden');
       const publishMenuOpen = publishActionMenuEl ? !publishActionMenuEl.classList.contains('hidden') : false;
@@ -4131,6 +4160,17 @@ function installEventHandlers() {
   });
 
   workspaceListEl.addEventListener('click', async (event) => {
+    const closeWorktreeTaskBtn = closestFromEvent(event, 'button[data-close-worktree-task]');
+    if (closeWorktreeTaskBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const taskID = String(closeWorktreeTaskBtn.dataset.closeWorktreeTask || '').trim();
+      if (taskID) {
+        closeTab(taskID);
+      }
+      return;
+    }
+
     const openBtn = closestFromEvent(event, '[data-open-task]');
     if (openBtn) {
       openTaskGroup(openBtn.dataset.openTask);

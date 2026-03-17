@@ -95,6 +95,7 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	mutated := false
+	restartTaskIDs := make([]string, 0, 8)
 	for i := range storedTasks {
 		t := storedTasks[i]
 		t.Workspace = normalizedWorkspace(t.Workspace)
@@ -110,13 +111,7 @@ func NewManager(opts Options) (*Manager, error) {
 			mutated = true
 		}
 		if t.Status == domain.StatusRunning {
-			t.Status = domain.StatusStopped
-			t.PID = 0
-			now := time.Now().UTC()
-			t.UpdatedAt = now
-			t.FinishedAt = &now
-			t.LastError = "marked stopped after server restart"
-			mutated = true
+			restartTaskIDs = append(restartTaskIDs, t.ID)
 		}
 		copyTask := t
 		m.tasks[t.ID] = &copyTask
@@ -131,6 +126,23 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	opts.Process.SetExitHandler(m.handleExit)
+
+	for _, taskID := range restartTaskIDs {
+		// Best-effort restore: revive tasks that were persisted as running.
+		if err := m.startInternal(taskID, false, 0, 0, true); err != nil {
+			m.mu.Lock()
+			if t, ok := m.tasks[taskID]; ok {
+				t.Status = domain.StatusFailed
+				now := time.Now().UTC()
+				t.UpdatedAt = now
+				t.FinishedAt = &now
+				t.LastError = "failed to restore after server restart: " + err.Error()
+				_ = m.persistLocked()
+			}
+			m.mu.Unlock()
+		}
+	}
+
 	return m, nil
 }
 
@@ -276,6 +288,10 @@ func (m *Manager) Start(id string) (domain.Task, error) {
 }
 
 func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) error {
+	return m.startInternal(id, includePresetSetup, cols, rows, false)
+}
+
+func (m *Manager) startInternal(id string, includePresetSetup bool, cols, rows uint16, allowRestoreRunning bool) error {
 	m.mu.Lock()
 	t, ok := m.tasks[id]
 	if !ok {
@@ -287,8 +303,14 @@ func (m *Manager) start(id string, includePresetSetup bool, cols, rows uint16) e
 		return errors.New("archived task cannot be resumed")
 	}
 	if t.Status == domain.StatusRunning {
-		m.mu.Unlock()
-		return errors.New("task already running")
+		if !allowRestoreRunning {
+			m.mu.Unlock()
+			return errors.New("task already running")
+		}
+		if m.process.IsRunning(id) {
+			m.mu.Unlock()
+			return errors.New("task already running")
+		}
 	}
 
 	command := t.Command
