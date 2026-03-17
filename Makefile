@@ -1,12 +1,18 @@
-.PHONY: build run desktop-build desktop-run desktop-export-macos desktop-export-macos-installer fmt tidy ui-install ui-build ui-dev ui-version
+.PHONY: build run desktop-build desktop-run desktop-export-macos desktop-export-macos-installer fmt tidy ui-install ui-ensure-deps ui-build ui-dev ui-version
 
 ui-install:
 	npm --prefix internal/api/frontend install
 
-ui-build:
+ui-ensure-deps:
+	@if [ ! -x internal/api/frontend/node_modules/.bin/vite ]; then \
+		echo "Installing frontend dependencies..."; \
+		npm --prefix internal/api/frontend install; \
+	fi
+
+ui-build: ui-ensure-deps
 	npm --prefix internal/api/frontend run build
 
-ui-dev:
+ui-dev: ui-ensure-deps
 	npm --prefix internal/api/frontend run dev
 
 build:

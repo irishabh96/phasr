@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -49,12 +51,14 @@ func run() error {
 	flag.BoolVar(&debug, "debug", false, "Enable webview devtools")
 	flag.Parse()
 
-	runtime, err := app.New(cfg)
+	listener, resolvedAddr, addrNotice, err := listenDesktop(cfg.Addr)
 	if err != nil {
 		return err
 	}
+	defer listener.Close()
+	cfg.Addr = resolvedAddr
 
-	listener, err := net.Listen("tcp", runtime.Config.Addr)
+	runtime, err := app.New(cfg)
 	if err != nil {
 		return err
 	}
@@ -118,6 +122,9 @@ func run() error {
 		shutdown()
 	}()
 
+	if strings.TrimSpace(addrNotice) != "" {
+		fmt.Println(addrNotice)
+	}
 	fmt.Printf("phasr.sh desktop listening on %s\n", appURL)
 	fmt.Printf("Data dir: %s\n", runtime.Config.DataDir)
 
@@ -139,4 +146,42 @@ func httpURL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+func listenDesktop(addr string) (net.Listener, string, string, error) {
+	listener, err := net.Listen("tcp", addr)
+	if err == nil {
+		return listener, listener.Addr().String(), "", nil
+	}
+	if !isAddrInUse(err) {
+		return nil, "", "", err
+	}
+
+	host, _, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		host = ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+
+	fallback := net.JoinHostPort(host, "0")
+	fallbackListener, fallbackErr := net.Listen("tcp", fallback)
+	if fallbackErr != nil {
+		return nil, "", "", fmt.Errorf("listen %s: %w (fallback %s failed: %v)", addr, err, fallback, fallbackErr)
+	}
+
+	resolved := fallbackListener.Addr().String()
+	notice := fmt.Sprintf("Address %s is in use; using %s", addr, resolved)
+	return fallbackListener, resolved, notice, nil
+}
+
+func isAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "address already in use")
 }
