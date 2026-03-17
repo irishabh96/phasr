@@ -172,6 +172,70 @@ func (s *Service) UnstageFile(worktreePath, path string) error {
 	return fmt.Errorf("git restore --staged: %w (%s)", err, strings.TrimSpace(out))
 }
 
+func (s *Service) DiscardFile(worktreePath, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	hasHead := false
+	if _, err := runGit("-C", worktreePath, "rev-parse", "--verify", "HEAD"); err == nil {
+		hasHead = true
+	}
+
+	attempts := []struct {
+		args []string
+		desc string
+	}{}
+	if hasHead {
+		attempts = append(attempts,
+			struct {
+				args []string
+				desc string
+			}{
+				args: []string{"-C", worktreePath, "restore", "--source=HEAD", "--staged", "--worktree", "--", path},
+				desc: "git restore --source=HEAD --staged --worktree",
+			},
+			struct {
+				args []string
+				desc string
+			}{
+				args: []string{"-C", worktreePath, "restore", "--worktree", "--", path},
+				desc: "git restore --worktree",
+			},
+		)
+	}
+	attempts = append(attempts,
+		struct {
+			args []string
+			desc string
+		}{
+			args: []string{"-C", worktreePath, "rm", "-f", "-r", "--", path},
+			desc: "git rm -f -r",
+		},
+		struct {
+			args []string
+			desc string
+		}{
+			args: []string{"-C", worktreePath, "clean", "-f", "-d", "--", path},
+			desc: "git clean -f -d",
+		},
+	)
+
+	lastErr := ""
+	for _, attempt := range attempts {
+		out, err := runGit(attempt.args...)
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Sprintf("%s: %v (%s)", attempt.desc, err, strings.TrimSpace(out))
+	}
+	if lastErr == "" {
+		return fmt.Errorf("discard changes failed")
+	}
+	return fmt.Errorf("discard changes: %s", lastErr)
+}
+
 func (s *Service) Commit(worktreePath, message string) (string, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -180,6 +244,30 @@ func (s *Service) Commit(worktreePath, message string) (string, error) {
 	out, err := runGit("-C", worktreePath, "commit", "-m", message)
 	if err != nil {
 		return "", fmt.Errorf("git commit: %w (%s)", err, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (s *Service) Push(worktreePath string) (string, error) {
+	out, err := runGit("-C", worktreePath, "push")
+	if err != nil {
+		return "", fmt.Errorf("git push: %w (%s)", err, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (s *Service) Pull(worktreePath string) (string, error) {
+	out, err := runGit("-C", worktreePath, "pull")
+	if err != nil {
+		return "", fmt.Errorf("git pull: %w (%s)", err, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (s *Service) Fetch(worktreePath string) (string, error) {
+	out, err := runGit("-C", worktreePath, "fetch")
+	if err != nil {
+		return "", fmt.Errorf("git fetch: %w (%s)", err, strings.TrimSpace(out))
 	}
 	return strings.TrimSpace(out), nil
 }

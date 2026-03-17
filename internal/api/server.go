@@ -664,8 +664,16 @@ func (s *server) handleTaskGit(w http.ResponseWriter, r *http.Request, id, subac
 		s.handleGitStage(w, r, id)
 	case "unstage":
 		s.handleGitUnstage(w, r, id)
+	case "discard":
+		s.handleGitDiscard(w, r, id)
 	case "commit":
 		s.handleGitCommit(w, r, id)
+	case "push":
+		s.handleGitPush(w, r, id)
+	case "pull":
+		s.handleGitPull(w, r, id)
+	case "fetch":
+		s.handleGitFetch(w, r, id)
 	case "commits":
 		s.handleGitCommits(w, r, id)
 	default:
@@ -860,6 +868,25 @@ func (s *server) handleGitUnstage(w http.ResponseWriter, r *http.Request, id str
 	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "unstaged": payload.Path})
 }
 
+func (s *server) handleGitDiscard(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.tasks.DiscardFile(id, payload.Path); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "discarded": payload.Path})
+}
+
 func (s *server) handleGitCommit(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -880,6 +907,54 @@ func (s *server) handleGitCommit(w http.ResponseWriter, r *http.Request, id stri
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id": id,
 		"commit":  out,
+	})
+}
+
+func (s *server) handleGitPush(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	out, err := s.tasks.Push(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id": id,
+		"output":  out,
+	})
+}
+
+func (s *server) handleGitPull(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	out, err := s.tasks.Pull(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id": id,
+		"output":  out,
+	})
+}
+
+func (s *server) handleGitFetch(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	out, err := s.tasks.Fetch(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id": id,
+		"output":  out,
 	})
 }
 

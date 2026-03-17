@@ -736,12 +736,44 @@ func (m *Manager) UnstageFile(id, path string) error {
 	return m.diffs.UnstageFile(t.WorktreePath, path)
 }
 
+func (m *Manager) DiscardFile(id, path string) error {
+	t, err := m.Get(id)
+	if err != nil {
+		return err
+	}
+	return m.diffs.DiscardFile(t.WorktreePath, path)
+}
+
 func (m *Manager) Commit(id, message string) (string, error) {
 	t, err := m.Get(id)
 	if err != nil {
 		return "", err
 	}
 	return m.diffs.Commit(t.WorktreePath, message)
+}
+
+func (m *Manager) Push(id string) (string, error) {
+	t, err := m.Get(id)
+	if err != nil {
+		return "", err
+	}
+	return m.diffs.Push(t.WorktreePath)
+}
+
+func (m *Manager) Pull(id string) (string, error) {
+	t, err := m.Get(id)
+	if err != nil {
+		return "", err
+	}
+	return m.diffs.Pull(t.WorktreePath)
+}
+
+func (m *Manager) Fetch(id string) (string, error) {
+	t, err := m.Get(id)
+	if err != nil {
+		return "", err
+	}
+	return m.diffs.Fetch(t.WorktreePath)
 }
 
 func (m *Manager) GitCommits(id string) ([]diff.CommitHistoryItem, int, error) {
