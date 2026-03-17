@@ -270,7 +270,31 @@
             placeholder="feat: concise message"
           ></textarea>
         </div>
-        <button class="publish-btn w-full" type="button">Publish Branch &#9662;</button>
+        <div id="publishBranchSplit" class="publish-split-wrap w-full relative">
+          <button id="publishPrimaryBtn" class="publish-btn publish-primary-btn" type="button">Push</button>
+          <button
+            id="publishDropdownBtn"
+            class="publish-btn publish-dropdown-btn"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-label="Publish actions"
+          >
+            <span class="publish-dropdown-icon" aria-hidden="true"></span>
+          </button>
+          <div
+            id="publishActionMenu"
+            class="hidden publish-action-menu"
+            role="menu"
+            aria-label="Publish actions"
+          >
+            <button class="publish-action-item" data-publish-action="push" type="button" role="menuitem">Push</button>
+            <button class="publish-action-item" data-publish-action="pull" type="button" role="menuitem">Pull</button>
+            <button class="publish-action-item" data-publish-action="fetch" type="button" role="menuitem">Fetch</button>
+            <button class="publish-action-item" data-publish-action="commit" type="button" role="menuitem">Commit</button>
+            <button class="publish-action-item" data-publish-action="create-pr" type="button" role="menuitem">Create PR</button>
+          </div>
+        </div>
       </div>
 
       <div id="changesPanel" class="changes-wrap min-h-0 overflow-auto p-2 flex flex-col gap-1.5 bg-transparent">
@@ -296,6 +320,15 @@
               ></path>
             </svg>
             <span id="stagedSectionLabel">Staged</span>
+            <button
+              id="unstageAllBtn"
+              class="change-section-action"
+              type="button"
+              title="Unstage all"
+              aria-label="Unstage all"
+            >
+              <span class="change-section-action-icon icon-unstage-minus" aria-hidden="true"></span>
+            </button>
           </summary>
           <div id="stagedList" class="change-list block pt-0.5 bg-transparent"></div>
         </details>
@@ -322,6 +355,15 @@
               ></path>
             </svg>
             <span id="unstagedSectionLabel">Unstaged</span>
+            <button
+              id="stageAllBtn"
+              class="change-section-action"
+              type="button"
+              title="Stage all"
+              aria-label="Stage all"
+            >
+              <span class="change-section-action-icon icon-stage-plus" aria-hidden="true"></span>
+            </button>
           </summary>
           <div id="unstagedList" class="change-list block pt-0.5 bg-transparent"></div>
         </details>

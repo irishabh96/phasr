@@ -46,6 +46,7 @@ let selectedPatchFile = '';
 let centerViewMode = 'terminal';
 let changesViewMode = 'grouped';
 let repoFilesEntriesCache = [];
+let selectedPublishAction = 'push';
 
 // P0-A: ANSI color codes for severity highlighting
 const ANSI_RESET = '\x1b[0m';
@@ -189,6 +190,10 @@ const filesPanelEl = document.getElementById('filesPanel');
 const repoFilesMetaEl = document.getElementById('repoFilesMeta');
 const repoFilesSearchEl = document.getElementById('repoFilesSearch');
 const repoFilesTreeEl = document.getElementById('repoFilesTree');
+const publishBranchSplitEl = document.getElementById('publishBranchSplit');
+const publishPrimaryBtnEl = document.getElementById('publishPrimaryBtn');
+const publishDropdownBtnEl = document.getElementById('publishDropdownBtn');
+const publishActionMenuEl = document.getElementById('publishActionMenu');
 const patchPreviewEl = document.getElementById('patchPreview');
 const terminalPanelEl = document.getElementById('terminalPanel');
 const centerEmptyStateEl = document.getElementById('centerEmptyState');
@@ -400,6 +405,12 @@ function closeTaskContextBranchMenu() {
   taskContextBranchMenuEl.classList.add('hidden');
 }
 
+function closePublishActionMenu() {
+  if (!publishActionMenuEl) return;
+  publishActionMenuEl.classList.add('hidden');
+  publishDropdownBtnEl?.setAttribute('aria-expanded', 'false');
+}
+
 function closeOpenIdeMenu() {
   if (!openIdeMenuEl) return;
   openIdeMenuEl.classList.add('hidden');
@@ -414,6 +425,25 @@ function currentCodebasePath() {
   const activeTaskPath = taskCodePath(getTask(activeTabId));
   if (activeTaskPath) return activeTaskPath;
   return String(activeWorkspaceRepoPath() || '').trim();
+}
+
+async function openExternalUrl(targetUrl) {
+  const href = String(targetUrl || '').trim();
+  if (!href) return false;
+  try {
+    await api('/api/local/open-url', {
+      method: 'POST',
+      body: JSON.stringify({ url: href }),
+    });
+    return true;
+  } catch (_) {
+    const opened = window.open(href, '_blank', 'noopener,noreferrer');
+    if (opened) {
+      opened.opener = null;
+      return true;
+    }
+  }
+  return false;
 }
 
 async function openCurrentCodebaseInIDE(ideName) {
@@ -510,6 +540,7 @@ function setTaskContextBranchActions({ provider = '', baseBranch = '', branchUrl
   taskContextOpenBranchBtnEl.disabled = !branchUrl;
   taskContextOpenBranchBtnEl.dataset.url = branchUrl || '';
   closeTaskContextBranchMenu();
+  renderPublishActionControls();
 }
 
 async function loadTaskContextBranchActions(pathValue, branchValue) {
@@ -592,6 +623,114 @@ function updateTaskContextBar(task = undefined) {
   taskContextBranchEl.textContent = '-';
   applyPath(workspacePath);
   void loadTaskContextBranchActions(workspacePath, '');
+}
+
+function publishActionDefinitions() {
+  return [
+    { id: 'push', label: 'Push', title: 'git push' },
+    { id: 'pull', label: 'Pull', title: 'git pull' },
+    { id: 'fetch', label: 'Fetch', title: 'git fetch' },
+    { id: 'commit', label: 'Commit', title: 'git commit' },
+    { id: 'create-pr', label: 'Create PR', title: 'Create PR with base branch' },
+  ];
+}
+
+function publishActionAvailability() {
+  const hasActiveTask = Boolean(String(activeTabId || '').trim());
+  const staged = currentGitStatus.staged || [];
+  const commitsTotal = Number(currentGitCommitsTotal || currentGitCommits.length || 0);
+  const prUrl = String(taskContextBranchEl?.dataset.prUrl || '').trim();
+  return {
+    push: hasActiveTask && commitsTotal > 0,
+    pull: hasActiveTask,
+    fetch: hasActiveTask,
+    commit: hasActiveTask && staged.length > 0,
+    'create-pr': hasActiveTask && Boolean(prUrl),
+  };
+}
+
+function normalizePublishPrimaryAction() {
+  const defs = publishActionDefinitions();
+  const available = publishActionAvailability();
+  if (available[selectedPublishAction]) return selectedPublishAction;
+  const fallback = defs.find((item) => available[item.id]);
+  if (fallback) {
+    selectedPublishAction = fallback.id;
+    return selectedPublishAction;
+  }
+  selectedPublishAction = defs[0]?.id || 'push';
+  return selectedPublishAction;
+}
+
+function renderPublishActionControls() {
+  if (!publishPrimaryBtnEl || !publishActionMenuEl) return;
+  const defs = publishActionDefinitions();
+  const available = publishActionAvailability();
+  const primaryAction = normalizePublishPrimaryAction();
+  const primaryDef = defs.find((item) => item.id === primaryAction) || defs[0];
+  publishPrimaryBtnEl.textContent = primaryDef?.label || 'Push';
+  publishPrimaryBtnEl.title = primaryDef?.title || '';
+  publishPrimaryBtnEl.disabled = !available[primaryAction];
+
+  const items = publishActionMenuEl.querySelectorAll('[data-publish-action]');
+  for (const item of items) {
+    const action = String(item.getAttribute('data-publish-action') || '').trim();
+    if (!action) continue;
+    const enabled = Boolean(available[action]);
+    item.disabled = !enabled;
+    item.classList.toggle('active', action === primaryAction);
+  }
+}
+
+async function runTaskGitAction(action) {
+  const actionName = String(action || '').trim();
+  if (!activeTabId || !actionName) return;
+  const result = await api(`/api/tasks/${activeTabId}/git/${actionName}`, {
+    method: 'POST',
+  });
+  await refreshGitStatus();
+  const output = String(result?.output || '').trim();
+  if (output) {
+    showToast(output, 'success', 2600);
+  } else {
+    showToast(`Git ${actionName} completed.`, 'success', 2200);
+  }
+}
+
+async function currentTaskPrUrl() {
+  const task = getTask(activeTabId);
+  if (!task) return '';
+  const path = taskCodePath(task) || String(activeWorkspaceRepoPath() || '').trim();
+  const branch = String(task.branch || '').trim();
+  if (!path || !branch || branch === '-') return '';
+  await loadTaskContextBranchActions(path, branch);
+  return String(taskContextBranchEl?.dataset.prUrl || '').trim();
+}
+
+async function runPublishAction(action) {
+  const actionName = String(action || '').trim();
+  if (!actionName) return;
+  if (actionName === 'push' || actionName === 'pull' || actionName === 'fetch') {
+    await runTaskGitAction(actionName);
+    return;
+  }
+  if (actionName === 'commit') {
+    await commitChanges();
+    renderPublishActionControls();
+    return;
+  }
+  if (actionName === 'create-pr') {
+    const prUrl = await currentTaskPrUrl();
+    if (!prUrl) {
+      throw new Error('PR URL is unavailable for this branch.');
+    }
+    const opened = await openExternalUrl(prUrl);
+    if (!opened) {
+      throw new Error('Unable to open PR URL in browser.');
+    }
+    return;
+  }
+  throw new Error(`Unsupported action: ${actionName}`);
 }
 
 function setPatchPreviewMessage(message) {
@@ -1845,14 +1984,18 @@ function healthDotTooltip(status, updatedAt) {
   return `${state} \u00b7 last active ${time}`;
 }
 
-function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updatedAt }) {
+function SidebarRow({ id, title, subtitle, isSelected, dataAttr, status, updatedAt, canCloseWorktree, closeTaskID }) {
   const selectedClass = isSelected ? 'selected' : '';
   const attr = dataAttr || '';
+  const closeBtn = canCloseWorktree
+    ? `<button class="sidebar-task-close" type="button" data-close-worktree-task="${escapeHtml(closeTaskID || id)}" aria-label="Close ${escapeHtml(title)}" title="Close ${escapeHtml(title)}">&times;</button>`
+    : '';
   const dot = status
     ? `<span class="sidebar-status-dot ${healthDotColor(status)}" title="${escapeHtml(healthDotTooltip(status, updatedAt))}"></span>`
     : '';
   return `
         <div class="sidebar-row ${selectedClass}" ${attr}>
+          ${closeBtn}
           <div class="sidebar-row-content">
             <span class="sidebar-row-title">${escapeHtml(title)}</span>
             ${subtitle ? `<span class="sidebar-row-subtitle">${escapeHtml(subtitle)}</span>` : ''}
@@ -1886,6 +2029,8 @@ function renderWorkspaces() {
             title: task.name || 'untitled',
             subtitle: String(task.branch || '').trim() || '-',
             isSelected: group.rootTaskID === activeTaskGroupId,
+            canCloseWorktree: !Boolean(task.direct_repo),
+            closeTaskID: group.rootTaskID,
             rawStatus: task.status || '',
             dotClass: healthDotColor(task.status || ''),
             dotTooltip: healthDotTooltip(task.status, group.latestUpdatedAt),
@@ -1957,6 +2102,8 @@ function renderWorkspaces() {
                 subtitle: task.subtitle,
                 isSelected: task.isSelected,
                 dataAttr: `data-open-task="${task.rootTaskID}"`,
+                canCloseWorktree: task.canCloseWorktree,
+                closeTaskID: task.closeTaskID,
                 status: task.rawStatus,
                 updatedAt: '',
               }),
@@ -2578,6 +2725,43 @@ function TreeChevron() {
       `;
 }
 
+function IconStagePlus() {
+  return `<span class="tree-action-icon icon-stage-plus" aria-hidden="true"></span>`;
+}
+
+function IconUnstageMinus() {
+  return `<span class="tree-action-icon icon-unstage-minus" aria-hidden="true"></span>`;
+}
+
+function IconDiscard() {
+  return `<span class="tree-action-icon icon-discard" aria-hidden="true"></span>`;
+}
+
+function ChangeRowActions(path, mode) {
+  const safePath = escapeHtml(path);
+  const actions = [];
+  if (mode === 'unstaged') {
+    actions.push(`
+          <button class="tree-action-btn stage" type="button" data-stage-file="${safePath}" title="Stage file" aria-label="Stage file">
+            ${IconStagePlus()}
+          </button>
+        `);
+  }
+  if (mode === 'staged') {
+    actions.push(`
+          <button class="tree-action-btn unstage" type="button" data-unstage-file="${safePath}" title="Unstage file" aria-label="Unstage file">
+            ${IconUnstageMinus()}
+          </button>
+        `);
+  }
+  actions.push(`
+        <button class="tree-action-btn discard" type="button" data-discard-file="${safePath}" title="Discard changes" aria-label="Discard changes">
+          ${IconDiscard()}
+        </button>
+      `);
+  return `<span class="tree-row-right">${actions.join('')}</span>`;
+}
+
 function fileIconType(name, kind = 'file') {
   if (kind === 'dir') {
     return { label: 'dir', cls: 'dir' };
@@ -2629,9 +2813,10 @@ function ChangedFileRow(change, mode, depth = 0) {
             <span class="change-file-name">${escapeHtml(name)}</span>
             <span class="change-inline-counts">
               <span class="add">+${add}</span>
-            <span class="del">-${del}</span>
+              <span class="del">-${del}</span>
             </span>
           </div>
+          ${ChangeRowActions(path, mode)}
         </div>
       `;
 }
@@ -3160,6 +3345,7 @@ function renderGitStatus() {
   const taskLabel = task ? task.name : 'No task';
   const staged = currentGitStatus.staged || [];
   const unstaged = currentGitStatus.unstaged || [];
+  renderPublishActionControls();
   const signature = gitRenderSignature(taskLabel, staged, unstaged);
   if (signature === lastGitRenderSignature) {
     return;
@@ -3426,6 +3612,26 @@ async function unstageFile(path) {
   }
 }
 
+async function discardFile(path) {
+  if (!activeTabId) return;
+  const targetPath = String(path || '').trim();
+  if (!targetPath) return;
+  try {
+    await api(`/api/tasks/${activeTabId}/git/discard`, {
+      method: 'POST',
+      body: JSON.stringify({ path: targetPath }),
+    });
+    if (selectedPatchFile === targetPath) {
+      selectedPatchFile = '';
+      await loadPatch('');
+    }
+  } catch (error) {
+    alert(error.message || String(error));
+  } finally {
+    await refreshGitStatus();
+  }
+}
+
 async function stageAllFiles() {
   if (!activeTabId) return;
   const unstaged = [...(currentGitStatus.unstaged || [])];
@@ -3685,24 +3891,59 @@ function installEventHandlers() {
     }
   });
 
-  const openTaskContextLink = async (targetUrl) => {
-    const href = String(targetUrl || '').trim();
-    if (!href) return;
-    try {
-      await api('/api/local/open-url', {
-        method: 'POST',
-        body: JSON.stringify({ url: href }),
-      });
-      return;
-    } catch (_) {
-      const opened = window.open(href, '_blank', 'noopener,noreferrer');
-      if (opened) {
-        opened.opener = null;
+  if (publishPrimaryBtnEl) {
+    publishPrimaryBtnEl.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const action = normalizePublishPrimaryAction();
+      const available = publishActionAvailability();
+      if (!available[action]) return;
+      try {
+        await runPublishAction(action);
+      } catch (error) {
+        alert(error.message || String(error));
+      } finally {
+        renderPublishActionControls();
+      }
+    });
+  }
+
+  if (publishDropdownBtnEl) {
+    publishDropdownBtnEl.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!publishActionMenuEl || !publishBranchSplitEl) return;
+      const isHidden = publishActionMenuEl.classList.contains('hidden');
+      if (!isHidden) {
+        closePublishActionMenu();
         return;
       }
-    }
-    alert('Unable to open link in browser.');
-  };
+      publishActionMenuEl.classList.remove('hidden');
+      publishDropdownBtnEl.setAttribute('aria-expanded', 'true');
+    });
+  }
+
+  if (publishActionMenuEl) {
+    publishActionMenuEl.addEventListener('click', async (event) => {
+      const option = closestFromEvent(event, '[data-publish-action]');
+      if (!option) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const action = String(option.getAttribute('data-publish-action') || '').trim();
+      if (!action) return;
+      const available = publishActionAvailability();
+      if (!available[action]) return;
+      selectedPublishAction = action;
+      closePublishActionMenu();
+      renderPublishActionControls();
+      try {
+        await runPublishAction(action);
+      } catch (error) {
+        alert(error.message || String(error));
+      } finally {
+        renderPublishActionControls();
+      }
+    });
+  }
 
   taskContextBranchEl.addEventListener('click', (event) => {
     event.preventDefault();
@@ -3712,13 +3953,19 @@ function installEventHandlers() {
   taskContextOpenPrBtnEl.addEventListener('click', async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    await openTaskContextLink(taskContextOpenPrBtnEl.dataset.url);
+    const opened = await openExternalUrl(taskContextOpenPrBtnEl.dataset.url);
+    if (!opened) {
+      alert('Unable to open link in browser.');
+    }
     closeTaskContextBranchMenu();
   });
   taskContextOpenBranchBtnEl.addEventListener('click', async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    await openTaskContextLink(taskContextOpenBranchBtnEl.dataset.url);
+    const opened = await openExternalUrl(taskContextOpenBranchBtnEl.dataset.url);
+    if (!opened) {
+      alert('Unable to open link in browser.');
+    }
     closeTaskContextBranchMenu();
   });
   openIdeBtnEl?.addEventListener('click', (event) => {
@@ -3754,12 +4001,15 @@ function installEventHandlers() {
     const target = event.target;
     if (!(target instanceof Element)) {
       closeTaskContextBranchMenu();
+      closePublishActionMenu();
       closeOpenIdeMenu();
       return;
     }
     const inBranchMenu = Boolean(target.closest('#taskContextBranch') || target.closest('#taskContextBranchMenu'));
+    const inPublishActionMenu = Boolean(target.closest('#publishBranchSplit') || target.closest('#publishActionMenu'));
     const inOpenIdeMenu = Boolean(target.closest('#openIdeWrap'));
     if (!inBranchMenu) closeTaskContextBranchMenu();
+    if (!inPublishActionMenu) closePublishActionMenu();
     if (!inOpenIdeMenu) closeOpenIdeMenu();
   });
 
@@ -3843,12 +4093,37 @@ function installEventHandlers() {
       return;
     }
 
+    const isMetaShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
+    if (isMetaShortcut && key === 't') {
+      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+      event.preventDefault();
+      const activeTask = getTask(activeTabId);
+      const rootTaskID = String(activeTaskGroupId || taskRootId(activeTask) || '').trim();
+      const preferredWorkspace = rootTaskID
+        ? String(workspaceIdByName(activeTask?.workspace) || activeWorkspace || '').trim()
+        : String(activeWorkspace || '').trim();
+      createTerminalTab({ preferredWorkspace, rootTaskID }).catch((error) => alert(error.message || String(error)));
+      return;
+    }
+    if (isMetaShortcut && key === 'w') {
+      if (isWorkspaceModalOpen() || isNewTaskModalOpen() || isNewTabTypeModalOpen()) return;
+      const currentTab = String(activeTabId || '').trim();
+      if (!currentTab) return;
+      event.preventDefault();
+      closeTab(currentTab);
+      return;
+    }
+
     if (event.key === 'Escape') {
       const branchMenuOpen = !taskContextBranchMenuEl.classList.contains('hidden');
+      const publishMenuOpen = publishActionMenuEl ? !publishActionMenuEl.classList.contains('hidden') : false;
       const ideMenuOpen = openIdeMenuEl ? !openIdeMenuEl.classList.contains('hidden') : false;
       if (branchMenuOpen) closeTaskContextBranchMenu();
+      if (publishMenuOpen) closePublishActionMenu();
       if (ideMenuOpen) closeOpenIdeMenu();
-      if ((branchMenuOpen || ideMenuOpen) && !isWorkspaceModalOpen() && !isNewTaskModalOpen()) return;
+      if ((branchMenuOpen || publishMenuOpen || ideMenuOpen) && !isWorkspaceModalOpen() && !isNewTaskModalOpen()) {
+        return;
+      }
     }
 
     if (isNewTaskModalOpen()) {
@@ -3885,6 +4160,17 @@ function installEventHandlers() {
   });
 
   workspaceListEl.addEventListener('click', async (event) => {
+    const closeWorktreeTaskBtn = closestFromEvent(event, 'button[data-close-worktree-task]');
+    if (closeWorktreeTaskBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const taskID = String(closeWorktreeTaskBtn.dataset.closeWorktreeTask || '').trim();
+      if (taskID) {
+        closeTab(taskID);
+      }
+      return;
+    }
+
     const openBtn = closestFromEvent(event, '[data-open-task]');
     if (openBtn) {
       openTaskGroup(openBtn.dataset.openTask);
@@ -4122,6 +4408,16 @@ function installEventHandlers() {
       }
       return;
     }
+    const discardBtn = closestFromEvent(event, 'button[data-discard-file]');
+    if (discardBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const path = discardBtn.getAttribute('data-discard-file') || discardBtn.dataset.discardFile || '';
+      if (path) {
+        await discardFile(path);
+      }
+      return;
+    }
     const patchTarget = closestFromEvent(event, '[data-patch-file]');
     if (patchTarget) {
       const path = patchTarget.getAttribute('data-patch-file') || patchTarget.dataset.patchFile || '';
@@ -4139,6 +4435,16 @@ function installEventHandlers() {
       const path = unstageBtn.getAttribute('data-unstage-file') || unstageBtn.dataset.unstageFile || '';
       if (path) {
         await unstageFile(path);
+      }
+      return;
+    }
+    const discardBtn = closestFromEvent(event, 'button[data-discard-file]');
+    if (discardBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const path = discardBtn.getAttribute('data-discard-file') || discardBtn.dataset.discardFile || '';
+      if (path) {
+        await discardFile(path);
       }
       return;
     }

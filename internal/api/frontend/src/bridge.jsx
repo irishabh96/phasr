@@ -78,6 +78,21 @@ function TaskHeaderView({ model }) {
 function SidebarTaskRow({ task }) {
   return (
     <div className={cx("sidebar-row", task.isSelected && "selected")} data-open-task={task.rootTaskID}>
+      {task.canCloseWorktree ? (
+        <button
+          className="sidebar-task-close"
+          type="button"
+          data-close-worktree-task={task.closeTaskID || task.rootTaskID}
+          aria-label={`Close ${task.title}`}
+          title={`Close ${task.title}`}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          &times;
+        </button>
+      ) : null}
       <div className="sidebar-row-content">
         <span className="sidebar-row-title">{task.title}</span>
         {task.subtitle ? <span className="sidebar-row-subtitle">{task.subtitle}</span> : null}
@@ -183,6 +198,11 @@ function TabBarView({ model }) {
 }
 
 function ChangeFileRow({ file, mode, commitMode = false }) {
+  const safePath = String(file?.path || "");
+  const showStage = !commitMode && mode === "unstaged";
+  const showUnstage = !commitMode && mode === "staged";
+  const showDiscard = !commitMode && !!safePath;
+
   return (
     <div
       className={cx("change-file-row", commitMode && "commit-file-row", file.selected && "selected")}
@@ -198,6 +218,25 @@ function ChangeFileRow({ file, mode, commitMode = false }) {
           <span className="del">-{file.deleted}</span>
         </span>
       </div>
+      {!commitMode ? (
+        <span className="tree-row-right">
+          {showStage ? (
+            <button className="tree-action-btn stage" type="button" data-stage-file={safePath} title="Stage file" aria-label="Stage file">
+              <span className="tree-action-icon icon-stage-plus" aria-hidden="true"></span>
+            </button>
+          ) : null}
+          {showUnstage ? (
+            <button className="tree-action-btn unstage" type="button" data-unstage-file={safePath} title="Unstage file" aria-label="Unstage file">
+              <span className="tree-action-icon icon-unstage-minus" aria-hidden="true"></span>
+            </button>
+          ) : null}
+          {showDiscard ? (
+            <button className="tree-action-btn discard" type="button" data-discard-file={safePath} title="Discard changes" aria-label="Discard changes">
+              <span className="tree-action-icon icon-discard" aria-hidden="true"></span>
+            </button>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
 }
