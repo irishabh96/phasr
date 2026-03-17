@@ -8,3 +8,6 @@ internal/api/static/dist/
 internal/api/static/ui-build-counter.json
 phasr
 phasr-desktop
+node_modules/
+staq
+staq-desktop
