@@ -442,6 +442,9 @@ func exitCodeFromError(err error) int {
 
 func buildScript(workDir string, preCommands []string, command string, keepShellAlive bool) string {
 	lines := []string{"set -e"}
+	// Include common user-local binary locations for CLI installs that are often
+	// only present in interactive shell startup files.
+	lines = append(lines, `export PATH="$HOME/.local/bin:$HOME/.superset/bin:$PATH"`)
 	if strings.TrimSpace(workDir) != "" {
 		lines = append(lines, "cd -- "+shellQuote(workDir))
 	}
