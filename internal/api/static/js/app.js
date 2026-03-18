@@ -1935,6 +1935,14 @@ function taskGroupsForWorkspace(workspaceID) {
     });
 }
 
+const TERMINAL_QUERY_RESPONSE_RE = /\x1b\[(?:\d{1,4}(?:;\d{1,4})*R|[IO]|\??[0-9;]*\$y)/g;
+
+function stripTerminalQueryResponses(data) {
+  const value = String(data || '');
+  if (!value.includes('\x1b[')) return value;
+  return value.replace(TERMINAL_QUERY_RESPONSE_RE, '');
+}
+
 function ensureTerminal() {
   if (terminalReady) return;
   terminal = new Terminal({
@@ -2007,17 +2015,15 @@ function ensureTerminal() {
     if (!activeTabId) return;
     const task = getTask(activeTabId);
     if (!task || task.status !== 'running') return;
-    // Drop focus in/out reports; some CLIs print these as stray characters.
-    if (data === '\x1b[I' || data === '\x1b[O') {
-      return;
-    }
+    const filteredData = stripTerminalQueryResponses(data);
+    if (!filteredData) return;
     // Signal characters (Ctrl+C, Ctrl+Z, Ctrl+\) must bypass the
     // debounced buffer and be sent immediately so interrupts aren't delayed.
-    if (data === '\x03' || data === '\x1a' || data === '\x1c') {
-      flushInputImmediately(data);
+    if (filteredData === '\x03' || filteredData === '\x1a' || filteredData === '\x1c') {
+      flushInputImmediately(filteredData);
       return;
     }
-    inputBuffer += data;
+    inputBuffer += filteredData;
     scheduleInputFlush();
   });
 

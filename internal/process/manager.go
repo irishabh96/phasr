@@ -2,12 +2,15 @@ package process
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -66,11 +69,26 @@ type Manager struct {
 	onExit      func(ExitResult)
 }
 
+var (
+	shellEnvCacheMu sync.Mutex
+	shellEnvCache   map[string]string
+	shellEnvAt      time.Time
+)
+
+const (
+	shellEnvCacheTTL      = time.Minute
+	shellEnvLookupTimeout = 8 * time.Second
+)
+
 func NewManager() *Manager {
-	return &Manager{
+	manager := &Manager{
 		running:     map[string]*runningProcess{},
 		subscribers: map[string]map[chan Event]struct{}{},
 	}
+	go func() {
+		_ = cachedShellEnv()
+	}()
+	return manager
 }
 
 func (m *Manager) SetExitHandler(handler func(ExitResult)) {
@@ -105,7 +123,7 @@ func (m *Manager) Start(spec StartSpec) (int, error) {
 	script := buildScript(spec.WorkDir, spec.PreCommands, spec.Command, spec.KeepShellAlive)
 	cmd := exec.Command("zsh", "-lc", script)
 	cmd.Dir = spec.WorkDir
-	cmd.Env = appendDefaultUTF8Env(append(os.Environ(), "TERM=xterm-256color"))
+	cmd.Env = buildCommandEnv()
 
 	winsize := &pty.Winsize{Cols: defaultCols(spec.Cols), Rows: defaultRows(spec.Rows)}
 	ptyFile, err := pty.StartWithSize(cmd, winsize)
@@ -395,6 +413,166 @@ func appendDefaultUTF8Env(env []string) []string {
 		env = append(env, "LC_CTYPE=en_US.UTF-8")
 	}
 	return env
+}
+
+func buildCommandEnv() []string {
+	env := envSliceToMap(os.Environ())
+	shellEnv := cachedShellEnv()
+	for key, value := range shellEnv {
+		if _, exists := env[key]; !exists {
+			env[key] = value
+		}
+	}
+	if shellPath := strings.TrimSpace(shellEnv["PATH"]); shellPath != "" {
+		env["PATH"] = shellPath
+	}
+	augmentPathForDarwin(env)
+	env["TERM"] = "xterm-256color"
+	return appendDefaultUTF8Env(envMapToSlice(env))
+}
+
+func cachedShellEnv() map[string]string {
+	shellEnvCacheMu.Lock()
+	defer shellEnvCacheMu.Unlock()
+
+	if len(shellEnvCache) > 0 && time.Since(shellEnvAt) < shellEnvCacheTTL {
+		return copyEnvMap(shellEnvCache)
+	}
+
+	env, err := queryLoginShellEnv()
+	if err != nil {
+		if len(shellEnvCache) > 0 {
+			return copyEnvMap(shellEnvCache)
+		}
+		return map[string]string{}
+	}
+	shellEnvCache = env
+	shellEnvAt = time.Now()
+	return copyEnvMap(shellEnvCache)
+}
+
+func queryLoginShellEnv() (map[string]string, error) {
+	shell := defaultLoginShell()
+	ctx, cancel := context.WithTimeout(context.Background(), shellEnvLookupTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, shell, "-ilc", "env -0")
+	output, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("derive login shell env: %w", ctx.Err())
+	}
+	if err != nil {
+		return nil, fmt.Errorf("derive login shell env: %w", err)
+	}
+
+	env := parseNullSeparatedEnv(output)
+	if len(env) == 0 {
+		return nil, errors.New("derive login shell env: empty result")
+	}
+	return env, nil
+}
+
+func defaultLoginShell() string {
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell != "" {
+		return shell
+	}
+	if runtime.GOOS == "darwin" {
+		return "/bin/zsh"
+	}
+	return "/bin/sh"
+}
+
+func parseNullSeparatedEnv(raw []byte) map[string]string {
+	env := map[string]string{}
+	for _, field := range bytes.Split(raw, []byte{0}) {
+		if len(field) == 0 {
+			continue
+		}
+		key, value, ok := strings.Cut(string(field), "=")
+		if !ok || key == "" {
+			continue
+		}
+		env[key] = value
+	}
+	return env
+}
+
+func copyEnvMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func envSliceToMap(entries []string) map[string]string {
+	env := map[string]string{}
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		env[key] = value
+	}
+	return env
+}
+
+func envMapToSlice(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+env[key])
+	}
+	return out
+}
+
+func augmentPathForDarwin(env map[string]string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+
+	const (
+		homebrewBin  = "/opt/homebrew/bin"
+		homebrewSbin = "/opt/homebrew/sbin"
+		localBin     = "/usr/local/bin"
+		localSbin    = "/usr/local/sbin"
+	)
+
+	current := strings.TrimSpace(env["PATH"])
+	parts := strings.Split(current, ":")
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		seen[part] = struct{}{}
+	}
+
+	prefix := make([]string, 0, 4)
+	for _, candidate := range []string{homebrewBin, homebrewSbin, localBin, localSbin} {
+		if _, ok := seen[candidate]; !ok {
+			prefix = append(prefix, candidate)
+		}
+	}
+
+	if len(prefix) == 0 {
+		return
+	}
+	combined := strings.Join(prefix, ":")
+	if current != "" {
+		combined += ":" + current
+	}
+	env["PATH"] = combined
 }
 
 func (m *Manager) wait(taskID string, rp *runningProcess) {
