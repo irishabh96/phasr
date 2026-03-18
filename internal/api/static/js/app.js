@@ -6,6 +6,7 @@ const AGENT_COMMANDS = {
   opencode: 'opencode --dangerously-skip-permissions',
   gemini: 'gemini --yolo',
 };
+const DEFAULT_AGENT = AGENT_COMMANDS.codex ? 'codex' : Object.keys(AGENT_COMMANDS)[0] || '';
 const TERMINAL_TAB_COMMAND = 'zsh -il';
 
 let tasksCache = [];
@@ -1706,7 +1707,7 @@ function resetNewTaskModalState() {
     newTaskModalBranchPrefixEl.value = 'task';
     newTaskModalBranchPrefixEl.title = 'task';
   }
-  setNewTaskModalAgentIcon(newTaskModalAgentEl?.value || 'claude');
+  setNewTaskModalAgentIcon(newTaskModalAgentEl?.value || DEFAULT_AGENT);
   setNewTaskModalBaseBranchOptions(['current'], 'current');
   updateNewTaskModalBranchPreview(true);
   updateNewTaskModalValidityUI();
@@ -1719,7 +1720,7 @@ function openNewTaskModal({ preferredWorkspace = activeWorkspace, rootTaskID = '
     return;
   }
   newTaskModalPromptEl.value = String(promptInputEl.value || '');
-  const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : 'claude';
+  const selectedAgent = AGENT_COMMANDS[agentSelectEl.value] ? agentSelectEl.value : DEFAULT_AGENT;
   newTaskModalAgentEl.value = selectedAgent;
   populateNewTaskModalWorkspaceOptions(preferredWorkspace);
   newTaskModalRootTaskId = String(rootTaskID || '').trim();
@@ -1889,7 +1890,7 @@ async function openOrCreateDefaultTaskForWorkspace(workspaceID) {
     openTaskGroup(taskRootId(firstTask), firstTask.id);
     return;
   }
-  await createTerminalTab({ preferredWorkspace: workspaceID, rootTaskID: '' });
+  openNewTaskModal({ preferredWorkspace: workspaceID, rootTaskID: '' });
 }
 
 function taskGroupsForWorkspace(workspaceID) {
@@ -4869,6 +4870,9 @@ async function boot() {
   updateTaskHeader(null);
   updateTaskContextBar(null);
 
+  if (!AGENT_COMMANDS[agentSelectEl.value] && DEFAULT_AGENT) {
+    agentSelectEl.value = DEFAULT_AGENT;
+  }
   commandInputEl.value = AGENT_COMMANDS[agentSelectEl.value] || '';
   syncProviderPills();
   renderChangeViewModeButton();
