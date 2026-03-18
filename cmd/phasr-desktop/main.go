@@ -79,9 +79,13 @@ func run() error {
 	var shutdownOnce sync.Once
 	shutdown := func() {
 		shutdownOnce.Do(func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			// Desktop quit should feel immediate; active SSE streams can keep
+			// graceful shutdown waiting. Try a short graceful window, then force close.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 			defer cancel()
-			_ = srv.Shutdown(shutdownCtx)
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				_ = srv.Close()
+			}
 		})
 	}
 

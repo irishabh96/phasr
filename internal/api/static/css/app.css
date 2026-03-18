@@ -493,6 +493,7 @@ kbd {
   align-items: center;
   gap: var(--space-6);
   height: var(--h-tab);
+  min-height: var(--h-tab);
   max-width: 340px;
   min-width: 0;
   padding: 0 var(--space-10);
@@ -616,16 +617,41 @@ kbd {
   border-bottom: 1px solid var(--border-subtle) !important;
 }
 
-.provider-row,
-.provider-bar {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-8);
+.agent-compose {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.agent-compose-section {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.agent-compose-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-10);
+}
+
+.agent-compose-title {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.3;
+  font-weight: 600;
 }
 
 .provider-row {
-  min-height: var(--h-chip);
+  display: block;
+  min-height: 0;
+}
+
+.provider-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
 }
 
 .provider-label {
@@ -708,20 +734,13 @@ kbd {
   color: var(--text-tertiary);
 }
 
-.prompt-row {
-  display: grid;
-  align-items: stretch;
-  grid-template-columns: minmax(0, 1fr) auto !important;
-  gap: var(--space-12) !important;
-}
-
 #promptInput {
-  min-height: 54px !important;
+  min-height: 56px !important;
   border-radius: var(--radius-8) !important;
   border: 1px solid var(--border-default) !important;
   background: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
-  padding: 9px 12px !important;
+  padding: 7px 9px !important;
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.42;
@@ -733,9 +752,27 @@ kbd {
 
 #promptInput::placeholder {
   color: var(--text-tertiary);
+  opacity: 1;
+  transition: opacity var(--dur-medium) var(--ease-standard);
 }
 
-#runAgentBtn,
+#promptInput.placeholder-rotating::placeholder {
+  opacity: 0;
+}
+
+.agent-compose-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.agent-compose-start-btn {
+  min-height: 32px !important;
+  border-radius: var(--radius-6) !important;
+  padding: 0 12px !important;
+}
+
 .btn-primary,
 #commitBtn,
 .workspace-modal-create-btn,
@@ -751,15 +788,6 @@ kbd {
   font-weight: 600;
 }
 
-#runAgentBtn {
-  min-width: 104px !important;
-  min-height: 32px !important;
-  height: 32px !important;
-  padding: 0 10px !important;
-  align-self: center;
-}
-
-#runAgentBtn:hover,
 .btn-primary:hover,
 #commitBtn:hover,
 .workspace-modal-create-btn:hover,
@@ -768,7 +796,6 @@ kbd {
   background: var(--accent-hover) !important;
 }
 
-#runAgentBtn:disabled,
 .btn-primary:disabled,
 #commitBtn:disabled,
 .workspace-modal-create-btn:disabled,
@@ -888,7 +915,6 @@ kbd {
 .btn-ghost,
 .workspace-modal-cancel-btn,
 #workspaceModalCloseBtn,
-#newTaskModalCloseBtn,
 #newTaskModalCancelBtn,
 #newTabTypeModalCloseBtn,
 #newTabTypeModalCancelBtn,
@@ -953,7 +979,6 @@ kbd {
 .btn-ghost:hover,
 .workspace-modal-cancel-btn:hover,
 #workspaceModalCloseBtn:hover,
-#newTaskModalCloseBtn:hover,
 #newTaskModalCancelBtn:hover,
 #newTabTypeModalCloseBtn:hover,
 #newTabTypeModalCancelBtn:hover,
@@ -2377,6 +2402,8 @@ kbd {
 
 #newTaskModalBackdrop .modal {
   width: min(720px, 96vw) !important;
+  border: 0 !important;
+  outline: 0 !important;
 }
 
 #workspaceModalBackdrop .modal-head {
@@ -2636,7 +2663,7 @@ kbd {
 }
 
 .new-task-compose {
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--radius-8);
   background: var(--bg-tertiary);
   overflow: hidden;
@@ -2644,8 +2671,7 @@ kbd {
 }
 
 .new-task-compose:focus-within {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: none;
 }
 
 .new-task-controls-grid {
@@ -2884,33 +2910,6 @@ kbd {
   gap: 6px;
 }
 
-.new-task-modal-close-x {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: var(--radius-6);
-  background: transparent;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background 0.12s,
-    color 0.12s;
-  z-index: 1;
-}
-
-.new-task-modal-close-x:hover {
-  background: var(--surface-hover);
-  color: var(--text-primary);
-}
-
 .new-task-modal-body .workspace-modal-help:empty {
   display: none;
 }
@@ -3004,7 +3003,7 @@ kbd {
     resize: none;
   }
 
-  .prompt-row,
+  .agent-compose-input-row,
   .commit-row {
     grid-template-columns: 1fr !important;
   }

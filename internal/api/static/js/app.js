@@ -200,6 +200,15 @@ const terminalPanelEl = document.getElementById('terminalPanel');
 const centerEmptyStateEl = document.getElementById('centerEmptyState');
 const providerBarEl = document.getElementById('providerBar');
 const runAgentBtnEl = document.getElementById('runAgentBtn');
+const promptPlaceholderExamples = [
+  'migrate from node to bun',
+  'create a desktop application in tauri',
+  'write a backend server in rust',
+  'build a CI pipeline with GitHub Actions',
+  'add OAuth login with Google and GitHub',
+  'optimize PostgreSQL queries and add indexes',
+];
+let promptPlaceholderTimer = null;
 
 const terminalOverlayTextEl = document.getElementById('terminalOverlayText');
 
@@ -228,7 +237,6 @@ const newTaskModalBaseBranchEl = document.getElementById('newTaskModalBaseBranch
 const newTaskModalBranchPrefixEl = document.getElementById('newTaskModalBranchPrefix');
 const newTaskModalBranchNameEl = document.getElementById('newTaskModalBranchName');
 const newTaskModalErrorEl = document.getElementById('newTaskModalError');
-const newTaskModalCloseBtnEl = document.getElementById('newTaskModalCloseBtn');
 const newTaskModalCancelBtnEl = document.getElementById('newTaskModalCancelBtn');
 const newTaskModalCreateBtnEl = document.getElementById('newTaskModalCreateBtn');
 const newTaskModalCreateLabelEl = document.getElementById('newTaskModalCreateLabel');
@@ -415,20 +423,108 @@ function taskCodePath(task) {
   return String(task?.worktree_path || task?.repo_path || '').trim();
 }
 
+function resetFloatingMenuStyle(menuEl) {
+  if (!menuEl) return;
+  menuEl.style.position = '';
+  menuEl.style.left = '';
+  menuEl.style.top = '';
+  menuEl.style.right = '';
+  menuEl.style.bottom = '';
+  menuEl.style.maxWidth = '';
+  menuEl.style.maxHeight = '';
+  menuEl.style.overflowY = '';
+}
+
+function positionFloatingMenu(menuEl, anchorEl, options = {}) {
+  if (!menuEl || !anchorEl) return;
+  const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+  if (viewportWidth <= 0 || viewportHeight <= 0) return;
+
+  const preferred = options.preferred === 'up' ? 'up' : 'down';
+  const align = options.align === 'left' ? 'left' : 'right';
+  const gap = 6;
+  const margin = 8;
+  const anchorRect = anchorEl.getBoundingClientRect();
+
+  menuEl.style.position = 'fixed';
+  menuEl.style.left = '0px';
+  menuEl.style.top = '0px';
+  menuEl.style.right = 'auto';
+  menuEl.style.bottom = 'auto';
+  menuEl.style.maxWidth = `${Math.max(1, viewportWidth - margin * 2)}px`;
+  menuEl.style.maxHeight = '';
+  menuEl.style.overflowY = '';
+
+  const naturalRect = menuEl.getBoundingClientRect();
+  const naturalWidth = Math.max(1, naturalRect.width);
+  const naturalHeight = Math.max(1, naturalRect.height);
+
+  const spaceBelow = Math.max(0, viewportHeight - anchorRect.bottom - margin);
+  const spaceAbove = Math.max(0, anchorRect.top - margin);
+  const fitsBelow = naturalHeight + gap <= spaceBelow;
+  const fitsAbove = naturalHeight + gap <= spaceAbove;
+
+  let openUp = preferred === 'up';
+  if (openUp) {
+    if (!fitsAbove && fitsBelow) {
+      openUp = false;
+    } else if (!fitsAbove && !fitsBelow) {
+      openUp = spaceAbove > spaceBelow;
+    }
+  } else if (!fitsBelow && fitsAbove) {
+    openUp = true;
+  } else if (!fitsBelow && !fitsAbove) {
+    openUp = spaceAbove > spaceBelow;
+  }
+
+  const availableHeight = Math.max(1, (openUp ? spaceAbove : spaceBelow) - gap);
+  const renderHeight = Math.min(naturalHeight, availableHeight);
+  menuEl.style.maxHeight = `${Math.floor(availableHeight)}px`;
+  menuEl.style.overflowY = 'auto';
+
+  let left = align === 'left' ? anchorRect.left : anchorRect.right - naturalWidth;
+  const minLeft = margin;
+  const maxLeft = Math.max(minLeft, viewportWidth - naturalWidth - margin);
+  left = Math.max(minLeft, Math.min(left, maxLeft));
+
+  let top = openUp ? anchorRect.top - gap - renderHeight : anchorRect.bottom + gap;
+  top = Math.max(margin, Math.min(top, viewportHeight - renderHeight - margin));
+
+  menuEl.style.left = `${Math.round(left)}px`;
+  menuEl.style.top = `${Math.round(top)}px`;
+}
+
+function repositionOpenMenus() {
+  if (publishActionMenuEl && !publishActionMenuEl.classList.contains('hidden') && publishBranchSplitEl) {
+    positionFloatingMenu(publishActionMenuEl, publishBranchSplitEl, { preferred: 'down', align: 'right' });
+  }
+  if (taskContextBranchMenuEl && !taskContextBranchMenuEl.classList.contains('hidden') && taskContextBranchEl) {
+    positionFloatingMenu(taskContextBranchMenuEl, taskContextBranchEl, { preferred: 'up', align: 'right' });
+  }
+  if (openIdeMenuEl && !openIdeMenuEl.classList.contains('hidden') && openIdeBtnEl) {
+    positionFloatingMenu(openIdeMenuEl, openIdeBtnEl, { preferred: 'up', align: 'right' });
+  }
+}
+
 function closeTaskContextBranchMenu() {
   if (!taskContextBranchMenuEl) return;
   taskContextBranchMenuEl.classList.add('hidden');
+  resetFloatingMenuStyle(taskContextBranchMenuEl);
+  taskContextBranchEl?.setAttribute('aria-expanded', 'false');
 }
 
 function closePublishActionMenu() {
   if (!publishActionMenuEl) return;
   publishActionMenuEl.classList.add('hidden');
+  resetFloatingMenuStyle(publishActionMenuEl);
   publishDropdownBtnEl?.setAttribute('aria-expanded', 'false');
 }
 
 function closeOpenIdeMenu() {
   if (!openIdeMenuEl) return;
   openIdeMenuEl.classList.add('hidden');
+  resetFloatingMenuStyle(openIdeMenuEl);
   if (openIdeBtnEl) {
     openIdeBtnEl.setAttribute('aria-expanded', 'false');
   }
@@ -4035,7 +4131,6 @@ function installEventHandlers() {
       closeWorkspaceModal();
     }
   });
-  newTaskModalCloseBtnEl.addEventListener('click', closeNewTaskModal);
   newTaskModalCancelBtnEl.addEventListener('click', closeNewTaskModal);
   newTaskModalBackdropEl.addEventListener('click', (event) => {
     if (event.target === newTaskModalBackdropEl) {
@@ -4297,6 +4392,7 @@ function installEventHandlers() {
         return;
       }
       publishActionMenuEl.classList.remove('hidden');
+      positionFloatingMenu(publishActionMenuEl, publishBranchSplitEl, { preferred: 'down', align: 'right' });
       publishDropdownBtnEl.setAttribute('aria-expanded', 'true');
     });
   }
@@ -4327,7 +4423,14 @@ function installEventHandlers() {
   taskContextBranchEl.addEventListener('click', (event) => {
     event.preventDefault();
     if (taskContextBranchEl.disabled) return;
-    taskContextBranchMenuEl.classList.toggle('hidden');
+    const hidden = taskContextBranchMenuEl.classList.contains('hidden');
+    if (!hidden) {
+      closeTaskContextBranchMenu();
+      return;
+    }
+    taskContextBranchMenuEl.classList.remove('hidden');
+    positionFloatingMenu(taskContextBranchMenuEl, taskContextBranchEl, { preferred: 'up', align: 'right' });
+    taskContextBranchEl.setAttribute('aria-expanded', 'true');
   });
   taskContextOpenPrBtnEl.addEventListener('click', async (event) => {
     event.preventDefault();
@@ -4356,6 +4459,7 @@ function installEventHandlers() {
       return;
     }
     openIdeMenuEl.classList.remove('hidden');
+    positionFloatingMenu(openIdeMenuEl, openIdeBtnEl, { preferred: 'up', align: 'right' });
     openIdeBtnEl.setAttribute('aria-expanded', 'true');
   });
   openIdeMenuEl?.addEventListener('click', async (event) => {
@@ -4391,6 +4495,7 @@ function installEventHandlers() {
     if (!inPublishActionMenu) closePublishActionMenu();
     if (!inOpenIdeMenu) closeOpenIdeMenu();
   });
+  window.addEventListener('resize', repositionOpenMenus);
 
   // Capture-phase Ctrl+C handler to guarantee interrupt delivery even when
   // focus/propagation inside xterm or overlays is inconsistent.
@@ -4676,21 +4781,14 @@ function installEventHandlers() {
     commandInputEl.value = AGENT_COMMANDS[agentSelectEl.value] || '';
     syncProviderPills();
   });
-  providerBarEl.addEventListener('click', async (event) => {
+  providerBarEl.addEventListener('click', (event) => {
     const pill = event.target.closest('[data-provider-pill]');
     if (!pill) return;
-    try {
-      await createQuickTaskForAgent(pill.dataset.providerPill);
-    } catch (error) {
-      alert(error.message || String(error));
-    }
-  });
-  runAgentBtnEl.addEventListener('click', async () => {
-    try {
-      await createQuickTaskForAgent(agentSelectEl.value);
-    } catch (error) {
-      alert(error.message || String(error));
-    }
+    const provider = String(pill.dataset.providerPill || '').trim();
+    if (!AGENT_COMMANDS[provider]) return;
+    agentSelectEl.value = provider;
+    commandInputEl.value = AGENT_COMMANDS[provider] || '';
+    syncProviderPills();
   });
   promptInputEl.addEventListener('keydown', async (event) => {
     // Plain Enter or ⌘Enter both submit
@@ -4871,6 +4969,23 @@ function installEventHandlers() {
   });
 }
 
+function startPromptPlaceholderRotation() {
+  if (!promptInputEl || !promptPlaceholderExamples.length) return;
+  let placeholderIndex = 0;
+  promptInputEl.placeholder = promptPlaceholderExamples[placeholderIndex];
+  if (promptPlaceholderTimer) {
+    clearInterval(promptPlaceholderTimer);
+  }
+  promptPlaceholderTimer = setInterval(() => {
+    promptInputEl.classList.add('placeholder-rotating');
+    window.setTimeout(() => {
+      placeholderIndex = (placeholderIndex + 1) % promptPlaceholderExamples.length;
+      promptInputEl.placeholder = promptPlaceholderExamples[placeholderIndex];
+      promptInputEl.classList.remove('placeholder-rotating');
+    }, 170);
+  }, 2000);
+}
+
 async function boot() {
   renderUiBuildVersion();
   ensureTerminal();
@@ -4886,6 +5001,7 @@ async function boot() {
   commandInputEl.value = AGENT_COMMANDS[agentSelectEl.value] || '';
   syncProviderPills();
   renderChangeViewModeButton();
+  startPromptPlaceholderRotation();
 
   installEventHandlers();
   await loadPresets();

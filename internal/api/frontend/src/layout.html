@@ -49,9 +49,11 @@
       </div>
 
       <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
-        <div class="provider-row flex items-center justify-between gap-2.5">
-          <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
-            <span class="text-2xs text-text-dim font-mono mr-0.5">Run with:</span>
+        <div class="agent-compose">
+          <div class="agent-compose-section">
+            <p class="agent-compose-title">Choose your agent:</p>
+            <div class="provider-row">
+              <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
               class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
@@ -127,8 +129,9 @@
               </span>
               <span>gemini</span>
             </button>
+              </div>
+            </div>
           </div>
-        </div>
 
         <div class="hidden-controls hidden">
           <label for="agentSelect">Provider</label>
@@ -152,20 +155,25 @@
           <input id="tagInput" placeholder="backend, urgent" />
         </div>
 
-        <div class="prompt-row grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
-          <textarea
-            id="promptInput"
-            class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] resize-y border-border-default bg-input-bg"
-            placeholder="Run /review on my current changes"
-          ></textarea>
-          <button
-            id="runAgentBtn"
-            class="btn-primary min-w-[120px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold inline-flex items-center justify-center gap-1.5"
-            type="button"
-          >
-            <span id="runAgentLabel">Run Agent</span>
-          </button>
+        <div class="agent-compose-section">
+          <label class="agent-compose-title" for="promptInput">Describe the task for this agent:</label>
+          <div class="agent-compose-input-row">
+            <textarea
+              id="promptInput"
+              class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] border-border-default bg-input-bg"
+              placeholder="migrate from node to bun"
+            ></textarea>
+            <button
+              id="runAgentBtn"
+              class="btn-primary agent-compose-start-btn min-w-[120px] min-h-[36px] rounded-md bg-[#2A2321] border-border-strong text-[#F5EEE8] font-semibold inline-flex items-center justify-center gap-1.5"
+              type="submit"
+            >
+              <span id="runAgentLabel">Start Agent</span>
+            </button>
+          </div>
         </div>
+        <p class="agent-compose-hint">This will start a new agent session in a terminal</p>
+          </div>
       </form>
 
       <div
@@ -423,7 +431,17 @@
     </div>
     <div class="context-item relative">
       <span class="context-label">Branch</span>
-      <button id="taskContextBranch" class="context-branch-btn" type="button" title="" disabled>-</button>
+      <button
+        id="taskContextBranch"
+        class="context-branch-btn"
+        type="button"
+        title=""
+        aria-haspopup="menu"
+        aria-expanded="false"
+        disabled
+      >
+        -
+      </button>
       <div
         id="taskContextBranchMenu"
         class="hidden absolute bottom-full right-0 mb-1 min-w-[180px] p-1 rounded-md border border-border-default bg-[#1A1514] shadow-lg z-30"
@@ -669,9 +687,7 @@
   aria-modal="true"
   aria-labelledby="newTaskModalTitle"
 >
-  <div
-    class="modal new-task-modal w-[min(640px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
-  >
+  <div class="modal new-task-modal w-[min(640px,96vw)] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]">
     <div class="modal-body new-task-modal-body">
       <div class="new-task-compose">
         <div class="new-task-controls-grid">
@@ -748,7 +764,6 @@
       <div id="newTaskModalPromptHelp" class="workspace-modal-help" aria-live="polite"></div>
       <div id="newTaskModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
     </div>
-    <button id="newTaskModalCloseBtn" class="new-task-modal-close-x" type="button" aria-label="Close">&#x2715;</button>
     <button id="newTaskModalCancelBtn" class="hidden" type="button" aria-hidden="true"></button>
     <h3 id="newTaskModalTitle" class="hidden">New Agent Task</h3>
   </div>
