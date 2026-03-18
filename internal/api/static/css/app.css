@@ -2375,6 +2375,10 @@ kbd {
   width: min(720px, 96vw) !important;
 }
 
+#newTaskModalBackdrop .modal {
+  width: min(720px, 96vw) !important;
+}
+
 #workspaceModalBackdrop .modal-head {
   min-height: 58px;
   padding: 12px 16px !important;

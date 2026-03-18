@@ -133,9 +133,9 @@
         <div class="hidden-controls hidden">
           <label for="agentSelect">Provider</label>
           <select id="agentSelect" required>
-            <option value="" selected>Select provider</option>
+            <option value="">Select provider</option>
             <option value="claude">claude</option>
-            <option value="codex">codex</option>
+            <option value="codex" selected>codex</option>
             <option value="copilot">copilot</option>
             <option value="opencode">opencode</option>
             <option value="gemini">gemini</option>
@@ -670,7 +670,7 @@
   aria-labelledby="newTaskModalTitle"
 >
   <div
-    class="modal new-task-modal w-[min(900px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+    class="modal new-task-modal w-[min(640px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
   >
     <div class="modal-body new-task-modal-body">
       <div class="new-task-compose">
@@ -680,8 +680,8 @@
             <div class="new-task-agent-select-wrap">
               <span id="newTaskModalAgentIcon" class="new-task-agent-icon" aria-hidden="true"></span>
               <select id="newTaskModalAgent" required class="new-task-inline-select new-task-agent-select">
-                <option value="claude" selected>claude</option>
-                <option value="codex">codex</option>
+                <option value="claude">claude</option>
+                <option value="codex" selected>codex</option>
                 <option value="copilot">copilot</option>
                 <option value="opencode">opencode</option>
                 <option value="gemini">gemini</option>
