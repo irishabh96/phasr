@@ -51,7 +51,6 @@
       <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
         <div class="provider-row flex items-center justify-between gap-2.5">
           <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
-            <span class="text-2xs text-text-dim font-mono mr-0.5">Run with:</span>
             <button
               type="button"
               class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
@@ -152,7 +151,7 @@
           <input id="tagInput" placeholder="backend, urgent" />
         </div>
 
-        <div class="prompt-row grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
+        <div class="prompt-row hidden grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
           <textarea
             id="promptInput"
             class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] resize-y border-border-default bg-input-bg"
@@ -189,7 +188,9 @@
           id="centerEmptyState"
           class="center-empty hidden flex flex-1 min-h-0 items-center justify-center px-4 text-center text-xs text-text-tertiary font-mono"
         >
-          Open a task to start a terminal session.
+          <span class="center-empty-icon" aria-hidden="true"></span>
+          <span class="center-empty-title">No Active Task</span>
+          <span class="center-empty-copy">Create a workspace, then open a task or terminal tab.</span>
         </div>
         <div id="terminalPanel" class="terminal-box relative min-h-0 flex flex-col bg-[#151110] overflow-hidden flex-1">
           <div id="terminal" class="w-full h-full flex-1 overflow-hidden p-2"></div>
@@ -238,7 +239,7 @@
             title="Switch to tree view"
             aria-label="Switch to tree view"
           >
-            &#x2630;
+            <span class="toolbar-icon icon-view-grouped" aria-hidden="true"></span>
           </button>
           <button
             id="refreshGitBtn"
@@ -247,7 +248,7 @@
             title="Refresh changes"
             aria-label="Refresh changes"
           >
-            &#x21BB;
+            <span class="toolbar-icon icon-refresh" aria-hidden="true"></span>
           </button>
         </div>
       </div>
@@ -255,7 +256,7 @@
       <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
         <div class="commit-message-wrap">
           <div class="commit-message-head">
-            <label for="commitMessage">Commit Message</label>
+            <label for="commitMessage">Commit message</label>
             <button
               id="suggestCommitBtn"
               class="text-2xs text-blue-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
@@ -672,6 +673,17 @@
   <div
     class="modal new-task-modal w-[min(640px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
   >
+    <div class="modal-head new-task-modal-head">
+      <div class="grid gap-1">
+        <h3 id="newTaskModalTitle" class="m-0 text-[16px] leading-tight font-semibold text-text-primary">
+          New Agent Task
+        </h3>
+        <p class="new-task-modal-subtitle">
+          Configure the agent, workspace, prompt, and branch for this task.
+        </p>
+      </div>
+      <button id="newTaskModalCloseBtn" class="new-task-modal-close-x" type="button" aria-label="Close"></button>
+    </div>
     <div class="modal-body new-task-modal-body">
       <div class="new-task-compose">
         <div class="new-task-controls-grid">
@@ -748,9 +760,7 @@
       <div id="newTaskModalPromptHelp" class="workspace-modal-help" aria-live="polite"></div>
       <div id="newTaskModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
     </div>
-    <button id="newTaskModalCloseBtn" class="new-task-modal-close-x" type="button" aria-label="Close">&#x2715;</button>
     <button id="newTaskModalCancelBtn" class="hidden" type="button" aria-hidden="true"></button>
-    <h3 id="newTaskModalTitle" class="hidden">New Agent Task</h3>
   </div>
 </div>
 

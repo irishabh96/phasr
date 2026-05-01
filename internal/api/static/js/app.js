@@ -44,43 +44,17 @@ let lastGitRenderSignature = '';
 let lastWorkspaceListHTML = '';
 let lastTabBarHTML = '';
 let selectedPatchFile = '';
+let selectedPatchState = '';
 let centerViewMode = 'terminal';
 let changesViewMode = 'grouped';
 let repoFilesEntriesCache = [];
 let selectedPublishAction = 'push';
 
-// P0-A: ANSI color codes for severity highlighting
-const ANSI_RESET = '\x1b[0m';
-const ANSI_RED = '\x1b[38;2;224;109;109m'; // danger #E06D6D
-const ANSI_YELLOW = '\x1b[38;2;231;182;92m'; // warning #E7B65C
-const ANSI_GREEN = '\x1b[38;2;86;194;136m'; // success #56C288
-const terminalFormatter = window.phasrTerminalFormatter?.createFormatter
-  ? window.phasrTerminalFormatter.createFormatter()
-  : null;
-
-const SEVERITY_PATTERNS = [
-  { pattern: /^.*\b(FAIL|ERROR|FATAL|PANIC|error:|fatal:)\b/i, ansi: ANSI_RED },
-  { pattern: /^.*\b(WARN|WARNING|warn:|warning:)\b/i, ansi: ANSI_YELLOW },
-  { pattern: /^.*\b(SUCCESS|PASS|OK|ok|PASSED|passed|succeeded)\b/i, ansi: ANSI_GREEN },
-];
-
-function colorizeLine(line) {
-  // Skip lines that already contain ANSI escapes
-  if (line.includes('\x1b[')) return line;
-  for (const rule of SEVERITY_PATTERNS) {
-    if (rule.pattern.test(line)) {
-      return rule.ansi + line + ANSI_RESET;
-    }
-  }
-  return line;
-}
-
-function colorizeTerminalOutput(data) {
-  const raw = String(data || '');
-  const cols = terminal?.cols || 120;
-  const formatted = terminalFormatter ? terminalFormatter.format(raw, cols) : raw;
-  if (!formatted || !formatted.includes('\n')) return colorizeLine(formatted);
-  return formatted.split('\n').map(colorizeLine).join('\n');
+function terminalOutputData(data) {
+  // xterm is a terminal emulator, so PTY output must be delivered unchanged.
+  // Text formatting, wrapping, or regex filtering can split/mutate stateful
+  // escape sequences and make raw control bytes visible as gibberish.
+  return String(data || '');
 }
 
 function cssVar(name, fallback = '') {
@@ -317,6 +291,11 @@ function showToast(message, type = 'error', timeoutMs = 4200) {
   );
 }
 
+function confirmDestructiveAction(title, detail = '') {
+  const message = [String(title || '').trim(), String(detail || '').trim()].filter(Boolean).join('\n\n');
+  return window.confirm(message || 'Continue?');
+}
+
 function parseTags(input) {
   return String(input || '')
     .split(',')
@@ -519,6 +498,34 @@ async function copyCurrentCodebasePath() {
       if (!ok) throw new Error('Clipboard write failed');
     }
     showToast('Path copied to clipboard.', 'success', 2200);
+  } catch (error) {
+    const message = String(error?.message || 'Clipboard write failed');
+    showToast(`Failed to copy: ${message}`, 'error');
+  }
+}
+
+async function copyTextToClipboard(value, successMessage = 'Copied to clipboard.') {
+  const text = String(value || '').trim();
+  if (!text) {
+    showToast('Failed to copy: Nothing to copy.', 'error');
+    return;
+  }
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const tmp = document.createElement('textarea');
+      tmp.value = text;
+      tmp.setAttribute('readonly', 'true');
+      tmp.style.position = 'absolute';
+      tmp.style.left = '-9999px';
+      document.body.appendChild(tmp);
+      tmp.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(tmp);
+      if (!ok) throw new Error('Clipboard write failed');
+    }
+    showToast(successMessage, 'success', 1800);
   } catch (error) {
     const message = String(error?.message || 'Clipboard write failed');
     showToast(`Failed to copy: ${message}`, 'error');
@@ -787,6 +794,35 @@ function closestFromEvent(event, selector) {
   return null;
 }
 
+function isEditableEventTarget(target) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']"));
+}
+
+async function handleWorkspaceActionButton(event) {
+  const workspaceActionBtn = closestFromEvent(event, 'button[data-new-workspace-tab], button[data-delete-workspace]');
+  if (!workspaceActionBtn) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.__phasrWorkspaceActionHandled = true;
+
+  if (workspaceActionBtn.matches('button[data-new-workspace-tab]')) {
+    const workspaceID = String(workspaceActionBtn.dataset.newWorkspaceTab || '').trim();
+    openNewTabTypeModal({ preferredWorkspace: workspaceID || activeWorkspace, rootTaskID: '' });
+    return true;
+  }
+
+  const workspaceID = String(workspaceActionBtn.dataset.deleteWorkspace || '').trim();
+  if (!workspaceID) return true;
+  try {
+    await deleteWorkspace(workspaceID);
+  } catch (error) {
+    alert(error.message || String(error));
+  }
+  return true;
+}
+
 function parseHunkHeader(line) {
   const match = String(line || '').match(/^@@\s*-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@/);
   if (!match) return null;
@@ -794,6 +830,195 @@ function parseHunkHeader(line) {
     oldStart: Number(match[1] || 0),
     newStart: Number(match[2] || 0),
   };
+}
+
+const DIFF_ROW_RENDER_LIMIT = 1800;
+
+function normalizePatchState(state) {
+  const value = String(state || '').trim().toLowerCase();
+  if (value === 'staged' || value === 'cached') return 'staged';
+  if (value === 'unstaged' || value === 'worktree') return 'unstaged';
+  return '';
+}
+
+function patchStateLabel(state) {
+  return normalizePatchState(state) === 'staged' ? 'Staged' : 'Unstaged';
+}
+
+function statusLabel(status) {
+  const value = String(status || '').trim().toUpperCase();
+  if (value.startsWith('A') || value === '?') return value === '?' ? 'Untracked' : 'Added';
+  if (value.startsWith('D')) return 'Deleted';
+  if (value.startsWith('R')) return 'Renamed';
+  if (value.startsWith('C')) return 'Copied';
+  if (value.startsWith('M')) return 'Modified';
+  return 'Changed';
+}
+
+function allChangedFilesForReview() {
+  const staged = Array.isArray(currentGitStatus.staged) ? currentGitStatus.staged : [];
+  const unstaged = Array.isArray(currentGitStatus.unstaged) ? currentGitStatus.unstaged : [];
+  const items = [];
+  staged.forEach((change) => {
+    const path = String(change?.path || '').trim();
+    if (path) items.push({ path, state: 'staged', change });
+  });
+  unstaged.forEach((change) => {
+    const path = String(change?.path || '').trim();
+    if (path) items.push({ path, state: 'unstaged', change });
+  });
+  return items;
+}
+
+function selectedPatchChange(path, state = '') {
+  const cleanPath = String(path || '').trim();
+  const preferredState = normalizePatchState(state);
+  const states = preferredState ? [preferredState] : ['unstaged', 'staged'];
+  for (const currentState of states) {
+    const list = currentState === 'staged' ? currentGitStatus.staged : currentGitStatus.unstaged;
+    const change = (Array.isArray(list) ? list : []).find((item) => String(item?.path || '').trim() === cleanPath);
+    if (change) {
+      return { change, state: currentState };
+    }
+  }
+  return { change: null, state: preferredState || 'unstaged' };
+}
+
+function selectedPatchStats(path, state, fallbackStat = '') {
+  const { change, state: resolvedState } = selectedPatchChange(path, state);
+  if (change) {
+    const added = Number(change.added || 0);
+    const deleted = Number(change.deleted || 0);
+    const status = String(change.status || 'M').trim();
+    const counts = added || deleted ? `+${added} -${deleted}` : '';
+    return {
+      added,
+      deleted,
+      status,
+      statusClass: statusBadgeClass(status),
+      statusLabel: statusLabel(status),
+      state: resolvedState,
+      line: [statusLabel(status), counts].filter(Boolean).join(' '),
+    };
+  }
+
+  const cleanPath = String(path || '').trim();
+  const statLine =
+    String(fallbackStat || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => (cleanPath ? line.includes(cleanPath) || line.startsWith(cleanPath.split('/').pop()) : line)) || '';
+  return {
+    added: 0,
+    deleted: 0,
+    status: 'M',
+    statusClass: 'modified',
+    statusLabel: 'Changed',
+    state: normalizePatchState(state) || 'unstaged',
+    line: statLine,
+  };
+}
+
+function patchReviewKey(path, state) {
+  return `${normalizePatchState(state) || 'unstaged'}:${String(path || '').trim()}`;
+}
+
+function patchReviewIndex(path, state) {
+  const key = patchReviewKey(path, state);
+  return allChangedFilesForReview().findIndex((item) => patchReviewKey(item.path, item.state) === key);
+}
+
+function joinCodebasePath(relativePath) {
+  const base = currentCodebasePath();
+  const rel = String(relativePath || '').trim();
+  if (!base || !rel) return '';
+  if (rel.startsWith('/')) return rel;
+  return `${base.replace(/\/+$/, '')}/${rel.replace(/^\/+/, '')}`;
+}
+
+function parentPathForPath(path) {
+  const cleanPath = String(path || '').trim();
+  const segments = cleanPath.split('/').filter(Boolean);
+  return segments.length > 1 ? segments.slice(0, -1).join('/') : '(root)';
+}
+
+function tokenParts(text) {
+  return String(text || '').match(/\s+|[A-Za-z0-9_$]+|[^\sA-Za-z0-9_$]+/g) || [];
+}
+
+function renderInlineToken(token, className = '') {
+  const safe = escapeHtml(token);
+  return className ? `<span class="${className}">${safe}</span>` : safe;
+}
+
+function inlineDiffHtml(leftText, rightText) {
+  const left = tokenParts(leftText);
+  const right = tokenParts(rightText);
+  if (!left.length && !right.length) {
+    return { left: escapeHtml(leftText || ' '), right: escapeHtml(rightText || ' ') };
+  }
+  if (left.length * right.length > 12000) {
+    return {
+      left: renderInlineToken(leftText || ' ', 'diff-inline diff-inline-remove'),
+      right: renderInlineToken(rightText || ' ', 'diff-inline diff-inline-add'),
+    };
+  }
+
+  const dp = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = left.length - 1; i >= 0; i -= 1) {
+    for (let j = right.length - 1; j >= 0; j -= 1) {
+      dp[i][j] = left[i] === right[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  let i = 0;
+  let j = 0;
+  const leftHtml = [];
+  const rightHtml = [];
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) {
+      leftHtml.push(renderInlineToken(left[i]));
+      rightHtml.push(renderInlineToken(right[j]));
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      leftHtml.push(renderInlineToken(left[i], 'diff-inline diff-inline-remove'));
+      i += 1;
+    } else {
+      rightHtml.push(renderInlineToken(right[j], 'diff-inline diff-inline-add'));
+      j += 1;
+    }
+  }
+  while (i < left.length) {
+    leftHtml.push(renderInlineToken(left[i], 'diff-inline diff-inline-remove'));
+    i += 1;
+  }
+  while (j < right.length) {
+    rightHtml.push(renderInlineToken(right[j], 'diff-inline diff-inline-add'));
+    j += 1;
+  }
+
+  return {
+    left: leftHtml.join('') || escapeHtml(' '),
+    right: rightHtml.join('') || escapeHtml(' '),
+  };
+}
+
+function diffMarker(type) {
+  if (type === 'removed') return '-';
+  if (type === 'added') return '+';
+  if (type === 'hunk') return '@';
+  return '';
+}
+
+function diffCodeHtml(text, type, counterpartText, counterpartType) {
+  if (type === 'removed' && counterpartType === 'added') {
+    return inlineDiffHtml(text, counterpartText).left;
+  }
+  if (type === 'added' && counterpartType === 'removed') {
+    return inlineDiffHtml(counterpartText, text).right;
+  }
+  return escapeHtml(text || ' ');
 }
 
 function buildSideBySideRows(patch) {
@@ -889,54 +1114,135 @@ function buildSideBySideRows(patch) {
   return rows;
 }
 
-function renderPatchDiff(path, stat, patch) {
+function buildPatchViewModel({ path, state, stat, patch }) {
   const cleanPath = String(path || '').trim();
   const segments = cleanPath.split('/').filter(Boolean);
   const fileName = segments.length ? segments[segments.length - 1] : cleanPath || 'Diff';
-  const parentPath = segments.length > 1 ? segments.slice(0, -1).join('/') : '(root)';
-  const statLine =
-    String(stat || '')
-      .split('\n')
-      .map((line) => line.trim())
-      .find(Boolean) || '';
+  const parentPath = parentPathForPath(cleanPath);
+  const selected = selectedPatchChange(cleanPath, state);
+  const stats = selectedPatchStats(cleanPath, selected.state, stat);
+  const reviewItems = allChangedFilesForReview();
+  const selectedIndex = patchReviewIndex(cleanPath, selected.state);
+  const status = stats.status || selected.change?.status || 'M';
+  const isDeleted = statusBadgeClass(status) === 'deleted';
 
   const rows = buildSideBySideRows(patch);
-  const rowsHtml = rows.length
-    ? rows
+  const binary = String(patch || '').includes('Binary files') || String(patch || '').includes('GIT binary patch');
+  return {
+    path: cleanPath,
+    fileName,
+    parentPath,
+    fullPath: joinCodebasePath(cleanPath),
+    state: selected.state,
+    stateLabel: patchStateLabel(selected.state),
+    stats,
+    statLine: stats.line,
+    status,
+    statusClass: stats.statusClass || statusBadgeClass(status),
+    statusLabel: stats.statusLabel || statusLabel(status),
+    rows,
+    rowOverflow: Math.max(0, rows.length - DIFF_ROW_RENDER_LIMIT),
+    binary,
+    index: selectedIndex >= 0 ? selectedIndex : 0,
+    total: reviewItems.length,
+    canPrev: selectedIndex > 0,
+    canNext: selectedIndex >= 0 && selectedIndex < reviewItems.length - 1,
+    canStage: selected.state !== 'staged',
+    canUnstage: selected.state === 'staged',
+    canDiscard: Boolean(cleanPath),
+    canReveal: Boolean(cleanPath && !isDeleted && joinCodebasePath(cleanPath)),
+  };
+}
+
+function DiffActionButton({ label, action, path = '', state = '', disabled = false, tone = '' }) {
+  const attrPath = path ? ` data-diff-${action}="${escapeHtml(path)}"` : ` data-diff-${action}`;
+  const attrState = state ? ` data-diff-state="${escapeHtml(state)}"` : '';
+  const toneClass = tone ? ` ${tone}` : '';
+  return `<button class="diff-action-btn${toneClass}" type="button"${attrPath}${attrState}${disabled ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
+}
+
+function renderPatchDiff(modelInput) {
+  const model = buildPatchViewModel(modelInput);
+  const displayRows = model.rows.slice(0, DIFF_ROW_RENDER_LIMIT);
+  const rowsHtml = model.rows.length
+    ? displayRows
         .map(
-          (row) => `
+          (row) => {
+            const leftCode = diffCodeHtml(row.leftText, row.leftType, row.rightText, row.rightType);
+            const rightCode = diffCodeHtml(row.rightText, row.rightType, row.leftText, row.leftType);
+            return `
             <div class="diff-sbs-row">
               <div class="diff-cell left ${row.leftType}">
                 <span class="diff-ln">${escapeHtml(row.leftNo || '')}</span>
-                <span class="diff-code">${escapeHtml(row.leftText || ' ')}</span>
+                <span class="diff-mark">${escapeHtml(diffMarker(row.leftType))}</span>
+                <span class="diff-code">${leftCode}</span>
               </div>
               <div class="diff-cell right ${row.rightType}">
                 <span class="diff-ln">${escapeHtml(row.rightNo || '')}</span>
-                <span class="diff-code">${escapeHtml(row.rightText || ' ')}</span>
+                <span class="diff-mark">${escapeHtml(diffMarker(row.rightType))}</span>
+                <span class="diff-code">${rightCode}</span>
               </div>
             </div>
-          `,
+          `;
+          },
         )
-        .join('')
-    : `<div class="diff-empty">No line-level changes available for this selection.</div>`;
+        .join('') +
+      (model.rowOverflow
+        ? `<div class="diff-overflow-note">${model.rowOverflow.toLocaleString()} more rows hidden for performance.</div>`
+        : '')
+    : `
+        <div class="diff-empty diff-empty-review">
+          <div class="diff-empty-title">${model.binary ? 'Binary file' : 'No textual diff'}</div>
+          <div class="diff-empty-copy">${
+            model.binary
+              ? 'This file cannot be rendered as a line-level text comparison.'
+              : `${model.stateLabel} changes for this file do not include a renderable patch.`
+          }</div>
+        </div>
+      `;
+  const columnsHeadHtml = model.rows.length
+    ? `
+        <div class="diff-columns-head">
+          <div class="pane left">Original</div>
+          <div class="pane right">${escapeHtml(model.state === 'staged' ? 'Staged' : 'Working tree')}</div>
+        </div>
+      `
+    : '';
+  const progress = model.total ? `${model.index + 1} / ${model.total}` : '0 / 0';
 
   return `
         <div class="diff-editor-head">
           <div class="diff-head-main">
-            <div class="diff-file-name">${escapeHtml(fileName)}</div>
-            <div class="diff-file-path">${escapeHtml(parentPath)}</div>
+            <div class="diff-file-name-row">
+              <span class="diff-state-dot ${escapeHtml(model.statusClass)}" aria-hidden="true"></span>
+              <div class="diff-file-name">${escapeHtml(model.fileName)}</div>
+            </div>
+            <div class="diff-file-path" title="${escapeHtml(model.path)}">${escapeHtml(model.parentPath)}</div>
           </div>
           <div class="diff-head-right">
-            <span class="diff-head-mode">Changes</span>
-            ${statLine ? `<span class="diff-head-stat">${escapeHtml(statLine)}</span>` : ''}
+            <span class="diff-state-pill">${escapeHtml(model.stateLabel)}</span>
+            <span class="diff-status-pill ${escapeHtml(model.statusClass)}">${escapeHtml(model.statusLabel)}</span>
+            ${model.statLine ? `<span class="diff-head-stat">${escapeHtml(model.statLine)}</span>` : ''}
+            <span class="diff-file-progress">${escapeHtml(progress)}</span>
+            <div class="diff-nav-actions">
+              ${DiffActionButton({ label: 'Prev', action: 'prev', disabled: !model.canPrev })}
+              ${DiffActionButton({ label: 'Next', action: 'next', disabled: !model.canNext })}
+            </div>
+            <div class="diff-file-actions">
+              ${
+                model.canStage
+                  ? DiffActionButton({ label: 'Stage', action: 'stage', path: model.path, state: model.state, tone: 'primary' })
+                  : DiffActionButton({ label: 'Unstage', action: 'unstage', path: model.path, state: model.state })
+              }
+              ${DiffActionButton({ label: 'Discard', action: 'discard', path: model.path, state: model.state, tone: 'danger' })}
+              ${DiffActionButton({ label: 'Copy path', action: 'copy-path', path: model.path })}
+              ${DiffActionButton({ label: 'Reveal', action: 'reveal', path: model.path, disabled: !model.canReveal })}
+            </div>
             <button class="diff-close-btn" data-diff-close type="button">Terminal</button>
           </div>
         </div>
-        <div class="diff-columns-head">
-          <div class="pane left">Original</div>
-          <div class="pane right">Current</div>
-        </div>
-        <div class="diff-scroll">${rowsHtml}</div>
+        ${columnsHeadHtml}
+        <div class="diff-scroll${model.rows.length ? '' : ' diff-scroll-empty'}">${rowsHtml}</div>
       `;
 }
 
@@ -1166,6 +1472,14 @@ function queueWorkspaceRepoValidation({ immediate = false } = {}) {
   const repoPath = String(workspaceModalRepoEl.value || '').trim();
   if (!repoPath) {
     workspaceRepoValidation = { path: '', valid: false, checking: false, message: '' };
+    updateWorkspaceModalValidityUI();
+    return;
+  }
+  if (
+    immediate &&
+    workspaceRepoValidation.path === repoPath &&
+    !workspaceRepoValidation.checking
+  ) {
     updateWorkspaceModalValidityUI();
     return;
   }
@@ -1935,14 +2249,6 @@ function taskGroupsForWorkspace(workspaceID) {
     });
 }
 
-const TERMINAL_QUERY_RESPONSE_RE = /\x1b\[(?:\d{1,4}(?:;\d{1,4})*R|[IO]|\??[0-9;]*\$y)/g;
-
-function stripTerminalQueryResponses(data) {
-  const value = String(data || '');
-  if (!value.includes('\x1b[')) return value;
-  return value.replace(TERMINAL_QUERY_RESPONSE_RE, '');
-}
-
 function ensureTerminal() {
   if (terminalReady) return;
   terminal = new Terminal({
@@ -1983,17 +2289,6 @@ function ensureTerminal() {
     }
   }
 
-  // Suppress terminal query responses (CSI R, I, O, $y) from showing as visible text
-  try {
-    const parser = terminal.parser;
-    if (parser) {
-      parser.registerCsiHandler({ final: 'R' }, () => true);
-      parser.registerCsiHandler({ final: 'I' }, () => true);
-      parser.registerCsiHandler({ final: 'O' }, () => true);
-      parser.registerCsiHandler({ intermediates: '$', final: 'y' }, () => true);
-    }
-  } catch (_) {}
-
   // Copy handler: trim trailing whitespace from copied text
   const xtermElement = terminal.element;
   if (xtermElement) {
@@ -2015,15 +2310,14 @@ function ensureTerminal() {
     if (!activeTabId) return;
     const task = getTask(activeTabId);
     if (!task || task.status !== 'running') return;
-    const filteredData = stripTerminalQueryResponses(data);
-    if (!filteredData) return;
+    if (!data) return;
     // Signal characters (Ctrl+C, Ctrl+Z, Ctrl+\) must bypass the
     // debounced buffer and be sent immediately so interrupts aren't delayed.
-    if (filteredData === '\x03' || filteredData === '\x1a' || filteredData === '\x1c') {
-      flushInputImmediately(filteredData);
+    if (data === '\x03' || data === '\x1a' || data === '\x1c') {
+      flushInputImmediately(data);
       return;
     }
-    inputBuffer += filteredData;
+    inputBuffer += data;
     scheduleInputFlush();
   });
 
@@ -2322,7 +2616,7 @@ function renderWorkspaces() {
             title: task.name || 'untitled',
             subtitle: String(task.branch || '').trim() || '-',
             isSelected: group.rootTaskID === activeTaskGroupId,
-            canCloseWorktree: !Boolean(task.direct_repo),
+            canCloseWorktree: true,
             closeTaskID: group.rootTaskID,
             rawStatus: task.status || '',
             dotClass: healthDotColor(task.status || ''),
@@ -2636,9 +2930,6 @@ function detachStream() {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  if (terminalFormatter) {
-    terminalFormatter.reset();
-  }
   inputBuffer = '';
 }
 
@@ -2705,7 +2996,7 @@ function attachStream(taskId) {
     if (activeTabId !== taskId) return;
     const data = JSON.parse(event.data || '{}');
     if (typeof data.logs === 'string' && data.logs.length > 0 && !bootstrappedTerminalTasks.has(taskId)) {
-      const output = colorizeTerminalOutput(data.logs);
+      const output = terminalOutputData(data.logs);
       terminal.write(output);
       bootstrappedTerminalTasks.add(taskId);
       // Keep last 256 chars of bootstrap to detect overlap with early log events
@@ -2734,7 +3025,7 @@ function attachStream(taskId) {
       // After the first non-overlapping log event, stop checking.
       bootstrapTail = '';
     }
-    terminal.write(colorizeTerminalOutput(data.message));
+    terminal.write(terminalOutputData(data.message));
     setTerminalOverlay('', false);
   });
 
@@ -2988,6 +3279,7 @@ function gitRenderSignature(taskLabel, staged, unstaged) {
     String(taskLabel || ''),
     String(changesViewMode || ''),
     String(selectedPatchFile || ''),
+    String(selectedPatchState || ''),
     String(commitsTotal),
     serializeGitChanges(staged),
     serializeGitChanges(unstaged),
@@ -3004,7 +3296,8 @@ function SidebarSectionHeader(title, count) {
 function renderChangeViewModeButton() {
   if (!changeViewModeBtnEl) return;
   const isTree = changesViewMode === 'tree';
-  changeViewModeBtnEl.textContent = isTree ? '\u2637' : '\u2630';
+  changeViewModeBtnEl.dataset.viewMode = isTree ? 'tree' : 'grouped';
+  changeViewModeBtnEl.innerHTML = `<span class="toolbar-icon ${isTree ? 'icon-view-tree' : 'icon-view-grouped'}" aria-hidden="true"></span>`;
   const nextLabel = isTree ? 'Switch to grouped view' : 'Switch to tree view';
   changeViewModeBtnEl.title = nextLabel;
   changeViewModeBtnEl.setAttribute('aria-label', nextLabel);
@@ -3078,7 +3371,7 @@ function fileIconType(name, kind = 'file') {
 function FileIcon(name, kind = 'file') {
   const icon = fileIconType(name, kind);
   const cls = icon.cls ? ` ${icon.cls}` : '';
-  return `<span class="file-icon${cls}" aria-hidden="true">${icon.label}</span>`;
+  return `<span class="file-icon${cls}" aria-hidden="true" data-file-kind="${escapeHtml(icon.label)}"></span>`;
 }
 
 function FolderGroupLabel(label) {
@@ -3097,17 +3390,24 @@ function ChangedFileRow(change, mode, depth = 0) {
   const statusClassName = statusBadgeClass(change.status || 'modified');
   const add = Number(change.added || 0);
   const del = Number(change.deleted || 0);
-  const selectedClass = selectedPatchFile === path ? ' selected' : '';
+  const selectedClass = selectedPatchFile === path && (!selectedPatchState || selectedPatchState === mode) ? ' selected' : '';
+  const countsHtml =
+    add || del
+      ? `
+            <span class="change-inline-counts">
+              <span class="add">+${add}</span>
+              <span class="del">-${del}</span>
+            </span>
+          `
+      : '';
 
   return `
         <div class="change-file-row${selectedClass}" data-patch-file="${escapeHtml(path)}" style="--change-depth:${depth};">
           <div class="change-file-main">
             <span class="change-status-icon ${statusClassName}" aria-hidden="true"></span>
+            ${FileIcon(name, 'file')}
             <span class="change-file-name">${escapeHtml(name)}</span>
-            <span class="change-inline-counts">
-              <span class="add">+${add}</span>
-              <span class="del">-${del}</span>
-            </span>
+            ${countsHtml}
           </div>
           ${ChangeRowActions(path, mode)}
         </div>
@@ -3175,6 +3475,7 @@ function CommitFileRow(change, depth = 0) {
         <div class="change-file-row commit-file-row" style="--change-depth:${depth};" title="${escapeHtml(path)}">
           <div class="change-file-main">
             <span class="change-status-icon modified" aria-hidden="true"></span>
+            ${FileIcon(name, 'file')}
             <span class="change-file-name">${escapeHtml(name)}</span>
             <span class="change-inline-counts">
               <span class="add">+${add}</span>
@@ -3317,7 +3618,7 @@ function toChangeFileModel(change, mode, depth = 0) {
     statusClass: statusBadgeClass(change?.status || 'modified'),
     added: Number(change?.added || 0),
     deleted: Number(change?.deleted || 0),
-    selected: selectedPatchFile === path,
+    selected: selectedPatchFile === path && (!selectedPatchState || selectedPatchState === mode),
     depth,
     mode,
   };
@@ -3465,20 +3766,25 @@ function renderRepoTreeNode(name, node, depth = 0) {
     ...dirs.map((child) => renderRepoTreeNode(child.name, child, depth + 1)),
     ...files.map((file) => FileTreeRow({ name: file, kind: 'file', depth: depth + 1 })),
   ].join('');
-  return FileTreeRow({ name, kind: 'dir', depth, open: depth < 2, children });
+  return FileTreeRow({ name, kind: 'dir', depth, open: true, children });
 }
 
 function buildRepoTreeNodeModel(name, node, depth = 0, keyPrefix = '') {
+  const key = `${keyPrefix}/${name}`.replace(/^\/+/, '');
   const dirs = [...node.dirs.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((child) => buildRepoTreeNodeModel(child.name, child, depth + 1, `${keyPrefix}/${name}`));
-  const files = [...node.files].sort((a, b) => a.localeCompare(b)).map((file) => ({ name: file, depth: depth + 1 }));
+    .map((child) => buildRepoTreeNodeModel(child.name, child, depth + 1, key));
+  const files = [...node.files].sort((a, b) => a.localeCompare(b)).map((file) => ({
+    key: `${key}/${file}`.replace(/^\/+/, ''),
+    name: file,
+    depth: depth + 1,
+  }));
 
   return {
-    key: `${keyPrefix}/${name}`.replace(/^\/+/, ''),
+    key,
     name,
     depth,
-    open: depth < 2,
+    open: true,
     dirs,
     files,
   };
@@ -3518,6 +3824,11 @@ function renderRepoFilesTree(entries) {
   const bridge = reactBridge();
   if (bridge?.renderRepoFilesTree) {
     bridge.renderRepoFilesTree(buildRepoFilesTreeModel(entries));
+    requestAnimationFrame(() => {
+      repoFilesTreeEl?.querySelectorAll('.repo-tree-dir').forEach((node) => {
+        node.open = true;
+      });
+    });
     return;
   }
   if (!entries?.length) {
@@ -3595,9 +3906,13 @@ async function loadRepoFiles() {
   try {
     const data = await api(endpoint);
     const root = String(data.root || activeTask?.repo_path || workspaceRepo || '');
-    repoFilesMetaEl.textContent = root || 'Repository files';
-    repoFilesMetaEl.title = root || 'Repository files';
     repoFilesEntriesCache = data.entries || [];
+    const itemCount = Number(data.entries_n || repoFilesEntriesCache.length || 0);
+    const itemMeta = `${itemCount.toLocaleString()} item${itemCount === 1 ? '' : 's'}${data.truncated ? ' · truncated' : ''}`;
+    repoFilesMetaEl.textContent = root ? `${root} · ${itemMeta}` : itemMeta;
+    repoFilesMetaEl.title = data.truncated
+      ? `${root || 'Repository files'} (${itemMeta}; file list capped for performance)`
+      : `${root || 'Repository files'} (${itemMeta})`;
     renderFilteredRepoFilesTree();
   } catch (error) {
     repoFilesMetaEl.textContent = 'Files';
@@ -3619,12 +3934,19 @@ async function loadRepoFiles() {
 function setRightPanelMode(mode) {
   rightPanelMode = mode === 'files' ? 'files' : 'changes';
   const filesActive = rightPanelMode === 'files';
+  document.querySelector('.right-col')?.classList.toggle('files-mode', filesActive);
   rightTabFilesEl.classList.toggle('active', filesActive);
   rightTabChangesEl.classList.toggle('active', !filesActive);
   filesPanelEl.classList.toggle('hidden', !filesActive);
   changesPanelEl.classList.toggle('hidden', filesActive);
   if (changeViewModeBtnEl) {
     changeViewModeBtnEl.classList.toggle('hidden', filesActive);
+  }
+  const refreshGitBtnEl = document.getElementById('refreshGitBtn');
+  if (refreshGitBtnEl) {
+    const refreshLabel = filesActive ? 'Refresh files' : 'Refresh changes';
+    refreshGitBtnEl.title = refreshLabel;
+    refreshGitBtnEl.setAttribute('aria-label', refreshLabel);
   }
   if (filesActive) {
     loadRepoFiles().catch((error) => console.error(error));
@@ -3689,25 +4011,164 @@ function renderGitStatus() {
   }
 }
 
-async function loadPatch(path) {
+async function loadPatch(path, state = '') {
   if (!activeTabId) return;
   const targetPath = String(path || '').trim();
+  const targetState = normalizePatchState(state);
   selectedPatchFile = targetPath;
+  selectedPatchState = targetPath ? selectedPatchChange(targetPath, targetState).state : '';
   renderGitStatus();
   if (!targetPath) {
+    patchPreviewEl.dataset.diffPath = '';
+    patchPreviewEl.dataset.diffState = '';
     setMainViewMode('terminal');
     return;
   }
   try {
-    const query = `?file=${encodeURIComponent(targetPath)}`;
+    const params = new URLSearchParams({ file: targetPath });
+    if (selectedPatchState) params.set('state', selectedPatchState);
+    const query = `?${params.toString()}`;
     const data = await api(`/api/tasks/${activeTabId}/diff${query}`);
-    const stat = data.stat || `Diff: ${targetPath}`;
-    patchPreviewEl.innerHTML = renderPatchDiff(targetPath, stat, data.patch || '');
+    const stat = data.stat || '';
+    patchPreviewEl.dataset.diffPath = targetPath;
+    patchPreviewEl.dataset.diffState = selectedPatchState;
+    patchPreviewEl.innerHTML = renderPatchDiff({
+      path: targetPath,
+      state: selectedPatchState,
+      stat,
+      patch: data.patch || '',
+    });
     setMainViewMode('diff');
   } catch (error) {
     setPatchPreviewMessage(error.message || String(error));
     setMainViewMode('diff');
   }
+}
+
+async function navigatePatch(delta) {
+  const items = allChangedFilesForReview();
+  if (!items.length) return;
+  const direction = Number(delta) < 0 ? -1 : 1;
+  let index = patchReviewIndex(selectedPatchFile, selectedPatchState);
+  if (index < 0) {
+    index = direction > 0 ? -1 : items.length;
+  }
+  const nextIndex = Math.max(0, Math.min(items.length - 1, index + direction));
+  const next = items[nextIndex];
+  if (!next) return;
+  await loadPatch(next.path, next.state);
+}
+
+function patchFolderPath(path) {
+  const cleanPath = String(path || '').trim();
+  const base = currentCodebasePath();
+  if (!cleanPath || !base) return '';
+  const parent = parentPathForPath(cleanPath);
+  if (!parent || parent === '(root)') return base;
+  return joinCodebasePath(parent);
+}
+
+async function revealPatchFolder(path) {
+  const folder = patchFolderPath(path);
+  if (!folder) {
+    showToast('Failed to reveal: No active workspace path found.', 'error');
+    return;
+  }
+  try {
+    await api('/api/local/open-directory', {
+      method: 'POST',
+      body: JSON.stringify({ path: folder }),
+    });
+  } catch (error) {
+    const message = String(error?.message || 'Unable to reveal folder');
+    showToast(`Failed to reveal: ${message}`, 'error');
+  }
+}
+
+async function handlePatchPreviewAction(event) {
+  const button = closestFromEvent(event, 'button');
+  if (!button) return false;
+
+  if (button.hasAttribute('data-diff-close')) {
+    event.preventDefault();
+    setMainViewMode('terminal');
+    return true;
+  }
+  if (button.hasAttribute('data-diff-prev')) {
+    event.preventDefault();
+    await navigatePatch(-1);
+    return true;
+  }
+  if (button.hasAttribute('data-diff-next')) {
+    event.preventDefault();
+    await navigatePatch(1);
+    return true;
+  }
+  if (button.hasAttribute('data-diff-stage')) {
+    event.preventDefault();
+    const path = button.getAttribute('data-diff-stage') || '';
+    if (path) await stageFile(path);
+    return true;
+  }
+  if (button.hasAttribute('data-diff-unstage')) {
+    event.preventDefault();
+    const path = button.getAttribute('data-diff-unstage') || '';
+    if (path) await unstageFile(path);
+    return true;
+  }
+  if (button.hasAttribute('data-diff-discard')) {
+    event.preventDefault();
+    const path = button.getAttribute('data-diff-discard') || '';
+    if (path) await discardFile(path);
+    return true;
+  }
+  if (button.hasAttribute('data-diff-copy-path')) {
+    event.preventDefault();
+    const path = button.getAttribute('data-diff-copy-path') || '';
+    await copyTextToClipboard(path, 'File path copied.');
+    return true;
+  }
+  if (button.hasAttribute('data-diff-reveal')) {
+    event.preventDefault();
+    const path = button.getAttribute('data-diff-reveal') || '';
+    await revealPatchFolder(path);
+    return true;
+  }
+  return false;
+}
+
+async function handlePatchKeyboardShortcut(event) {
+  if (centerViewMode !== 'diff' || !selectedPatchFile) return false;
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (isEditableEventTarget(event.target)) return false;
+
+  const key = String(event.key || '').toLowerCase();
+  if (key === 'escape') {
+    event.preventDefault();
+    setMainViewMode('terminal');
+    return true;
+  }
+  if (key === 'j' || key === 'arrowdown') {
+    event.preventDefault();
+    await navigatePatch(1);
+    return true;
+  }
+  if (key === 'k' || key === 'arrowup') {
+    event.preventDefault();
+    await navigatePatch(-1);
+    return true;
+  }
+  if (key === 's' && selectedPatchState !== 'staged') {
+    event.preventDefault();
+    await stageFile(selectedPatchFile);
+    return true;
+  }
+  if (key === 'u' && selectedPatchState === 'staged') {
+    event.preventDefault();
+    await unstageFile(selectedPatchFile);
+    return true;
+  }
+  return false;
 }
 
 function setRunAgentBtnState(running) {
@@ -3885,12 +4346,20 @@ async function runCloseTaskModalAction() {
 async function deleteWorkspace(workspaceID) {
   const target = String(workspaceID || '').trim();
   if (!target) return;
+  const workspace = getWorkspace(target);
+  const name = String(workspace?.name || target).trim();
+  const taskCount = tasksForWorkspace(target).length;
+  if (taskCount > 0) {
+    const detail = `This will permanently delete ${taskCount} task${taskCount === 1 ? '' : 's'} and managed worktrees for "${name}".`;
+    if (!confirmDestructiveAction('Delete workspace?', detail)) return;
+  }
   await api(`/api/workspaces/${encodeURIComponent(target)}`, { method: 'DELETE' });
   if (activeWorkspace === target) {
     activeWorkspace = '';
   }
   await loadWorkspaces();
   await loadTasks({ keepTab: true });
+  showToast(`Deleted workspace "${name}".`, 'success', 2200);
   if (!workspaces.length) {
     openWorkspaceModal();
   }
@@ -3954,6 +4423,14 @@ async function discardFile(path) {
   if (!activeTabId) return;
   const targetPath = String(path || '').trim();
   if (!targetPath) return;
+  if (
+    !confirmDestructiveAction(
+      'Discard changes?',
+      `This will permanently discard local changes for:\n${targetPath}`,
+    )
+  ) {
+    return;
+  }
   try {
     await api(`/api/tasks/${activeTabId}/git/discard`, {
       method: 'POST',
@@ -3973,14 +4450,13 @@ async function discardFile(path) {
 async function stageAllFiles() {
   if (!activeTabId) return;
   const unstaged = [...(currentGitStatus.unstaged || [])];
-  if (!unstaged.length) return;
+  const paths = unstaged.map((change) => String(change.path || '').trim()).filter(Boolean);
+  if (!paths.length) return;
   try {
-    for (const change of unstaged) {
-      await api(`/api/tasks/${activeTabId}/git/stage`, {
-        method: 'POST',
-        body: JSON.stringify({ path: change.path }),
-      });
-    }
+    await api(`/api/tasks/${activeTabId}/git/stage`, {
+      method: 'POST',
+      body: JSON.stringify({ paths }),
+    });
   } finally {
     await refreshGitStatus();
   }
@@ -3989,14 +4465,13 @@ async function stageAllFiles() {
 async function unstageAllFiles() {
   if (!activeTabId) return;
   const staged = [...(currentGitStatus.staged || [])];
-  if (!staged.length) return;
+  const paths = staged.map((change) => String(change.path || '').trim()).filter(Boolean);
+  if (!paths.length) return;
   try {
-    for (const change of staged) {
-      await api(`/api/tasks/${activeTabId}/git/unstage`, {
-        method: 'POST',
-        body: JSON.stringify({ path: change.path }),
-      });
-    }
+    await api(`/api/tasks/${activeTabId}/git/unstage`, {
+      method: 'POST',
+      body: JSON.stringify({ paths }),
+    });
   } finally {
     await refreshGitStatus();
   }
@@ -4553,7 +5028,19 @@ function installEventHandlers() {
     }
   });
 
+  workspaceListEl.addEventListener(
+    'click',
+    (event) => {
+      void handleWorkspaceActionButton(event);
+    },
+    true,
+  );
+
   workspaceListEl.addEventListener('click', async (event) => {
+    if (event.__phasrWorkspaceActionHandled || event.defaultPrevented) {
+      return;
+    }
+
     const closeWorktreeTaskBtn = closestFromEvent(event, 'button[data-close-worktree-task]');
     if (closeWorktreeTaskBtn) {
       event.preventDefault();
@@ -4568,29 +5055,6 @@ function installEventHandlers() {
     const openBtn = closestFromEvent(event, '[data-open-task]');
     if (openBtn) {
       openTaskGroup(openBtn.dataset.openTask);
-      return;
-    }
-
-    const newWorkspaceTabBtn = closestFromEvent(event, 'button[data-new-workspace-tab]');
-    if (newWorkspaceTabBtn) {
-      event.preventDefault();
-      event.stopPropagation();
-      const workspaceID = String(newWorkspaceTabBtn.dataset.newWorkspaceTab || '').trim();
-      openNewTabTypeModal({ preferredWorkspace: workspaceID || activeWorkspace, rootTaskID: '' });
-      return;
-    }
-
-    const deleteWorkspaceBtn = closestFromEvent(event, 'button[data-delete-workspace]');
-    if (deleteWorkspaceBtn) {
-      event.preventDefault();
-      event.stopPropagation();
-      const workspaceName = String(deleteWorkspaceBtn.dataset.deleteWorkspace || '').trim();
-      if (!workspaceName) return;
-      try {
-        await deleteWorkspace(workspaceName);
-      } catch (error) {
-        alert(error.message || String(error));
-      }
       return;
     }
 
@@ -4632,6 +5096,16 @@ function installEventHandlers() {
       loadRepoFiles().catch((error) => console.error(error));
     }
   });
+
+  workspaceListEl.addEventListener(
+    'pointerdown',
+    (event) => {
+      const workspaceActionBtn = closestFromEvent(event, 'button[data-new-workspace-tab], button[data-delete-workspace]');
+      if (!workspaceActionBtn) return;
+      event.stopPropagation();
+    },
+    true,
+  );
 
   tabBarEl.addEventListener('click', async (event) => {
     const closeBtn = event.target.closest('button[data-close-tab]');
@@ -4816,7 +5290,7 @@ function installEventHandlers() {
     if (patchTarget) {
       const path = patchTarget.getAttribute('data-patch-file') || patchTarget.dataset.patchFile || '';
       if (path) {
-        await loadPatch(path);
+        await loadPatch(path, 'unstaged');
       }
     }
   });
@@ -4846,16 +5320,17 @@ function installEventHandlers() {
     if (patchTarget) {
       const path = patchTarget.getAttribute('data-patch-file') || patchTarget.dataset.patchFile || '';
       if (path) {
-        await loadPatch(path);
+        await loadPatch(path, 'staged');
       }
     }
   });
 
   patchPreviewEl.addEventListener('click', (event) => {
-    const closeBtn = closestFromEvent(event, 'button[data-diff-close]');
-    if (!closeBtn) return;
-    event.preventDefault();
-    setMainViewMode('terminal');
+    handlePatchPreviewAction(event).catch((error) => alert(error.message || String(error)));
+  });
+
+  document.addEventListener('keydown', (event) => {
+    handlePatchKeyboardShortcut(event).catch((error) => alert(error.message || String(error)));
   });
 
   terminalPanelEl.addEventListener('click', () => {

@@ -20,7 +20,7 @@ func NewWorktreeManager(baseDir string) *WorktreeManager {
 	return &WorktreeManager{baseDir: baseDir}
 }
 
-func (m *WorktreeManager) Create(repoPath, taskName, taskID string) (string, string, error) {
+func (m *WorktreeManager) Create(repoPath, taskName, taskID, baseBranch, requestedBranch string) (string, string, error) {
 	repoPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve repo path: %w", err)
@@ -37,12 +37,23 @@ func (m *WorktreeManager) Create(repoPath, taskName, taskID string) (string, str
 	}
 
 	idToken := compactTaskToken(taskID)
-	branchName := fmt.Sprintf("task/%s", slug)
-	if m.branchExists(repoPath, branchName) {
+	branchName, explicitBranch, err := m.branchName(repoPath, slug, requestedBranch)
+	if err != nil {
+		return "", "", err
+	}
+	if !explicitBranch && m.branchExists(repoPath, branchName) {
 		branchName = fmt.Sprintf("%s-%s", branchName, idToken)
 		if m.branchExists(repoPath, branchName) {
 			branchName = fmt.Sprintf("%s-%d", branchName, time.Now().Unix())
 		}
+	}
+	if explicitBranch && m.branchExists(repoPath, branchName) {
+		return "", "", fmt.Errorf("branch %q already exists", branchName)
+	}
+
+	baseRef, err := m.baseRef(repoPath, baseBranch)
+	if err != nil {
+		return "", "", err
 	}
 
 	if err := os.MkdirAll(m.baseDir, 0o755); err != nil {
@@ -54,10 +65,18 @@ func (m *WorktreeManager) Create(repoPath, taskName, taskID string) (string, str
 		worktreePath = worktreePath + fmt.Sprintf("-%d", time.Now().Unix())
 	}
 
-	out, err := runGit("-C", repoPath, "worktree", "add", "-b", branchName, worktreePath)
+	args := []string{"-C", repoPath, "worktree", "add", "-b", branchName, worktreePath}
+	if baseRef != "" {
+		args = append(args, baseRef)
+	}
+	out, err := runGit(args...)
 	if err != nil && strings.Contains(strings.ToLower(out), "already registered worktree") {
 		_, _ = runGit("-C", repoPath, "worktree", "prune")
-		out, err = runGit("-C", repoPath, "worktree", "add", "-f", "-b", branchName, worktreePath)
+		args = []string{"-C", repoPath, "worktree", "add", "-f", "-b", branchName, worktreePath}
+		if baseRef != "" {
+			args = append(args, baseRef)
+		}
+		out, err = runGit(args...)
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("create worktree: %w (%s)", err, strings.TrimSpace(out))
@@ -137,6 +156,41 @@ func (m *WorktreeManager) ensureRepo(repoPath string) error {
 func (m *WorktreeManager) branchExists(repoPath, branch string) bool {
 	_, err := runGit("-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil
+}
+
+func (m *WorktreeManager) branchName(repoPath, slug, requested string) (string, bool, error) {
+	requested = strings.Trim(strings.TrimSpace(requested), "/")
+	if requested == "" {
+		return fmt.Sprintf("task/%s", slug), false, nil
+	}
+	if strings.HasPrefix(requested, "-") {
+		return "", false, fmt.Errorf("invalid branch name %q", requested)
+	}
+	if out, err := runGit("-C", repoPath, "check-ref-format", "--branch", requested); err != nil {
+		return "", false, fmt.Errorf("invalid branch name %q: %w (%s)", requested, err, strings.TrimSpace(out))
+	}
+	return requested, true, nil
+}
+
+func (m *WorktreeManager) baseRef(repoPath, baseBranch string) (string, error) {
+	base := strings.Trim(strings.TrimSpace(baseBranch), "/")
+	if base == "" || strings.EqualFold(base, "current") || strings.EqualFold(base, "detecting...") {
+		return "", nil
+	}
+	if strings.HasPrefix(base, "-") {
+		return "", fmt.Errorf("invalid base branch %q", base)
+	}
+
+	candidates := []string{base}
+	if !strings.HasPrefix(base, "origin/") && !strings.HasPrefix(base, "refs/") {
+		candidates = append(candidates, "origin/"+base)
+	}
+	for _, candidate := range candidates {
+		if _, err := runGit("-C", repoPath, "rev-parse", "--verify", "--quiet", candidate+"^{commit}"); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("base branch %q was not found", base)
 }
 
 func runGit(args ...string) (string, error) {

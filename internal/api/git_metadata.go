@@ -111,15 +111,25 @@ func resolveGitMetadata(path, branch string) (gitMetadataResponse, error) {
 
 	remoteName, remoteURL, err := gitRemote(absPath)
 	if err != nil {
-		return gitMetadataResponse{}, err
+		return gitMetadataResponse{
+			Path:     absPath,
+			Provider: "local",
+			Branch:   branch,
+		}, nil
 	}
 	host, repoPath := parseGitRemoteURL(remoteURL)
+	baseBranch := detectBaseBranch(absPath, remoteName)
 	if host == "" || repoPath == "" {
-		return gitMetadataResponse{}, errors.New("unable to parse git remote URL")
+		return gitMetadataResponse{
+			Path:       absPath,
+			Provider:   "local",
+			Remote:     remoteURL,
+			BaseBranch: baseBranch,
+			Branch:     branch,
+		}, nil
 	}
 
 	provider := detectProvider(host)
-	baseBranch := detectBaseBranch(absPath, remoteName)
 	branchURL, prURL := buildProviderURLs(provider, host, repoPath, baseBranch, branch)
 
 	return gitMetadataResponse{

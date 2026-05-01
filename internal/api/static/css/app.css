@@ -610,8 +610,8 @@ kbd {
 }
 
 .compose {
-  padding: var(--space-10) var(--space-12) !important;
-  gap: var(--space-8) !important;
+  padding: 8px 12px !important;
+  gap: 0 !important;
   background: var(--bg-secondary) !important;
   border-bottom: 1px solid var(--border-subtle) !important;
 }
@@ -626,6 +626,7 @@ kbd {
 
 .provider-row {
   min-height: var(--h-chip);
+  justify-content: flex-start !important;
 }
 
 .provider-label {
@@ -852,6 +853,10 @@ kbd {
 .center-empty {
   color: var(--text-tertiary) !important;
   font-family: var(--font-mono);
+}
+
+.center-empty.hidden {
+  display: none !important;
 }
 
 #terminal .xterm,
@@ -2321,6 +2326,10 @@ kbd {
   text-align: left;
 }
 
+.context-branch-btn {
+  min-width: 16px;
+}
+
 .context-branch-btn:hover,
 .context-path-btn:hover {
   color: var(--accent-primary);
@@ -3007,5 +3016,4240 @@ kbd {
   .prompt-row,
   .commit-row {
     grid-template-columns: 1fr !important;
+  }
+}
+
+/* Production dark polish layer: presentational overrides only. */
+:root,
+html[data-theme='dark'],
+html[data-theme='light'] {
+  --bg-primary: #0b0f14;
+  --bg-secondary: #121821;
+  --bg-tertiary: #161d26;
+  --surface-hover: #1b2430;
+  --surface-pressed: #202a38;
+  --surface-selected: rgba(110, 132, 255, 0.12);
+  --border-subtle: rgba(226, 232, 240, 0.07);
+  --border-default: rgba(226, 232, 240, 0.11);
+  --border-strong: rgba(226, 232, 240, 0.18);
+  --text-primary: #f4f7fb;
+  --text-secondary: #bac6d6;
+  --text-tertiary: #7f8da1;
+  --accent-primary: #7c8cff;
+  --accent-hover: #94a3ff;
+  --accent-soft: rgba(124, 140, 255, 0.12);
+  --accent-glow: rgba(124, 140, 255, 0.22);
+  --success: #62c98f;
+  --warning: #e5b86a;
+  --danger: #f07373;
+
+  --navbar-bg: var(--bg-primary);
+  --card-bg: var(--bg-secondary);
+  --mockup-bg: var(--bg-secondary);
+  --mockup-sidebar: var(--bg-tertiary);
+  --mockup-terminal-bg: #080c11;
+  --cta-bg: var(--bg-tertiary);
+
+  --radius-control: var(--radius-8);
+  --radius-panel: var(--radius-10);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.26);
+  --shadow-elevated: 0 18px 48px rgba(0, 0, 0, 0.42);
+  --shadow-focus: 0 0 0 3px var(--accent-glow);
+
+  --z-dropdown: 1200;
+  --z-overlay: 2800;
+  --z-modal: 3200;
+  --z-toast: 5200;
+}
+
+body {
+  letter-spacing: 0;
+  background: var(--bg-primary);
+}
+
+button {
+  transform: translateY(0);
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  box-shadow: none !important;
+}
+
+input,
+textarea,
+select {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  background: color-mix(in srgb, var(--bg-tertiary) 84%, var(--bg-primary)) !important;
+  border-color: color-mix(in srgb, var(--accent-primary) 52%, var(--border-strong)) !important;
+  box-shadow: var(--shadow-focus) !important;
+}
+
+.app-shell {
+  background: var(--bg-primary) !important;
+}
+
+.left-col,
+.right-col,
+.center-col {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.left-col,
+.right-col {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 120px),
+    var(--bg-secondary) !important;
+}
+
+.center-col {
+  background: var(--bg-primary) !important;
+}
+
+.tabs,
+.right-head,
+.compose,
+.commit-box,
+.task-header {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
+    var(--bg-secondary) !important;
+}
+
+.tabs,
+.right-head {
+  border-bottom-color: var(--border-default) !important;
+}
+
+.tab-list {
+  gap: var(--space-6);
+}
+
+.tab,
+.right-tab,
+.provider-pill,
+.publish-btn,
+.context-open-ide-btn,
+.workspace-summary,
+.sidebar-row,
+.change-section-summary,
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary {
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
+}
+
+.tab.active,
+.right-tab.active,
+.provider-pill.active,
+.workspace-node.active > .workspace-summary,
+.sidebar-row.selected,
+.change-file-row.selected {
+  background: var(--surface-selected) !important;
+  border-color: color-mix(in srgb, var(--accent-primary) 34%, transparent) !important;
+  box-shadow: inset 0 0 0 1px rgba(124, 140, 255, 0.08);
+}
+
+.tab:hover,
+.right-tab:hover,
+.provider-pill:hover,
+.workspace-summary:hover,
+.sidebar-row:hover,
+.change-section-summary:hover,
+.change-file-row:hover,
+.repo-tree-file:hover,
+.change-tree-dir > summary:hover,
+.repo-tree-dir > summary:hover,
+.commit-history-summary:hover {
+  background: var(--surface-hover) !important;
+}
+
+.tab:active,
+.right-tab:active,
+.provider-pill:active,
+.workspace-summary:active,
+.sidebar-row:active,
+.change-file-row:active {
+  background: var(--surface-pressed) !important;
+}
+
+.tab {
+  min-width: 92px;
+  justify-content: space-between;
+}
+
+.plus-tab {
+  min-width: var(--h-tab);
+}
+
+.tab-close,
+.icon-btn,
+.ghost-action,
+.right-head-actions .icon-btn,
+.change-section-action,
+.tree-action-btn,
+.sidebar-task-close,
+.new-task-modal-close-x {
+  flex: 0 0 auto;
+}
+
+.tab-close:hover,
+.icon-btn:hover,
+.ghost-action:hover,
+.right-head-actions .icon-btn:hover,
+.change-section-action:hover,
+.tree-action-btn:hover,
+.sidebar-task-close:hover,
+.new-task-modal-close-x:hover {
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.provider-row {
+  min-height: 26px;
+}
+
+.provider-pill {
+  border-color: var(--border-default);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.provider-pill.active .provider-icon,
+.provider-pill.active .provider-icon-svg {
+  color: var(--accent-primary);
+}
+
+#promptInput,
+#commitMessage,
+.files-search,
+.workspace-modal-input,
+.workspace-modal-input-with-action,
+.new-task-inline-select,
+.new-task-branch-slug-wrap,
+.new-task-compose-textarea {
+  border-color: var(--border-default) !important;
+  background: color-mix(in srgb, var(--bg-tertiary) 88%, var(--bg-primary)) !important;
+}
+
+#promptInput {
+  min-height: 56px !important;
+}
+
+#runAgentBtn,
+.btn-primary,
+#commitBtn,
+.workspace-modal-create-btn,
+.new-task-modal-create-btn,
+#workspaceInitPromptYesBtn {
+  box-shadow: 0 8px 18px rgba(82, 99, 255, 0.16);
+}
+
+#runAgentBtn:hover,
+.btn-primary:hover,
+#commitBtn:hover,
+.workspace-modal-create-btn:hover,
+.new-task-modal-create-btn:hover,
+#workspaceInitPromptYesBtn:hover {
+  box-shadow: 0 10px 22px rgba(82, 99, 255, 0.2);
+}
+
+.btn-ghost,
+#createWorkspaceBtn,
+.workspace-modal-cancel-btn,
+#workspaceModalCloseBtn,
+#newTaskModalCloseBtn,
+#newTaskModalCancelBtn,
+#newTabTypeModalCloseBtn,
+#newTabTypeModalCancelBtn,
+#workspaceInitPromptBrowseBtn {
+  box-shadow: none;
+}
+
+.workspace-list {
+  padding: var(--space-8);
+}
+
+.workspace-summary {
+  min-height: 38px;
+  padding: var(--space-6) var(--space-8);
+}
+
+.workspace-avatar {
+  background: color-mix(in srgb, var(--bg-tertiary) 88%, var(--bg-primary));
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.workspace-actions {
+  opacity: 0.42;
+}
+
+.workspace-summary:focus-visible,
+.sidebar-row:focus-visible,
+.change-section-summary:focus-visible,
+.change-file-row:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.sidebar-empty,
+.empty,
+.diff-empty {
+  display: grid;
+  gap: var(--space-6);
+  border-style: solid !important;
+  border-color: var(--border-subtle) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
+    color-mix(in srgb, var(--bg-tertiary) 56%, transparent) !important;
+  color: var(--text-tertiary) !important;
+}
+
+.sidebar-empty::before,
+.empty::before {
+  content: '';
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-6);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
+    var(--bg-tertiary);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+
+.center-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-sans);
+  font-size: 12px !important;
+}
+
+.center-empty::before {
+  content: '';
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-10);
+  background:
+    linear-gradient(180deg, rgba(124, 140, 255, 0.16), transparent),
+    var(--bg-tertiary);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 24%, transparent),
+    var(--shadow-soft);
+}
+
+.terminal-banner {
+  background: color-mix(in srgb, var(--bg-tertiary) 68%, var(--mockup-terminal-bg)) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  z-index: var(--z-overlay) !important;
+}
+
+#terminal {
+  padding: var(--space-12) !important;
+}
+
+.git-summary,
+.files-toolbar,
+#repoFilesTree {
+  border-color: var(--border-subtle) !important;
+}
+
+.changes-wrap {
+  padding: var(--space-8) !important;
+  gap: var(--space-4) !important;
+}
+
+.change-section {
+  padding: var(--space-2) 0;
+}
+
+.change-section-summary {
+  min-height: 30px;
+  padding: 0 var(--space-6) !important;
+}
+
+.change-list {
+  padding: var(--space-4) 0 var(--space-6);
+}
+
+.change-group-label {
+  min-height: 22px;
+  padding: 0 var(--space-8);
+}
+
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary {
+  min-height: 28px;
+}
+
+.tree-row-right {
+  opacity: 0.48;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.change-file-row:hover .tree-row-right,
+.change-file-row:focus-within .tree-row-right,
+.change-file-row.selected .tree-row-right {
+  opacity: 1;
+}
+
+.change-inline-counts {
+  min-width: max-content;
+}
+
+.file-icon {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: var(--radius-6) !important;
+  background: color-mix(in srgb, var(--bg-tertiary) 88%, var(--bg-primary)) !important;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.diff-editor-head,
+.diff-columns-head {
+  background: var(--bg-tertiary) !important;
+}
+
+.diff-scroll {
+  overflow: auto;
+}
+
+.diff-sbs-row:hover .diff-cell:not(.added):not(.removed):not(.hunk) {
+  background: rgba(255, 255, 255, 0.018);
+}
+
+#taskContextBar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
+    var(--bg-secondary) !important;
+}
+
+.context-label {
+  letter-spacing: 0.06em;
+}
+
+.context-branch-btn:not(:disabled),
+.context-path-btn:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.tab-overflow-menu,
+.publish-action-menu,
+.context-open-ide-menu,
+#taskContextBranchMenu {
+  z-index: var(--z-dropdown) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    var(--bg-secondary) !important;
+  border-color: var(--border-default) !important;
+  box-shadow: var(--shadow-elevated) !important;
+}
+
+.modal-backdrop {
+  z-index: var(--z-modal) !important;
+  background: rgba(5, 8, 12, 0.74) !important;
+}
+
+.modal {
+  border-color: var(--border-default) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 120px),
+    var(--bg-secondary) !important;
+}
+
+.modal-head,
+.modal-foot {
+  background: color-mix(in srgb, var(--bg-tertiary) 54%, var(--bg-secondary)) !important;
+}
+
+.new-task-compose {
+  border-color: var(--border-default);
+  background: color-mix(in srgb, var(--bg-tertiary) 92%, var(--bg-primary));
+}
+
+.new-tab-type-option {
+  border-color: var(--border-default) !important;
+}
+
+.workspace-modal-error {
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-secondary));
+}
+
+.inline-prompt {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-secondary)) !important;
+  border-color: color-mix(in srgb, var(--warning) 38%, transparent) !important;
+}
+
+.toast-viewport {
+  z-index: var(--z-toast);
+}
+
+.toast {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    var(--bg-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Vercel/Notion refinement layer: flatter, quieter, denser. */
+:root,
+html[data-theme='dark'],
+html[data-theme='light'] {
+  --bg-primary: #0b0f14;
+  --bg-secondary: #121821;
+  --bg-tertiary: #161d26;
+  --mockup-terminal-bg: #090d12;
+  --surface-hover: #18202a;
+  --surface-pressed: #1d2632;
+  --surface-selected: rgba(244, 247, 251, 0.07);
+  --border-subtle: rgba(244, 247, 251, 0.065);
+  --border-default: rgba(244, 247, 251, 0.105);
+  --border-strong: rgba(244, 247, 251, 0.18);
+  --text-primary: #f5f7fb;
+  --text-secondary: #b8c2cf;
+  --text-tertiary: #7d8998;
+  --accent-primary: #8a93ff;
+  --accent-hover: #a2a9ff;
+  --accent-soft: rgba(138, 147, 255, 0.105);
+  --accent-glow: rgba(138, 147, 255, 0.18);
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.025);
+  --shadow-elevated: 0 18px 48px rgba(0, 0, 0, 0.46), 0 0 0 1px var(--border-default);
+  --shadow-focus: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 34%, transparent);
+}
+
+body,
+.app-shell,
+.center-col {
+  background: var(--bg-primary) !important;
+}
+
+.left-col,
+.right-col,
+.tabs,
+.right-head,
+.compose,
+.commit-box,
+.task-header,
+#taskContextBar,
+.modal,
+.modal-head,
+.modal-foot,
+.toast,
+.tab-overflow-menu,
+.publish-action-menu,
+.context-open-ide-menu,
+#taskContextBranchMenu {
+  background-image: none !important;
+}
+
+.left-col,
+.right-col,
+.tabs,
+.right-head,
+.compose,
+.commit-box,
+.task-header,
+#taskContextBar {
+  box-shadow: none !important;
+}
+
+.panel,
+.left-col,
+.right-col,
+.tabs,
+.right-head,
+.compose,
+.commit-box,
+.task-header,
+#taskContextBar,
+.modal-head,
+.modal-foot {
+  border-color: var(--border-subtle) !important;
+}
+
+button,
+input,
+textarea,
+select,
+.tab,
+.right-tab,
+.provider-pill,
+.publish-btn,
+.context-open-ide-btn,
+.workspace-summary,
+.sidebar-row,
+.change-section-summary,
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary,
+.new-tab-type-option {
+  border-radius: var(--radius-control) !important;
+}
+
+button,
+input,
+textarea,
+select {
+  box-shadow: none !important;
+}
+
+button:active:not(:disabled) {
+  transform: none;
+}
+
+#runAgentBtn,
+.btn-primary,
+#commitBtn,
+.workspace-modal-create-btn,
+.new-task-modal-create-btn,
+#workspaceInitPromptYesBtn {
+  background: var(--accent-primary) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+#runAgentBtn:hover,
+.btn-primary:hover,
+#commitBtn:hover,
+.workspace-modal-create-btn:hover,
+.new-task-modal-create-btn:hover,
+#workspaceInitPromptYesBtn:hover {
+  background: var(--accent-hover) !important;
+  box-shadow: none !important;
+}
+
+.btn-ghost,
+#createWorkspaceBtn,
+.workspace-modal-cancel-btn,
+#workspaceModalCloseBtn,
+#newTaskModalCloseBtn,
+#newTaskModalCancelBtn,
+#newTabTypeModalCloseBtn,
+#newTabTypeModalCancelBtn,
+#workspaceInitPromptBrowseBtn,
+.publish-btn,
+.context-open-ide-btn {
+  background: transparent !important;
+}
+
+.tab-list {
+  gap: var(--space-4);
+}
+
+.tab {
+  min-width: 84px;
+  border-color: transparent !important;
+  background: transparent !important;
+}
+
+.tab.active,
+.right-tab.active,
+.provider-pill.active {
+  background: rgba(244, 247, 251, 0.075) !important;
+  border-color: var(--border-default) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+}
+
+.workspace-node.active > .workspace-summary,
+.sidebar-row.selected,
+.change-file-row.selected {
+  background: rgba(244, 247, 251, 0.06) !important;
+  border-color: transparent !important;
+  box-shadow: inset 2px 0 0 var(--accent-primary) !important;
+}
+
+.provider-pill {
+  height: 26px;
+  min-height: 26px;
+  border-color: transparent !important;
+}
+
+.provider-label,
+.context-label,
+#stagedSectionLabel,
+#unstagedSectionLabel,
+#commitsSectionLabel {
+  letter-spacing: 0.02em;
+}
+
+.workspace-list,
+.changes-wrap {
+  padding: var(--space-8) !important;
+}
+
+.workspace-summary {
+  min-height: 34px;
+}
+
+.sidebar-row,
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary {
+  min-height: 26px;
+}
+
+.workspace-actions,
+.tree-row-right {
+  opacity: 0.34;
+}
+
+.workspace-summary:hover .workspace-actions,
+.workspace-node.active .workspace-actions,
+.change-file-row:hover .tree-row-right,
+.change-file-row:focus-within .tree-row-right,
+.change-file-row.selected .tree-row-right {
+  opacity: 1;
+}
+
+.workspace-avatar,
+.file-icon {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.file-icon {
+  color: var(--text-tertiary) !important;
+}
+
+.file-icon.dir {
+  color: var(--text-secondary) !important;
+}
+
+.file-icon.go,
+.file-icon.doc,
+.file-icon.cfg {
+  color: var(--text-tertiary) !important;
+}
+
+#promptInput,
+#commitMessage,
+.files-search,
+.workspace-modal-input,
+.workspace-modal-input-with-action,
+.new-task-inline-select,
+.new-task-branch-slug-wrap,
+.new-task-compose-textarea,
+.new-task-branch-input {
+  background: color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-primary)) !important;
+  border-color: var(--border-default) !important;
+}
+
+#promptInput,
+#commitMessage,
+.new-task-compose-textarea {
+  line-height: 1.5 !important;
+}
+
+.sidebar-empty,
+.empty,
+.diff-empty {
+  background: transparent !important;
+  border-color: var(--border-subtle) !important;
+  border-style: solid !important;
+  color: var(--text-tertiary) !important;
+}
+
+.sidebar-empty::before,
+.empty::before,
+.center-empty::before {
+  display: none !important;
+}
+
+.center-empty {
+  gap: 0;
+}
+
+.change-section-summary {
+  min-height: 28px;
+}
+
+.change-group-files,
+.change-tree-children,
+.repo-tree-children {
+  border-left-color: rgba(244, 247, 251, 0.055);
+}
+
+.diff-editor-head,
+.diff-columns-head {
+  background: var(--bg-secondary) !important;
+}
+
+.diff-cell.left.removed {
+  background: rgba(240, 115, 115, 0.11);
+}
+
+.diff-cell.right.added {
+  background: rgba(98, 201, 143, 0.1);
+}
+
+.diff-cell.hunk {
+  background: rgba(138, 147, 255, 0.1);
+}
+
+.modal {
+  border-radius: var(--radius-panel) !important;
+}
+
+.modal-backdrop {
+  background: rgba(6, 9, 13, 0.72) !important;
+}
+
+.tab-overflow-menu,
+.publish-action-menu,
+.context-open-ide-menu,
+#taskContextBranchMenu {
+  border-radius: var(--radius-panel) !important;
+}
+
+.new-task-compose {
+  border-radius: var(--radius-panel);
+  background: var(--bg-secondary);
+}
+
+.new-task-controls-grid,
+.new-task-branch-grid,
+.new-task-compose-footer {
+  background: var(--bg-secondary);
+}
+
+.inline-prompt {
+  background: rgba(229, 184, 106, 0.08) !important;
+}
+
+.toast {
+  border-color: var(--border-default);
+}
+
+/* Motion layer: opacity/transform only, with reduced-motion fallback below. */
+@keyframes phasr-backdrop-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes phasr-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes phasr-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes phasr-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px) translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0) translateY(0);
+  }
+}
+
+@keyframes phasr-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes phasr-status-pulse {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.22);
+  }
+}
+
+.modal-backdrop:not(.hidden) {
+  animation: phasr-backdrop-in 180ms var(--ease-standard) both;
+}
+
+.modal-backdrop:not(.hidden) .modal {
+  animation: phasr-modal-in 210ms var(--ease-standard) both;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+
+.tab-overflow-menu:not(.hidden),
+.publish-action-menu:not(.hidden),
+.context-open-ide-menu:not(.hidden),
+#taskContextBranchMenu:not(.hidden),
+#openIdeMenu:not(.hidden) {
+  animation: phasr-menu-in 160ms var(--ease-standard) both;
+  transform-origin: top right;
+  will-change: opacity, transform;
+}
+
+#taskContextBranchMenu:not(.hidden),
+.context-open-ide-menu:not(.hidden),
+#openIdeMenu:not(.hidden) {
+  transform-origin: bottom right;
+}
+
+.toast {
+  animation: phasr-toast-in 220ms var(--ease-standard) both;
+  will-change: opacity, transform;
+}
+
+.workspace-node,
+.sidebar-row,
+.change-section,
+.change-group,
+.change-file-row,
+.repo-tree-dir,
+.repo-tree-file,
+.commit-history-item {
+  animation: phasr-row-in 180ms var(--ease-standard) both;
+}
+
+.tab,
+.right-tab,
+.provider-pill,
+.publish-btn,
+.context-open-ide-btn,
+.workspace-summary,
+.sidebar-row,
+.change-section-summary,
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary,
+.new-tab-type-option,
+.tree-action-btn,
+.icon-btn,
+.ghost-action,
+.tab-close,
+.sidebar-task-close {
+  will-change: transform, background-color, border-color, opacity;
+}
+
+button:hover:not(:disabled),
+.tab:hover,
+.provider-pill:hover,
+.workspace-summary:hover,
+.sidebar-row:hover,
+.change-file-row:hover,
+.repo-tree-file:hover,
+.change-tree-dir > summary:hover,
+.repo-tree-dir > summary:hover,
+.commit-history-summary:hover,
+.new-tab-type-option:hover {
+  transform: translateY(-1px);
+}
+
+button:active:not(:disabled),
+.tab:active,
+.provider-pill:active,
+.workspace-summary:active,
+.sidebar-row:active,
+.change-file-row:active,
+.new-tab-type-option:active {
+  transform: translateY(0) scale(0.995);
+}
+
+.status-dot.active,
+.sidebar-status-dot.status-running,
+.sidebar-status-dot.running,
+.status-running .sidebar-status-dot {
+  animation: phasr-status-pulse 1450ms var(--ease-standard) infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop:not(.hidden),
+  .modal-backdrop:not(.hidden) .modal,
+  .tab-overflow-menu:not(.hidden),
+  .publish-action-menu:not(.hidden),
+  .context-open-ide-menu:not(.hidden),
+  #taskContextBranchMenu:not(.hidden),
+  #openIdeMenu:not(.hidden),
+  .toast,
+  .workspace-node,
+  .sidebar-row,
+  .change-section,
+  .change-group,
+  .change-file-row,
+  .repo-tree-dir,
+  .repo-tree-file,
+  .commit-history-item,
+  .status-dot.active,
+  .sidebar-status-dot.status-running,
+  .sidebar-status-dot.running,
+  .status-running .sidebar-status-dot {
+    animation: none !important;
+  }
+
+  button:hover:not(:disabled),
+  .tab:hover,
+  .provider-pill:hover,
+  .workspace-summary:hover,
+  .sidebar-row:hover,
+  .change-file-row:hover,
+  .repo-tree-file:hover,
+  .change-tree-dir > summary:hover,
+  .repo-tree-dir > summary:hover,
+  .commit-history-summary:hover,
+  .new-tab-type-option:hover,
+  button:active:not(:disabled),
+  .tab:active,
+  .provider-pill:active,
+  .workspace-summary:active,
+  .sidebar-row:active,
+  .change-file-row:active,
+  .new-tab-type-option:active {
+    transform: none !important;
+  }
+}
+
+/* Product-design elevation layer: Notion/Vercel-inspired hierarchy and finish. */
+:root,
+html[data-theme='dark'],
+html[data-theme='light'] {
+  --bg-primary: #0b0f14;
+  --bg-secondary: #10161d;
+  --bg-tertiary: #151c25;
+  --bg-raised: #18212b;
+  --surface-hover: rgba(244, 247, 251, 0.055);
+  --surface-pressed: rgba(244, 247, 251, 0.08);
+  --surface-selected: rgba(244, 247, 251, 0.07);
+  --border-subtle: rgba(244, 247, 251, 0.07);
+  --border-default: rgba(244, 247, 251, 0.12);
+  --border-strong: rgba(244, 247, 251, 0.2);
+  --text-primary: #f7f8fb;
+  --text-secondary: #b7c0cc;
+  --text-tertiary: #788391;
+  --accent-primary: #8f98ff;
+  --accent-hover: #a8afff;
+  --accent-soft: rgba(143, 152, 255, 0.12);
+  --shadow-elevated: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border-default);
+}
+
+body {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.app {
+  background: var(--bg-primary);
+}
+
+.left-col {
+  width: 288px !important;
+  background: #0d1218 !important;
+  border-right-color: rgba(244, 247, 251, 0.08) !important;
+}
+
+.right-col {
+  width: 360px !important;
+  background: #0f151c !important;
+  border-left-color: rgba(244, 247, 251, 0.08) !important;
+}
+
+.center-col {
+  background: #080c11 !important;
+}
+
+.tabs {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 var(--space-12) !important;
+  background: rgba(16, 22, 29, 0.92) !important;
+  border-bottom-color: rgba(244, 247, 251, 0.08) !important;
+}
+
+.tab {
+  height: 30px;
+  min-width: 92px;
+  max-width: 280px;
+  padding: 0 var(--space-8) 0 var(--space-10);
+  color: var(--text-tertiary);
+}
+
+.tab.active {
+  background: #171f29 !important;
+  border-color: rgba(244, 247, 251, 0.11) !important;
+}
+
+.tab-label {
+  font-weight: 560;
+}
+
+.plus-tab {
+  min-width: 30px;
+  width: 30px;
+  color: var(--text-secondary);
+}
+
+.tab-bar {
+  justify-content: flex-start !important;
+  gap: var(--space-8);
+}
+
+.tabs-empty {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0;
+  padding: 0 var(--space-10);
+  border: 1px solid rgba(244, 247, 251, 0.08);
+  border-radius: 7px;
+  background: rgba(244, 247, 251, 0.025);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.workspace-list {
+  padding: var(--space-10) var(--space-8);
+}
+
+.workspace-summary {
+  min-height: 36px;
+  padding: 0 var(--space-8);
+  border-radius: 7px !important;
+  color: var(--text-secondary);
+}
+
+.workspace-name {
+  font-size: 12px;
+  font-weight: 610;
+}
+
+.workspace-avatar {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 7px !important;
+  background: #171f29 !important;
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.08) !important;
+}
+
+.workspace-node.active > .workspace-summary,
+.sidebar-row.selected {
+  background: rgba(244, 247, 251, 0.075) !important;
+  box-shadow: inset 2px 0 0 var(--accent-primary) !important;
+}
+
+.workspace-children {
+  margin-left: 16px;
+  padding-left: var(--space-8);
+  border-left-color: rgba(244, 247, 251, 0.06);
+}
+
+.sidebar-row {
+  min-height: 28px;
+  padding: 4px var(--space-8);
+  border-radius: 7px !important;
+}
+
+.sidebar-row-title {
+  font-weight: 540;
+}
+
+.sidebar-row-subtitle {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+#createWorkspaceBtn {
+  min-height: 38px !important;
+  border-color: rgba(244, 247, 251, 0.1) !important;
+  background: rgba(244, 247, 251, 0.03) !important;
+}
+
+#createWorkspaceBtn:hover {
+  background: rgba(244, 247, 251, 0.065) !important;
+  border-color: rgba(244, 247, 251, 0.16) !important;
+}
+
+.task-header {
+  min-height: 40px;
+  background: #0d1218 !important;
+}
+
+.task-header-title {
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.transcript-wrap,
+#terminalPanel,
+.terminal-box {
+  background: #080c11 !important;
+}
+
+#terminal {
+  padding: var(--space-16) !important;
+}
+
+.center-empty {
+  max-width: 360px;
+  margin: auto;
+  color: var(--text-tertiary) !important;
+  line-height: 1.55;
+}
+
+.center-empty::before {
+  display: block !important;
+  content: '';
+  width: 44px;
+  height: 44px;
+  margin: 0 auto var(--space-12);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(143, 152, 255, 0.22), rgba(244, 247, 251, 0.03)),
+    #121923;
+  box-shadow:
+    inset 0 0 0 1px rgba(244, 247, 251, 0.1),
+    0 16px 32px rgba(0, 0, 0, 0.24);
+}
+
+.right-head {
+  height: 44px;
+  min-height: 44px;
+  background: #0d1218 !important;
+}
+
+.right-tab {
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0 var(--space-10) !important;
+  border-radius: 7px !important;
+}
+
+.right-tab.active {
+  background: #171f29 !important;
+}
+
+.commit-box {
+  padding: var(--space-10) var(--space-12) var(--space-12) !important;
+  background: #10161d !important;
+}
+
+#commitMessage,
+.files-search,
+.workspace-modal-input,
+.workspace-modal-input-with-action,
+.new-task-inline-select,
+.new-task-branch-slug-wrap,
+.new-task-compose-textarea,
+.new-task-branch-input {
+  background: #0d1218 !important;
+  border-color: rgba(244, 247, 251, 0.1) !important;
+}
+
+#commitMessage:hover,
+.files-search:hover,
+.workspace-modal-input:hover,
+.workspace-modal-input-with-action:hover,
+.new-task-inline-select:hover,
+.new-task-compose-textarea:hover {
+  border-color: rgba(244, 247, 251, 0.18) !important;
+}
+
+.changes-wrap {
+  padding: var(--space-10) !important;
+  background: #0f151c !important;
+}
+
+.change-section {
+  padding: var(--space-4) 0;
+}
+
+.change-section-summary {
+  min-height: 30px;
+  color: var(--text-secondary) !important;
+}
+
+#stagedSectionLabel,
+#unstagedSectionLabel,
+#commitsSectionLabel {
+  color: var(--text-secondary) !important;
+  font-size: 11px !important;
+  text-transform: uppercase;
+}
+
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary {
+  min-height: 28px;
+  border-radius: 7px !important;
+}
+
+.change-file-name,
+.tree-row-label {
+  font-size: 11px !important;
+}
+
+.change-file-row.selected {
+  background: rgba(143, 152, 255, 0.105) !important;
+  box-shadow: inset 2px 0 0 var(--accent-primary) !important;
+}
+
+.file-icon {
+  width: 18px;
+  min-width: 18px;
+  color: var(--text-tertiary) !important;
+}
+
+.sidebar-empty,
+.empty,
+.diff-empty {
+  min-height: 76px;
+  place-content: center;
+  text-align: center;
+  border-radius: 10px !important;
+  background: rgba(244, 247, 251, 0.025) !important;
+}
+
+#taskContextBar {
+  height: 32px !important;
+  min-height: 32px !important;
+  background: #0d1218 !important;
+  border-top-color: rgba(244, 247, 251, 0.08) !important;
+}
+
+.context-open-ide-btn {
+  height: 22px;
+  min-height: 22px;
+  background: rgba(244, 247, 251, 0.035) !important;
+}
+
+.modal-backdrop {
+  background: rgba(3, 6, 10, 0.72) !important;
+  backdrop-filter: blur(10px) saturate(1.12);
+}
+
+.modal {
+  border-radius: 14px !important;
+  background: #111821 !important;
+  border-color: rgba(244, 247, 251, 0.12) !important;
+  box-shadow:
+    0 28px 90px rgba(0, 0, 0, 0.62),
+    0 0 0 1px rgba(244, 247, 251, 0.08) !important;
+}
+
+.modal-head {
+  position: relative;
+  min-height: 68px !important;
+  padding: var(--space-16) var(--space-16) var(--space-12) !important;
+  background: #111821 !important;
+}
+
+.modal-head::before {
+  content: '';
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
+    #151e28;
+  box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.1);
+}
+
+#workspaceModalTitle,
+#newTabTypeModalTitle,
+.close-task-modal-title {
+  font-size: 17px !important;
+  letter-spacing: -0.01em;
+}
+
+#workspaceModalSubtitle {
+  max-width: 460px;
+  color: var(--text-tertiary) !important;
+}
+
+.modal-body {
+  padding: var(--space-16) !important;
+  background: #111821;
+}
+
+.modal-foot {
+  padding: var(--space-12) var(--space-16) var(--space-16) !important;
+  background: #111821 !important;
+}
+
+#workspaceModalBackdrop .modal {
+  width: min(640px, 94vw) !important;
+}
+
+.workspace-modal-field {
+  gap: var(--space-8) !important;
+}
+
+.workspace-modal-label,
+.commit-box label {
+  color: var(--text-secondary) !important;
+  font-size: 11px !important;
+  font-weight: 640 !important;
+}
+
+.workspace-modal-input,
+.workspace-modal-input-with-action {
+  min-height: 40px !important;
+  border-radius: 8px !important;
+}
+
+.workspace-modal-help {
+  min-height: 16px;
+  color: var(--text-tertiary);
+}
+
+.workspace-modal-browse-btn {
+  background: #0d1218 !important;
+}
+
+#workspaceModalCloseBtn,
+#workspaceModalCancelBtn,
+#newTabTypeModalCloseBtn,
+#closeTaskModalCancelBtn {
+  min-height: 36px !important;
+  padding: 0 var(--space-12) !important;
+}
+
+#workspaceModalCreateBtn,
+#workspaceInitPromptYesBtn,
+#newTaskModalCreateBtn,
+#closeTaskModalDeleteBtn {
+  min-height: 36px !important;
+  padding: 0 var(--space-14) !important;
+}
+
+#workspaceModalCreateBtn,
+#newTaskModalCreateBtn,
+#workspaceInitPromptYesBtn {
+  background: #f7f8fb !important;
+  color: #0b0f14 !important;
+  border-color: transparent !important;
+}
+
+#workspaceModalCreateBtn:hover,
+#newTaskModalCreateBtn:hover,
+#workspaceInitPromptYesBtn:hover {
+  background: #ffffff !important;
+}
+
+#workspaceModalCreateBtn:disabled,
+#newTaskModalCreateBtn:disabled {
+  background: rgba(244, 247, 251, 0.1) !important;
+  color: rgba(244, 247, 251, 0.42) !important;
+}
+
+.new-task-modal {
+  width: min(680px, 94vw) !important;
+}
+
+.new-task-compose {
+  background: #111821;
+  border-color: rgba(244, 247, 251, 0.1);
+}
+
+.new-task-controls-grid,
+.new-task-prompt-wrap,
+.new-task-branch-grid,
+.new-task-compose-footer {
+  padding: var(--space-12);
+}
+
+.new-task-compose-textarea {
+  min-height: 144px;
+  border-radius: 10px !important;
+}
+
+.new-tab-type-option {
+  min-height: 104px;
+  padding: var(--space-14);
+  border-radius: 12px !important;
+  background: #0d1218 !important;
+}
+
+.new-tab-type-option:hover {
+  background: #151e28 !important;
+  transform: translateY(-2px);
+}
+
+.tab-overflow-menu,
+.publish-action-menu,
+.context-open-ide-menu,
+#taskContextBranchMenu {
+  background: #111821 !important;
+  border-color: rgba(244, 247, 251, 0.12) !important;
+  border-radius: 12px !important;
+}
+
+.toast {
+  background: #111821 !important;
+  border-color: rgba(244, 247, 251, 0.12);
+  border-radius: 12px;
+}
+
+/* Zero-data state polish. */
+.tab-bar:empty::before {
+  content: 'No open tabs';
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--space-10);
+  border: 1px solid rgba(244, 247, 251, 0.08);
+  border-radius: 7px;
+  background: rgba(244, 247, 251, 0.025);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.sidebar-empty:not(.sidebar-empty-tasks) {
+  min-height: 96px;
+  padding: var(--space-14);
+  font-size: 0 !important;
+  text-align: left;
+  place-content: center start;
+}
+
+.sidebar-empty:not(.sidebar-empty-tasks)::before {
+  display: block !important;
+  content: '';
+  width: 28px;
+  height: 28px;
+  margin-bottom: var(--space-10);
+  border-radius: 8px;
+  background: #171f29;
+  box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.1);
+}
+
+.sidebar-empty:not(.sidebar-empty-tasks)::after {
+  content: 'No workspaces\A Add a repository workspace to begin.';
+  white-space: pre-line;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.center-empty {
+  font-size: 0 !important;
+}
+
+.center-empty::after {
+  content: 'No Active Task\A Create a workspace, then open a task or terminal tab.';
+  white-space: pre-line;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.65;
+  text-align: center;
+}
+
+/* Final layout guardrails: keep late visual layers from breaking containment. */
+.change-section,
+.change-list,
+.change-group,
+.change-group-files,
+.change-tree-dir,
+.change-tree-children,
+.repo-tree-dir,
+.repo-tree-children,
+.commit-history-item,
+.commit-history-summary,
+.change-file-row,
+.change-file-main,
+.tree-row-label {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.commit-history-item,
+.change-tree-dir,
+.repo-tree-dir {
+  overflow: hidden;
+}
+
+.commit-history-summary,
+.change-tree-dir > summary,
+.repo-tree-dir > summary {
+  width: 100%;
+}
+
+.commit-history-label,
+.change-tree-dir > summary .tree-row-label,
+.repo-tree-dir > summary .tree-row-label {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 1180px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-shell {
+    min-height: 100%;
+    height: auto;
+  }
+
+  .app {
+    flex-direction: column;
+  }
+
+  .left-col,
+  .right-col,
+  .center-col {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    resize: none;
+  }
+
+  .left-col,
+  .right-col {
+    border-left: 0 !important;
+    border-right: 0 !important;
+  }
+
+  .left-col {
+    border-bottom: 1px solid var(--border-subtle) !important;
+  }
+
+  .right-col {
+    border-top: 1px solid var(--border-subtle) !important;
+  }
+}
+
+/* Visual QA hardening: replace text stand-ins with real icons and align modal headers/cards. */
+.file-icon {
+  position: relative;
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+  color: var(--text-tertiary) !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  overflow: hidden;
+}
+
+.file-icon::before,
+.file-icon::after {
+  content: '';
+  position: absolute;
+  display: block;
+}
+
+.file-icon::before {
+  inset: 2px 3px 1px 3px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.86;
+}
+
+.file-icon::after {
+  top: 3px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-top: 1.4px solid currentColor;
+  border-right: 1.4px solid currentColor;
+  transform: skew(-8deg);
+  opacity: 0.65;
+}
+
+.file-icon.dir::before {
+  inset: 4px 1px 2px 1px;
+  border: 1.4px solid currentColor;
+  border-radius: 3px;
+}
+
+.file-icon.dir::after {
+  top: 2px;
+  left: 2px;
+  width: 7px;
+  height: 4px;
+  border: 1.4px solid currentColor;
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+  transform: none;
+}
+
+.file-icon.go {
+  color: var(--success) !important;
+}
+
+.file-icon.doc {
+  color: var(--accent-primary) !important;
+}
+
+.file-icon.cfg {
+  color: var(--warning) !important;
+}
+
+.right-head-actions .icon-btn,
+.tree-action-btn,
+.change-section-action,
+.tab-close,
+.sidebar-task-close,
+.workspace-add-tab-btn,
+.workspace-delete-btn {
+  width: 24px !important;
+  min-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.tab-close,
+.plus-tab,
+.sidebar-task-close,
+.workspace-delete-btn,
+.workspace-add-tab-btn,
+.new-task-modal-close-x {
+  font-size: 0 !important;
+  line-height: 0 !important;
+}
+
+.tab-close::before,
+.sidebar-task-close::before,
+.workspace-delete-btn::before,
+.new-task-modal-close-x::before,
+.plus-tab::before,
+.workspace-add-tab-btn::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  display: block;
+  background: currentColor;
+  opacity: 0.88;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+.tab-close::before,
+.sidebar-task-close::before,
+.workspace-delete-btn::before,
+.new-task-modal-close-x::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M4.5 4.5l7 7M11.5 4.5l-7 7' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M4.5 4.5l7 7M11.5 4.5l-7 7' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.plus-tab::before,
+.workspace-add-tab-btn::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M8 3.5v9M3.5 8h9' stroke='black' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M8 3.5v9M3.5 8h9' stroke='black' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.tab-close svg,
+.sidebar-task-close svg,
+.workspace-delete-btn svg,
+.workspace-add-tab-btn svg {
+  display: none !important;
+}
+
+#changeViewModeBtn,
+#refreshGitBtn {
+  font-size: 0 !important;
+}
+
+#changeViewModeBtn::before,
+#refreshGitBtn::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  display: block;
+  background: currentColor;
+  opacity: 0.88;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+#changeViewModeBtn::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 4.25h10M3 8h10M3 11.75h10' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 4.25h10M3 8h10M3 11.75h10' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+#refreshGitBtn::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12.9 7.2a5 5 0 1 0-1.45 4.04' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3Cpath d='M12.8 3.8v3.4H9.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12.9 7.2a5 5 0 1 0-1.45 4.04' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3Cpath d='M12.8 3.8v3.4H9.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.modal-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: var(--space-12) !important;
+}
+
+.modal-head > .grid,
+.modal-head > h3 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modal-head > .btn-ghost {
+  flex: 0 0 auto;
+}
+
+.modal-head::before {
+  flex: 0 0 36px;
+  background:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 6.4A1.4 1.4 0 0 1 4.4 5h3.1l1.4 1.4h4.7A1.4 1.4 0 0 1 15 7.8v4.8a1.4 1.4 0 0 1-1.4 1.4H4.4A1.4 1.4 0 0 1 3 12.6V6.4Z' fill='none' stroke='%23c7d2e0' stroke-width='1.4' stroke-linejoin='round'/%3E%3Cpath d='M9 8.25v3.5M7.25 10h3.5' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
+    #151e28 !important;
+}
+
+#newTaskModalBackdrop .modal-head::before {
+  background:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='9' cy='5' r='2.2' fill='none' stroke='%23c7d2e0' stroke-width='1.4'/%3E%3Cpath d='M4.5 13c1-2.3 2.5-3.4 4.5-3.4s3.5 1.1 4.5 3.4' fill='none' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3Cpath d='M3 5h2M13 5h2M9 1.8v1' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
+    #151e28 !important;
+}
+
+#newTabTypeModalBackdrop .modal-head::before {
+  background:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9 4v10M4 9h10' stroke='%23c7d2e0' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
+    #151e28 !important;
+}
+
+#closeTaskModalBackdrop .modal-head::before {
+  background:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M5.5 6.5h7M7 6.5v6M11 6.5v6M7 4.5h4l.8 2H6.2l.8-2ZM6 6.5l.6 8h4.8l.6-8' fill='none' stroke='%23fecaca' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    linear-gradient(135deg, rgba(240, 115, 115, 0.22), rgba(244, 247, 251, 0.04)),
+    #151e28 !important;
+}
+
+.new-task-modal-head {
+  min-height: 68px !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+
+.new-task-modal-subtitle {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.new-task-modal .new-task-modal-close-x {
+  position: static;
+  flex: 0 0 auto;
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.new-task-modal-body {
+  padding: 18px !important;
+}
+
+.new-task-compose {
+  border-radius: 12px !important;
+}
+
+.new-task-controls-grid,
+.new-task-prompt-wrap,
+.new-task-branch-grid,
+.new-task-compose-footer {
+  padding: 14px !important;
+}
+
+.new-task-control-field,
+.new-task-branch-field,
+.new-task-prompt-wrap {
+  gap: var(--space-6) !important;
+}
+
+.new-task-controls-grid,
+.new-task-branch-grid {
+  gap: 12px !important;
+}
+
+.new-task-prompt-wrap,
+.new-task-branch-grid,
+.new-task-compose-footer {
+  border-top-color: rgba(244, 247, 251, 0.09) !important;
+}
+
+.new-task-inline-select,
+.new-task-branch-slug-wrap,
+.new-task-branch-input,
+.new-task-base-branch-select {
+  height: 34px;
+  min-height: 34px;
+  line-height: 34px;
+}
+
+.new-task-agent-icon {
+  left: 10px;
+}
+
+.new-task-agent-select {
+  padding-left: 32px;
+}
+
+.new-task-compose-textarea {
+  min-height: 136px !important;
+  padding: 12px !important;
+}
+
+.new-task-start-btn {
+  min-height: 36px !important;
+  font-size: 12px !important;
+}
+
+#newTabTypeModalTitle {
+  text-align: left !important;
+}
+
+.new-tab-type-grid {
+  gap: var(--space-12) !important;
+}
+
+.new-tab-type-option {
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
+  column-gap: var(--space-10);
+  row-gap: 3px;
+  min-height: 96px !important;
+  padding: var(--space-12) !important;
+}
+
+.new-tab-type-option::before {
+  content: '';
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+  justify-self: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background:
+    linear-gradient(135deg, rgba(143, 152, 255, 0.2), rgba(244, 247, 251, 0.03)),
+    #151e28;
+  box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.1);
+}
+
+.new-tab-type-option::after {
+  content: '';
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+  justify-self: center;
+  width: 16px;
+  height: 16px;
+  background: var(--text-secondary);
+}
+
+#newTabTypeTaskBtn::after {
+  -webkit-mask:
+    radial-gradient(circle at 50% 4px, #000 0 2.4px, transparent 2.6px),
+    linear-gradient(#000 0 0) center 8px / 12px 2px no-repeat,
+    linear-gradient(#000 0 0) center 12px / 8px 2px no-repeat;
+  mask:
+    radial-gradient(circle at 50% 4px, #000 0 2.4px, transparent 2.6px),
+    linear-gradient(#000 0 0) center 8px / 12px 2px no-repeat,
+    linear-gradient(#000 0 0) center 12px / 8px 2px no-repeat;
+}
+
+#newTabTypeTerminalBtn::after {
+  -webkit-mask:
+    linear-gradient(45deg, transparent 42%, #000 44% 56%, transparent 58%) 2px 4px / 6px 6px no-repeat,
+    linear-gradient(-45deg, transparent 42%, #000 44% 56%, transparent 58%) 2px 8px / 6px 6px no-repeat,
+    linear-gradient(#000 0 0) 9px 11px / 6px 2px no-repeat;
+  mask:
+    linear-gradient(45deg, transparent 42%, #000 44% 56%, transparent 58%) 2px 4px / 6px 6px no-repeat,
+    linear-gradient(-45deg, transparent 42%, #000 44% 56%, transparent 58%) 2px 8px / 6px 6px no-repeat,
+    linear-gradient(#000 0 0) 9px 11px / 6px 2px no-repeat;
+}
+
+.new-tab-type-title,
+.new-tab-type-desc {
+  grid-column: 2;
+}
+
+.new-tab-type-title {
+  align-self: end;
+}
+
+.new-tab-type-desc {
+  align-self: start;
+  max-width: 28ch;
+}
+
+.change-group-label,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary,
+.change-file-row,
+.repo-tree-file {
+  gap: var(--space-6);
+}
+
+/* Change review polish: cleaner diff surface and quieter file rows. */
+.diff-editor {
+  background: #090e13 !important;
+}
+
+.diff-editor:has(.diff-scroll-empty) {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.diff-editor-head {
+  min-height: 62px;
+  padding: 12px 14px !important;
+  background:
+    linear-gradient(180deg, rgba(244, 247, 251, 0.028), transparent),
+    #101720 !important;
+  border-bottom-color: rgba(244, 247, 251, 0.085) !important;
+}
+
+.diff-file-name {
+  font-size: 15px !important;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.diff-file-path {
+  margin-top: 3px;
+  color: color-mix(in srgb, var(--text-tertiary) 86%, transparent) !important;
+}
+
+.diff-head-mode {
+  color: color-mix(in srgb, var(--text-tertiary) 80%, transparent) !important;
+  font-size: 10px !important;
+}
+
+.diff-head-stat {
+  max-width: 240px;
+  color: color-mix(in srgb, var(--text-tertiary) 78%, transparent) !important;
+}
+
+.diff-close-btn {
+  min-height: 34px !important;
+  padding: 0 14px !important;
+  border-radius: 10px !important;
+  background: rgba(244, 247, 251, 0.035) !important;
+}
+
+.diff-scroll {
+  background: #080d12 !important;
+}
+
+.diff-scroll-empty {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.diff-empty-review {
+  width: min(380px, 100%);
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  text-align: center;
+  place-content: center;
+  gap: 6px;
+}
+
+.diff-empty-review::before {
+  content: '';
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 8px;
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(143, 152, 255, 0.16), transparent),
+    rgba(244, 247, 251, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.09);
+}
+
+.diff-empty-review {
+  position: relative;
+}
+
+.diff-empty-title {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.diff-empty-copy {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.changes-wrap {
+  padding: 14px !important;
+  gap: 10px !important;
+  background:
+    linear-gradient(180deg, rgba(244, 247, 251, 0.012), transparent 180px),
+    #0f151c !important;
+}
+
+.change-section {
+  padding: 0 !important;
+}
+
+.change-section-summary {
+  display: grid !important;
+  grid-template-columns: 14px minmax(0, 1fr) 24px;
+  align-items: center;
+  min-height: 34px !important;
+  padding: 0 8px !important;
+  column-gap: 8px !important;
+}
+
+#stagedSectionLabel,
+#unstagedSectionLabel,
+#commitsSectionLabel {
+  color: color-mix(in srgb, var(--text-secondary) 88%, transparent) !important;
+  font-size: 12px !important;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+}
+
+.change-list {
+  padding: 2px 0 10px !important;
+}
+
+.change-group {
+  display: grid;
+  gap: 2px;
+}
+
+.change-group-label {
+  min-height: 28px;
+  padding: 0 8px !important;
+  color: color-mix(in srgb, var(--text-tertiary) 88%, transparent) !important;
+}
+
+.change-group-files,
+.change-tree-children {
+  margin-left: 10px;
+  padding-left: 8px;
+  border-left-color: rgba(244, 247, 251, 0.055) !important;
+  gap: 2px;
+}
+
+.change-file-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 34px !important;
+  padding: 4px 6px 4px calc(8px + (var(--change-depth, 0) * 12px)) !important;
+  border-radius: 9px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+}
+
+.change-file-row:hover {
+  background: rgba(244, 247, 251, 0.045) !important;
+  border-color: rgba(244, 247, 251, 0.055) !important;
+}
+
+.change-file-row.selected {
+  background: rgba(143, 152, 255, 0.13) !important;
+  border-color: rgba(143, 152, 255, 0.18) !important;
+  box-shadow: inset 2px 0 0 var(--accent-primary) !important;
+}
+
+.change-file-main {
+  display: grid !important;
+  grid-template-columns: 8px 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.change-file-name {
+  font-size: 12px !important;
+  line-height: 1.25;
+  color: color-mix(in srgb, var(--text-primary) 96%, var(--text-secondary)) !important;
+}
+
+.change-status-icon {
+  width: 7px !important;
+  min-width: 7px !important;
+  height: 7px !important;
+  box-shadow: 0 0 0 2px rgba(244, 247, 251, 0.035);
+}
+
+.change-file-row .file-icon {
+  width: 18px !important;
+  min-width: 18px !important;
+  height: 18px !important;
+  color: color-mix(in srgb, var(--text-secondary) 78%, var(--text-tertiary)) !important;
+}
+
+.change-inline-counts {
+  min-width: 42px;
+  justify-content: end;
+  gap: 6px !important;
+  font-size: 10px !important;
+}
+
+.tree-row-right {
+  width: max-content;
+  opacity: 0;
+  gap: 3px !important;
+}
+
+.change-file-row:hover .tree-row-right,
+.change-file-row:focus-within .tree-row-right {
+  opacity: 1;
+}
+
+.change-file-row.selected .tree-row-right {
+  opacity: 0.72;
+}
+
+.tree-action-btn {
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  border-radius: 7px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.tree-action-btn.stage,
+.tree-action-btn.unstage,
+.tree-action-btn.discard {
+  color: var(--text-tertiary) !important;
+}
+
+.tree-action-btn.stage:hover {
+  color: var(--success) !important;
+}
+
+.tree-action-btn.unstage:hover,
+.tree-action-btn.discard:hover {
+  color: var(--danger) !important;
+}
+
+.change-tree-dir > summary,
+.commit-history-summary {
+  min-height: 32px !important;
+  padding: 4px 8px !important;
+  border-radius: 9px !important;
+}
+
+/* Right sidebar density reset: keep changes as a compact desktop tool panel. */
+.right-col {
+  background: #0f151c !important;
+}
+
+.right-head {
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 0 10px !important;
+  background: #0e141b !important;
+}
+
+.right-tabs {
+  gap: 4px !important;
+}
+
+.right-tab {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+}
+
+.right-head-actions .icon-btn {
+  width: 24px !important;
+  min-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+}
+
+.commit-box {
+  padding: 10px !important;
+  gap: 8px !important;
+  background: #10161d !important;
+}
+
+.commit-message-wrap {
+  gap: 6px !important;
+}
+
+.commit-message-head {
+  min-height: 18px;
+}
+
+.commit-box label {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  font-weight: 650;
+}
+
+#suggestCommitBtn {
+  min-height: 18px !important;
+  padding: 0 !important;
+  font-size: 10px !important;
+}
+
+#commitMessage {
+  min-height: 48px !important;
+  height: 48px !important;
+  padding: 8px 9px !important;
+  border-radius: 9px !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+.publish-split-wrap {
+  grid-template-columns: minmax(0, 1fr) 34px !important;
+}
+
+.publish-btn {
+  min-height: 32px !important;
+  height: 32px !important;
+  font-size: 11px !important;
+  border-radius: 9px !important;
+}
+
+.changes-wrap {
+  padding: 10px !important;
+  gap: 2px !important;
+  background: #0f151c !important;
+}
+
+.change-section {
+  padding: 0 !important;
+}
+
+.change-section + .change-section {
+  margin-top: 4px;
+}
+
+.change-section-summary {
+  grid-template-columns: 14px minmax(0, 1fr) 22px !important;
+  min-height: 28px !important;
+  padding: 0 6px !important;
+  column-gap: 7px !important;
+  border-radius: 7px !important;
+}
+
+.change-section-summary .tree-chevron {
+  width: 12px !important;
+  height: 12px !important;
+  margin: 0 !important;
+}
+
+#stagedSectionLabel,
+#unstagedSectionLabel,
+#commitsSectionLabel {
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.055em !important;
+}
+
+.change-section-action {
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  opacity: 0.82;
+}
+
+.change-list {
+  padding: 0 0 2px !important;
+}
+
+.change-list > .empty {
+  display: none !important;
+}
+
+.change-group-label {
+  min-height: 22px !important;
+  padding: 0 6px !important;
+  font-size: 11px !important;
+}
+
+.change-group-files,
+.change-tree-children {
+  margin-left: 8px !important;
+  padding-left: 7px !important;
+}
+
+.change-file-row,
+.change-tree-dir > summary,
+.commit-history-summary {
+  min-height: 28px !important;
+}
+
+/* Final empty-state iconography: no decorative blank squares. */
+.center-empty {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  max-width: 420px !important;
+  margin: auto !important;
+  padding: 24px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+  color: var(--text-tertiary) !important;
+}
+
+.center-empty::before,
+.center-empty::after {
+  content: none !important;
+  display: none !important;
+}
+
+.center-empty-icon {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+  border-radius: 13px;
+  color: color-mix(in srgb, var(--text-secondary) 86%, var(--accent-primary));
+  background:
+    linear-gradient(135deg, rgba(143, 152, 255, 0.2), rgba(244, 247, 251, 0.035)),
+    #121923;
+  box-shadow:
+    inset 0 0 0 1px rgba(244, 247, 251, 0.11),
+    0 14px 32px rgba(0, 0, 0, 0.28);
+}
+
+.center-empty-icon::before {
+  content: '';
+  width: 24px;
+  height: 17px;
+  border: 1.7px solid currentColor;
+  border-radius: 5px;
+  opacity: 0.92;
+}
+
+.center-empty-icon::after {
+  content: '';
+  position: absolute;
+  left: 15px;
+  top: 18px;
+  width: 16px;
+  height: 9px;
+  background: currentColor;
+  opacity: 0.92;
+  -webkit-mask:
+    linear-gradient(45deg, transparent 0 42%, #000 44% 56%, transparent 58%) 0 0 / 7px 7px no-repeat,
+    linear-gradient(-45deg, transparent 0 42%, #000 44% 56%, transparent 58%) 0 4px / 7px 7px no-repeat,
+    linear-gradient(#000 0 0) 10px 7px / 6px 2px no-repeat;
+  mask:
+    linear-gradient(45deg, transparent 0 42%, #000 44% 56%, transparent 58%) 0 0 / 7px 7px no-repeat,
+    linear-gradient(-45deg, transparent 0 42%, #000 44% 56%, transparent 58%) 0 4px / 7px 7px no-repeat,
+    linear-gradient(#000 0 0) 10px 7px / 6px 2px no-repeat;
+}
+
+.center-empty-title {
+  display: block;
+  color: color-mix(in srgb, var(--text-secondary) 90%, var(--text-primary));
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.center-empty-copy {
+  display: block;
+  max-width: 46ch;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+.diff-empty-review::before {
+  position: relative;
+  display: block !important;
+  background:
+    linear-gradient(135deg, rgba(143, 152, 255, 0.18), rgba(244, 247, 251, 0.03)),
+    #121923 !important;
+}
+
+.diff-empty-review::after {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin-top: -91px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--text-secondary) 82%, var(--accent-primary));
+  -webkit-mask:
+    linear-gradient(#000 0 0) 3px 2px / 12px 14px no-repeat,
+    linear-gradient(#000 0 0) 6px 6px / 6px 1.5px no-repeat,
+    linear-gradient(#000 0 0) 6px 10px / 6px 1.5px no-repeat,
+    linear-gradient(#000 0 0) 6px 14px / 4px 1.5px no-repeat;
+  mask:
+    linear-gradient(#000 0 0) 3px 2px / 12px 14px no-repeat,
+    linear-gradient(#000 0 0) 6px 6px / 6px 1.5px no-repeat,
+    linear-gradient(#000 0 0) 6px 10px / 6px 1.5px no-repeat,
+    linear-gradient(#000 0 0) 6px 14px / 4px 1.5px no-repeat;
+}
+
+.sidebar-empty:not(.sidebar-empty-tasks)::before {
+  width: 30px !important;
+  height: 24px !important;
+  border-radius: 0 !important;
+  background: color-mix(in srgb, var(--text-secondary) 78%, var(--accent-primary)) !important;
+  box-shadow: none !important;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='30' height='24' viewBox='0 0 30 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2.5 7.5c0-1.66 1.34-3 3-3h6.1l2.2 2.5h10.7c1.66 0 3 1.34 3 3v8.5c0 1.66-1.34 3-3 3h-19c-1.66 0-3-1.34-3-3v-11Z' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='30' height='24' viewBox='0 0 30 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2.5 7.5c0-1.66 1.34-3 3-3h6.1l2.2 2.5h10.7c1.66 0 3 1.34 3 3v8.5c0 1.66-1.34 3-3 3h-19c-1.66 0-3-1.34-3-3v-11Z' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E");
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+.sidebar-empty:not(.sidebar-empty-tasks)::after {
+  display: block;
+}
+
+/* Right sidebar typography normalization: keep it on the same UI scale as the app. */
+.right-col {
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  letter-spacing: 0 !important;
+}
+
+.right-col .right-tab,
+.right-col .publish-btn,
+.right-col .change-section-summary,
+.right-col .change-file-name,
+.right-col .repo-tree-file,
+.right-col .repo-tree-dir > summary,
+.right-col .commit-history-summary,
+.right-col .tree-row-label,
+.right-col #commitMessage,
+.right-col .files-search {
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  letter-spacing: 0 !important;
+}
+
+.right-col .commit-box label,
+.right-col #repoFilesMeta,
+.right-col .change-group-label,
+.right-col .muted {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  letter-spacing: 0 !important;
+}
+
+.right-col #suggestCommitBtn,
+.right-col .change-inline-counts,
+.right-col .tree-action-btn,
+.right-col .change-section-action {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+}
+
+/* App style guidelines pass: compact operational UI, one token system. */
+:root,
+html[data-theme='dark'],
+html[data-theme='light'] {
+  --bg-primary: #0c0d10;
+  --bg-secondary: #121418;
+  --bg-tertiary: #181b20;
+  --bg-raised: #1d2127;
+  --surface-hover: rgba(255, 255, 255, 0.055);
+  --surface-pressed: rgba(255, 255, 255, 0.085);
+  --surface-selected: rgba(142, 151, 255, 0.105);
+  --border-subtle: rgba(242, 245, 248, 0.065);
+  --border-default: rgba(242, 245, 248, 0.11);
+  --border-strong: rgba(242, 245, 248, 0.18);
+  --text-primary: #f2f4f7;
+  --text-secondary: #b8bec8;
+  --text-tertiary: #7b8491;
+  --accent-primary: #8e97ff;
+  --accent-hover: #a4abff;
+  --accent-soft: rgba(142, 151, 255, 0.12);
+  --accent-glow: rgba(142, 151, 255, 0.18);
+  --success: #62bd82;
+  --warning: #d5a54f;
+  --danger: #df6767;
+  --mockup-terminal-bg: #090a0d;
+  --h-tab: 28px;
+  --h-button: 32px;
+  --h-input: 32px;
+  --h-panel-head: 38px;
+  --right-width: 340px;
+  --right-min: 292px;
+  --right-max: 430px;
+  --left-width: 288px;
+  --radius-control: 7px;
+  --shadow-elevated: 0 18px 48px rgba(0, 0, 0, 0.42), 0 0 0 1px var(--border-subtle);
+  --shadow-focus: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 34%, transparent);
+}
+
+body {
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  letter-spacing: 0 !important;
+}
+
+button,
+input,
+textarea,
+select {
+  letter-spacing: 0 !important;
+}
+
+button {
+  border-radius: var(--radius-control) !important;
+  min-height: var(--h-button);
+}
+
+input,
+textarea,
+select {
+  border-radius: var(--radius-control) !important;
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-default) !important;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible,
+.workspace-summary:focus-visible,
+.sidebar-row:focus-visible,
+.change-section-summary:focus-visible,
+.change-file-row:focus-visible,
+.repo-tree-file:focus-visible,
+.repo-tree-dir > summary:focus-visible,
+.commit-history-summary:focus-visible {
+  outline: none !important;
+  box-shadow: var(--shadow-focus) !important;
+}
+
+.app-shell,
+.app {
+  background: var(--bg-primary) !important;
+}
+
+.left-col,
+.right-col,
+.center-col {
+  background: var(--bg-secondary) !important;
+  box-shadow: none !important;
+}
+
+.left-col {
+  border-right: 1px solid var(--border-subtle) !important;
+}
+
+.right-col {
+  display: flex !important;
+  flex-direction: column !important;
+  width: var(--right-width) !important;
+  min-width: var(--right-min) !important;
+  max-width: var(--right-max) !important;
+  border-left: 1px solid var(--border-subtle) !important;
+  font-family: var(--font-sans) !important;
+}
+
+.center-col,
+.transcript-wrap,
+.terminal-box {
+  background: var(--bg-primary) !important;
+}
+
+.tabs,
+.compose,
+.task-header,
+.right-head,
+.commit-box,
+#taskContextBar {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+#taskContextBar {
+  color: var(--text-secondary) !important;
+}
+
+.right-head {
+  height: var(--h-panel-head) !important;
+  min-height: var(--h-panel-head) !important;
+  padding: 0 10px !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+
+.right-tabs {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 1px !important;
+  padding: 2px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px !important;
+  background: color-mix(in srgb, var(--bg-primary) 62%, var(--bg-tertiary)) !important;
+}
+
+.right-tab {
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-tertiary) !important;
+  font-size: 13px !important;
+  font-weight: 560 !important;
+  line-height: 1 !important;
+}
+
+.right-tab:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-secondary) !important;
+}
+
+.right-tab.active {
+  background: var(--bg-raised) !important;
+  color: var(--text-primary) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default) !important;
+}
+
+.right-head-actions {
+  gap: 4px !important;
+}
+
+.right-head-actions .icon-btn,
+.icon-btn.btn-ghost {
+  width: 26px !important;
+  min-width: 26px !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-tertiary) !important;
+}
+
+.right-head-actions .icon-btn:hover,
+.icon-btn.btn-ghost:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+}
+
+.toolbar-icon {
+  display: block;
+  width: 15px;
+  height: 15px;
+  background: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+.icon-refresh {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M13 4.2V1.5h1.4v5.1H9.3V5.2h2.55A4.65 4.65 0 1 0 12.4 11l1.1.86A6.05 6.05 0 1 1 13 4.2Z' fill='black'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M13 4.2V1.5h1.4v5.1H9.3V5.2h2.55A4.65 4.65 0 1 0 12.4 11l1.1.86A6.05 6.05 0 1 1 13 4.2Z' fill='black'/%3E%3C/svg%3E");
+}
+
+.icon-view-grouped {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 3h10v1.4H3V3Zm0 4.3h10v1.4H3V7.3Zm0 4.3h10V13H3v-1.4Z' fill='black'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 3h10v1.4H3V3Zm0 4.3h10v1.4H3V7.3Zm0 4.3h10V13H3v-1.4Z' fill='black'/%3E%3C/svg%3E");
+}
+
+.icon-view-tree {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M4 2.5h2v2H4v-2Zm0 4.5h2v2H4V7Zm0 4.5h2v2H4v-2ZM7.5 3.05H13v1.4H7.5v-1.4Zm0 4.5H13v1.4H7.5v-1.4Zm0 4.5H13v1.4H7.5v-1.4Z' fill='black'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M4 2.5h2v2H4v-2Zm0 4.5h2v2H4V7Zm0 4.5h2v2H4v-2ZM7.5 3.05H13v1.4H7.5v-1.4Zm0 4.5H13v1.4H7.5v-1.4Zm0 4.5H13v1.4H7.5v-1.4Z' fill='black'/%3E%3C/svg%3E");
+}
+
+.commit-box {
+  flex: 0 0 auto !important;
+  padding: 9px 10px 10px !important;
+  gap: 8px !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+
+.commit-message-wrap {
+  gap: 5px !important;
+}
+
+.commit-message-head {
+  min-height: 18px !important;
+}
+
+.commit-box label {
+  margin: 0 !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 620 !important;
+  line-height: 1.25 !important;
+}
+
+#suggestCommitBtn {
+  min-height: 18px !important;
+  padding: 0 2px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  text-decoration: none !important;
+}
+
+#suggestCommitBtn:hover {
+  color: var(--accent-primary) !important;
+  background: transparent !important;
+}
+
+#commitMessage {
+  height: 50px !important;
+  min-height: 50px !important;
+  max-height: 82px !important;
+  resize: vertical !important;
+  padding: 7px 8px !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--bg-primary) 50%, var(--bg-tertiary)) !important;
+  border: 1px solid var(--border-default) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+}
+
+#commitMessage::placeholder {
+  color: color-mix(in srgb, var(--text-tertiary) 82%, transparent) !important;
+  font-style: normal !important;
+}
+
+.publish-split-wrap {
+  grid-template-columns: minmax(0, 1fr) 34px !important;
+}
+
+.publish-btn {
+  height: 31px !important;
+  min-height: 31px !important;
+  border: 1px solid var(--border-default) !important;
+  background: color-mix(in srgb, var(--bg-primary) 48%, var(--bg-tertiary)) !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-weight: 620 !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+}
+
+.publish-btn:hover {
+  background: var(--bg-raised) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.publish-btn:disabled,
+.publish-btn:disabled:hover {
+  opacity: 0.48 !important;
+  background: color-mix(in srgb, var(--bg-primary) 48%, var(--bg-tertiary)) !important;
+  color: var(--text-tertiary) !important;
+  border-color: var(--border-default) !important;
+}
+
+.publish-primary-btn {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+
+.publish-dropdown-btn {
+  border-left: 0 !important;
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+}
+
+.publish-action-menu {
+  top: calc(100% + 5px) !important;
+  min-width: 180px !important;
+  padding: 4px !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: 8px !important;
+  background: var(--bg-raised) !important;
+  box-shadow: var(--shadow-elevated) !important;
+}
+
+.publish-action-item {
+  min-height: 28px !important;
+  border-radius: 6px !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+}
+
+.publish-action-item:hover,
+.publish-action-item.active {
+  background: var(--surface-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+.changes-wrap {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  padding: 8px !important;
+  gap: 3px !important;
+  background: var(--bg-secondary) !important;
+}
+
+.change-section {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.change-section + .change-section {
+  margin-top: 4px !important;
+}
+
+.change-section-summary {
+  display: grid !important;
+  grid-template-columns: 14px minmax(0, 1fr) 24px !important;
+  align-items: center !important;
+  min-height: 28px !important;
+  padding: 0 5px !important;
+  column-gap: 6px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+}
+
+.change-section-summary:hover {
+  background: var(--surface-hover) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+.change-section-summary .tree-chevron {
+  width: 12px !important;
+  min-width: 12px !important;
+  height: 12px !important;
+  margin: 0 !important;
+  color: var(--text-tertiary) !important;
+}
+
+#stagedSectionLabel,
+#unstagedSectionLabel,
+#commitsSectionLabel {
+  margin: 0 !important;
+  overflow: hidden !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 680 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0 !important;
+  text-overflow: ellipsis !important;
+  text-transform: uppercase !important;
+  white-space: nowrap !important;
+}
+
+.change-section-action {
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  justify-self: end !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  opacity: 0.82 !important;
+}
+
+.change-section-action:hover {
+  background: var(--surface-hover) !important;
+  box-shadow: none !important;
+}
+
+.change-list {
+  display: grid !important;
+  gap: 1px !important;
+  padding: 1px 0 2px !important;
+}
+
+.change-group {
+  display: grid !important;
+  gap: 1px !important;
+}
+
+.change-group-label {
+  display: grid !important;
+  grid-template-columns: 16px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-height: 24px !important;
+  padding: 0 6px !important;
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1.2 !important;
+}
+
+.change-group-files,
+.change-tree-children,
+.repo-tree-children {
+  display: grid !important;
+  gap: 1px !important;
+  margin-left: 9px !important;
+  padding-left: 7px !important;
+  border-left: 1px solid rgba(242, 245, 248, 0.055) !important;
+}
+
+.change-file-row,
+.repo-tree-file,
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary {
+  min-height: 27px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  line-height: 1.25 !important;
+}
+
+.change-file-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 50px !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 2px 5px 2px calc(6px + (var(--change-depth, 0) * 12px)) !important;
+}
+
+.change-file-row:hover,
+.repo-tree-file:hover,
+.change-tree-dir > summary:hover,
+.repo-tree-dir > summary:hover,
+.commit-history-summary:hover {
+  background: var(--surface-hover) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+.change-file-row.selected {
+  background: var(--surface-selected) !important;
+  border-color: color-mix(in srgb, var(--accent-primary) 24%, transparent) !important;
+  box-shadow: inset 2px 0 0 var(--accent-primary) !important;
+}
+
+.change-file-main {
+  display: grid !important;
+  grid-template-columns: 7px 16px minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-width: 0 !important;
+}
+
+.change-status-icon {
+  width: 6px !important;
+  min-width: 6px !important;
+  height: 6px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--text-tertiary) 72%, transparent) !important;
+  box-shadow: none !important;
+}
+
+.change-status-icon.added {
+  background: var(--success) !important;
+}
+
+.change-status-icon.modified {
+  background: var(--warning) !important;
+}
+
+.change-status-icon.deleted {
+  background: var(--danger) !important;
+}
+
+.change-file-name,
+.tree-row-label,
+.repo-tree-file {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  line-height: 1.25 !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.commit-history-label {
+  color: var(--text-secondary) !important;
+}
+
+.change-inline-counts {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: end !important;
+  min-width: 42px !important;
+  gap: 5px !important;
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+}
+
+.change-inline-counts .add {
+  color: var(--success) !important;
+}
+
+.change-inline-counts .del {
+  color: var(--danger) !important;
+}
+
+.tree-row-right {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  width: 50px !important;
+  min-width: 50px !important;
+  gap: 2px !important;
+  opacity: 0.48 !important;
+  pointer-events: auto !important;
+  transition: opacity var(--dur-fast) var(--ease-standard) !important;
+}
+
+.change-file-row:hover .tree-row-right,
+.change-file-row:focus-within .tree-row-right,
+.change-file-row.selected .tree-row-right {
+  opacity: 1 !important;
+}
+
+.tree-action-btn {
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tree-action-btn:hover {
+  background: var(--surface-hover) !important;
+  box-shadow: none !important;
+}
+
+.tree-action-icon,
+.change-section-action-icon {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.tree-action-btn.stage,
+#stageAllBtn {
+  color: var(--success) !important;
+}
+
+.tree-action-btn.unstage,
+#unstageAllBtn {
+  color: var(--warning) !important;
+}
+
+.tree-action-btn.discard {
+  color: var(--danger) !important;
+}
+
+.tree-chevron {
+  width: 12px !important;
+  min-width: 12px !important;
+  height: 12px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.file-icon {
+  position: relative !important;
+  display: inline-block !important;
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: color-mix(in srgb, var(--text-tertiary) 88%, var(--text-secondary)) !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+}
+
+.file-icon::before,
+.file-icon::after {
+  content: '' !important;
+  position: absolute !important;
+  display: block !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.file-icon::before {
+  left: 3px !important;
+  top: 1px !important;
+  width: 10px !important;
+  height: 14px !important;
+  border: 1.4px solid currentColor !important;
+  border-radius: 2.5px !important;
+}
+
+.file-icon::after {
+  right: 3px !important;
+  top: 1px !important;
+  width: 4px !important;
+  height: 4px !important;
+  border-left: 1.4px solid currentColor !important;
+  border-bottom: 1.4px solid currentColor !important;
+  border-radius: 0 1px 0 1px !important;
+}
+
+.file-icon.dir {
+  color: color-mix(in srgb, var(--accent-primary) 55%, var(--text-secondary)) !important;
+}
+
+.file-icon.dir::before {
+  left: 1px !important;
+  top: 5px !important;
+  width: 14px !important;
+  height: 9px !important;
+  border: 1.4px solid currentColor !important;
+  border-radius: 3px !important;
+}
+
+.file-icon.dir::after {
+  left: 2px !important;
+  top: 3px !important;
+  width: 7px !important;
+  height: 4px !important;
+  border: 1.4px solid currentColor !important;
+  border-bottom: 0 !important;
+  border-radius: 3px 3px 0 0 !important;
+}
+
+.file-icon.go,
+.file-icon.doc,
+.file-icon.cfg {
+  color: color-mix(in srgb, var(--text-tertiary) 86%, var(--text-secondary)) !important;
+}
+
+.change-tree-dir,
+.repo-tree-dir,
+.commit-history-item {
+  display: grid !important;
+  gap: 1px !important;
+}
+
+.change-tree-dir > summary,
+.repo-tree-dir > summary,
+.commit-history-summary {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 2px 6px !important;
+  list-style: none !important;
+}
+
+.repo-tree-dir > summary,
+.repo-tree-file {
+  padding-left: calc(6px + (var(--depth, 0) * 13px)) !important;
+}
+
+.repo-tree-file {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-height: 27px !important;
+  padding-right: 6px !important;
+}
+
+.files-toolbar {
+  gap: 6px !important;
+  padding: 0 2px 7px !important;
+}
+
+#repoFilesMeta {
+  color: var(--text-tertiary) !important;
+  font-size: 12px !important;
+  line-height: 1.3 !important;
+}
+
+.files-search {
+  height: 31px !important;
+  min-height: 31px !important;
+  padding: 0 9px !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--bg-primary) 50%, var(--bg-tertiary)) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+}
+
+#repoFilesTree {
+  padding-top: 6px !important;
+  border-top: 1px solid var(--border-subtle) !important;
+}
+
+.empty,
+.sidebar-empty,
+.diff-empty {
+  min-height: 26px !important;
+  padding: 5px 8px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1.3 !important;
+  text-align: left !important;
+}
+
+.empty::before,
+.empty::after,
+.sidebar-empty::before,
+.sidebar-empty::after {
+  content: none !important;
+  display: none !important;
+}
+
+.center-empty {
+  color: var(--text-tertiary) !important;
+}
+
+.tab,
+.provider-pill,
+.workspace-summary,
+.sidebar-row,
+.context-open-ide-btn {
+  border-radius: 7px !important;
+}
+
+.tab.active,
+.provider-pill.active,
+.workspace-node.active > .workspace-summary,
+.sidebar-row.selected {
+  background: var(--surface-selected) !important;
+  border-color: color-mix(in srgb, var(--accent-primary) 22%, transparent) !important;
+  box-shadow: inset 2px 0 0 var(--accent-primary) !important;
+}
+
+.tab:hover,
+.provider-pill:hover,
+.workspace-summary:hover,
+.sidebar-row:hover,
+.context-open-ide-btn:hover {
+  background: var(--surface-hover) !important;
+}
+
+/* Polish pass from visual review: quieter chrome, cleaner sidebars. */
+:root,
+html[data-theme='dark'],
+html[data-theme='light'] {
+  --bg-primary: #080a0d;
+  --bg-secondary: #101318;
+  --bg-tertiary: #151922;
+  --bg-raised: #1b2029;
+  --surface-hover: rgba(242, 245, 248, 0.046);
+  --surface-pressed: rgba(242, 245, 248, 0.075);
+  --surface-selected: rgba(142, 151, 255, 0.09);
+  --border-subtle: rgba(242, 245, 248, 0.07);
+  --border-default: rgba(242, 245, 248, 0.12);
+  --text-primary: #eef1f5;
+  --text-secondary: #aeb5c0;
+  --text-tertiary: #6f7886;
+  --accent-primary: #8b93e6;
+  --mockup-terminal-bg: #05070a;
+}
+
+#changeViewModeBtn::before,
+#refreshGitBtn::before {
+  content: none !important;
+  display: none !important;
+}
+
+#changeViewModeBtn,
+#refreshGitBtn {
+  font-size: 0 !important;
+}
+
+#changeViewModeBtn.hidden {
+  display: none !important;
+}
+
+.right-col.files-mode .commit-box {
+  display: none !important;
+}
+
+.right-col.files-mode .right-head {
+  border-bottom-color: var(--border-subtle) !important;
+}
+
+.right-col.files-mode #filesPanel {
+  padding-top: 9px !important;
+}
+
+.right-col.files-mode .files-toolbar {
+  padding-bottom: 8px !important;
+}
+
+.right-col.files-mode #repoFilesTree {
+  padding-top: 5px !important;
+}
+
+.right-head {
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 8px 0 10px !important;
+}
+
+.right-tabs {
+  gap: 0 !important;
+  padding: 2px !important;
+  border-radius: 8px !important;
+  background: #0c0f14 !important;
+}
+
+.right-tab {
+  height: 25px !important;
+  min-height: 25px !important;
+  padding: 0 10px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.right-tab.active {
+  background: #1a1f28 !important;
+  color: var(--text-primary) !important;
+  box-shadow: inset 0 0 0 1px rgba(242, 245, 248, 0.12) !important;
+}
+
+.right-head-actions {
+  gap: 2px !important;
+}
+
+.right-head-actions .icon-btn,
+.icon-btn.btn-ghost {
+  width: 24px !important;
+  min-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  color: color-mix(in srgb, var(--text-tertiary) 84%, transparent) !important;
+}
+
+.toolbar-icon {
+  width: 14px !important;
+  height: 14px !important;
+  opacity: 0.86 !important;
+}
+
+.commit-box {
+  padding: 8px 10px 9px !important;
+  gap: 7px !important;
+}
+
+#commitMessage {
+  height: 44px !important;
+  min-height: 44px !important;
+  max-height: 72px !important;
+  padding: 6px 8px !important;
+}
+
+.publish-btn {
+  height: 30px !important;
+  min-height: 30px !important;
+}
+
+.files-toolbar {
+  padding: 0 2px 6px !important;
+}
+
+#repoFilesMeta {
+  height: 17px !important;
+  overflow: hidden !important;
+  color: color-mix(in srgb, var(--text-tertiary) 88%, transparent) !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.files-search {
+  height: 30px !important;
+  min-height: 30px !important;
+}
+
+.repo-tree-dir > summary,
+.repo-tree-file {
+  min-height: 25px !important;
+  border-radius: 6px !important;
+}
+
+.repo-tree-dir > summary {
+  color: var(--text-secondary) !important;
+  font-weight: 520 !important;
+}
+
+.repo-tree-dir > summary:hover,
+.repo-tree-file:hover {
+  background: rgba(242, 245, 248, 0.035) !important;
+  border-color: transparent !important;
+}
+
+.repo-tree-dir > summary .tree-row-label,
+.repo-tree-file {
+  color: var(--text-secondary) !important;
+}
+
+.repo-tree-children {
+  margin-left: 8px !important;
+  padding-left: 8px !important;
+  border-left-color: rgba(242, 245, 248, 0.05) !important;
+}
+
+.change-file-row,
+.change-tree-dir > summary,
+.commit-history-summary {
+  min-height: 26px !important;
+}
+
+.change-section-summary {
+  min-height: 27px !important;
+}
+
+.left-col {
+  background: #101319 !important;
+  border-right-color: rgba(242, 245, 248, 0.075) !important;
+}
+
+.center-col,
+.transcript-wrap,
+.terminal-box {
+  background: #06080b !important;
+}
+
+.right-col {
+  background: #101319 !important;
+  border-left-color: rgba(242, 245, 248, 0.075) !important;
+}
+
+.tabs,
+.compose,
+.task-header,
+.right-head,
+.commit-box,
+#taskContextBar {
+  background: #11151b !important;
+}
+
+.workspace-list {
+  padding: 8px 7px !important;
+}
+
+.workspace-summary {
+  min-height: 33px !important;
+  padding: 5px 8px !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.workspace-node.active > .workspace-summary {
+  background: rgba(142, 151, 255, 0.075) !important;
+  border-color: rgba(142, 151, 255, 0.12) !important;
+  box-shadow: none !important;
+}
+
+.workspace-avatar {
+  width: 21px !important;
+  min-width: 21px !important;
+  height: 21px !important;
+  border-radius: 6px !important;
+  background: #171c25 !important;
+  color: var(--text-tertiary) !important;
+}
+
+.workspace-node.active .workspace-avatar {
+  background: rgba(142, 151, 255, 0.13) !important;
+  color: color-mix(in srgb, var(--accent-primary) 88%, white) !important;
+}
+
+.workspace-name {
+  font-size: 13px !important;
+}
+
+.workspace-count {
+  font-size: 11px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.workspace-children {
+  margin-left: 20px !important;
+  padding-left: 8px !important;
+  border-left-color: rgba(242, 245, 248, 0.06) !important;
+}
+
+.workspace-node.active > .workspace-children {
+  border-left-color: rgba(142, 151, 255, 0.2) !important;
+}
+
+.sidebar-row {
+  min-height: 29px !important;
+  margin: 1px 0 !important;
+  padding: 4px 8px !important;
+  border-color: transparent !important;
+}
+
+.sidebar-row.selected {
+  background: rgba(142, 151, 255, 0.08) !important;
+  border-color: rgba(142, 151, 255, 0.12) !important;
+  box-shadow: none !important;
+}
+
+.sidebar-row-title {
+  font-size: 13px !important;
+  font-weight: 540 !important;
+}
+
+.sidebar-row.selected .sidebar-row-title {
+  font-weight: 620 !important;
+}
+
+.sidebar-row-subtitle {
+  display: none !important;
+}
+
+.sidebar-status-dot {
+  opacity: 0.82 !important;
+  transform: scale(0.86) !important;
+}
+
+#taskContextBar {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 8px !important;
+  gap: 10px !important;
+  background: #101319 !important;
+  border-top-color: rgba(242, 245, 248, 0.075) !important;
+  font-family: var(--font-sans) !important;
+}
+
+.context-item {
+  gap: 6px !important;
+}
+
+.context-label {
+  color: color-mix(in srgb, var(--text-tertiary) 82%, transparent) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.055em !important;
+}
+
+.context-value,
+.context-path-btn,
+.context-branch-btn {
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+}
+
+.context-path-item {
+  min-width: 0 !important;
+}
+
+#taskContextPath {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+#uiBuildVersionWrap {
+  margin-left: auto !important;
+}
+
+#uiBuildVersion {
+  color: var(--text-tertiary) !important;
+  font-size: 12px !important;
+}
+
+.context-open-ide-btn {
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 10px !important;
+  border-radius: 7px !important;
+  background: #171c24 !important;
+  border-color: rgba(242, 245, 248, 0.12) !important;
+  color: var(--text-secondary) !important;
+}
+
+/* Restore visible nested folder hierarchy in Files. */
+#repoFilesTree {
+  display: grid !important;
+  gap: 1px !important;
+}
+
+.repo-tree-dir {
+  display: grid !important;
+  gap: 1px !important;
+}
+
+.repo-tree-dir > summary {
+  display: grid !important;
+  grid-template-columns: 12px 16px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-height: 26px !important;
+  padding: 2px 6px 2px calc(5px + (var(--depth, 0) * 11px)) !important;
+  cursor: default !important;
+}
+
+.repo-tree-file {
+  display: grid !important;
+  grid-template-columns: 16px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-height: 24px !important;
+  padding: 2px 6px 2px calc(24px + (var(--depth, 0) * 11px)) !important;
+}
+
+.repo-tree-children {
+  display: grid !important;
+  gap: 1px !important;
+  margin-left: 10px !important;
+  padding-left: 7px !important;
+  border-left: 1px solid rgba(242, 245, 248, 0.085) !important;
+}
+
+.repo-tree-dir[open] > .repo-tree-children {
+  display: grid !important;
+}
+
+.repo-tree-dir:not([open]) > .repo-tree-children {
+  display: none !important;
+}
+
+.repo-tree-dir > summary .tree-chevron {
+  width: 11px !important;
+  min-width: 11px !important;
+  height: 11px !important;
+  color: color-mix(in srgb, var(--text-tertiary) 92%, transparent) !important;
+}
+
+.repo-tree-dir[open] > summary .tree-chevron {
+  transform: rotate(90deg) !important;
+}
+
+.repo-tree-dir > summary .file-icon.dir {
+  color: color-mix(in srgb, var(--accent-primary) 68%, var(--text-secondary)) !important;
+}
+
+.repo-tree-dir > summary:hover,
+.repo-tree-file:hover {
+  background: rgba(242, 245, 248, 0.04) !important;
+}
+
+/* Task rows must always expose their close action. */
+.sidebar-task-close {
+  display: inline-flex !important;
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  margin-left: 4px !important;
+  border-radius: 6px !important;
+  color: color-mix(in srgb, var(--text-tertiary) 84%, transparent) !important;
+  opacity: 0.72 !important;
+}
+
+.sidebar-row:hover .sidebar-task-close,
+.sidebar-row:focus-within .sidebar-task-close,
+.sidebar-task-close:hover {
+  opacity: 1 !important;
+  color: var(--danger) !important;
+}
+
+.sidebar-task-close::before {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+/* Empty tab bar needs a visible new-tab affordance. */
+.tab-list:has(.plus-tab:only-child) {
+  gap: 8px !important;
+}
+
+.tab-list:has(.plus-tab:only-child) .plus-tab,
+.plus-tab {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: 7px !important;
+  background: rgba(242, 245, 248, 0.035) !important;
+  color: var(--text-secondary) !important;
+  opacity: 1 !important;
+}
+
+.plus-tab:hover {
+  background: rgba(142, 151, 255, 0.12) !important;
+  border-color: rgba(142, 151, 255, 0.24) !important;
+  color: var(--text-primary) !important;
+}
+
+.plus-tab::before {
+  width: 14px !important;
+  height: 14px !important;
+  opacity: 1 !important;
+}
+
+/* Diff review product pass: clear hierarchy, real file state, and scannable code gutters. */
+.diff-editor {
+  grid-template-rows: auto auto minmax(0, 1fr) !important;
+  background: #070b0f !important;
+}
+
+.diff-editor-head {
+  display: grid !important;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: start !important;
+  gap: 12px !important;
+  min-height: 0 !important;
+  padding: 14px 16px !important;
+  background:
+    linear-gradient(180deg, rgba(242, 245, 248, 0.035), transparent),
+    #10151c !important;
+  border-bottom: 1px solid rgba(242, 245, 248, 0.08) !important;
+}
+
+.diff-head-main {
+  min-width: 0;
+  align-self: center;
+}
+
+.diff-file-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diff-state-dot {
+  width: 9px;
+  min-width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--warning);
+  box-shadow: 0 0 0 4px rgba(231, 182, 92, 0.1);
+}
+
+.diff-state-dot.added,
+.diff-status-pill.added {
+  color: var(--success) !important;
+}
+
+.diff-state-dot.added {
+  background: var(--success);
+  box-shadow: 0 0 0 4px rgba(98, 201, 143, 0.11);
+}
+
+.diff-state-dot.deleted,
+.diff-status-pill.deleted {
+  color: var(--danger) !important;
+}
+
+.diff-state-dot.deleted {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px rgba(240, 115, 115, 0.12);
+}
+
+.diff-state-dot.modified {
+  background: var(--warning);
+}
+
+.diff-file-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary) !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-path {
+  max-width: min(760px, 100%);
+  margin-top: 5px !important;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text-tertiary) 88%, transparent) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-head-right {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center !important;
+  justify-content: flex-end;
+  gap: 8px !important;
+  max-width: min(100%, 860px);
+}
+
+.diff-state-pill,
+.diff-status-pill,
+.diff-file-progress {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(242, 245, 248, 0.085);
+  border-radius: 7px;
+  background: rgba(242, 245, 248, 0.035);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.diff-state-pill {
+  color: color-mix(in srgb, var(--accent-primary) 74%, white);
+}
+
+.diff-head-stat {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: 260px !important;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: rgba(242, 245, 248, 0.025);
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-mono);
+  font-size: 12px !important;
+}
+
+.diff-nav-actions,
+.diff-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-action-btn,
+.diff-close-btn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  border: 1px solid rgba(242, 245, 248, 0.1) !important;
+  border-radius: 7px !important;
+  background: rgba(242, 245, 248, 0.04) !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.diff-action-btn:hover:not(:disabled),
+.diff-close-btn:hover {
+  border-color: rgba(142, 151, 255, 0.3) !important;
+  background: rgba(142, 151, 255, 0.12) !important;
+  color: var(--text-primary) !important;
+}
+
+.diff-action-btn:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.diff-action-btn.primary {
+  border-color: rgba(98, 201, 143, 0.22) !important;
+  background: rgba(98, 201, 143, 0.11) !important;
+  color: color-mix(in srgb, var(--success) 74%, white) !important;
+}
+
+.diff-action-btn.danger {
+  border-color: rgba(240, 115, 115, 0.2) !important;
+  color: color-mix(in srgb, var(--danger) 76%, white) !important;
+}
+
+.diff-close-btn {
+  margin-left: 2px;
+}
+
+.diff-columns-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #0d1218 !important;
+  border-bottom-color: rgba(242, 245, 248, 0.08) !important;
+}
+
+.diff-columns-head .pane {
+  min-height: 30px;
+  padding: 0 14px !important;
+  color: var(--text-tertiary);
+  font-size: 11px !important;
+  font-weight: 700;
+  letter-spacing: 0.08em !important;
+}
+
+.diff-columns-head .pane + .pane {
+  border-left: 1px solid rgba(242, 245, 248, 0.075);
+}
+
+.diff-scroll {
+  overflow: auto;
+  background: #070b0f !important;
+  font-size: 12px !important;
+  line-height: 1.48 !important;
+}
+
+.diff-sbs-row {
+  min-width: 760px;
+  border-bottom-color: rgba(242, 245, 248, 0.04) !important;
+}
+
+.diff-cell {
+  grid-template-columns: 48px 24px minmax(0, 1fr) !important;
+  min-height: 24px !important;
+}
+
+.diff-cell.left {
+  border-right-color: rgba(242, 245, 248, 0.075) !important;
+}
+
+.diff-ln {
+  padding: 0 8px !important;
+  border-right: 1px solid rgba(242, 245, 248, 0.055) !important;
+  color: color-mix(in srgb, var(--text-tertiary) 68%, transparent) !important;
+  font-size: 11px !important;
+}
+
+.diff-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid rgba(242, 245, 248, 0.04);
+  color: color-mix(in srgb, var(--text-tertiary) 78%, transparent);
+  font-weight: 700;
+  user-select: none;
+}
+
+.diff-code {
+  min-height: 24px !important;
+  padding: 1px 12px !important;
+  color: color-mix(in srgb, var(--terminal-fg) 92%, white) !important;
+}
+
+.diff-cell.left.removed {
+  background: rgba(240, 115, 115, 0.105) !important;
+}
+
+.diff-cell.left.removed .diff-mark,
+.diff-cell.left.removed .diff-code {
+  color: color-mix(in srgb, var(--danger) 70%, white) !important;
+}
+
+.diff-cell.right.added {
+  background: rgba(98, 201, 143, 0.105) !important;
+}
+
+.diff-cell.right.added .diff-mark,
+.diff-cell.right.added .diff-code {
+  color: color-mix(in srgb, var(--success) 70%, white) !important;
+}
+
+.diff-cell.empty {
+  min-height: 24px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: rgba(242, 245, 248, 0.018) !important;
+  text-align: initial !important;
+}
+
+.diff-cell.hunk {
+  background: rgba(142, 151, 255, 0.1) !important;
+}
+
+.diff-cell.hunk .diff-mark,
+.diff-cell.hunk .diff-code {
+  color: color-mix(in srgb, var(--accent-primary) 78%, white) !important;
+  font-weight: 700;
+}
+
+.diff-inline {
+  border-radius: 4px;
+  padding: 0 1px;
+}
+
+.diff-inline-remove {
+  background: rgba(240, 115, 115, 0.24);
+  box-shadow: 0 0 0 1px rgba(240, 115, 115, 0.1);
+}
+
+.diff-inline-add {
+  background: rgba(98, 201, 143, 0.24);
+  box-shadow: 0 0 0 1px rgba(98, 201, 143, 0.1);
+}
+
+.diff-overflow-note {
+  min-width: 760px;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(242, 245, 248, 0.08);
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-align: center;
+}
+
+.diff-scroll-empty {
+  background:
+    linear-gradient(180deg, rgba(242, 245, 248, 0.018), transparent),
+    #070b0f !important;
+}
+
+.diff-empty-review {
+  width: min(420px, 100%) !important;
+}
+
+.diff-empty-title {
+  font-size: 14px !important;
+}
+
+.diff-empty-copy {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1100px) {
+  .diff-editor-head {
+    grid-template-columns: 1fr;
+  }
+
+  .diff-head-right {
+    justify-content: flex-start;
+  }
+
+  .diff-head-stat {
+    max-width: 100% !important;
   }
 }

@@ -560,7 +560,8 @@ func (s *server) handleTaskDiff(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	file := r.URL.Query().Get("file")
-	changes, stat, patch, err := s.tasks.Diff(id, file)
+	state := r.URL.Query().Get("state")
+	changes, stat, patch, err := s.tasks.Diff(id, file, state)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -568,6 +569,7 @@ func (s *server) handleTaskDiff(w http.ResponseWriter, r *http.Request, id strin
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id":       id,
 		"selected_file": file,
+		"state":         state,
 		"changes":       changes,
 		"stat":          stat,
 		"patch":         patch,
@@ -767,6 +769,10 @@ type repoFileItem struct {
 
 func collectRepoFiles(root string) ([]repoFileItem, bool, error) {
 	const maxEntries = 30000
+	if entries, truncated, err := collectGitRepoFiles(root, maxEntries); err == nil {
+		return entries, truncated, nil
+	}
+
 	entries := make([]repoFileItem, 0, 1024)
 	truncated := false
 
@@ -787,7 +793,7 @@ func collectRepoFiles(root string) ([]repoFileItem, bool, error) {
 		if rel == "." {
 			return nil
 		}
-		if d.IsDir() && d.Name() == ".git" {
+		if d.IsDir() && shouldSkipRepoWalkDir(d.Name()) {
 			return filepath.SkipDir
 		}
 
@@ -810,6 +816,73 @@ func collectRepoFiles(root string) ([]repoFileItem, bool, error) {
 	})
 
 	return entries, truncated, nil
+}
+
+func collectGitRepoFiles(root string, maxEntries int) ([]repoFileItem, bool, error) {
+	if _, err := runGitInPath(root, "rev-parse", "--is-inside-work-tree"); err != nil {
+		return nil, false, err
+	}
+
+	out, err := runGitInPath(root, "ls-files", "-z", "-c", "-o", "--exclude-standard")
+	if err != nil {
+		return nil, false, err
+	}
+
+	files := strings.Split(out, "\x00")
+	dirs := map[string]struct{}{}
+	entries := make([]repoFileItem, 0, len(files))
+	truncated := false
+	for _, file := range files {
+		path := normalizeRepoFilePath(file)
+		if path == "" {
+			continue
+		}
+		for dir := filepath.ToSlash(filepath.Dir(path)); dir != "." && dir != "/"; dir = filepath.ToSlash(filepath.Dir(dir)) {
+			dirs[dir] = struct{}{}
+		}
+		entries = append(entries, repoFileItem{Path: path, Kind: "file"})
+		if len(entries)+len(dirs) >= maxEntries {
+			truncated = true
+			break
+		}
+	}
+
+	for dir := range dirs {
+		entries = append(entries, repoFileItem{Path: dir, Kind: "dir"})
+		if len(entries) >= maxEntries {
+			truncated = true
+			entries = entries[:maxEntries]
+			break
+		}
+	}
+	sortRepoFileItems(entries)
+	return entries, truncated, nil
+}
+
+func normalizeRepoFilePath(path string) string {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" || path == "." || strings.HasPrefix(path, "../") || path == ".." {
+		return ""
+	}
+	return strings.Trim(path, "/")
+}
+
+func shouldSkipRepoWalkDir(name string) bool {
+	switch name {
+	case ".git", "node_modules", ".next", ".nuxt", "dist", "build", "target", ".cache":
+		return true
+	default:
+		return false
+	}
+}
+
+func sortRepoFileItems(entries []repoFileItem) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Path == entries[j].Path {
+			return entries[i].Kind < entries[j].Kind
+		}
+		return entries[i].Path < entries[j].Path
+	})
 }
 
 func (s *server) handleGitStatus(w http.ResponseWriter, r *http.Request, id string) {
@@ -837,17 +910,22 @@ func (s *server) handleGitStage(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	var payload struct {
-		Path string `json:"path"`
+		Path  string   `json:"path"`
+		Paths []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.tasks.StageFile(id, payload.Path); err != nil {
+	paths := payload.Paths
+	if len(paths) == 0 && strings.TrimSpace(payload.Path) != "" {
+		paths = []string{payload.Path}
+	}
+	if err := s.tasks.StageFiles(id, paths); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "staged": payload.Path})
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "staged": paths})
 }
 
 func (s *server) handleGitUnstage(w http.ResponseWriter, r *http.Request, id string) {
@@ -856,17 +934,22 @@ func (s *server) handleGitUnstage(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	var payload struct {
-		Path string `json:"path"`
+		Path  string   `json:"path"`
+		Paths []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.tasks.UnstageFile(id, payload.Path); err != nil {
+	paths := payload.Paths
+	if len(paths) == 0 && strings.TrimSpace(payload.Path) != "" {
+		paths = []string{payload.Path}
+	}
+	if err := s.tasks.UnstageFiles(id, paths); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "unstaged": payload.Path})
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": id, "unstaged": paths})
 }
 
 func (s *server) handleGitDiscard(w http.ResponseWriter, r *http.Request, id string) {
