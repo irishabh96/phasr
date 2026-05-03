@@ -1077,6 +1077,21 @@ kbd {
   align-items: center;
   gap: var(--space-4);
   opacity: 0.5;
+  position: relative;
+  pointer-events: auto;
+}
+
+.workspace-actions > button {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.workspace-summary .workspace-delete-btn {
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 28px !important;
+  min-height: 28px !important;
 }
 
 .workspace-summary:hover .workspace-actions,
@@ -3112,9 +3127,7 @@ select:focus-visible {
 
 .left-col,
 .right-col {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 120px),
-    var(--bg-secondary) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 120px), var(--bg-secondary) !important;
 }
 
 .center-col {
@@ -3126,9 +3139,7 @@ select:focus-visible {
 .compose,
 .commit-box,
 .task-header {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
-    var(--bg-secondary) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent), var(--bg-secondary) !important;
 }
 
 .tabs,
@@ -3331,9 +3342,7 @@ select:focus-visible {
   width: 18px;
   height: 18px;
   border-radius: var(--radius-6);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
-    var(--bg-tertiary);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent), var(--bg-tertiary);
   box-shadow: inset 0 0 0 1px var(--border-default);
 }
 
@@ -3351,9 +3360,7 @@ select:focus-visible {
   width: 36px;
   height: 36px;
   border-radius: var(--radius-10);
-  background:
-    linear-gradient(180deg, rgba(124, 140, 255, 0.16), transparent),
-    var(--bg-tertiary);
+  background: linear-gradient(180deg, rgba(124, 140, 255, 0.16), transparent), var(--bg-tertiary);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 24%, transparent),
     var(--shadow-soft);
@@ -3444,9 +3451,7 @@ select:focus-visible {
 }
 
 #taskContextBar {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
-    var(--bg-secondary) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent), var(--bg-secondary) !important;
 }
 
 .context-label {
@@ -3463,9 +3468,7 @@ select:focus-visible {
 .context-open-ide-menu,
 #taskContextBranchMenu {
   z-index: var(--z-dropdown) !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
-    var(--bg-secondary) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent), var(--bg-secondary) !important;
   border-color: var(--border-default) !important;
   box-shadow: var(--shadow-elevated) !important;
 }
@@ -3477,9 +3480,7 @@ select:focus-visible {
 
 .modal {
   border-color: var(--border-default) !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 120px),
-    var(--bg-secondary) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 120px), var(--bg-secondary) !important;
 }
 
 .modal-head,
@@ -3510,9 +3511,7 @@ select:focus-visible {
 }
 
 .toast {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
-    var(--bg-secondary);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent), var(--bg-secondary);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4273,9 +4272,7 @@ body {
   height: 44px;
   margin: 0 auto var(--space-12);
   border-radius: 12px;
-  background:
-    linear-gradient(135deg, rgba(143, 152, 255, 0.22), rgba(244, 247, 251, 0.03)),
-    #121923;
+  background: linear-gradient(135deg, rgba(143, 152, 255, 0.22), rgba(244, 247, 251, 0.03)), #121923;
   box-shadow:
     inset 0 0 0 1px rgba(244, 247, 251, 0.1),
     0 16px 32px rgba(0, 0, 0, 0.24);
@@ -4421,9 +4418,7 @@ body {
   min-width: 36px;
   height: 36px;
   border-radius: 10px;
-  background:
-    linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
-    #151e28;
+  background: linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)), #151e28;
   box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.1);
 }
 
@@ -4876,28 +4871,40 @@ body {
 .modal-head::before {
   flex: 0 0 36px;
   background:
-    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 6.4A1.4 1.4 0 0 1 4.4 5h3.1l1.4 1.4h4.7A1.4 1.4 0 0 1 15 7.8v4.8a1.4 1.4 0 0 1-1.4 1.4H4.4A1.4 1.4 0 0 1 3 12.6V6.4Z' fill='none' stroke='%23c7d2e0' stroke-width='1.4' stroke-linejoin='round'/%3E%3Cpath d='M9 8.25v3.5M7.25 10h3.5' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 6.4A1.4 1.4 0 0 1 4.4 5h3.1l1.4 1.4h4.7A1.4 1.4 0 0 1 15 7.8v4.8a1.4 1.4 0 0 1-1.4 1.4H4.4A1.4 1.4 0 0 1 3 12.6V6.4Z' fill='none' stroke='%23c7d2e0' stroke-width='1.4' stroke-linejoin='round'/%3E%3Cpath d='M9 8.25v3.5M7.25 10h3.5' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E")
+      center / 18px 18px no-repeat,
     linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
     #151e28 !important;
 }
 
 #newTaskModalBackdrop .modal-head::before {
   background:
-    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='9' cy='5' r='2.2' fill='none' stroke='%23c7d2e0' stroke-width='1.4'/%3E%3Cpath d='M4.5 13c1-2.3 2.5-3.4 4.5-3.4s3.5 1.1 4.5 3.4' fill='none' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3Cpath d='M3 5h2M13 5h2M9 1.8v1' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='9' cy='5' r='2.2' fill='none' stroke='%23c7d2e0' stroke-width='1.4'/%3E%3Cpath d='M4.5 13c1-2.3 2.5-3.4 4.5-3.4s3.5 1.1 4.5 3.4' fill='none' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3Cpath d='M3 5h2M13 5h2M9 1.8v1' stroke='%23c7d2e0' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E")
+      center / 18px 18px no-repeat,
     linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
     #151e28 !important;
 }
 
 #newTabTypeModalBackdrop .modal-head::before {
   background:
-    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9 4v10M4 9h10' stroke='%23c7d2e0' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9 4v10M4 9h10' stroke='%23c7d2e0' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E")
+      center / 18px 18px no-repeat,
     linear-gradient(135deg, rgba(143, 152, 255, 0.24), rgba(244, 247, 251, 0.04)),
     #151e28 !important;
 }
 
 #closeTaskModalBackdrop .modal-head::before {
   background:
-    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M5.5 6.5h7M7 6.5v6M11 6.5v6M7 4.5h4l.8 2H6.2l.8-2ZM6 6.5l.6 8h4.8l.6-8' fill='none' stroke='%23fecaca' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 18px 18px no-repeat,
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M5.5 6.5h7M7 6.5v6M11 6.5v6M7 4.5h4l.8 2H6.2l.8-2ZM6 6.5l.6 8h4.8l.6-8' fill='none' stroke='%23fecaca' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 18px 18px no-repeat,
+    linear-gradient(135deg, rgba(240, 115, 115, 0.22), rgba(244, 247, 251, 0.04)),
+    #151e28 !important;
+}
+
+#deleteWorkspaceModalBackdrop .modal-head::before {
+  background:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M5.5 6.5h7M7 6.5v6M11 6.5v6M7 4.5h4l.8 2H6.2l.8-2ZM6 6.5l.6 8h4.8l.6-8' fill='none' stroke='%23fecaca' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 18px 18px no-repeat,
     linear-gradient(135deg, rgba(240, 115, 115, 0.22), rgba(244, 247, 251, 0.04)),
     #151e28 !important;
 }
@@ -5012,9 +5019,7 @@ body {
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  background:
-    linear-gradient(135deg, rgba(143, 152, 255, 0.2), rgba(244, 247, 251, 0.03)),
-    #151e28;
+  background: linear-gradient(135deg, rgba(143, 152, 255, 0.2), rgba(244, 247, 251, 0.03)), #151e28;
   box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.1);
 }
 
@@ -5086,9 +5091,7 @@ body {
 .diff-editor-head {
   min-height: 62px;
   padding: 12px 14px !important;
-  background:
-    linear-gradient(180deg, rgba(244, 247, 251, 0.028), transparent),
-    #101720 !important;
+  background: linear-gradient(180deg, rgba(244, 247, 251, 0.028), transparent), #101720 !important;
   border-bottom-color: rgba(244, 247, 251, 0.085) !important;
 }
 
@@ -5147,9 +5150,7 @@ body {
   height: 34px;
   margin: 0 auto 8px;
   border-radius: 10px;
-  background:
-    linear-gradient(180deg, rgba(143, 152, 255, 0.16), transparent),
-    rgba(244, 247, 251, 0.045);
+  background: linear-gradient(180deg, rgba(143, 152, 255, 0.16), transparent), rgba(244, 247, 251, 0.045);
   box-shadow: inset 0 0 0 1px rgba(244, 247, 251, 0.09);
 }
 
@@ -5173,9 +5174,7 @@ body {
 .changes-wrap {
   padding: 14px !important;
   gap: 10px !important;
-  background:
-    linear-gradient(180deg, rgba(244, 247, 251, 0.012), transparent 180px),
-    #0f151c !important;
+  background: linear-gradient(180deg, rgba(244, 247, 251, 0.012), transparent 180px), #0f151c !important;
 }
 
 .change-section {
@@ -5505,9 +5504,7 @@ body {
   margin-bottom: 4px;
   border-radius: 13px;
   color: color-mix(in srgb, var(--text-secondary) 86%, var(--accent-primary));
-  background:
-    linear-gradient(135deg, rgba(143, 152, 255, 0.2), rgba(244, 247, 251, 0.035)),
-    #121923;
+  background: linear-gradient(135deg, rgba(143, 152, 255, 0.2), rgba(244, 247, 251, 0.035)), #121923;
   box-shadow:
     inset 0 0 0 1px rgba(244, 247, 251, 0.11),
     0 14px 32px rgba(0, 0, 0, 0.28);
@@ -5562,9 +5559,7 @@ body {
 .diff-empty-review::before {
   position: relative;
   display: block !important;
-  background:
-    linear-gradient(135deg, rgba(143, 152, 255, 0.18), rgba(244, 247, 251, 0.03)),
-    #121923 !important;
+  background: linear-gradient(135deg, rgba(143, 152, 255, 0.18), rgba(244, 247, 251, 0.03)), #121923 !important;
 }
 
 .diff-empty-review::after {
@@ -6926,9 +6921,7 @@ html[data-theme='light'] {
   gap: 12px !important;
   min-height: 0 !important;
   padding: 14px 16px !important;
-  background:
-    linear-gradient(180deg, rgba(242, 245, 248, 0.035), transparent),
-    #10151c !important;
+  background: linear-gradient(180deg, rgba(242, 245, 248, 0.035), transparent), #10151c !important;
   border-bottom: 1px solid rgba(242, 245, 248, 0.08) !important;
 }
 
@@ -7221,9 +7214,7 @@ html[data-theme='light'] {
 }
 
 .diff-scroll-empty {
-  background:
-    linear-gradient(180deg, rgba(242, 245, 248, 0.018), transparent),
-    #070b0f !important;
+  background: linear-gradient(180deg, rgba(242, 245, 248, 0.018), transparent), #070b0f !important;
 }
 
 .diff-empty-review {
@@ -7251,5 +7242,921 @@ html[data-theme='light'] {
 
   .diff-head-stat {
     max-width: 100% !important;
+  }
+}
+
+/* State and responsive pass: active work first, secondary panels as drawers. */
+body.has-active-task .compose,
+body.has-active-task .task-header {
+  display: none !important;
+}
+
+body.no-active-task .right-col:not(.files-mode) .commit-box,
+body.no-active-task .right-col:not(.files-mode) #changesPanel > .change-section {
+  display: none !important;
+}
+
+body.no-active-task .right-col:not(.files-mode) #changesPanel {
+  display: grid !important;
+  place-items: start stretch;
+  padding: 12px !important;
+}
+
+body.no-active-task .right-col:not(.files-mode) #changesPanel::before {
+  content: 'Open a task to review changes, commit, or inspect Git history.';
+  display: block;
+  padding: 12px;
+  border: 1px solid rgba(242, 245, 248, 0.08);
+  border-radius: 8px;
+  background: rgba(242, 245, 248, 0.025);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.center-empty {
+  display: grid !important;
+  align-content: center;
+  justify-items: center;
+  gap: 8px !important;
+}
+
+.center-empty.hidden {
+  display: none !important;
+}
+
+.center-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.center-empty-action {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(242, 245, 248, 0.1);
+  border-radius: 7px;
+  background: rgba(242, 245, 248, 0.04);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.center-empty-action:hover {
+  border-color: rgba(142, 151, 255, 0.28);
+  background: rgba(142, 151, 255, 0.11);
+  color: var(--text-primary);
+}
+
+.center-empty-action.primary {
+  border-color: rgba(142, 151, 255, 0.32);
+  background: rgba(142, 151, 255, 0.15);
+  color: var(--text-primary);
+}
+
+.workspace-delete-btn {
+  border: 1px solid rgba(240, 115, 115, 0.14) !important;
+  background: rgba(240, 115, 115, 0.035) !important;
+  color: color-mix(in srgb, var(--danger) 70%, var(--text-tertiary)) !important;
+}
+
+.workspace-delete-btn:hover {
+  border-color: rgba(240, 115, 115, 0.35) !important;
+  background: rgba(240, 115, 115, 0.12) !important;
+  color: color-mix(in srgb, var(--danger) 76%, white) !important;
+}
+
+@media (max-width: 1180px) {
+  html,
+  body {
+    overflow: hidden !important;
+  }
+
+  .app-shell {
+    height: 100vh !important;
+    min-height: 100vh !important;
+    grid-template-rows: minmax(0, 1fr) var(--h-status) !important;
+    overflow: hidden !important;
+  }
+
+  .app {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .left-col {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: 150px !important;
+    resize: none !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--border-default) !important;
+  }
+
+  .workspace-list {
+    max-height: 92px !important;
+    overflow: auto !important;
+  }
+
+  .left-col > div:last-child {
+    flex: 0 0 auto !important;
+    padding: 8px 10px !important;
+    border-top: 1px solid var(--border-subtle) !important;
+  }
+
+  .center-col {
+    width: 100% !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: hidden !important;
+  }
+
+  body.has-active-task .compose,
+  body.has-active-task .task-header {
+    display: none !important;
+  }
+
+  .tabs {
+    min-height: 44px !important;
+    height: 44px !important;
+    overflow-x: auto !important;
+  }
+
+  .tab-list {
+    min-width: max-content;
+  }
+
+  .provider-row {
+    overflow-x: auto !important;
+  }
+
+  .transcript-wrap {
+    min-height: 0 !important;
+  }
+
+  .terminal-box,
+  .diff-editor {
+    min-height: 0 !important;
+  }
+
+  .right-col {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    bottom: calc(var(--h-status) + 6px) !important;
+    top: auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    max-height: min(56vh, 440px) !important;
+    resize: none !important;
+    z-index: 1800;
+    border: 1px solid var(--border-default) !important;
+    border-radius: 9px 9px 0 0 !important;
+    box-shadow: 0 -16px 44px rgba(0, 0, 0, 0.42);
+  }
+
+  body.right-panel-expanded .right-col,
+  .right-col:hover,
+  .right-col:focus-within {
+    height: min(56vh, 440px) !important;
+  }
+
+  .right-head {
+    min-height: 40px !important;
+    cursor: pointer;
+  }
+
+  .right-head::after {
+    content: 'Click to expand';
+    margin-left: auto;
+    color: var(--text-tertiary);
+    font-size: 11px;
+  }
+
+  body.right-panel-expanded .right-head::after,
+  .right-col:hover .right-head::after,
+  .right-col:focus-within .right-head::after {
+    content: 'Click to collapse';
+  }
+
+  body:not(.right-panel-expanded) .right-col:not(:focus-within):not(:hover) .commit-box,
+  body:not(.right-panel-expanded) .right-col:not(:focus-within):not(:hover) #changesPanel,
+  body:not(.right-panel-expanded) .right-col:not(:focus-within):not(:hover) #filesPanel {
+    visibility: hidden;
+  }
+
+  body.right-panel-expanded .right-col .commit-box,
+  body.right-panel-expanded .right-col #changesPanel,
+  body.right-panel-expanded .right-col #filesPanel,
+  .right-col:focus-within .commit-box,
+  .right-col:focus-within #changesPanel,
+  .right-col:focus-within #filesPanel {
+    visibility: visible;
+  }
+
+  #taskContextBar {
+    position: relative;
+    z-index: 1900;
+    overflow: hidden !important;
+  }
+
+  .context-path-item {
+    min-width: 0 !important;
+  }
+
+  .context-build-item {
+    display: none !important;
+  }
+}
+
+/* Tree hierarchy pass: make nested change, commit, and file rows read as children. */
+.change-section {
+  position: relative;
+}
+
+.change-section > .change-list {
+  position: relative;
+  margin-left: 12px !important;
+  padding: 2px 0 8px 8px !important;
+  border-left: 1px solid rgba(142, 151, 255, 0.16) !important;
+}
+
+.change-section > .change-list:empty {
+  display: none !important;
+}
+
+.change-section > .change-list > .empty {
+  margin-left: 0 !important;
+}
+
+.change-tree-children,
+.change-group-files,
+.repo-tree-children {
+  position: relative !important;
+  margin-left: 10px !important;
+  padding-left: 8px !important;
+  border-left: 1px solid rgba(142, 151, 255, 0.14) !important;
+}
+
+.change-tree-dir,
+.commit-history-item,
+.change-file-row,
+.repo-tree-dir,
+.repo-tree-file {
+  position: relative !important;
+}
+
+.change-tree-dir::before,
+.commit-history-item::before,
+.change-file-row::before,
+.repo-tree-dir::before,
+.repo-tree-file::before {
+  content: '' !important;
+  position: absolute !important;
+  left: -8px !important;
+  top: 14px !important;
+  width: 6px !important;
+  height: 1px !important;
+  background: rgba(142, 151, 255, 0.18) !important;
+  pointer-events: none !important;
+}
+
+.change-section > .change-list > .change-tree-dir::before,
+.change-section > .change-list > .commit-history-item::before,
+.change-section > .change-list > .change-file-row::before,
+.change-section > .change-list > .change-group::before {
+  left: -8px !important;
+}
+
+.change-group {
+  position: relative !important;
+}
+
+.change-group::before {
+  content: '' !important;
+  position: absolute !important;
+  left: -8px !important;
+  top: 12px !important;
+  width: 6px !important;
+  height: 1px !important;
+  background: rgba(142, 151, 255, 0.18) !important;
+  pointer-events: none !important;
+}
+
+.change-group-label,
+.commit-history-summary,
+.change-tree-dir > summary,
+.repo-tree-dir > summary {
+  padding-left: 4px !important;
+}
+
+#commitsList {
+  display: grid !important;
+  gap: 3px !important;
+}
+
+#commitsList .commit-history-item {
+  margin-left: 0 !important;
+}
+
+#commitsList .commit-history-summary {
+  min-height: 28px !important;
+  background: rgba(242, 245, 248, 0.018) !important;
+}
+
+#commitsList .commit-history-item[open] > .commit-history-summary {
+  border-color: rgba(142, 151, 255, 0.16) !important;
+  background: rgba(142, 151, 255, 0.055) !important;
+}
+
+#commitsList .commit-history-label {
+  color: var(--text-primary) !important;
+  font-size: 12.5px !important;
+}
+
+#commitsList .commit-file-row {
+  padding-left: 4px !important;
+  color: var(--text-secondary) !important;
+}
+
+.change-file-row.commit-file-row .change-file-main {
+  grid-template-columns: 6px 16px minmax(0, 1fr) auto !important;
+}
+
+.change-file-row.commit-file-row .tree-row-right {
+  display: none !important;
+}
+
+.change-tree-dir[open] > summary,
+.repo-tree-dir[open] > summary {
+  color: var(--text-primary) !important;
+}
+
+.change-tree-dir[open] > summary .file-icon.dir,
+.repo-tree-dir[open] > summary .file-icon.dir {
+  color: color-mix(in srgb, var(--accent-primary) 76%, white) !important;
+}
+
+.repo-tree-dir > summary,
+.repo-tree-file {
+  padding-left: 2px !important;
+}
+
+.repo-tree-children .repo-tree-children {
+  margin-left: 9px !important;
+  padding-left: 7px !important;
+}
+
+/* Commit history cleanup: keep nesting visible without making every row a framed tree node. */
+#commitsList {
+  display: grid !important;
+  gap: 2px !important;
+}
+
+#commitsList .commit-history-item {
+  margin: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+#commitsList .commit-history-item::before,
+#commitsList .commit-file-row::before,
+#commitsList .change-group-files::before {
+  content: none !important;
+  display: none !important;
+}
+
+#commitsList .commit-history-summary {
+  min-height: 30px !important;
+  padding: 3px 6px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#commitsList .commit-history-summary:hover {
+  background: rgba(242, 245, 248, 0.04) !important;
+}
+
+#commitsList .commit-history-item[open] > .commit-history-summary {
+  border-color: transparent !important;
+  background: rgba(242, 245, 248, 0.035) !important;
+  box-shadow: none !important;
+}
+
+#commitsList .commit-history-summary .tree-chevron {
+  color: var(--text-tertiary) !important;
+}
+
+#commitsList .commit-history-label {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  color: var(--text-primary) !important;
+  font-size: 12.5px !important;
+  line-height: 1.2 !important;
+}
+
+#commitsList .commit-hash {
+  flex: 0 0 auto !important;
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11.5px !important;
+  letter-spacing: 0 !important;
+}
+
+#commitsList .commit-message {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+}
+
+#commitsList .change-tree-children {
+  margin-left: 16px !important;
+  padding: 2px 0 5px 10px !important;
+  border-left: 1px solid rgba(142, 151, 255, 0.1) !important;
+}
+
+#commitsList .change-group-files {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+  border-left: 0 !important;
+}
+
+#commitsList .commit-file-row {
+  min-height: 24px !important;
+  padding: 1px 5px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+}
+
+#commitsList .commit-file-row:hover {
+  background: rgba(242, 245, 248, 0.035) !important;
+}
+
+#commitsList .commit-file-row .change-status-icon {
+  display: none !important;
+}
+
+#commitsList .commit-file-row .change-file-main {
+  grid-template-columns: 16px minmax(0, 1fr) auto !important;
+  gap: 7px !important;
+}
+
+#commitsList .commit-file-row .file-icon {
+  opacity: 0.72 !important;
+  transform: scale(0.9) !important;
+}
+
+#commitsList .commit-file-row .change-file-name {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: var(--text-secondary) !important;
+  font-size: 12.5px !important;
+}
+
+#commitsList .commit-file-row .change-inline-counts {
+  display: inline-flex !important;
+  justify-content: flex-end !important;
+  gap: 5px !important;
+  min-width: 50px !important;
+  opacity: 0.78 !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+}
+
+#commitsList .commit-file-row .change-inline-counts .add {
+  color: color-mix(in srgb, var(--success) 78%, var(--text-secondary)) !important;
+}
+
+#commitsList .commit-file-row .change-inline-counts .del {
+  color: color-mix(in srgb, var(--danger) 78%, var(--text-secondary)) !important;
+}
+
+/* Keep the quick agent launcher visible above active sessions. */
+body.has-active-task .compose {
+  display: grid !important;
+  padding: 8px !important;
+}
+
+body.has-active-task .compose .provider-row {
+  display: flex !important;
+}
+
+body.has-active-task .compose .hidden-controls,
+body.has-active-task .compose .prompt-row {
+  display: none !important;
+}
+
+.provider-pill {
+  gap: 6px !important;
+}
+
+.provider-icon,
+.provider-icon-svg {
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+}
+
+.provider-icon-svg {
+  opacity: 1 !important;
+}
+
+/* Workspace creation modal: polished form layout and guided validation state. */
+#workspaceModalBackdrop {
+  background: rgba(2, 6, 10, 0.78) !important;
+  backdrop-filter: blur(8px) saturate(1.08) !important;
+}
+
+#workspaceModalBackdrop .modal {
+  width: min(616px, calc(100vw - 48px)) !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  background: #111821 !important;
+}
+
+#workspaceModalBackdrop .modal-head {
+  display: grid !important;
+  grid-template-columns: 36px minmax(0, 1fr) 34px !important;
+  align-items: center !important;
+  min-height: 0 !important;
+  padding: 18px 22px !important;
+  gap: 14px !important;
+  border-bottom: 0 !important;
+}
+
+#workspaceModalBackdrop .modal-head::before {
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  flex-basis: 36px !important;
+  border-radius: 9px !important;
+  background-size:
+    15px 15px,
+    auto,
+    auto !important;
+  align-self: center !important;
+  justify-self: center !important;
+}
+
+#workspaceModalBackdrop .modal-head > .grid {
+  gap: 2px !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  align-self: center !important;
+}
+
+#workspaceModalTitle {
+  margin: 0 !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+  line-height: 1.15 !important;
+  color: var(--text-primary) !important;
+}
+
+#workspaceModalSubtitle {
+  max-width: 460px !important;
+  margin: 0 !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  color: var(--text-tertiary) !important;
+}
+
+#workspaceModalCloseBtn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 !important;
+  border-radius: 8px !important;
+  border-color: rgba(244, 247, 251, 0.12) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  justify-self: end !important;
+  align-self: center !important;
+}
+
+#workspaceModalCloseBtn:hover {
+  background: rgba(244, 247, 251, 0.06) !important;
+  color: var(--text-primary) !important;
+}
+
+.workspace-modal-close-icon,
+.workspace-modal-close-icon::before {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-modal-close-icon {
+  transform: translateX(1px);
+}
+
+.workspace-modal-close-icon::before {
+  content: '';
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M4.5 4.5l7 7M11.5 4.5l-7 7' stroke='black' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M4.5 4.5l7 7M11.5 4.5l-7 7' stroke='black' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+#workspaceModalBackdrop .modal-body {
+  padding: 13px 22px 0 !important;
+  gap: 18px !important;
+  background: #111821 !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-field {
+  gap: 6px !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-label {
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 1.25 !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-input,
+#workspaceModalBackdrop .workspace-modal-input-with-action {
+  min-height: 44px !important;
+  height: 44px !important;
+  border-radius: 9px !important;
+  border-color: rgba(244, 247, 251, 0.12) !important;
+  background: #0d1218 !important;
+  color: var(--text-primary) !important;
+  font-size: 13px !important;
+  line-height: 1.3 !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-input::placeholder,
+#workspaceModalBackdrop .workspace-modal-input-with-action::placeholder {
+  color: rgba(169, 179, 194, 0.72) !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-input:focus,
+#workspaceModalBackdrop .workspace-modal-input-with-action:focus {
+  outline: none !important;
+  border-color: rgba(142, 151, 255, 0.48) !important;
+  box-shadow: 0 0 0 2px rgba(142, 151, 255, 0.14) !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-input-invalid {
+  border-color: rgba(240, 115, 115, 0.72) !important;
+  box-shadow: 0 0 0 2px rgba(240, 115, 115, 0.12) !important;
+}
+
+#workspaceModalBackdrop .workspace-repo-input-wrap {
+  display: block !important;
+  position: relative !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-input-with-action {
+  padding-right: 54px !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-browse-btn {
+  position: absolute !important;
+  top: 0 !important;
+  right: 1px !important;
+  bottom: 0 !important;
+  width: 44px !important;
+  min-width: 44px !important;
+  height: auto !important;
+  border-left: 1px solid rgba(244, 247, 251, 0.1) !important;
+  border-radius: 0 8px 8px 0 !important;
+  background: rgba(244, 247, 251, 0.025) !important;
+  color: var(--text-secondary) !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-browse-btn:hover {
+  background: rgba(244, 247, 251, 0.06) !important;
+  color: var(--text-primary) !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-browse-btn:focus-visible {
+  outline: none !important;
+  box-shadow: inset 0 0 0 2px rgba(142, 151, 255, 0.44) !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-browse-btn svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-help {
+  min-height: 15px !important;
+  color: var(--text-tertiary) !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-help:empty {
+  min-height: 0 !important;
+}
+
+#workspaceModalBackdrop .workspace-modal-help.workspace-modal-help-error {
+  color: var(--danger) !important;
+}
+
+#workspaceModalError {
+  margin: 0 !important;
+  padding: 8px 10px !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+#workspaceInitPrompt {
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 9px 10px !important;
+  border-color: rgba(231, 182, 92, 0.36) !important;
+  border-radius: 8px !important;
+  background: rgba(231, 182, 92, 0.08) !important;
+}
+
+#workspaceInitPrompt.hidden {
+  display: none !important;
+}
+
+#workspaceInitPrompt .workspace-init-copy {
+  display: grid !important;
+  gap: 3px !important;
+  min-width: 0 !important;
+}
+
+#workspaceInitPrompt .workspace-init-title {
+  color: var(--text-primary) !important;
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  line-height: 1.3 !important;
+}
+
+#workspaceInitPrompt .workspace-init-text {
+  color: var(--text-tertiary) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+#workspaceInitPrompt .actions {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+}
+
+#workspaceInitPromptBrowseBtn,
+#workspaceInitPromptYesBtn {
+  min-height: 30px !important;
+  height: 30px !important;
+  padding: 0 10px !important;
+  border-radius: 7px !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+}
+
+#workspaceInitPromptYesBtn {
+  background: #f7f8fb !important;
+  color: #0b0f14 !important;
+  border-color: transparent !important;
+}
+
+#workspaceInitPromptBrowseBtn {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+}
+
+#workspaceModalBackdrop .modal-foot {
+  padding: 24px 22px 20px !important;
+  gap: 9px !important;
+  border-top: 0 !important;
+  background: #111821 !important;
+}
+
+#workspaceModalCancelBtn,
+#workspaceModalCreateBtn {
+  min-height: 36px !important;
+  height: 36px !important;
+  padding: 0 14px !important;
+  border-radius: 8px !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+}
+
+#workspaceModalCancelBtn {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  border-color: rgba(244, 247, 251, 0.13) !important;
+}
+
+#workspaceModalCancelBtn:hover {
+  background: rgba(244, 247, 251, 0.06) !important;
+  color: var(--text-primary) !important;
+}
+
+#workspaceModalCreateBtn {
+  min-width: 132px !important;
+  background: #f7f8fb !important;
+  color: #0b0f14 !important;
+  border-color: transparent !important;
+}
+
+#workspaceModalCreateBtn:disabled {
+  background: rgba(244, 247, 251, 0.08) !important;
+  color: rgba(244, 247, 251, 0.45) !important;
+  border-color: rgba(244, 247, 251, 0.08) !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
+}
+
+#workspaceModalCreateBtn:disabled:hover {
+  background: rgba(244, 247, 251, 0.08) !important;
+  color: rgba(244, 247, 251, 0.45) !important;
+}
+
+@media (max-width: 700px) {
+  #workspaceModalBackdrop {
+    padding: 14px !important;
+  }
+
+  #workspaceModalBackdrop .modal {
+    width: min(100%, calc(100vw - 28px)) !important;
+  }
+
+  #workspaceModalBackdrop .modal-head {
+    grid-template-columns: 34px minmax(0, 1fr) 34px !important;
+    gap: 12px !important;
+    padding: 16px !important;
+  }
+
+  #workspaceModalBackdrop .modal-head::before {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 34px !important;
+    flex-basis: 34px !important;
+    background-size:
+      14px 14px,
+      auto,
+      auto !important;
+  }
+
+  #workspaceModalTitle {
+    font-size: 17px !important;
+  }
+
+  #workspaceModalSubtitle {
+    font-size: 12px !important;
+  }
+
+  #workspaceModalCloseBtn {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+  }
+
+  #workspaceModalBackdrop .modal-body {
+    padding: 12px 16px 0 !important;
+    gap: 16px !important;
+  }
+
+  #workspaceModalBackdrop .modal-foot {
+    padding: 22px 16px 18px !important;
+  }
+
+  #workspaceInitPrompt {
+    grid-template-columns: 1fr !important;
+  }
+
+  #workspaceInitPrompt .actions {
+    justify-content: flex-start !important;
   }
 }

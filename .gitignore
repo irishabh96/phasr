@@ -3,6 +3,8 @@ bin/
 .env
 internal/api/frontend/node_modules/
 internal/api/frontend/.vite/
+internal/api/frontend/test-results/
+internal/api/frontend/playwright-report/
 dist/
 internal/api/static/dist/
 internal/api/static/ui-build-counter.json

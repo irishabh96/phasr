@@ -110,10 +110,6 @@ function SidebarTaskRow({ task }) {
           data-state="closed"
           data-slot="tooltip-trigger"
           title={`Close ${task.title}`}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
         >
           <svg
             stroke="currentColor"
@@ -371,7 +367,10 @@ function CommitsView({ model }) {
     <details className="commit-history-item change-tree-dir" key={item.key}>
       <summary className="commit-history-summary">
         <TreeChevron />
-        <span className="commit-history-label tree-row-label mono">{item.label}</span>
+        <span className="commit-history-label tree-row-label">
+          {item.hash ? <span className="commit-hash">{item.hash}</span> : null}
+          <span className="commit-message">{item.message || item.label || "unknown"}</span>
+        </span>
       </summary>
       <div className="change-tree-children">
         {item.files.length ? item.files.map((file) => (

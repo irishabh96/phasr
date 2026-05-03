@@ -30,6 +30,7 @@ func (m *WorktreeManager) Create(repoPath, taskName, taskID, baseBranch, request
 		return "", "", err
 	}
 	_, _ = runGit("-C", repoPath, "worktree", "prune")
+	hasCommits := repoHasCommits(repoPath)
 
 	slug := sanitize(taskName)
 	if slug == "" {
@@ -55,6 +56,9 @@ func (m *WorktreeManager) Create(repoPath, taskName, taskID, baseBranch, request
 	if err != nil {
 		return "", "", err
 	}
+	if !hasCommits && baseRef != "" {
+		return "", "", fmt.Errorf("base branch %q cannot be used before the repository has commits", baseBranch)
+	}
 
 	if err := os.MkdirAll(m.baseDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("create worktree root: %w", err)
@@ -65,14 +69,22 @@ func (m *WorktreeManager) Create(repoPath, taskName, taskID, baseBranch, request
 		worktreePath = worktreePath + fmt.Sprintf("-%d", time.Now().Unix())
 	}
 
-	args := []string{"-C", repoPath, "worktree", "add", "-b", branchName, worktreePath}
+	args := []string{"-C", repoPath, "worktree", "add"}
+	if !hasCommits {
+		args = append(args, "--orphan")
+	}
+	args = append(args, "-b", branchName, worktreePath)
 	if baseRef != "" {
 		args = append(args, baseRef)
 	}
 	out, err := runGit(args...)
 	if err != nil && strings.Contains(strings.ToLower(out), "already registered worktree") {
 		_, _ = runGit("-C", repoPath, "worktree", "prune")
-		args = []string{"-C", repoPath, "worktree", "add", "-f", "-b", branchName, worktreePath}
+		args = []string{"-C", repoPath, "worktree", "add", "-f"}
+		if !hasCommits {
+			args = append(args, "--orphan")
+		}
+		args = append(args, "-b", branchName, worktreePath)
 		if baseRef != "" {
 			args = append(args, baseRef)
 		}
@@ -155,6 +167,11 @@ func (m *WorktreeManager) ensureRepo(repoPath string) error {
 
 func (m *WorktreeManager) branchExists(repoPath, branch string) bool {
 	_, err := runGit("-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
+func repoHasCommits(repoPath string) bool {
+	_, err := runGit("-C", repoPath, "rev-parse", "--verify", "HEAD")
 	return err == nil
 }
 

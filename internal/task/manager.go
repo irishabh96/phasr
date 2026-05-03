@@ -217,17 +217,9 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 		branch = currentRepoBranch(repoPath)
 		worktreePath = repoPath
 	} else {
-		// Repos without a commit cannot produce a usable detached worktree with tracked files.
-		// Fall back to running directly in repo so files remain visible/editable.
-		if !repoHasCommits(repoPath) {
-			directRepo = true
-			branch = currentRepoBranch(repoPath)
-			worktreePath = repoPath
-		} else {
-			branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID, req.BaseBranch, req.NewBranchName)
-			if err != nil {
-				return domain.Task{}, err
-			}
+		branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID, req.BaseBranch, req.NewBranchName)
+		if err != nil {
+			return domain.Task{}, err
 		}
 	}
 
@@ -1083,11 +1075,6 @@ func currentRepoBranch(repoPath string) string {
 		return "HEAD"
 	}
 	return branch
-}
-
-func repoHasCommits(repoPath string) bool {
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "HEAD")
-	return cmd.Run() == nil
 }
 
 func normalizedTags(tags []string) []string {
