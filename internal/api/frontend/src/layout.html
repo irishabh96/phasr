@@ -51,7 +51,6 @@
       <form id="createTaskForm" class="compose border-b border-border-subtle p-2 grid gap-2 bg-toolbar-bg">
         <div class="provider-row flex items-center justify-between gap-2.5">
           <div id="providerBar" class="provider-bar inline-flex items-center gap-1.5 flex-wrap">
-            <span class="text-2xs text-text-dim font-mono mr-0.5">Run with:</span>
             <button
               type="button"
               class="provider-pill border border-border-subtle rounded-[7px] bg-transparent text-[#9C8F87] min-h-[24px] px-2 text-xs font-medium"
@@ -152,7 +151,7 @@
           <input id="tagInput" placeholder="backend, urgent" />
         </div>
 
-        <div class="prompt-row grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
+        <div class="prompt-row hidden grid gap-2.5 grid-cols-[minmax(0,1fr)_auto] items-center">
           <textarea
             id="promptInput"
             class="min-h-[36px] max-h-[120px] rounded-md px-2.5 py-2 leading-[1.35] resize-y border-border-default bg-input-bg"
@@ -189,7 +188,9 @@
           id="centerEmptyState"
           class="center-empty hidden flex flex-1 min-h-0 items-center justify-center px-4 text-center text-xs text-text-tertiary font-mono"
         >
-          Open a task to start a terminal session.
+          <span class="center-empty-icon" aria-hidden="true"></span>
+          <span class="center-empty-title">No Active Task</span>
+          <span class="center-empty-copy">Create a workspace, then open a task or terminal tab.</span>
         </div>
         <div id="terminalPanel" class="terminal-box relative min-h-0 flex flex-col bg-[#151110] overflow-hidden flex-1">
           <div id="terminal" class="w-full h-full flex-1 overflow-hidden p-2"></div>
@@ -238,7 +239,7 @@
             title="Switch to tree view"
             aria-label="Switch to tree view"
           >
-            &#x2630;
+            <span class="toolbar-icon icon-view-grouped" aria-hidden="true"></span>
           </button>
           <button
             id="refreshGitBtn"
@@ -247,7 +248,7 @@
             title="Refresh changes"
             aria-label="Refresh changes"
           >
-            &#x21BB;
+            <span class="toolbar-icon icon-refresh" aria-hidden="true"></span>
           </button>
         </div>
       </div>
@@ -255,7 +256,7 @@
       <div class="commit-box border-b border-border-subtle p-2 grid gap-2 bg-transparent">
         <div class="commit-message-wrap">
           <div class="commit-message-head">
-            <label for="commitMessage">Commit Message</label>
+            <label for="commitMessage">Commit message</label>
             <button
               id="suggestCommitBtn"
               class="text-2xs text-blue-accent bg-transparent border-0 p-0 min-h-0 cursor-pointer hover:underline font-mono"
@@ -282,17 +283,16 @@
           >
             <span class="publish-dropdown-icon" aria-hidden="true"></span>
           </button>
-          <div
-            id="publishActionMenu"
-            class="hidden publish-action-menu"
-            role="menu"
-            aria-label="Publish actions"
-          >
+          <div id="publishActionMenu" class="hidden publish-action-menu" role="menu" aria-label="Publish actions">
             <button class="publish-action-item" data-publish-action="push" type="button" role="menuitem">Push</button>
             <button class="publish-action-item" data-publish-action="pull" type="button" role="menuitem">Pull</button>
             <button class="publish-action-item" data-publish-action="fetch" type="button" role="menuitem">Fetch</button>
-            <button class="publish-action-item" data-publish-action="commit" type="button" role="menuitem">Commit</button>
-            <button class="publish-action-item" data-publish-action="create-pr" type="button" role="menuitem">Create PR</button>
+            <button class="publish-action-item" data-publish-action="commit" type="button" role="menuitem">
+              Commit
+            </button>
+            <button class="publish-action-item" data-publish-action="create-pr" type="button" role="menuitem">
+              Create PR
+            </button>
           </div>
         </div>
       </div>
@@ -563,10 +563,12 @@
       </div>
       <button
         id="workspaceModalCloseBtn"
-        class="btn-ghost bg-transparent border-border-default text-text-secondary p-2"
+        class="btn-ghost bg-transparent border-border-default text-text-secondary"
         type="button"
+        aria-label="Close"
+        title="Close"
       >
-        Close
+        <span class="workspace-modal-close-icon" aria-hidden="true"></span>
       </button>
     </div>
     <div class="modal-body px-4 py-3.5 grid gap-3.5">
@@ -614,8 +616,9 @@
         id="workspaceInitPrompt"
         class="inline-prompt hidden border border-[#4A3F3A] rounded-md p-2 bg-[rgba(213,155,26,0.08)] grid gap-2"
       >
-        <div class="muted text-text-secondary text-sm">
-          Selected folder is not a git repo. Initialize git in this folder?
+        <div class="workspace-init-copy">
+          <div class="workspace-init-title">This folder is not a git repository.</div>
+          <div class="workspace-init-text">Initialize git here or choose another folder.</div>
         </div>
         <div class="actions flex gap-2 justify-end">
           <button
@@ -630,7 +633,7 @@
             class="btn-primary bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold"
             type="button"
           >
-            Yes, Init Git
+            Init Git
           </button>
         </div>
       </div>
@@ -672,6 +675,15 @@
   <div
     class="modal new-task-modal w-[min(640px,96vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
   >
+    <div class="modal-head new-task-modal-head">
+      <div class="grid gap-1">
+        <h3 id="newTaskModalTitle" class="m-0 text-[16px] leading-tight font-semibold text-text-primary">
+          New Agent Task
+        </h3>
+        <p class="new-task-modal-subtitle">Configure the agent, workspace, prompt, and branch for this task.</p>
+      </div>
+      <button id="newTaskModalCloseBtn" class="new-task-modal-close-x" type="button" aria-label="Close"></button>
+    </div>
     <div class="modal-body new-task-modal-body">
       <div class="new-task-compose">
         <div class="new-task-controls-grid">
@@ -748,9 +760,7 @@
       <div id="newTaskModalPromptHelp" class="workspace-modal-help" aria-live="polite"></div>
       <div id="newTaskModalError" class="workspace-modal-error hidden text-sm" role="alert"></div>
     </div>
-    <button id="newTaskModalCloseBtn" class="new-task-modal-close-x" type="button" aria-label="Close">&#x2715;</button>
     <button id="newTaskModalCancelBtn" class="hidden" type="button" aria-hidden="true"></button>
-    <h3 id="newTaskModalTitle" class="hidden">New Agent Task</h3>
   </div>
 </div>
 
@@ -800,13 +810,18 @@
   <div
     class="modal close-task-modal w-[min(340px,94vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
   >
-    <div class="modal-head close-task-modal-head px-4 py-3 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]">
+    <div
+      class="modal-head close-task-modal-head px-4 py-3 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
+    >
       <h3 id="closeTaskModalTitle" class="close-task-modal-title m-0 text-[15px] font-medium text-text-primary">
         Remove task "<span id="closeTaskModalTaskName" class="close-task-modal-task-name"></span>"?
       </h3>
     </div>
     <div class="modal-body close-task-modal-body px-4 py-3.5 grid gap-3">
-      <p id="closeTaskModalDescription" class="close-task-modal-description m-0 text-[12px] leading-[1.45] text-text-tertiary">
+      <p
+        id="closeTaskModalDescription"
+        class="close-task-modal-description m-0 text-[12px] leading-[1.45] text-text-tertiary"
+      >
         Deleting will permanently remove the worktree.
       </p>
     </div>
@@ -822,6 +837,53 @@
       </button>
       <button
         id="closeTaskModalDeleteBtn"
+        class="btn-primary close-task-modal-delete-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2"
+        type="button"
+      >
+        Delete
+      </button>
+    </div>
+  </div>
+</div>
+
+<div
+  id="deleteWorkspaceModalBackdrop"
+  class="modal-backdrop hidden fixed inset-0 bg-[rgba(12,9,8,0.72)] backdrop-blur-[2px] flex items-center justify-center z-[3140] p-3.5"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="deleteWorkspaceModalTitle"
+  aria-describedby="deleteWorkspaceModalDescription"
+>
+  <div
+    class="modal close-task-modal delete-workspace-modal w-[min(360px,94vw)] border border-[#3E3431] rounded-lg overflow-hidden bg-panel-bg shadow-[0_12px_32px_rgba(0,0,0,0.28)]"
+  >
+    <div
+      class="modal-head close-task-modal-head px-4 py-3 border-b border-[#312927] flex items-center justify-between gap-2 bg-[#1C1715]"
+    >
+      <h3 id="deleteWorkspaceModalTitle" class="close-task-modal-title m-0 text-[15px] font-medium text-text-primary">
+        Remove workspace "<span id="deleteWorkspaceModalName" class="close-task-modal-task-name"></span>"?
+      </h3>
+    </div>
+    <div class="modal-body close-task-modal-body px-4 py-3.5 grid gap-3">
+      <p
+        id="deleteWorkspaceModalDescription"
+        class="close-task-modal-description m-0 text-[12px] leading-[1.45] text-text-tertiary"
+      >
+        This will permanently delete workspace tasks and managed worktrees.
+      </p>
+    </div>
+    <div
+      class="modal-foot close-task-modal-foot px-4 py-2.5 pb-3.5 border-t border-[#312927] flex items-center justify-end gap-2.5 bg-[#1C1715]"
+    >
+      <button
+        id="deleteWorkspaceModalCancelBtn"
+        class="btn-ghost close-task-modal-cancel-btn bg-transparent border-border-default text-text-secondary p-2"
+        type="button"
+      >
+        Cancel
+      </button>
+      <button
+        id="deleteWorkspaceModalDeleteBtn"
         class="btn-primary close-task-modal-delete-btn bg-[#2A2321] border-border-strong text-[#F2EBE4] font-semibold p-2"
         type="button"
       >

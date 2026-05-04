@@ -36,17 +36,19 @@ type Options struct {
 }
 
 type CreateRequest struct {
-	Name       string   `json:"name"`
-	Workspace  string   `json:"workspace"`
-	Tags       []string `json:"tags"`
-	RepoPath   string   `json:"repo_path"`
-	Prompt     string   `json:"prompt"`
-	Command    string   `json:"command"`
-	Preset     string   `json:"preset"`
-	DirectRepo bool     `json:"direct_repo"`
-	RootTaskID string   `json:"root_task_id"`
-	Cols       uint16   `json:"cols"`
-	Rows       uint16   `json:"rows"`
+	Name          string   `json:"name"`
+	Workspace     string   `json:"workspace"`
+	Tags          []string `json:"tags"`
+	RepoPath      string   `json:"repo_path"`
+	Prompt        string   `json:"prompt"`
+	Command       string   `json:"command"`
+	Preset        string   `json:"preset"`
+	DirectRepo    bool     `json:"direct_repo"`
+	RootTaskID    string   `json:"root_task_id"`
+	BaseBranch    string   `json:"base_branch"`
+	NewBranchName string   `json:"new_branch_name"`
+	Cols          uint16   `json:"cols"`
+	Rows          uint16   `json:"rows"`
 }
 
 type Manager struct {
@@ -215,17 +217,9 @@ func (m *Manager) Create(req CreateRequest) (domain.Task, error) {
 		branch = currentRepoBranch(repoPath)
 		worktreePath = repoPath
 	} else {
-		// Repos without a commit cannot produce a usable detached worktree with tracked files.
-		// Fall back to running directly in repo so files remain visible/editable.
-		if !repoHasCommits(repoPath) {
-			directRepo = true
-			branch = currentRepoBranch(repoPath)
-			worktreePath = repoPath
-		} else {
-			branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID)
-			if err != nil {
-				return domain.Task{}, err
-			}
+		branch, worktreePath, err = m.worktree.Create(repoPath, taskName, taskID, req.BaseBranch, req.NewBranchName)
+		if err != nil {
+			return domain.Task{}, err
 		}
 	}
 
@@ -724,7 +718,7 @@ func (m *Manager) DeleteWorkspace(workspaceID string) error {
 	return nil
 }
 
-func (m *Manager) Diff(id, file string) ([]diff.Change, string, string, error) {
+func (m *Manager) Diff(id, file, state string) ([]diff.Change, string, string, error) {
 	t, err := m.Get(id)
 	if err != nil {
 		return nil, "", "", err
@@ -734,7 +728,7 @@ func (m *Manager) Diff(id, file string) ([]diff.Change, string, string, error) {
 	if err != nil {
 		return nil, "", "", err
 	}
-	patch, err := m.diffs.Patch(t.WorktreePath, file)
+	patch, err := m.diffs.Patch(t.WorktreePath, file, state)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -750,19 +744,27 @@ func (m *Manager) GitStatus(id string) (diff.GitStatus, error) {
 }
 
 func (m *Manager) StageFile(id, path string) error {
+	return m.StageFiles(id, []string{path})
+}
+
+func (m *Manager) StageFiles(id string, paths []string) error {
 	t, err := m.Get(id)
 	if err != nil {
 		return err
 	}
-	return m.diffs.StageFile(t.WorktreePath, path)
+	return m.diffs.StageFiles(t.WorktreePath, paths)
 }
 
 func (m *Manager) UnstageFile(id, path string) error {
+	return m.UnstageFiles(id, []string{path})
+}
+
+func (m *Manager) UnstageFiles(id string, paths []string) error {
 	t, err := m.Get(id)
 	if err != nil {
 		return err
 	}
-	return m.diffs.UnstageFile(t.WorktreePath, path)
+	return m.diffs.UnstageFiles(t.WorktreePath, paths)
 }
 
 func (m *Manager) DiscardFile(id, path string) error {
@@ -1073,11 +1075,6 @@ func currentRepoBranch(repoPath string) string {
 		return "HEAD"
 	}
 	return branch
-}
-
-func repoHasCommits(repoPath string) bool {
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "HEAD")
-	return cmd.Run() == nil
 }
 
 func normalizedTags(tags []string) []string {

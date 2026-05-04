@@ -25,7 +25,7 @@ function fileIconType(name, kind = "file") {
 
 function FileIcon({ name, kind = "file" }) {
   const icon = fileIconType(name, kind);
-  return <span className={cx("file-icon", icon.cls)} aria-hidden="true">{icon.label}</span>;
+  return <span className={cx("file-icon", icon.cls)} aria-hidden="true" data-file-kind={icon.label} />;
 }
 
 function TreeChevron() {
@@ -37,18 +37,30 @@ function TreeChevron() {
 }
 
 const PROVIDERS = [
-  { id: "claude", label: "claude", icon: "C", title: "Anthropic Claude — autonomous coding agent" },
-  { id: "codex", label: "codex", icon: "O", title: "OpenAI Codex — GPT-powered coding agent" },
-  { id: "copilot", label: "copilot", icon: "G", title: "GitHub Copilot — AI pair programmer" },
-  { id: "opencode", label: "opencode", icon: "OC", title: "OpenCode — open-source coding assistant" },
-  { id: "gemini", label: "gemini", icon: "Gm", title: "Google Gemini — multimodal AI agent" },
+  { id: "claude", label: "claude", fallbackIcon: "C", title: "Anthropic Claude — autonomous coding agent" },
+  { id: "codex", label: "codex", fallbackIcon: "O", title: "OpenAI Codex — GPT-powered coding agent" },
+  { id: "copilot", label: "copilot", fallbackIcon: "G", title: "GitHub Copilot — AI pair programmer" },
+  { id: "opencode", label: "opencode", fallbackIcon: "OC", title: "OpenCode — open-source coding assistant" },
+  { id: "gemini", label: "gemini", fallbackIcon: "Gm", title: "Google Gemini — multimodal AI agent" },
 ];
+
+let providerIconSources = {};
+
+function captureProviderIconSources(host) {
+  if (!host) return;
+  const next = {};
+  for (const provider of PROVIDERS) {
+    const img = host.querySelector(`[data-provider-pill="${provider.id}"] img.provider-icon-svg`);
+    const src = String(img?.getAttribute("src") || "").trim();
+    if (src) next[provider.id] = src;
+  }
+  providerIconSources = next;
+}
 
 function ProviderBarView({ model }) {
   const selected = String(model?.selected || "");
   return (
     <>
-      <span className="provider-label">Run with:</span>
       {PROVIDERS.map((provider) => (
         <button
           key={provider.id}
@@ -57,7 +69,13 @@ function ProviderBarView({ model }) {
           data-provider-pill={provider.id}
           title={provider.title}
         >
-          <span className="provider-icon" aria-hidden="true">{provider.icon}</span>
+          <span className={cx("provider-icon", `provider-icon-${provider.id}`)} aria-hidden="true">
+            {providerIconSources[provider.id] ? (
+              <img className="provider-icon-svg" src={providerIconSources[provider.id]} alt="" />
+            ) : (
+              provider.fallbackIcon
+            )}
+          </span>
           <span>{provider.label}</span>
         </button>
       ))}
@@ -92,10 +110,6 @@ function SidebarTaskRow({ task }) {
           data-state="closed"
           data-slot="tooltip-trigger"
           title={`Close ${task.title}`}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
         >
           <svg
             stroke="currentColor"
@@ -242,6 +256,7 @@ function ChangeFileRow({ file, mode, commitMode = false }) {
   const showStage = !commitMode && mode === "unstaged";
   const showUnstage = !commitMode && mode === "staged";
   const showDiscard = !commitMode && !!safePath;
+  const hasCounts = Number(file?.added || 0) || Number(file?.deleted || 0);
 
   return (
     <div
@@ -252,11 +267,14 @@ function ChangeFileRow({ file, mode, commitMode = false }) {
     >
       <div className="change-file-main">
         <span className={cx("change-status-icon", file.statusClass)} aria-hidden="true" />
+        <FileIcon name={file.name} kind="file" />
         <span className="change-file-name mono">{file.name}</span>
-        <span className="change-inline-counts">
-          <span className="add">+{file.added}</span>
-          <span className="del">-{file.deleted}</span>
-        </span>
+        {hasCounts ? (
+          <span className="change-inline-counts">
+            <span className="add">+{file.added}</span>
+            <span className="del">-{file.deleted}</span>
+          </span>
+        ) : null}
       </div>
       {!commitMode ? (
         <span className="tree-row-right">
@@ -349,7 +367,10 @@ function CommitsView({ model }) {
     <details className="commit-history-item change-tree-dir" key={item.key}>
       <summary className="commit-history-summary">
         <TreeChevron />
-        <span className="commit-history-label tree-row-label mono">{item.label}</span>
+        <span className="commit-history-label tree-row-label">
+          {item.hash ? <span className="commit-hash">{item.hash}</span> : null}
+          <span className="commit-message">{item.message || item.label || "unknown"}</span>
+        </span>
       </summary>
       <div className="change-tree-children">
         {item.files.length ? item.files.map((file) => (
@@ -369,9 +390,9 @@ function RepoTreeDir({ node }) {
         <span className="tree-row-label">{node.name}</span>
       </summary>
       <div className="repo-tree-children">
-        {node.dirs.map((dir) => <RepoTreeDir key={`${node.name}/${dir.name}`} node={dir} />)}
+        {node.dirs.map((dir) => <RepoTreeDir key={dir.key} node={dir} />)}
         {node.files.map((file) => (
-          <div className="repo-tree-file" style={{ "--depth": file.depth }} key={`${node.name}/${file.name}`}>
+          <div className="repo-tree-file" style={{ "--depth": file.depth }} key={file.key}>
             <FileIcon name={file.name} kind="file" />
             <span className="tree-row-label">{file.name}</span>
           </div>
@@ -408,6 +429,8 @@ export function setupReactBridge() {
   const commitsRoot = commitsHost ? createRoot(commitsHost) : null;
   const repoFilesRoot = repoFilesHost ? createRoot(repoFilesHost) : null;
 
+  captureProviderIconSources(providerHost);
+
   window.__PHASR_REACT_BRIDGE__ = {
     renderWorkspaces(model) {
       if (!workspaceRoot) return;
@@ -419,6 +442,9 @@ export function setupReactBridge() {
     },
     renderProviderBar(model) {
       if (!providerRoot) return;
+      if (!Object.keys(providerIconSources).length) {
+        captureProviderIconSources(providerHost);
+      }
       providerRoot.render(<ProviderBarView model={model} />);
     },
     renderTaskHeader(model) {
