@@ -1,0 +1,127 @@
+//! Local filesystem checks the UI uses to validate user-supplied paths
+//! (e.g. when adding a workspace). No I/O outside read-only fs metadata
+//! and the existence of a `.git` directory.
+
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathValidation {
+    pub path: String,
+    pub absolute_path: Option<String>,
+    pub exists: bool,
+    pub is_dir: bool,
+    pub is_git_repo: bool,
+    /// Present only when `exists && is_dir && !is_git_repo`. Suggests the
+    /// user run `git init` or pick a different folder (mockup 4 of the plan).
+    pub message: Option<String>,
+}
+
+pub fn validate(path: &str) -> PathValidation {
+    let expanded = expand_tilde(path);
+    let absolute = std::fs::canonicalize(&expanded)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+
+    let exists = expanded.exists();
+    let is_dir = exists && expanded.is_dir();
+    let is_git_repo = is_dir && expanded.join(".git").exists();
+
+    let message = match (exists, is_dir, is_git_repo) {
+        (false, _, _) => Some("Path does not exist".into()),
+        (true, false, _) => Some("Path is a file, not a directory".into()),
+        (true, true, false) => Some("Folder is not a git repository".into()),
+        (true, true, true) => None,
+    };
+
+    PathValidation {
+        path: path.into(),
+        absolute_path: absolute,
+        exists,
+        is_dir,
+        is_git_repo,
+        message,
+    }
+}
+
+/// Expands a leading `~` to the user's home directory. Does not handle
+/// `~user/...` style — Phasr never spawns paths as another user.
+fn expand_tilde(input: &str) -> PathBuf {
+    if let Some(rest) = input.strip_prefix("~/") {
+        if let Some(home) = home_dir() {
+            return home.join(rest);
+        }
+    }
+    if input == "~" {
+        if let Some(home) = home_dir() {
+            return home;
+        }
+    }
+    PathBuf::from(input)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+#[tauri::command]
+pub fn validate_workspace_path(path: String) -> PathValidation {
+    validate(&path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn missing_path_is_invalid() {
+        let result = validate("/this/almost/certainly/does/not/exist/qq");
+        assert!(!result.exists);
+        assert!(!result.is_dir);
+        assert!(!result.is_git_repo);
+        assert_eq!(result.message.as_deref(), Some("Path does not exist"));
+    }
+
+    #[test]
+    fn file_path_is_not_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hello.txt");
+        fs::write(&file, "hi").unwrap();
+        let result = validate(file.to_str().unwrap());
+        assert!(result.exists);
+        assert!(!result.is_dir);
+        assert_eq!(result.message.as_deref(), Some("Path is a file, not a directory"));
+    }
+
+    #[test]
+    fn dir_without_git_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = validate(dir.path().to_str().unwrap());
+        assert!(result.exists);
+        assert!(result.is_dir);
+        assert!(!result.is_git_repo);
+        assert_eq!(result.message.as_deref(), Some("Folder is not a git repository"));
+    }
+
+    #[test]
+    fn dir_with_git_subfolder_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let result = validate(dir.path().to_str().unwrap());
+        assert!(result.exists);
+        assert!(result.is_dir);
+        assert!(result.is_git_repo);
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn tilde_expansion() {
+        let result = expand_tilde("~/somewhere");
+        assert!(result.is_absolute());
+        assert!(!result.starts_with("~"));
+    }
+}
