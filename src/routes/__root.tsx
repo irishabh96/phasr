@@ -1,7 +1,8 @@
-import { Outlet, createRootRoute } from "@tanstack/react-router";
+import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useUiStore } from "@/lib/store";
-import { applyTheme, resolveTheme } from "@/lib/theme";
+import { applyTheme } from "@/lib/theme";
 
 function RootLayout() {
   const theme = useUiStore((state) => state.theme);
@@ -19,21 +20,33 @@ function RootLayout() {
   }, [theme]);
 
   return (
-    <div className="min-h-screen bg-(--color-bg-base) text-(--color-text-primary)">
+    <>
       <Outlet />
-      <ThemeBadge resolved={resolveTheme(theme)} />
-    </div>
+      <div className="pointer-events-auto fixed bottom-3 right-3 z-50">
+        <ThemeToggle />
+      </div>
+    </>
   );
 }
 
-function ThemeBadge({ resolved }: { resolved: "dark" | "light" }) {
+function NotFound() {
   return (
-    <div className="pointer-events-none fixed bottom-3 right-3 rounded-md border border-(--color-border-subtle) bg-(--color-bg-elevated) px-2 py-1 text-xs text-(--color-text-muted)">
-      theme: {resolved}
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-(--color-bg-base) px-4 text-center">
+      <h1 className="text-lg font-semibold">Page not found</h1>
+      <p className="text-sm text-(--color-text-secondary)">
+        The page you were trying to reach doesn't exist.
+      </p>
+      <Link
+        to="/"
+        className="rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-3 py-1.5 text-sm hover:border-(--color-border-strong)"
+      >
+        Back to home
+      </Link>
     </div>
   );
 }
 
 export const Route = createRootRoute({
   component: RootLayout,
+  notFoundComponent: NotFound,
 });
