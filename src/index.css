@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+/* ---------- Design tokens (from the rebuild plan: Theming) ---------- */
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --color-bg-base: #0a0a0b;
+  --color-bg-surface: #111114;
+  --color-bg-elevated: #1a1a1f;
+  --color-bg-input: #0e0e11;
+
+  --color-border-subtle: #1f1f25;
+  --color-border-default: #2a2a33;
+  --color-border-strong: #3a3a45;
+
+  --color-text-primary: #e8e8ec;
+  --color-text-secondary: #a0a0ab;
+  --color-text-muted: #6b6b76;
+
+  --color-accent-50: #eef2ff;
+  --color-accent-100: #e0e7ff;
+  --color-accent-200: #c7d2fe;
+  --color-accent-300: #a5b4fc;
+  --color-accent-400: #818cf8;
+  --color-accent-500: #6366f1;
+  --color-accent-600: #4f46e5;
+  --color-accent-700: #4338ca;
+  --color-accent-800: #3730a3;
+  --color-accent-900: #312e81;
+  --color-accent-950: #1e1b4b;
+
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+}
+
+/* Light mode overrides */
+[data-theme="light"] {
+  --color-bg-base: #fafafb;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-input: #f4f4f5;
+
+  --color-border-subtle: #ebebef;
+  --color-border-default: #d8d8de;
+  --color-border-strong: #b6b6c0;
+
+  --color-text-primary: #0a0a0b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #8e8e96;
+
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-info: #2563eb;
+}
+
+/* ---------- Base resets ---------- */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button {
+  font: inherit;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--color-accent-500);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+}

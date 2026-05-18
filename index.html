@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phasr</title>
+    <script>
+      // Pre-React theme bootstrap. Reads localStorage and applies data-theme
+      // to <html> before any styles paint so there's no flash.
+      (function () {
+        try {
+          var raw = localStorage.getItem("phasr.theme");
+          var theme = raw === "light" || raw === "dark" || raw === "system" ? raw : "dark";
+          var resolved = theme;
+          if (theme === "system") {
+            resolved = window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark";
+          }
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (_e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

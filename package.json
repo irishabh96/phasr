@@ -1,0 +1,49 @@
+{
+  "name": "phasr",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "@tanstack/react-router": "^1.131.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.451.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind-merge": "^2.5.4",
+    "tailwindcss": "^4.0.0",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tanstack/react-query-devtools": "^5.59.0",
+    "@tanstack/router-devtools": "^1.131.0",
+    "@tanstack/router-plugin": "^1.131.0",
+    "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^25.9.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^25.0.1",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "vitest": "^2.1.3"
+  }
+}
