@@ -69,6 +69,37 @@ impl PresetRepo {
         Ok(seeded.len())
     }
 
+    /// For each seeded preset (matched by name + is_seed=true): if it
+    /// exists with a different command, update it; if it's missing,
+    /// insert it. User-added presets are left alone. Run this on every
+    /// boot so old DBs pick up command tweaks when we ship them.
+    pub async fn sync_seeded(&self) -> Result<(), StoreError> {
+        let existing = self.list().await?;
+        let now = Utc::now().to_rfc3339();
+        for canonical in Preset::seeded() {
+            let match_ = existing
+                .iter()
+                .find(|p| p.is_seed && p.name == canonical.name);
+            match match_ {
+                Some(existing_row) if existing_row.command != canonical.command => {
+                    sqlx::query(
+                        "UPDATE presets SET command = ?, updated_at = ?, dirty = 1 WHERE id = ?",
+                    )
+                    .bind(&canonical.command)
+                    .bind(&now)
+                    .bind(&existing_row.id)
+                    .execute(&self.db)
+                    .await?;
+                }
+                Some(_) => {}
+                None => {
+                    self.insert(&canonical).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), StoreError> {
         let res = sqlx::query(
             "UPDATE presets SET is_enabled = ?, updated_at = ?, dirty = 1 WHERE id = ?",

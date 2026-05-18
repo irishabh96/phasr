@@ -4,6 +4,7 @@
 //! instead (introduced in later phases).
 
 pub mod presets;
+pub mod runtime;
 pub mod settings;
 pub mod tasks;
 pub mod workspaces;

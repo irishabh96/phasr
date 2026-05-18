@@ -19,8 +19,8 @@ function AppLayout() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-(--color-bg-base) text-(--color-text-primary)">
-      <header className="flex h-12 items-center justify-between border-b border-(--color-border-subtle) bg-(--color-bg-surface) px-4">
+    <div className="flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-(--color-border-subtle) bg-(--color-bg-surface) px-4">
         <div className="flex items-center gap-2 text-sm font-medium">
           <span className="text-(--color-text-primary)">Phasr</span>
         </div>
@@ -32,7 +32,7 @@ function AppLayout() {
           }}
         />
       </header>
-      <main className="flex-1">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <Outlet />
       </main>
     </div>

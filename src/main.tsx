@@ -1,4 +1,3 @@
-import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ClerkProvider } from "@clerk/react";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -31,11 +30,9 @@ if (!rootElement) {
 }
 
 createRoot(rootElement).render(
-  <StrictMode>
-    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} appearance={clerkAppearance()}>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-      </QueryClientProvider>
-    </ClerkProvider>
-  </StrictMode>,
+  <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} appearance={clerkAppearance()}>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  </ClerkProvider>,
 );

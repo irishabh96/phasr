@@ -36,18 +36,18 @@ impl Preset {
     /// The shipped seed presets per the rebuild plan (Concepts: Templates).
     pub fn seeded() -> Vec<Self> {
         let now = Utc::now();
+        // Each command launches the agent in interactive mode. The
+        // user's prompt is then typed into the agent's UI by the PTY
+        // runtime (see PtyHandle::spawn) — keeps the agent alive for
+        // follow-up turns instead of one-shot CLI args.
         let entries = [
-            ("Claude", r#"claude -p "{{prompt}}""#, true),
-            (
-                "Claude Code",
-                r#"claude --dangerously-skip-permissions -p "{{prompt}}""#,
-                false,
-            ),
-            ("Codex", r#"codex --prompt "{{prompt}}""#, false),
-            ("Cursor", r#"cursor-agent --prompt "{{prompt}}""#, false),
-            ("OpenCode", r#"opencode run "{{prompt}}""#, false),
-            ("Copilot", r#"gh copilot suggest "{{prompt}}""#, false),
-            ("Gemini", r#"gemini -p "{{prompt}}""#, false),
+            ("Claude", "claude --dangerously-skip-permissions", true),
+            ("Claude Code", "claude --dangerously-skip-permissions", false),
+            ("Codex", "codex", false),
+            ("Cursor", "cursor-agent", false),
+            ("OpenCode", "opencode", false),
+            ("Copilot", "gh copilot suggest", false),
+            ("Gemini", "gemini", false),
         ];
         entries
             .into_iter()

@@ -2,11 +2,13 @@ mod auth;
 mod commands;
 mod domain;
 mod localfs;
+mod pty;
 mod store;
 
 use std::sync::Arc;
 
 use auth::SessionState;
+use pty::TaskRuntime;
 use store::{default_db_path, init_pool, PresetRepo, SettingsRepo, TaskRepo, WorkspaceRepo};
 use tauri::Manager;
 
@@ -24,6 +26,10 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to resolve app data directory");
             let db_path = default_db_path(&app_data_dir);
+            let log_dir = app_data_dir.join("logs");
+
+            let task_runtime = Arc::new(TaskRuntime::new(log_dir));
+            app.manage(task_runtime);
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -32,6 +38,9 @@ pub fn run() {
                         let preset_repo = PresetRepo::new(pool.clone());
                         if let Err(err) = preset_repo.seed_if_empty().await {
                             eprintln!("preset seeding failed: {err}");
+                        }
+                        if let Err(err) = preset_repo.sync_seeded().await {
+                            eprintln!("preset sync failed: {err}");
                         }
                         handle.manage(WorkspaceRepo::new(pool.clone()));
                         handle.manage(TaskRepo::new(pool.clone()));
@@ -64,6 +73,12 @@ pub fn run() {
             commands::presets::set_preset_enabled,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
+            commands::runtime::start_task,
+            commands::runtime::read_task_log,
+            commands::runtime::send_task_input,
+            commands::runtime::resize_task,
+            commands::runtime::interrupt_task,
+            commands::runtime::stop_task,
             localfs::validate_workspace_path,
         ])
         .run(tauri::generate_context!())

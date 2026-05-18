@@ -1,5 +1,5 @@
 import { useUser } from "@clerk/react";
-import { createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute } from "@tanstack/react-router";
 import { AddWorkspaceForm } from "@/components/AddWorkspaceForm";
 import { useDeleteWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { usePresets } from "@/lib/hooks/usePresets";
@@ -39,12 +39,16 @@ function Home() {
           )}
           {workspaces?.map((ws) => (
             <li key={ws.id} className="flex items-center justify-between py-3">
-              <div className="min-w-0">
+              <Link
+                to="/workspaces/$workspaceId"
+                params={{ workspaceId: ws.id }}
+                className="min-w-0 flex-1 hover:text-(--color-accent-400)"
+              >
                 <div className="truncate text-sm">{ws.name}</div>
                 <div className="truncate text-xs text-(--color-text-muted)">
                   {ws.localPath ?? "(no local path)"}
                 </div>
-              </div>
+              </Link>
               <button
                 type="button"
                 onClick={() => deleteWorkspace.mutate(ws.id)}

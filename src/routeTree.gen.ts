@@ -15,6 +15,8 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
 import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
+import { Route as AppWorkspacesWorkspaceIdIndexRouteImport } from './routes/_app/workspaces/$workspaceId/index'
+import { Route as AppWorkspacesWorkspaceIdTasksTaskIdRouteImport } from './routes/_app/workspaces/$workspaceId/tasks/$taskId'
 
 const SignUpRoute = SignUpRouteImport.update({
   id: '/sign-up',
@@ -45,6 +47,18 @@ const SignInSplatRoute = SignInSplatRouteImport.update({
   path: '/$',
   getParentRoute: () => SignInRoute,
 } as any)
+const AppWorkspacesWorkspaceIdIndexRoute =
+  AppWorkspacesWorkspaceIdIndexRouteImport.update({
+    id: '/workspaces/$workspaceId/',
+    path: '/workspaces/$workspaceId/',
+    getParentRoute: () => AppRoute,
+  } as any)
+const AppWorkspacesWorkspaceIdTasksTaskIdRoute =
+  AppWorkspacesWorkspaceIdTasksTaskIdRouteImport.update({
+    id: '/workspaces/$workspaceId/tasks/$taskId',
+    path: '/workspaces/$workspaceId/tasks/$taskId',
+    getParentRoute: () => AppRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -52,6 +66,8 @@ export interface FileRoutesByFullPath {
   '/sign-up': typeof SignUpRouteWithChildren
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
+  '/workspaces/$workspaceId/': typeof AppWorkspacesWorkspaceIdIndexRoute
+  '/workspaces/$workspaceId/tasks/$taskId': typeof AppWorkspacesWorkspaceIdTasksTaskIdRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof SignInRouteWithChildren
@@ -59,6 +75,8 @@ export interface FileRoutesByTo {
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/': typeof AppIndexRoute
+  '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdIndexRoute
+  '/workspaces/$workspaceId/tasks/$taskId': typeof AppWorkspacesWorkspaceIdTasksTaskIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -68,12 +86,28 @@ export interface FileRoutesById {
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/workspaces/$workspaceId/': typeof AppWorkspacesWorkspaceIdIndexRoute
+  '/_app/workspaces/$workspaceId/tasks/$taskId': typeof AppWorkspacesWorkspaceIdTasksTaskIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/sign-in' | '/sign-up' | '/sign-in/$' | '/sign-up/$'
+  fullPaths:
+    | '/'
+    | '/sign-in'
+    | '/sign-up'
+    | '/sign-in/$'
+    | '/sign-up/$'
+    | '/workspaces/$workspaceId/'
+    | '/workspaces/$workspaceId/tasks/$taskId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/sign-in' | '/sign-up' | '/sign-in/$' | '/sign-up/$' | '/'
+  to:
+    | '/sign-in'
+    | '/sign-up'
+    | '/sign-in/$'
+    | '/sign-up/$'
+    | '/'
+    | '/workspaces/$workspaceId'
+    | '/workspaces/$workspaceId/tasks/$taskId'
   id:
     | '__root__'
     | '/_app'
@@ -82,6 +116,8 @@ export interface FileRouteTypes {
     | '/sign-in/$'
     | '/sign-up/$'
     | '/_app/'
+    | '/_app/workspaces/$workspaceId/'
+    | '/_app/workspaces/$workspaceId/tasks/$taskId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -134,15 +170,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignInSplatRouteImport
       parentRoute: typeof SignInRoute
     }
+    '/_app/workspaces/$workspaceId/': {
+      id: '/_app/workspaces/$workspaceId/'
+      path: '/workspaces/$workspaceId'
+      fullPath: '/workspaces/$workspaceId/'
+      preLoaderRoute: typeof AppWorkspacesWorkspaceIdIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/workspaces/$workspaceId/tasks/$taskId': {
+      id: '/_app/workspaces/$workspaceId/tasks/$taskId'
+      path: '/workspaces/$workspaceId/tasks/$taskId'
+      fullPath: '/workspaces/$workspaceId/tasks/$taskId'
+      preLoaderRoute: typeof AppWorkspacesWorkspaceIdTasksTaskIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
+  AppWorkspacesWorkspaceIdIndexRoute: typeof AppWorkspacesWorkspaceIdIndexRoute
+  AppWorkspacesWorkspaceIdTasksTaskIdRoute: typeof AppWorkspacesWorkspaceIdTasksTaskIdRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
+  AppWorkspacesWorkspaceIdIndexRoute: AppWorkspacesWorkspaceIdIndexRoute,
+  AppWorkspacesWorkspaceIdTasksTaskIdRoute:
+    AppWorkspacesWorkspaceIdTasksTaskIdRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

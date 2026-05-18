@@ -1,5 +1,14 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { PathValidation, Preset, Task, TaskStatus, UserSettings, Workspace } from "./types";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import type {
+  PathValidation,
+  Preset,
+  PtyEvent,
+  RunningTaskInfo,
+  Task,
+  TaskStatus,
+  UserSettings,
+  Workspace,
+} from "./types";
 
 interface CreateWorkspaceInput {
   name: string;
@@ -74,4 +83,17 @@ export const tauri = {
   // ── localfs ──────────────────────────────────────────────────────────
   validateWorkspacePath: (path: string) =>
     invoke<PathValidation>("validate_workspace_path", { path }),
+
+  // ── runtime (PTY) ────────────────────────────────────────────────────
+  startTask: (taskId: string, onEvent: Channel<PtyEvent>, rows = 24, cols = 80) =>
+    invoke<RunningTaskInfo>("start_task", { taskId, onEvent, rows, cols }),
+  readTaskLog: (taskId: string) => invoke<string>("read_task_log", { taskId }),
+  sendTaskInput: (taskId: string, data: string) =>
+    invoke<void>("send_task_input", { taskId, data }),
+  resizeTask: (taskId: string, rows: number, cols: number) =>
+    invoke<void>("resize_task", { taskId, rows, cols }),
+  interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
+  stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
 };
+
+export { Channel };

@@ -51,6 +51,15 @@ export interface Preset {
   updatedAt: string;
 }
 
+export type PtyEvent =
+  | { type: "output"; taskId: string; chunk: string }
+  | { type: "exit"; taskId: string; exitCode: number | null };
+
+export interface RunningTaskInfo {
+  taskId: string;
+  startedAt: string;
+}
+
 export interface PathValidation {
   path: string;
   absolutePath: string | null;

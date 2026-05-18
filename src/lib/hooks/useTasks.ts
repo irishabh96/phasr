@@ -21,6 +21,14 @@ export function useTask(id: string | null | undefined) {
     queryKey: taskKeys.detail(id ?? ""),
     queryFn: () => tauri.getTask(id ?? ""),
     enabled: !!id,
+    // Poll while the task is in flight so status badges reflect reality
+    // even before the PTY exits.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (!status) return 1500;
+      const settled = status === "completed" || status === "failed" || status === "archived";
+      return settled ? false : 1500;
+    },
   });
 }
 
