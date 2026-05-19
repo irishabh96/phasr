@@ -2,11 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Check } from "lucide-react";
 import { useUserSettings, useUpdateUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import type { Theme } from "@/lib/theme";
 
 interface AccentChoice {
   id: string;
-  /** What we write to `user_settings.accent_color`. */
   swatch: string;
 }
 
@@ -36,59 +36,95 @@ function AppearancePage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <header>
-        <h2 className="text-base font-semibold tracking-tight">Appearance</h2>
-        <p className="mt-1 text-xs text-(--color-text-muted)">
+        <h2 className="text-[15px] font-semibold tracking-tight leading-none">Appearance</h2>
+        <p className="mt-1.5 text-[12px] text-(--color-text-muted)">
           Theme and accent color apply across devices once cloud sync runs.
         </p>
       </header>
 
       <section className="space-y-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-(--color-text-muted)">
+        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
           Theme
         </div>
-        <div className="flex gap-2">
-          {THEMES.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => setTheme(option)}
-              data-active={theme === option}
-              className="rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-3 py-1.5 text-sm capitalize text-(--color-text-primary) transition-colors hover:border-(--color-border-strong) data-[active=true]:border-(--color-accent-500) data-[active=true]:bg-(--color-accent-600) data-[active=true]:text-white"
-            >
-              {option}
-            </button>
-          ))}
+        <div className="grid grid-cols-3 gap-3">
+          {THEMES.map((option) => {
+            const active = theme === option;
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setTheme(option)}
+                className={cn(
+                  "glass-panel relative flex h-20 items-end justify-between p-3 text-left capitalize",
+                  "transition-all duration-150",
+                  active
+                    ? "border-(--color-accent-500) shadow-[var(--shadow-glow)]"
+                    : "hover:border-(--glass-border-strong)",
+                )}
+              >
+                <ThemePreview option={option} />
+                <span className="relative text-[13px] font-medium">{option}</span>
+                {active && (
+                  <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-(--color-accent-500) text-white">
+                    <Check size={10} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </section>
 
       <section className="space-y-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-(--color-text-muted)">
+        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
           Accent
         </div>
-        <div className="flex flex-wrap gap-2">
-          {ACCENTS.map((choice) => (
-            <button
-              key={choice.id}
-              type="button"
-              title={choice.id}
-              onClick={() => setAccent(choice.id)}
-              className="flex h-8 w-8 items-center justify-center rounded-full border-2 transition-transform hover:scale-110"
-              style={{
-                background: choice.swatch,
-                borderColor: accent === choice.id ? "var(--color-text-primary)" : "transparent",
-              }}
-            >
-              {accent === choice.id && <Check size={14} color="white" />}
-            </button>
-          ))}
+        <div className="flex flex-wrap gap-2.5">
+          {ACCENTS.map((choice) => {
+            const active = accent === choice.id;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                title={choice.id}
+                onClick={() => setAccent(choice.id)}
+                className={cn(
+                  "relative flex h-9 w-9 items-center justify-center rounded-full",
+                  "transition-all duration-150",
+                  "hover:scale-105",
+                  active && "ring-2 ring-(--color-text-primary) ring-offset-2 ring-offset-(--color-bg-base)",
+                )}
+                style={{
+                  background: choice.swatch,
+                  boxShadow: active ? `0 0 24px -4px ${choice.swatch}` : undefined,
+                }}
+              >
+                {active && <Check size={14} color="white" />}
+              </button>
+            );
+          })}
         </div>
-        <p className="text-xs text-(--color-text-muted)">
-          Saved to your user settings. (Live re-theming of the accent CSS
-          tokens lands next pass; the value is persisted now.)
+        <p className="text-[11px] text-(--color-text-muted)">
+          Saved to your user settings. Live re-theming of the accent CSS tokens lands next pass.
         </p>
       </section>
+    </div>
+  );
+}
+
+function ThemePreview({ option }: { option: Theme }) {
+  const bg = option === "light" ? "#fafafb" : option === "system" ? "linear-gradient(135deg, #0a0a0b 50%, #fafafb 50%)" : "#0a0a0b";
+  const fg = option === "light" ? "#0a0a0b" : "#e8e8ec";
+  return (
+    <div
+      aria-hidden
+      className="absolute inset-2 rounded-[8px] border border-(--glass-border-hairline) opacity-70"
+      style={{ background: bg }}
+    >
+      <div className="absolute left-2 top-2 h-1 w-6 rounded-full" style={{ background: fg }} />
+      <div className="absolute left-2 top-4 h-1 w-3 rounded-full opacity-50" style={{ background: fg }} />
     </div>
   );
 }

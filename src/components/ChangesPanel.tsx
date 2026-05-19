@@ -10,6 +10,9 @@ import {
   useGitUnstage,
 } from "@/lib/hooks/useGit";
 import type { FileChange, FileStatus } from "@/lib/types";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { GlassTextarea } from "@/components/ui/GlassInput";
+import { cn } from "@/lib/utils";
 
 interface ChangesPanelProps {
   workspaceId: string;
@@ -28,9 +31,6 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
 
   const stagedFiles = (changes ?? []).filter((c) => c.staged !== "other");
 
-  // HEAD scope shows both staged + unstaged changes against the last
-  // commit — covers tracked files in one query. Untracked files are
-  // synthesised on the Rust side.
   const { data: diff, error: diffError } = useGitDiff(workspaceId, "Head", selectedPath);
 
   useEffect(() => {
@@ -46,23 +46,25 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex items-center justify-between px-2 pt-2 text-xs uppercase tracking-wide text-(--color-text-muted)">
-        <span>Changes ({changes?.length ?? 0})</span>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-(--glass-border-hairline) px-3">
+        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
+          Changes <span className="text-(--color-text-secondary)">{changes?.length ?? 0}</span>
+        </span>
         {stagedFiles.length > 0 && (
           <button
             type="button"
             onClick={() => unstage.mutate([])}
-            className="rounded px-1.5 py-0.5 hover:bg-(--color-bg-elevated)"
+            className="rounded-[6px] px-1.5 py-0.5 text-[11px] text-(--color-text-secondary) transition-colors hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)"
           >
             Unstage all
           </button>
         )}
       </div>
 
-      <ul className="max-h-[35%] min-h-0 flex-1 overflow-y-auto border-y border-(--color-border-subtle)">
+      <ul className="max-h-[36%] min-h-0 shrink-0 overflow-y-auto">
         {!changes?.length && (
-          <li className="px-3 py-2 text-xs text-(--color-text-muted)">
+          <li className="px-3 py-2.5 text-[12px] text-(--color-text-muted)">
             No changes in this worktree yet.
           </li>
         )}
@@ -79,7 +81,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         ))}
       </ul>
 
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-2 font-mono text-xs">
+      <div className="min-h-0 flex-1 overflow-auto border-y border-(--glass-border-hairline) px-3 py-2 font-mono text-[11.5px]">
         {selectedPath ? (
           diffError ? (
             <p className="text-(--color-danger)">{String(diffError)}</p>
@@ -93,41 +95,41 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         )}
       </div>
 
-      <div className="border-t border-(--color-border-subtle) bg-(--color-bg-surface) p-3">
-        <textarea
+      <div className="shrink-0 p-3">
+        <GlassTextarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={2}
           placeholder="Commit message"
-          className="w-full resize-y"
         />
-        <div className="mt-2 flex items-center gap-2">
-          <button
-            type="button"
+        <div className="mt-2 flex items-center gap-1">
+          <GlassButton
+            variant="ghost"
+            size="sm"
             onClick={() => stage.mutate([])}
             disabled={stage.isPending}
-            className="rounded-md border border-(--color-border-default) px-2 py-1 text-xs hover:border-(--color-border-strong)"
           >
             Stage all
-          </button>
-          <button
-            type="button"
+          </GlassButton>
+          <GlassButton
+            variant="primary"
+            size="sm"
             onClick={handleCommit}
             disabled={commit.isPending || !message.trim() || stagedFiles.length === 0}
-            className="flex items-center gap-1 rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-2 py-1 text-xs text-white hover:bg-(--color-accent-500) disabled:opacity-50"
           >
             <Check size={12} />
-            Commit ({stagedFiles.length})
-          </button>
-          <button
-            type="button"
+            Commit {stagedFiles.length > 0 && `(${stagedFiles.length})`}
+          </GlassButton>
+          <GlassButton
+            variant="outline"
+            size="sm"
             onClick={() => push.mutate()}
             disabled={push.isPending}
-            className="ml-auto flex items-center gap-1 rounded-md border border-(--color-border-default) px-2 py-1 text-xs hover:border-(--color-border-strong)"
+            className="ml-auto"
           >
             <GitBranch size={12} />
             {push.isPending ? "Pushing…" : "Push"}
-          </button>
+          </GlassButton>
         </div>
         {push.error && (
           <p className="mt-2 text-[11px] text-(--color-danger)">{String(push.error)}</p>
@@ -156,64 +158,101 @@ function FileRow({ change, selected, onSelect, onStage, onUnstage, onDiscard }: 
     <li
       onClick={onSelect}
       data-active={selected}
-      className="group flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-(--color-bg-elevated) data-[active=true]:bg-(--color-bg-elevated)"
+      className={cn(
+        "group flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px]",
+        "transition-colors duration-150",
+        "hover:bg-[color-mix(in_oklab,white_4%,transparent)]",
+        "data-[active=true]:bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]",
+        "data-[active=true]:text-(--color-text-primary)",
+      )}
     >
-      <span className="w-7 font-mono text-(--color-text-muted)">
+      <span className="w-7 shrink-0 font-mono text-[11px] text-(--color-text-muted)">
         <span style={{ color: stagedMarker.color }}>{stagedMarker.glyph}</span>
         <span style={{ color: unstagedMarker.color }}>{unstagedMarker.glyph}</span>
       </span>
-      <span className="flex-1 truncate">{change.path}</span>
-      <div className="hidden gap-1 group-hover:flex">
+      <span className="min-w-0 flex-1 truncate">{change.path}</span>
+      <div className="hidden shrink-0 gap-0.5 group-hover:flex">
         {change.unstaged !== "other" && (
-          <button
-            type="button"
+          <RowIconButton
+            label="Stage"
             onClick={(e) => {
               e.stopPropagation();
               onStage();
             }}
-            className="rounded px-1 hover:bg-(--color-bg-base)"
-            title="Stage"
           >
             +
-          </button>
+          </RowIconButton>
         )}
         {change.staged !== "other" && (
-          <button
-            type="button"
+          <RowIconButton
+            label="Unstage"
             onClick={(e) => {
               e.stopPropagation();
               onUnstage();
             }}
-            className="rounded px-1 hover:bg-(--color-bg-base)"
-            title="Unstage"
           >
             −
-          </button>
+          </RowIconButton>
         )}
         {change.unstaged !== "other" && (
-          <button
-            type="button"
+          <RowIconButton
+            label="Discard"
+            danger
             onClick={(e) => {
               e.stopPropagation();
               if (window.confirm(`Discard changes to ${change.path}?`)) {
                 onDiscard();
               }
             }}
-            className="rounded px-1 text-(--color-danger) hover:bg-(--color-bg-base)"
-            title="Discard"
           >
             <Trash2 size={11} />
-          </button>
+          </RowIconButton>
         )}
       </div>
     </li>
   );
 }
 
+function RowIconButton({
+  children,
+  label,
+  onClick,
+  danger,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      className={cn(
+        "flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px]",
+        "transition-colors",
+        "hover:bg-[color-mix(in_oklab,white_8%,transparent)]",
+        danger && "text-(--color-danger)",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function renderDiff(diff: string) {
   return diff.split("\n").map((line, i) => {
     let style: React.CSSProperties = {};
-    if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("@@") || line.startsWith("new file") || line.startsWith("index ")) {
+    if (
+      line.startsWith("+++") ||
+      line.startsWith("---") ||
+      line.startsWith("diff ") ||
+      line.startsWith("@@") ||
+      line.startsWith("new file") ||
+      line.startsWith("index ")
+    ) {
       style = { color: "var(--color-text-muted)" };
     } else if (line.startsWith("+")) {
       style = { color: "var(--color-success)" };

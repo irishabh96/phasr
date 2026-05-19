@@ -1,4 +1,6 @@
+import { listen } from "@tauri-apps/api/event";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { tauri } from "@/lib/tauri";
 import type { DiffScope } from "@/lib/types";
 
@@ -8,13 +10,45 @@ const gitKeys = {
     ["git", "diff", workspaceId, scope, path ?? null] as const,
 };
 
+interface WorktreeChangedPayload {
+  workspaceId: string;
+}
+
 export function useGitStatus(workspaceId: string | null | undefined) {
-  return useQuery({
+  const qc = useQueryClient();
+  const query = useQuery({
     queryKey: gitKeys.status(workspaceId ?? ""),
     queryFn: () => tauri.gitStatus(workspaceId ?? ""),
     enabled: !!workspaceId,
-    refetchInterval: 6000,
   });
+
+  // Refetch on fs-watcher events from the backend instead of polling.
+  // The watcher debounces bursts of fs changes server-side, so this
+  // only fires ~300ms after the user actually stops editing.
+  // We tell the backend to start/stop watching as the user navigates
+  // in and out of this workspace so only one OS-level watcher exists
+  // at a time.
+  useEffect(() => {
+    if (!workspaceId) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    tauri.watchWorkspace(workspaceId).catch(() => {});
+    listen<WorktreeChangedPayload>("worktree-changed", (e) => {
+      if (e.payload.workspaceId !== workspaceId) return;
+      qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
+      qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      tauri.unwatchWorkspace(workspaceId).catch(() => {});
+    };
+  }, [workspaceId, qc]);
+
+  return query;
 }
 
 export function useGitDiff(

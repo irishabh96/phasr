@@ -44,7 +44,10 @@ impl WorkspaceStatus {
         use WorkspaceStatus::*;
         match (self, next) {
             (Pending, Running | Failed | Archived) => true,
-            (Running, Stopped | Completed | Failed) => true,
+            // Archive while running is valid — the command kills the
+            // PTY first, so a running row going straight to archived
+            // is the intended path.
+            (Running, Stopped | Completed | Failed | Archived) => true,
             (Stopped, Running | Archived | Failed) => true,
             (Completed, Archived) => true,
             (Failed, Archived | Pending) => true,

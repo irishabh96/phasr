@@ -37,6 +37,32 @@
   --color-warning: #f59e0b;
   --color-danger: #ef4444;
   --color-info: #3b82f6;
+
+  /* Glass material tokens. Derived from the base palette via color-mix so
+     accent and theme swaps recolor every glass surface automatically. */
+  --glass-rail: color-mix(in oklab, var(--color-bg-surface) 70%, transparent);
+  --glass-panel: color-mix(in oklab, var(--color-bg-elevated) 60%, transparent);
+  --glass-modal: color-mix(in oklab, var(--color-bg-elevated) 50%, transparent);
+
+  --glass-border-hairline: color-mix(in oklab, white 6%, transparent);
+  --glass-border-strong: color-mix(in oklab, white 12%, transparent);
+  --glass-highlight-top: color-mix(in oklab, white 10%, transparent);
+
+  --blur-rail: 24px;
+  --blur-panel: 32px;
+  --blur-modal: 40px;
+
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 20px 60px -10px rgba(0, 0, 0, 0.7);
+  --shadow-glow: 0 0 24px -6px color-mix(in oklab, var(--color-accent-500) 50%, transparent);
+  --shadow-glow-danger: 0 0 24px -6px color-mix(in oklab, var(--color-danger) 50%, transparent);
+
+  --radius-control: 10px;
+  --radius-panel: 14px;
+  --radius-modal: 18px;
+
+  --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-glass: 180ms;
 }
 
 /* Accent palette overrides. Selected at runtime by setting
@@ -159,6 +185,18 @@
   --color-warning: #d97706;
   --color-danger: #dc2626;
   --color-info: #2563eb;
+
+  /* Glass tokens — light variant. White-tinted instead of black-tinted. */
+  --glass-rail: color-mix(in oklab, var(--color-bg-surface) 75%, transparent);
+  --glass-panel: color-mix(in oklab, var(--color-bg-elevated) 65%, transparent);
+  --glass-modal: color-mix(in oklab, var(--color-bg-elevated) 55%, transparent);
+
+  --glass-border-hairline: color-mix(in oklab, black 6%, transparent);
+  --glass-border-strong: color-mix(in oklab, black 12%, transparent);
+  --glass-highlight-top: color-mix(in oklab, white 60%, transparent);
+
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -8px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 20px 60px -10px rgba(0, 0, 0, 0.15);
 }
 
 /* ---------- Base resets ---------- */
@@ -220,4 +258,53 @@ select:focus {
   outline: none;
   border-color: var(--color-accent-500);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+}
+
+/* ---------- Glass surface utilities (Tailwind v4 @utility) ---------- */
+
+@utility glass-rail {
+  background: var(--glass-rail);
+  backdrop-filter: blur(var(--blur-rail)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--blur-rail)) saturate(140%);
+  border: 1px solid var(--glass-border-hairline);
+}
+
+@utility glass-panel {
+  background: var(--glass-panel);
+  backdrop-filter: blur(var(--blur-panel)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--blur-panel)) saturate(140%);
+  border: 1px solid var(--glass-border-hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: inset 0 1px 0 0 var(--glass-highlight-top), var(--shadow-panel);
+}
+
+@utility glass-modal {
+  background: var(--glass-modal);
+  backdrop-filter: blur(var(--blur-modal)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--blur-modal)) saturate(160%);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-modal);
+  box-shadow: inset 0 1px 0 0 var(--glass-highlight-top), var(--shadow-modal);
+}
+
+/* ---------- Animations ---------- */
+
+@keyframes pulse-dot {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color, var(--color-info)) 60%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--pulse-color, var(--color-info)) 0%, transparent);
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }

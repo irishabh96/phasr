@@ -71,3 +71,31 @@ export function useDeleteWorkspace() {
     },
   });
 }
+
+export function useArchiveWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // Archive flows through `mirror:updateWorkspace` so the cloud
+    // gets the same state change.
+    mutationKey: ["mirror", "updateWorkspace", "archive"] as const,
+    mutationFn: (id: string) => tauri.archiveWorkspace(id),
+    onSuccess: (workspace: Workspace) => {
+      queryClient.invalidateQueries({
+        queryKey: workspaceKeys.byRepository(workspace.repositoryId),
+      });
+      queryClient.setQueryData(workspaceKeys.detail(workspace.id), workspace);
+    },
+  });
+}
+
+export function useOpenPullRequest() {
+  return useMutation({
+    mutationFn: (id: string) => tauri.openPullRequest(id),
+  });
+}
+
+export function useCheckWorkspaceDelete() {
+  return useMutation({
+    mutationFn: (id: string) => tauri.checkWorkspaceDelete(id),
+  });
+}

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ExternalLink, FolderOpen, TerminalSquare } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { GlassButton } from "@/components/ui/GlassButton";
 import { tauri } from "@/lib/tauri";
 import type { Launcher, LauncherKind } from "@/lib/types";
 
@@ -27,7 +28,6 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
     staleTime: 60_000,
   });
 
-  // Close on outside click / Escape.
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
@@ -64,30 +64,33 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
 
   return (
     <div ref={containerRef} className="relative">
-      <button
-        type="button"
+      <GlassButton
+        variant="ghost"
+        size="sm"
         onClick={() => setOpen((v) => !v)}
         title="Open this worktree in another app"
-        className="flex items-center gap-1 rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-2.5 py-1 text-xs text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
       >
         <ExternalLink size={12} />
         Open in
-        <ChevronDown size={12} />
-      </button>
+        <ChevronDown size={11} className="opacity-60" />
+      </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-60 overflow-hidden rounded-md border border-(--color-border-default) bg-(--color-bg-elevated) shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
           {launchers && launchers.length === 0 && (
-            <div className="px-3 py-2 text-xs text-(--color-text-muted)">
-              No editors or terminals detected on this Mac.
+            <div className="px-3 py-3 text-[12px] text-(--color-text-muted)">
+              No editors or terminals detected.
             </div>
           )}
           {KIND_ORDER.map((kind) => {
             const items = grouped[kind];
             if (items.length === 0) return null;
             return (
-              <div key={kind} className="border-b border-(--color-border-subtle) last:border-b-0">
-                <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-(--color-text-muted)">
+              <div
+                key={kind}
+                className="border-b border-(--glass-border-hairline) p-1 last:border-b-0"
+              >
+                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
                   {KIND_LABEL[kind]}
                 </div>
                 {items.map((launcher) => (
@@ -95,10 +98,10 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                     key={launcher.id}
                     type="button"
                     onClick={() => handleLaunch(launcher.id)}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-base)"
+                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-[color-mix(in_oklab,white_6%,transparent)]"
                   >
                     <KindIcon kind={launcher.kind} />
-                    <span>{launcher.name}</span>
+                    <span className="leading-none">{launcher.name}</span>
                   </button>
                 ))}
               </div>
