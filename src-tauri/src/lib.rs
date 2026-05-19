@@ -2,6 +2,7 @@ mod auth;
 mod commands;
 mod domain;
 mod git;
+mod launcher;
 mod localfs;
 mod pty;
 mod store;
@@ -91,6 +92,8 @@ pub fn run() {
             commands::git::git_commit,
             commands::git::git_push,
             localfs::validate_workspace_path,
+            launcher::list_launchers,
+            launcher::launch_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

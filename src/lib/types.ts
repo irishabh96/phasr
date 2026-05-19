@@ -113,3 +113,11 @@ export interface CommitOutput {
   sha: string;
   message: string;
 }
+
+export type LauncherKind = "editor" | "terminal" | "filemanager";
+
+export interface Launcher {
+  id: string;
+  name: string;
+  kind: LauncherKind;
+}

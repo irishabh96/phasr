@@ -4,6 +4,7 @@ import type {
   CommitOutput,
   DiffScope,
   FileChange,
+  Launcher,
   PathValidation,
   PtyEvent,
   Repository,
@@ -105,6 +106,11 @@ export const tauri = {
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>
     invoke<PathValidation>("validate_workspace_path", { path }),
+
+  // ── launchers ────────────────────────────────────────────────────────
+  listLaunchers: () => invoke<Launcher[]>("list_launchers"),
+  launchApp: (launcherId: string, path: string) =>
+    invoke<void>("launch_app", { launcherId, path }),
 
   // ── runtime (PTY) ────────────────────────────────────────────────────
   startWorkspace: (

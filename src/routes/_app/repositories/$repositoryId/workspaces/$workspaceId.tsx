@@ -3,6 +3,7 @@ import { Link, createFileRoute } from "@tanstack/react-router";
 import { ArrowLeft, Square } from "lucide-react";
 import { useCallback } from "react";
 import { ChangesPanel } from "@/components/ChangesPanel";
+import { OpenInMenu } from "@/components/OpenInMenu";
 import { Terminal } from "@/components/Terminal";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { tauri } from "@/lib/tauri";
@@ -55,6 +56,7 @@ function WorkspaceDetail() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
           <StatusPill status={workspace.status} />
           {workspace.status === "running" && (
             <button
