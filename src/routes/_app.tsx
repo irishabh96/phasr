@@ -1,6 +1,7 @@
 import { useAuth, UserButton } from "@clerk/react";
 import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Settings as SettingsIcon } from "lucide-react";
+import { Search, Settings as SettingsIcon } from "lucide-react";
+import { CommandPalette } from "@/components/CommandPalette";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
 import { useRustSession } from "@/lib/use-rust-session";
@@ -33,6 +34,22 @@ function AppLayout() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => {
+              window.dispatchEvent(
+                new KeyboardEvent("keydown", { key: "k", metaKey: true }),
+              );
+            }}
+            title="Command palette (⌘ K)"
+            className="flex items-center gap-1.5 rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-2.5 py-1 text-xs text-(--color-text-secondary) transition-colors hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
+          >
+            <Search size={12} />
+            <span className="hidden sm:inline">Search</span>
+            <kbd className="ml-1 rounded border border-(--color-border-default) bg-(--color-bg-elevated) px-1 text-[9px]">
+              ⌘ K
+            </kbd>
+          </button>
+          <button
+            type="button"
             onClick={() => navigate({ to: "/settings" })}
             title="Settings"
             className="flex h-7 w-7 items-center justify-center rounded-md border border-(--color-border-default) bg-(--color-bg-input) text-(--color-text-secondary) transition-colors hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
@@ -51,6 +68,7 @@ function AppLayout() {
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <Outlet />
       </main>
+      <CommandPalette />
     </div>
   );
 }
