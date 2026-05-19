@@ -12,16 +12,16 @@ import {
 import type { FileChange, FileStatus } from "@/lib/types";
 
 interface ChangesPanelProps {
-  taskId: string;
+  workspaceId: string;
 }
 
-export function ChangesPanel({ taskId }: ChangesPanelProps) {
-  const { data: changes } = useGitStatus(taskId);
-  const stage = useGitStage(taskId);
-  const unstage = useGitUnstage(taskId);
-  const discard = useGitDiscard(taskId);
-  const commit = useGitCommit(taskId);
-  const push = useGitPush(taskId);
+export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
+  const { data: changes } = useGitStatus(workspaceId);
+  const stage = useGitStage(workspaceId);
+  const unstage = useGitUnstage(workspaceId);
+  const discard = useGitDiscard(workspaceId);
+  const commit = useGitCommit(workspaceId);
+  const push = useGitPush(workspaceId);
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -31,7 +31,7 @@ export function ChangesPanel({ taskId }: ChangesPanelProps) {
   // HEAD scope shows both staged + unstaged changes against the last
   // commit — covers tracked files in one query. Untracked files are
   // synthesised on the Rust side.
-  const { data: diff, error: diffError } = useGitDiff(taskId, "Head", selectedPath);
+  const { data: diff, error: diffError } = useGitDiff(workspaceId, "Head", selectedPath);
 
   useEffect(() => {
     if (!selectedPath && changes?.length) {

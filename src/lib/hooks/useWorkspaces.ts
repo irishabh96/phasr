@@ -4,25 +4,22 @@ import type { Workspace } from "@/lib/types";
 
 const workspaceKeys = {
   all: ["workspaces"] as const,
-  list: () => [...workspaceKeys.all, "list"] as const,
+  byRepository: (repositoryId: string) =>
+    [...workspaceKeys.all, "repository", repositoryId] as const,
   detail: (id: string) => [...workspaceKeys.all, "detail", id] as const,
 };
 
-/**
- * Mutation keys used by the cloud-sync layer to dispatch mirroring.
- * Adding/removing items here must stay in lockstep with
- * `src/lib/hooks/useCloudSync.ts` HANDLERS.
- */
 export const workspaceMutationKeys = {
   create: ["mirror", "createWorkspace"] as const,
   update: (id: string) => ["mirror", "updateWorkspace", id] as const,
-  delete: (id: string) => ["mirror", "deleteWorkspace", id] as const,
+  delete: ["mirror", "deleteWorkspace"] as const,
 };
 
-export function useWorkspaces() {
+export function useWorkspaces(repositoryId: string | null | undefined) {
   return useQuery({
-    queryKey: workspaceKeys.list(),
-    queryFn: () => tauri.listWorkspaces(),
+    queryKey: workspaceKeys.byRepository(repositoryId ?? ""),
+    queryFn: () => tauri.listWorkspaces(repositoryId ?? ""),
+    enabled: !!repositoryId,
   });
 }
 
@@ -40,7 +37,9 @@ export function useCreateWorkspace() {
     mutationKey: workspaceMutationKeys.create,
     mutationFn: tauri.createWorkspace,
     onSuccess: (workspace: Workspace) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
+      queryClient.invalidateQueries({
+        queryKey: workspaceKeys.byRepository(workspace.repositoryId),
+      });
       queryClient.setQueryData(workspaceKeys.detail(workspace.id), workspace);
     },
   });
@@ -53,7 +52,9 @@ export function useUpdateWorkspace(id: string) {
     mutationFn: (input: Parameters<typeof tauri.updateWorkspace>[1]) =>
       tauri.updateWorkspace(id, input),
     onSuccess: (workspace: Workspace) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
+      queryClient.invalidateQueries({
+        queryKey: workspaceKeys.byRepository(workspace.repositoryId),
+      });
       queryClient.setQueryData(workspaceKeys.detail(workspace.id), workspace);
     },
   });
@@ -62,10 +63,10 @@ export function useUpdateWorkspace(id: string) {
 export function useDeleteWorkspace() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationKey: ["mirror", "deleteWorkspace"] as const,
-    mutationFn: (id: string) => tauri.deleteWorkspace(id),
-    onSuccess: (_v, id) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
+    mutationKey: workspaceMutationKeys.delete,
+    mutationFn: ({ id }: { id: string; repositoryId: string }) => tauri.deleteWorkspace(id),
+    onSuccess: (_v, { id, repositoryId }) => {
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.byRepository(repositoryId) });
       queryClient.removeQueries({ queryKey: workspaceKeys.detail(id) });
     },
   });

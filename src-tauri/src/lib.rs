@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use auth::SessionState;
 use pty::TaskRuntime;
-use store::{default_db_path, init_pool, PresetRepo, SettingsRepo, TaskRepo, WorkspaceRepo};
+use store::{
+    default_db_path, init_pool, PresetRepo, RepositoryRepo, SettingsRepo, WorkspaceRepo,
+};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -43,8 +45,8 @@ pub fn run() {
                         if let Err(err) = preset_repo.sync_seeded().await {
                             eprintln!("preset sync failed: {err}");
                         }
+                        handle.manage(RepositoryRepo::new(pool.clone()));
                         handle.manage(WorkspaceRepo::new(pool.clone()));
-                        handle.manage(TaskRepo::new(pool.clone()));
                         handle.manage(preset_repo);
                         handle.manage(SettingsRepo::new(pool));
                     }
@@ -60,26 +62,26 @@ pub fn run() {
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
+            commands::repositories::create_repository,
+            commands::repositories::list_repositories,
+            commands::repositories::get_repository,
+            commands::repositories::update_repository,
+            commands::repositories::delete_repository,
             commands::workspaces::create_workspace,
             commands::workspaces::list_workspaces,
             commands::workspaces::get_workspace,
             commands::workspaces::update_workspace,
             commands::workspaces::delete_workspace,
-            commands::tasks::create_task,
-            commands::tasks::list_tasks,
-            commands::tasks::get_task,
-            commands::tasks::update_task,
-            commands::tasks::delete_task,
             commands::presets::list_presets,
             commands::presets::set_preset_enabled,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
-            commands::runtime::start_task,
-            commands::runtime::read_task_log,
-            commands::runtime::send_task_input,
-            commands::runtime::resize_task,
-            commands::runtime::interrupt_task,
-            commands::runtime::stop_task,
+            commands::runtime::start_workspace,
+            commands::runtime::read_workspace_log,
+            commands::runtime::send_workspace_input,
+            commands::runtime::resize_workspace,
+            commands::runtime::interrupt_workspace,
+            commands::runtime::stop_workspace,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,

@@ -1,15 +1,18 @@
 //! Domain entities. Pure data and invariants — no I/O, no SQL, no Tauri.
 //!
-//! Per the clean-architecture rule: this module has zero dependencies on
-//! outer layers. Storage adapters (`store`) and command handlers (`commands`)
-//! depend on us, never the other way around.
+//! Naming model (Phase 7):
+//!   - `Repository` — a connection to one local git repository.
+//!   - `Workspace`  — one agent run inside a repository, with its own
+//!     git worktree, branch, and PTY session.
+//!   - `Preset`     — a saved agent command template.
+//!   - `UserSettings` — per-user app settings.
 
 pub mod preset;
+pub mod repository;
 pub mod settings;
-pub mod task;
 pub mod workspace;
 
 pub use preset::Preset;
+pub use repository::Repository;
 pub use settings::UserSettings;
-pub use task::{Task, TaskStatus};
-pub use workspace::Workspace;
+pub use workspace::{Workspace, WorkspaceStatus};

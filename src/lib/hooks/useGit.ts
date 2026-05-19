@@ -3,72 +3,69 @@ import { tauri } from "@/lib/tauri";
 import type { DiffScope } from "@/lib/types";
 
 const gitKeys = {
-  status: (taskId: string) => ["git", "status", taskId] as const,
-  diff: (taskId: string, scope: DiffScope, path?: string) =>
-    ["git", "diff", taskId, scope, path ?? null] as const,
+  status: (workspaceId: string) => ["git", "status", workspaceId] as const,
+  diff: (workspaceId: string, scope: DiffScope, path?: string) =>
+    ["git", "diff", workspaceId, scope, path ?? null] as const,
 };
 
-export function useGitStatus(taskId: string | null | undefined) {
+export function useGitStatus(workspaceId: string | null | undefined) {
   return useQuery({
-    queryKey: gitKeys.status(taskId ?? ""),
-    queryFn: () => tauri.gitStatus(taskId ?? ""),
-    enabled: !!taskId,
-    // Conservative: status only changes when the agent (or user) writes,
-    // and we refresh manually after stage/unstage/discard/commit
-    // mutations via invalidate.
+    queryKey: gitKeys.status(workspaceId ?? ""),
+    queryFn: () => tauri.gitStatus(workspaceId ?? ""),
+    enabled: !!workspaceId,
     refetchInterval: 6000,
   });
 }
 
 export function useGitDiff(
-  taskId: string | null | undefined,
+  workspaceId: string | null | undefined,
   scope: DiffScope,
   path?: string | null,
 ) {
   return useQuery({
-    queryKey: gitKeys.diff(taskId ?? "", scope, path ?? undefined),
-    queryFn: () => tauri.gitDiff(taskId ?? "", scope, path ?? undefined),
-    enabled: !!taskId && !!path,
+    queryKey: gitKeys.diff(workspaceId ?? "", scope, path ?? undefined),
+    queryFn: () => tauri.gitDiff(workspaceId ?? "", scope, path ?? undefined),
+    enabled: !!workspaceId && !!path,
   });
 }
 
-export function useGitStage(taskId: string) {
+export function useGitStage(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (paths: string[]) => tauri.gitStage(taskId, paths),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", taskId] }),
+    mutationFn: (paths: string[]) => tauri.gitStage(workspaceId, paths),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] }),
   });
 }
 
-export function useGitUnstage(taskId: string) {
+export function useGitUnstage(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (paths: string[]) => tauri.gitUnstage(taskId, paths),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", taskId] }),
+    mutationFn: (paths: string[]) => tauri.gitUnstage(workspaceId, paths),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] }),
   });
 }
 
-export function useGitDiscard(taskId: string) {
+export function useGitDiscard(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (paths: string[]) => tauri.gitDiscard(taskId, paths),
+    mutationFn: (paths: string[]) => tauri.gitDiscard(workspaceId, paths),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["git", "status", taskId] });
-      qc.invalidateQueries({ queryKey: ["git", "diff", taskId] });
+      qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
     },
   });
 }
 
-export function useGitCommit(taskId: string) {
+export function useGitCommit(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (message: string) => tauri.gitCommit(taskId, message),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", taskId] }),
+    mutationFn: (message: string) => tauri.gitCommit(workspaceId, message),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] }),
   });
 }
 
-export function useGitPush(taskId: string) {
+export function useGitPush(workspaceId: string) {
   return useMutation({
-    mutationFn: () => tauri.gitPush(taskId),
+    mutationFn: () => tauri.gitPush(workspaceId),
   });
 }

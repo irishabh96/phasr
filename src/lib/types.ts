@@ -1,8 +1,7 @@
 // Mirrors the Rust domain types (src-tauri/src/domain/*) with the
-// camelCase shape they serialize to. Keep these in lockstep with the
-// Rust side — when a field changes there, update it here too.
+// camelCase shape they serialize to. Keep these in lockstep.
 
-export type TaskStatus =
+export type WorkspaceStatus =
   | "pending"
   | "running"
   | "stopped"
@@ -10,7 +9,7 @@ export type TaskStatus =
   | "failed"
   | "archived";
 
-export interface Workspace {
+export interface Repository {
   id: string;
   name: string;
   remoteUrl: string | null;
@@ -20,14 +19,14 @@ export interface Workspace {
   updatedAt: string;
 }
 
-export interface Task {
+export interface Workspace {
   id: string;
-  workspaceId: string;
+  repositoryId: string;
   name: string;
   prompt: string | null;
   presetId: string | null;
   command: string;
-  status: TaskStatus;
+  status: WorkspaceStatus;
   branch: string | null;
   worktreePath: string | null;
   exitCode: number | null;
@@ -51,6 +50,46 @@ export interface Preset {
   updatedAt: string;
 }
 
+export interface UserSettings {
+  theme: string;
+  accentColor: string;
+  sansFont: string;
+  monoFont: string;
+  baseFontSize: number;
+  cursorStyle: string;
+  cursorBlink: boolean;
+  terminalScrollback: number;
+  defaultEditor: string;
+  defaultTerminal: string;
+  defaultPresetId: string | null;
+  keyboardShortcuts: string;
+  branchPrefixTemplate: string;
+  worktreeBasePath: string;
+  defaultMergeStrategy: string;
+  autoFetchSeconds: number;
+  honorGpgSign: boolean;
+  autoPushOnCommit: boolean;
+  updatedAt: string;
+}
+
+export type PtyEvent =
+  | { type: "output"; taskId: string; chunk: string }
+  | { type: "exit"; taskId: string; exitCode: number | null };
+
+export interface RunningWorkspaceInfo {
+  workspaceId: string;
+  startedAt: string;
+}
+
+export interface PathValidation {
+  path: string;
+  absolutePath: string | null;
+  exists: boolean;
+  isDir: boolean;
+  isGitRepo: boolean;
+  message: string | null;
+}
+
 export type FileStatus =
   | "added"
   | "modified"
@@ -72,44 +111,4 @@ export type DiffScope = "Unstaged" | "Staged" | "Head";
 export interface CommitOutput {
   sha: string;
   message: string;
-}
-
-export type PtyEvent =
-  | { type: "output"; taskId: string; chunk: string }
-  | { type: "exit"; taskId: string; exitCode: number | null };
-
-export interface RunningTaskInfo {
-  taskId: string;
-  startedAt: string;
-}
-
-export interface PathValidation {
-  path: string;
-  absolutePath: string | null;
-  exists: boolean;
-  isDir: boolean;
-  isGitRepo: boolean;
-  message: string | null;
-}
-
-export interface UserSettings {
-  theme: string;
-  accentColor: string;
-  sansFont: string;
-  monoFont: string;
-  baseFontSize: number;
-  cursorStyle: string;
-  cursorBlink: boolean;
-  terminalScrollback: number;
-  defaultEditor: string;
-  defaultTerminal: string;
-  defaultPresetId: string | null;
-  keyboardShortcuts: string;
-  branchPrefixTemplate: string;
-  worktreeBasePath: string;
-  defaultMergeStrategy: string;
-  autoFetchSeconds: number;
-  honorGpgSign: boolean;
-  autoPushOnCommit: boolean;
-  updatedAt: string;
 }

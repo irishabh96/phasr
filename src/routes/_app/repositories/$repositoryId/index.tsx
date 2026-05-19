@@ -1,18 +1,18 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useState } from "react";
-import { useCreateTask, useTasks } from "@/lib/hooks/useTasks";
+import { useCreateWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { usePresets } from "@/lib/hooks/usePresets";
-import { useWorkspace } from "@/lib/hooks/useWorkspaces";
-import type { Task } from "@/lib/types";
+import { useRepository } from "@/lib/hooks/useRepositories";
+import type { Workspace } from "@/lib/types";
 
-function WorkspaceView() {
-  const { workspaceId } = Route.useParams();
+function RepositoryView() {
+  const { repositoryId } = Route.useParams();
   const navigate = useNavigate();
-  const { data: workspace } = useWorkspace(workspaceId);
-  const { data: tasks } = useTasks(workspaceId);
+  const { data: repository } = useRepository(repositoryId);
+  const { data: workspaces } = useWorkspaces(repositoryId);
   const { data: presets } = usePresets();
-  const createTask = useCreateTask();
+  const createWorkspace = useCreateWorkspace();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
@@ -28,10 +28,8 @@ function WorkspaceView() {
     e.preventDefault();
     if (!name.trim() || !activePreset) return;
     try {
-      // The preset launches the agent interactively. The prompt is sent
-      // as keystrokes by the PTY runtime after the agent starts up.
-      const task = await createTask.mutateAsync({
-        workspaceId,
+      const workspace = await createWorkspace.mutateAsync({
+        repositoryId,
         name: name.trim(),
         command: activePreset.command,
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
@@ -41,17 +39,15 @@ function WorkspaceView() {
       setPrompt("");
       setShowForm(false);
       navigate({
-        to: "/workspaces/$workspaceId/tasks/$taskId",
-        params: { workspaceId, taskId: task.id },
+        to: "/repositories/$repositoryId/workspaces/$workspaceId",
+        params: { repositoryId, workspaceId: workspace.id },
       });
     } catch (err) {
-      console.error("create task failed", err);
-      // The mutation hook surfaces `createTask.error` to the form
-      // footer; no extra UI needed here.
+      console.error("create workspace failed", err);
     }
   };
 
-  const grouped = groupTasks(tasks ?? []);
+  const grouped = groupWorkspaces(workspaces ?? []);
 
   return (
     <div className="mx-auto max-w-5xl px-8 py-10">
@@ -61,13 +57,13 @@ function WorkspaceView() {
             to="/"
             className="text-xs text-(--color-text-muted) hover:text-(--color-text-primary)"
           >
-            ← All workspaces
+            ← All repositories
           </Link>
           <h1 className="mt-1 truncate text-xl font-semibold tracking-tight">
-            {workspace?.name}
+            {repository?.name}
           </h1>
           <p className="truncate text-xs text-(--color-text-muted)">
-            {workspace?.localPath ?? "(no local path)"}
+            {repository?.localPath ?? "(no local path)"}
           </p>
         </div>
         <button
@@ -76,7 +72,7 @@ function WorkspaceView() {
           className="flex items-center gap-1 rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500)"
         >
           <Plus size={14} />
-          New task
+          New workspace
         </button>
       </div>
 
@@ -88,7 +84,7 @@ function WorkspaceView() {
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Task name (e.g. fix login redirect bug)"
+            placeholder="Workspace name (e.g. fix login redirect bug)"
             className="w-full"
             autoFocus
           />
@@ -122,9 +118,9 @@ function WorkspaceView() {
             />
           </div>
           <div className="flex items-center justify-end gap-2">
-            {createTask.error && (
+            {createWorkspace.error && (
               <span className="mr-auto text-xs text-(--color-danger)">
-                {String(createTask.error)}
+                {String(createWorkspace.error)}
               </span>
             )}
             <button
@@ -136,10 +132,10 @@ function WorkspaceView() {
             </button>
             <button
               type="submit"
-              disabled={createTask.isPending || !name.trim() || !activePreset}
+              disabled={createWorkspace.isPending || !name.trim() || !activePreset}
               className="rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500) disabled:opacity-50"
             >
-              {createTask.isPending ? "Creating…" : "Create & open"}
+              {createWorkspace.isPending ? "Creating…" : "Create & open"}
             </button>
           </div>
         </form>
@@ -156,21 +152,21 @@ function WorkspaceView() {
                   {status} ({list.length})
                 </h2>
                 <ul className="mt-2 divide-y divide-(--color-border-subtle)">
-                  {list.map((task) => (
-                    <li key={task.id} className="py-2.5">
+                  {list.map((workspace) => (
+                    <li key={workspace.id} className="py-2.5">
                       <Link
-                        to="/workspaces/$workspaceId/tasks/$taskId"
-                        params={{ workspaceId, taskId: task.id }}
+                        to="/repositories/$repositoryId/workspaces/$workspaceId"
+                        params={{ repositoryId, workspaceId: workspace.id }}
                         className="flex items-center justify-between gap-3 hover:text-(--color-accent-400)"
                       >
                         <div className="min-w-0">
-                          <div className="truncate text-sm">{task.name}</div>
+                          <div className="truncate text-sm">{workspace.name}</div>
                           <code className="block truncate text-xs text-(--color-text-muted)">
-                            {task.command}
+                            {workspace.command}
                           </code>
                         </div>
                         <span className="shrink-0 text-xs text-(--color-text-muted)">
-                          {relativeTime(task.createdAt)}
+                          {relativeTime(workspace.createdAt)}
                         </span>
                       </Link>
                     </li>
@@ -180,9 +176,9 @@ function WorkspaceView() {
             );
           },
         )}
-        {(!tasks || tasks.length === 0) && (
+        {(!workspaces || workspaces.length === 0) && (
           <p className="text-xs text-(--color-text-muted)">
-            No tasks yet. Click "New task" to create one.
+            No workspaces yet. Click "New workspace" to create one.
           </p>
         )}
       </div>
@@ -190,10 +186,10 @@ function WorkspaceView() {
   );
 }
 
-function groupTasks(tasks: Task[]) {
-  const groups: Record<string, Task[]> = {};
-  for (const task of tasks) {
-    (groups[task.status] ??= []).push(task);
+function groupWorkspaces(workspaces: Workspace[]) {
+  const groups: Record<string, Workspace[]> = {};
+  for (const workspace of workspaces) {
+    (groups[workspace.status] ??= []).push(workspace);
   }
   return groups;
 }
@@ -207,6 +203,6 @@ function relativeTime(iso: string): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-export const Route = createFileRoute("/_app/workspaces/$workspaceId/")({
-  component: WorkspaceView,
+export const Route = createFileRoute("/_app/repositories/$repositoryId/")({
+  component: RepositoryView,
 });

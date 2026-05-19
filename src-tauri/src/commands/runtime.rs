@@ -1,5 +1,4 @@
-//! Commands that drive the per-task PTY runtime. These are the bridge
-//! between the React UI and the `pty::TaskRuntime`.
+//! Commands that drive the per-workspace PTY runtime.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,23 +10,22 @@ use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
 
-/// Tauri event name fired whenever a task row's status changes server-side
-/// (PTY exit, status transitions driven by start/stop). Frontend listens
-/// to this and invalidates its task queries.
-pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
+use crate::domain::WorkspaceStatus;
+use crate::pty::{PtyEvent, TaskRuntime};
+use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
+
+/// Tauri event name fired whenever a workspace row's status changes
+/// server-side (PTY exit, status transitions driven by start/stop).
+pub const WORKSPACE_STATUS_EVENT: &str = "phasr://workspace-status";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskStatusPayload {
-    pub task_id: String,
+pub struct WorkspaceStatusPayload {
     pub workspace_id: String,
+    pub repository_id: String,
     pub status: String,
     pub exit_code: Option<i64>,
 }
-
-use crate::domain::TaskStatus;
-use crate::pty::{PtyEvent, TaskRuntime};
-use crate::store::{StoreError, TaskRepo, TaskUpdate, WorkspaceRepo};
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -35,11 +33,11 @@ pub enum RuntimeError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Pty(#[from] crate::pty::handle::PtyError),
-    #[error("workspace has no local path; pick or clone one first")]
-    NoWorkspacePath,
-    #[error("no running pty for task `{0}`")]
+    #[error("repository has no local path; pick or clone one first")]
+    NoRepositoryPath,
+    #[error("no running pty for workspace `{0}`")]
     NotRunning(String),
-    #[error("task is already finished (status: {0}); create a new task to retry")]
+    #[error("workspace is already finished (status: {0}); create a new one to retry")]
     AlreadyFinished(String),
 }
 
@@ -51,65 +49,61 @@ impl serde::Serialize for RuntimeError {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunningTaskInfo {
-    pub task_id: String,
+pub struct RunningWorkspaceInfo {
+    pub workspace_id: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Idempotent: if the task is already running, subscribes the channel
-/// to the existing PTY broadcast; otherwise spawns a new PTY. Calling
-/// this on a finished task (completed/failed/archived) errors — those
-/// should display their log via `read_task_log` instead.
+/// Idempotent: if the workspace is already running, subscribes the
+/// channel to the existing PTY broadcast; otherwise spawns a new PTY.
 #[tauri::command]
-pub async fn start_task(
-    task_id: String,
+pub async fn start_workspace(
+    workspace_id: String,
     on_event: Channel<PtyEvent>,
     rows: Option<u16>,
     cols: Option<u16>,
     app: AppHandle,
-    tasks: State<'_, TaskRepo>,
     workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
     runtime: State<'_, Arc<TaskRuntime>>,
-) -> Result<RunningTaskInfo, RuntimeError> {
-    let task = tasks.get(&task_id).await?;
+) -> Result<RunningWorkspaceInfo, RuntimeError> {
+    let workspace = workspaces.get(&workspace_id).await?;
 
-    // If already running, just subscribe.
-    if let Some(handle) = runtime.get(&task_id) {
+    if let Some(handle) = runtime.get(&workspace_id) {
         let rx = handle.subscribe();
-        spawn_event_forwarder(rx, on_event, task_id.clone(), None, None, None);
-        return Ok(RunningTaskInfo {
-            task_id,
-            started_at: task.started_at.unwrap_or_else(Utc::now),
+        spawn_event_forwarder(rx, on_event, workspace_id.clone(), None, None, None);
+        return Ok(RunningWorkspaceInfo {
+            workspace_id,
+            started_at: workspace.started_at.unwrap_or_else(Utc::now),
         });
     }
 
     if matches!(
-        task.status,
-        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Archived
+        workspace.status,
+        WorkspaceStatus::Completed | WorkspaceStatus::Failed | WorkspaceStatus::Archived
     ) {
-        return Err(RuntimeError::AlreadyFinished(task.status.as_str().into()));
+        return Err(RuntimeError::AlreadyFinished(
+            workspace.status.as_str().into(),
+        ));
     }
 
-    // Prefer the task's worktree path (created in create_task); fall
-    // back to the workspace's local path for tasks created before
-    // worktree support landed.
-    let cwd = if let Some(worktree) = task.worktree_path.as_deref() {
+    let cwd = if let Some(worktree) = workspace.worktree_path.as_deref() {
         PathBuf::from(worktree)
     } else {
-        let workspace = workspaces.get(&task.workspace_id).await?;
-        workspace
+        let repository = repositories.get(&workspace.repository_id).await?;
+        repository
             .local_path
             .as_ref()
             .map(PathBuf::from)
-            .ok_or(RuntimeError::NoWorkspacePath)?
+            .ok_or(RuntimeError::NoRepositoryPath)?
     };
 
     let now = Utc::now();
-    tasks
+    workspaces
         .update(
-            &task_id,
-            TaskUpdate {
-                status: Some(TaskStatus::Running),
+            &workspace_id,
+            WorkspaceUpdate {
+                status: Some(WorkspaceStatus::Running),
                 started_at: Some(Some(now)),
                 exit_code: Some(None),
                 finished_at: Some(None),
@@ -118,23 +112,22 @@ pub async fn start_task(
         )
         .await?;
 
-    // Notify the frontend that this task just transitioned to running.
     let _ = app.emit(
-        TASK_STATUS_EVENT,
-        TaskStatusPayload {
-            task_id: task_id.clone(),
-            workspace_id: task.workspace_id.clone(),
+        WORKSPACE_STATUS_EVENT,
+        WorkspaceStatusPayload {
+            workspace_id: workspace_id.clone(),
+            repository_id: workspace.repository_id.clone(),
             status: "running".into(),
             exit_code: None,
         },
     );
 
-    let initial_command = if task.command.trim().is_empty() {
+    let initial_command = if workspace.command.trim().is_empty() {
         None
     } else {
-        Some(task.command.clone())
+        Some(workspace.command.clone())
     };
-    let initial_prompt = task.prompt.as_ref().and_then(|p| {
+    let initial_prompt = workspace.prompt.as_ref().and_then(|p| {
         let trimmed = p.trim();
         if trimmed.is_empty() {
             None
@@ -143,7 +136,7 @@ pub async fn start_task(
         }
     });
     let handle = runtime.spawn(
-        task_id.clone(),
+        workspace_id.clone(),
         initial_command,
         initial_prompt,
         cwd,
@@ -151,34 +144,27 @@ pub async fn start_task(
         cols.unwrap_or(80),
     )?;
 
-    // Forward PTY events to the frontend Channel and watch for the Exit
-    // event to update task status in the DB.
     let rx = handle.subscribe();
     spawn_event_forwarder(
         rx,
         on_event,
-        task_id.clone(),
-        Some(tasks.inner().clone()),
+        workspace_id.clone(),
+        Some(workspaces.inner().clone()),
         Some(runtime.inner().clone()),
         Some(app.clone()),
     );
 
-    Ok(RunningTaskInfo {
-        task_id,
+    Ok(RunningWorkspaceInfo {
+        workspace_id,
         started_at: now,
     })
 }
 
-/// Bridges a tokio broadcast Receiver to a Tauri Channel. When this is the
-/// primary subscriber (i.e. created `start_task` was the spawn path), it
-/// also updates the task row to completed/failed and drops the runtime
-/// entry on exit. Secondary subscribers (e.g. a second tab attaching to a
-/// running task) pass `task_repo`/`runtime` as `None` and just forward.
 fn spawn_event_forwarder(
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
-    task_id: String,
-    task_repo: Option<TaskRepo>,
+    workspace_id: String,
+    workspace_repo: Option<WorkspaceRepo>,
     runtime: Option<Arc<TaskRuntime>>,
     app: Option<AppHandle>,
 ) {
@@ -195,16 +181,17 @@ fn spawn_event_forwarder(
                     let _ = channel.send(event);
 
                     if is_exit {
-                        if let (Some(repo), Some(rt)) = (task_repo.as_ref(), runtime.as_ref()) {
+                        if let (Some(repo), Some(rt)) = (workspace_repo.as_ref(), runtime.as_ref())
+                        {
                             let next_status = if exit_code == Some(0) {
-                                TaskStatus::Completed
+                                WorkspaceStatus::Completed
                             } else {
-                                TaskStatus::Failed
+                                WorkspaceStatus::Failed
                             };
                             let updated = repo
                                 .update(
-                                    &task_id,
-                                    TaskUpdate {
+                                    &workspace_id,
+                                    WorkspaceUpdate {
                                         status: Some(next_status),
                                         exit_code: Some(exit_code),
                                         finished_at: Some(Some(Utc::now())),
@@ -213,14 +200,14 @@ fn spawn_event_forwarder(
                                 )
                                 .await
                                 .ok();
-                            rt.drop_task(&task_id);
+                            rt.drop_task(&workspace_id);
 
-                            if let (Some(app), Some(task)) = (app.as_ref(), updated) {
+                            if let (Some(app), Some(workspace)) = (app.as_ref(), updated) {
                                 let _ = app.emit(
-                                    TASK_STATUS_EVENT,
-                                    TaskStatusPayload {
-                                        task_id: task_id.clone(),
-                                        workspace_id: task.workspace_id,
+                                    WORKSPACE_STATUS_EVENT,
+                                    WorkspaceStatusPayload {
+                                        workspace_id: workspace_id.clone(),
+                                        repository_id: workspace.repository_id,
                                         status: next_status.as_str().into(),
                                         exit_code,
                                     },
@@ -237,14 +224,12 @@ fn spawn_event_forwarder(
     });
 }
 
-/// Reads the log file for a task (UTF-8, lossy). Used to display history
-/// for completed/failed/stopped tasks without re-spawning a PTY.
 #[tauri::command]
-pub async fn read_task_log(
-    task_id: String,
+pub async fn read_workspace_log(
+    workspace_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
 ) -> Result<String, RuntimeError> {
-    let path = runtime.log_dir.join(format!("{task_id}.log"));
+    let path = runtime.log_dir.join(format!("{workspace_id}.log"));
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
@@ -254,52 +239,52 @@ pub async fn read_task_log(
 }
 
 #[tauri::command]
-pub async fn send_task_input(
-    task_id: String,
+pub async fn send_workspace_input(
+    workspace_id: String,
     data: String,
     runtime: State<'_, Arc<TaskRuntime>>,
 ) -> Result<(), RuntimeError> {
     let handle = runtime
-        .get(&task_id)
-        .ok_or_else(|| RuntimeError::NotRunning(task_id.clone()))?;
+        .get(&workspace_id)
+        .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
     handle.write(data.as_bytes())?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn resize_task(
-    task_id: String,
+pub async fn resize_workspace(
+    workspace_id: String,
     rows: u16,
     cols: u16,
     runtime: State<'_, Arc<TaskRuntime>>,
 ) -> Result<(), RuntimeError> {
     let handle = runtime
-        .get(&task_id)
-        .ok_or_else(|| RuntimeError::NotRunning(task_id.clone()))?;
+        .get(&workspace_id)
+        .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
     handle.resize(rows, cols)?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn interrupt_task(
-    task_id: String,
+pub async fn interrupt_workspace(
+    workspace_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
 ) -> Result<(), RuntimeError> {
     let handle = runtime
-        .get(&task_id)
-        .ok_or_else(|| RuntimeError::NotRunning(task_id.clone()))?;
+        .get(&workspace_id)
+        .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
     handle.interrupt()?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn stop_task(
-    task_id: String,
+pub async fn stop_workspace(
+    workspace_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
 ) -> Result<(), RuntimeError> {
     let handle = runtime
-        .get(&task_id)
-        .ok_or_else(|| RuntimeError::NotRunning(task_id.clone()))?;
+        .get(&workspace_id)
+        .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
     handle.kill()?;
     Ok(())
 }

@@ -4,32 +4,34 @@ import { ArrowLeft, Square } from "lucide-react";
 import { useCallback } from "react";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { Terminal } from "@/components/Terminal";
-import { useTask } from "@/lib/hooks/useTasks";
+import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { tauri } from "@/lib/tauri";
 
-function TaskDetail() {
-  const { workspaceId, taskId } = Route.useParams();
-  const { data: task } = useTask(taskId);
+function WorkspaceDetail() {
+  const { repositoryId, workspaceId } = Route.useParams();
+  const { data: workspace } = useWorkspace(workspaceId);
   const queryClient = useQueryClient();
 
   const refresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["tasks", "detail", taskId] });
-    queryClient.invalidateQueries({ queryKey: ["tasks", "workspace", workspaceId] });
-  }, [queryClient, taskId, workspaceId]);
+    queryClient.invalidateQueries({ queryKey: ["workspaces", "detail", workspaceId] });
+    queryClient.invalidateQueries({
+      queryKey: ["workspaces", "repository", repositoryId],
+    });
+  }, [queryClient, workspaceId, repositoryId]);
 
   const handleStop = async () => {
     try {
-      await tauri.stopTask(taskId);
+      await tauri.stopWorkspace(workspaceId);
       refresh();
     } catch (err) {
       console.error("stop failed", err);
     }
   };
 
-  if (!task) {
+  if (!workspace) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-(--color-text-muted)">
-        Loading task…
+        Loading workspace…
       </div>
     );
   }
@@ -39,22 +41,22 @@ function TaskDetail() {
       <header className="flex shrink-0 items-center justify-between border-b border-(--color-border-subtle) bg-(--color-bg-surface) px-6 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <Link
-            to="/workspaces/$workspaceId"
-            params={{ workspaceId }}
+            to="/repositories/$repositoryId"
+            params={{ repositoryId }}
             className="text-(--color-text-secondary) hover:text-(--color-text-primary)"
           >
             <ArrowLeft size={16} />
           </Link>
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{task.name}</div>
+            <div className="truncate text-sm font-medium">{workspace.name}</div>
             <code className="block truncate text-xs text-(--color-text-muted)">
-              {task.command}
+              {workspace.command}
             </code>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <StatusPill status={task.status} />
-          {task.status === "running" && (
+          <StatusPill status={workspace.status} />
+          {workspace.status === "running" && (
             <button
               type="button"
               onClick={handleStop}
@@ -69,11 +71,15 @@ function TaskDetail() {
 
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 flex-1">
-          <Terminal taskId={taskId} status={task.status} onExit={refresh} />
+          <Terminal
+            workspaceId={workspaceId}
+            status={workspace.status}
+            onExit={refresh}
+          />
         </div>
-        {task.worktreePath && (
+        {workspace.worktreePath && (
           <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-(--color-border-subtle) bg-(--color-bg-surface)">
-            <ChangesPanel taskId={taskId} />
+            <ChangesPanel workspaceId={workspaceId} />
           </aside>
         )}
       </div>
@@ -104,6 +110,8 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-export const Route = createFileRoute("/_app/workspaces/$workspaceId/tasks/$taskId")({
-  component: TaskDetail,
+export const Route = createFileRoute(
+  "/_app/repositories/$repositoryId/workspaces/$workspaceId",
+)({
+  component: WorkspaceDetail,
 });

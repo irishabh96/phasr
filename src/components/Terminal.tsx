@@ -5,23 +5,19 @@ import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 import { tauri } from "@/lib/tauri";
-import type { PtyEvent, TaskStatus } from "@/lib/types";
+import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
 export interface TerminalProps {
-  taskId: string;
-  /** Snapshot of status at the moment the user opened the task. Status
-   *  changes after mount are intentionally ignored — the PTY runtime
-   *  drives further behaviour via exit events. */
-  status: TaskStatus;
+  workspaceId: string;
+  /** Snapshot of status at the moment the user opened the workspace. */
+  status: WorkspaceStatus;
   onExit?: (exitCode: number | null) => void;
 }
 
-const FINISHED_STATUSES: TaskStatus[] = ["completed", "failed", "archived"];
+const FINISHED_STATUSES: WorkspaceStatus[] = ["completed", "failed", "archived"];
 
-export function Terminal({ taskId, status, onExit }: TerminalProps) {
+export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Snapshot the *initial* status — we don't want the effect re-running
-  // every time the polling task hook flips pending → running.
   const initialStatusRef = useRef(status);
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
@@ -41,8 +37,7 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
     } catch {
       /* canvas fallback */
     }
-    // Defer the first fit to the next frame so we read the container's
-    // final post-layout size, not the pre-paint size.
+
     const fitNow = () => {
       try {
         fit.fit();
@@ -62,7 +57,7 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
       disposables.push(
         term.onData((data) => {
           if (cancelled) return;
-          void tauri.sendTaskInput(taskId, data).catch((err) => {
+          void tauri.sendWorkspaceInput(workspaceId, data).catch((err) => {
             term.write(`\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`);
           });
         }),
@@ -70,14 +65,14 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
       disposables.push(
         term.onResize(({ rows, cols }) => {
           if (cancelled) return;
-          void tauri.resizeTask(taskId, rows, cols).catch(() => {});
+          void tauri.resizeWorkspace(workspaceId, rows, cols).catch(() => {});
         }),
       );
       term.focus();
     };
 
     const startOrAttach = async () => {
-      term.write("\x1b[2m── starting task ──\x1b[0m\r\n");
+      term.write("\x1b[2m── starting workspace ──\x1b[0m\r\n");
       const channel = new Channel<PtyEvent>();
       channel.onmessage = (event) => {
         if (cancelled) return;
@@ -93,7 +88,7 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
         }
       };
       try {
-        await tauri.startTask(taskId, channel, term.rows, term.cols);
+        await tauri.startWorkspace(workspaceId, channel, term.rows, term.cols);
         if (cancelled) return;
         wireInteractive();
       } catch (err) {
@@ -104,7 +99,7 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
 
     const loadLog = async () => {
       try {
-        const log = await tauri.readTaskLog(taskId);
+        const log = await tauri.readWorkspaceLog(workspaceId);
         if (cancelled) return;
         term.write(log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n");
       } catch (err) {
@@ -125,10 +120,8 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
       for (const d of disposables) d.dispose();
       term.dispose();
     };
-    // taskId is the ONLY dependency. Status changes mid-mount must NOT
-    // re-run this effect (that would dispose the live PTY connection).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId]);
+  }, [workspaceId]);
 
   return (
     <div
@@ -138,9 +131,6 @@ export function Terminal({ taskId, status, onExit }: TerminalProps) {
       }}
       className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-input)"
       style={{
-        // Outer padding gives the terminal breathing room. The inner
-        // div (which xterm renders into) carries no padding so the
-        // FitAddon can compute rows/cols without overestimating.
         paddingTop: 10,
         paddingRight: 8,
         paddingBottom: 16,

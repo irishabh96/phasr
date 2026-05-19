@@ -1,7 +1,5 @@
-//! Git command surface. All operations run inside the task's worktree
-//! (resolved from `task.worktree_path`). Tasks without a worktree path
-//! yet (e.g. workspace had no local path at create time) return an
-//! error.
+//! Git command surface. All operations run inside a workspace's
+//! worktree (resolved from `workspace.worktree_path`).
 
 use std::path::PathBuf;
 
@@ -9,7 +7,7 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::git::{self, CommitOutput, DiffScope, FileChange, GitError};
-use crate::store::{StoreError, TaskRepo};
+use crate::store::{StoreError, WorkspaceRepo};
 
 #[derive(Debug)]
 pub enum GitCmdError {
@@ -35,7 +33,7 @@ impl std::fmt::Display for GitCmdError {
         match self {
             Self::Store(e) => write!(f, "{e}"),
             Self::Git(e) => write!(f, "{e}"),
-            Self::NoWorktree => write!(f, "task has no worktree yet"),
+            Self::NoWorktree => write!(f, "workspace has no worktree yet"),
         }
     }
 }
@@ -46,26 +44,30 @@ impl serde::Serialize for GitCmdError {
     }
 }
 
-async fn task_cwd(repo: &TaskRepo, task_id: &str) -> Result<PathBuf, GitCmdError> {
-    let task = repo.get(task_id).await?;
-    task.worktree_path
+async fn workspace_cwd(
+    repo: &WorkspaceRepo,
+    workspace_id: &str,
+) -> Result<PathBuf, GitCmdError> {
+    let workspace = repo.get(workspace_id).await?;
+    workspace
+        .worktree_path
         .map(PathBuf::from)
         .ok_or(GitCmdError::NoWorktree)
 }
 
 #[tauri::command]
 pub async fn git_status(
-    task_id: String,
-    tasks: State<'_, TaskRepo>,
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<Vec<FileChange>, GitCmdError> {
-    let cwd = task_cwd(&tasks, &task_id).await?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     Ok(git::status(&cwd)?)
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffInput {
-    pub task_id: String,
+    pub workspace_id: String,
     pub scope: DiffScope,
     pub path: Option<String>,
 }
@@ -73,19 +75,19 @@ pub struct DiffInput {
 #[tauri::command]
 pub async fn git_diff(
     input: DiffInput,
-    tasks: State<'_, TaskRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<String, GitCmdError> {
-    let cwd = task_cwd(&tasks, &input.task_id).await?;
+    let cwd = workspace_cwd(&workspaces, &input.workspace_id).await?;
     Ok(git::diff(&cwd, input.scope, input.path.as_deref())?)
 }
 
 #[tauri::command]
 pub async fn git_stage(
-    task_id: String,
+    workspace_id: String,
     paths: Vec<String>,
-    tasks: State<'_, TaskRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<(), GitCmdError> {
-    let cwd = task_cwd(&tasks, &task_id).await?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     git::stage(&cwd, &refs)?;
     Ok(())
@@ -93,11 +95,11 @@ pub async fn git_stage(
 
 #[tauri::command]
 pub async fn git_unstage(
-    task_id: String,
+    workspace_id: String,
     paths: Vec<String>,
-    tasks: State<'_, TaskRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<(), GitCmdError> {
-    let cwd = task_cwd(&tasks, &task_id).await?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     git::unstage(&cwd, &refs)?;
     Ok(())
@@ -105,11 +107,11 @@ pub async fn git_unstage(
 
 #[tauri::command]
 pub async fn git_discard(
-    task_id: String,
+    workspace_id: String,
     paths: Vec<String>,
-    tasks: State<'_, TaskRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<(), GitCmdError> {
-    let cwd = task_cwd(&tasks, &task_id).await?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     git::discard(&cwd, &refs)?;
     Ok(())
@@ -117,28 +119,28 @@ pub async fn git_discard(
 
 #[tauri::command]
 pub async fn git_commit(
-    task_id: String,
+    workspace_id: String,
     message: String,
-    tasks: State<'_, TaskRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<CommitOutput, GitCmdError> {
-    let cwd = task_cwd(&tasks, &task_id).await?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     Ok(git::commit(&cwd, &message)?)
 }
 
 #[tauri::command]
 pub async fn git_push(
-    task_id: String,
-    tasks: State<'_, TaskRepo>,
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
 ) -> Result<(), GitCmdError> {
-    let task = tasks.get(&task_id).await?;
-    let cwd = task
+    let workspace = workspaces.get(&workspace_id).await?;
+    let cwd = workspace
         .worktree_path
         .as_ref()
         .map(PathBuf::from)
         .ok_or(GitCmdError::NoWorktree)?;
-    let branch = task
-        .branch
-        .ok_or_else(|| GitCmdError::Git(GitError::CommandFailed("no branch on task".into())))?;
+    let branch = workspace.branch.ok_or_else(|| {
+        GitCmdError::Git(GitError::CommandFailed("no branch on workspace".into()))
+    })?;
     git::push(&cwd, "origin", &branch)?;
     Ok(())
 }

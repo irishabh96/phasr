@@ -3,21 +3,20 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { useEffect, useMemo, useRef } from "react";
 import {
-  deleteTaskFromCloud,
+  deleteRepositoryFromCloud,
   deleteWorkspaceFromCloud,
-  pullTasks,
+  pullRepositories,
   pullWorkspaces,
-  pushMissingTasks,
+  pushMissingRepositories,
   pushMissingWorkspaces,
-  pushTask,
+  pushRepository,
   pushWorkspace,
 } from "@/lib/cloud";
 import { createPhasrSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { tauri } from "@/lib/tauri";
-import type { Task, Workspace } from "@/lib/types";
+import type { Repository, Workspace } from "@/lib/types";
 
 const DEBUG = true;
-
 const log = (...args: unknown[]) => {
   if (DEBUG) console.info("[cloud sync]", ...args);
 };
@@ -41,27 +40,27 @@ export function useCloudSync() {
 
   const pulledRef = useRef(false);
 
-  // (1) Bootstrap pull-then-backfill-push on first sign-in.
+  // (1) Bootstrap pull-then-backfill on first sign-in.
   useEffect(() => {
     if (!isLoaded || !isSignedIn || !supabase || !userId || pulledRef.current) return;
     pulledRef.current = true;
     let cancelled = false;
     (async () => {
       try {
-        log("bootstrap: pulling workspaces");
-        const cloudWorkspaceIds = await pullWorkspaces(supabase);
+        log("bootstrap: pulling repositories");
+        const cloudRepoIds = await pullRepositories(supabase);
         if (cancelled) return;
-        log("bootstrap: pulling tasks");
-        await pullTasks(supabase);
+        log("bootstrap: pulling workspaces");
+        await pullWorkspaces(supabase);
+        if (cancelled) return;
+        log("bootstrap: pushing local-only repositories");
+        await pushMissingRepositories(supabase, userId, cloudRepoIds);
         if (cancelled) return;
         log("bootstrap: pushing local-only workspaces");
-        await pushMissingWorkspaces(supabase, userId, cloudWorkspaceIds);
+        await pushMissingWorkspaces(supabase, userId);
         if (cancelled) return;
-        log("bootstrap: pushing local-only tasks");
-        await pushMissingTasks(supabase, userId);
-        if (cancelled) return;
+        queryClient.invalidateQueries({ queryKey: ["repositories"] });
         queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-        queryClient.invalidateQueries({ queryKey: ["tasks"] });
         log("bootstrap complete");
       } catch (err) {
         console.error("[cloud sync] bootstrap failed", err);
@@ -72,12 +71,13 @@ export function useCloudSync() {
     };
   }, [isLoaded, isSignedIn, supabase, userId, queryClient]);
 
-  // (2) Mirror local mutations to the cloud, dispatched by mutationKey.
+  // (2) Mirror local mutations, dispatched by mutationKey.
   useEffect(() => {
     const cache = queryClient.getMutationCache();
     return cache.subscribe((event) => {
       const mutation = event.mutation;
-      const key = mutation?.options.mutationKey;
+      if (!mutation) return;
+      const key = mutation.options.mutationKey;
       if (!Array.isArray(key) || key[0] !== "mirror") return;
       const op = key[1] as string;
 
@@ -85,10 +85,7 @@ export function useCloudSync() {
         log("mutation lifecycle:added", op);
         return;
       }
-      if (event.type === "removed") {
-        log("mutation lifecycle:removed", op);
-        return;
-      }
+      if (event.type === "removed") return;
       if (event.type !== "updated") return;
 
       log("mutation lifecycle:updated", op, mutation.state.status);
@@ -101,7 +98,6 @@ export function useCloudSync() {
         return;
       }
 
-      // Dedup: success can fire multiple times as state settles.
       const tag = mutation as unknown as { __phasrMirrored?: boolean };
       if (tag.__phasrMirrored) return;
       tag.__phasrMirrored = true;
@@ -134,35 +130,34 @@ export function useCloudSync() {
       .channel("phasr-sync")
       .on(
         "postgres_changes",
+        { event: "*", schema: "public", table: "repositories", filter: `user_id=eq.${userId}` },
+        async (payload) => {
+          log("realtime repository", payload.eventType);
+          if (payload.eventType === "DELETE") {
+            const id = (payload.old as { id?: string } | null)?.id;
+            if (id) {
+              await tauri.deleteRepository(id).catch(() => {});
+            }
+          } else {
+            await pullRepositories(supabase).catch(() => {});
+          }
+          queryClient.invalidateQueries({ queryKey: ["repositories"] });
+        },
+      )
+      .on(
+        "postgres_changes",
         { event: "*", schema: "public", table: "workspaces", filter: `user_id=eq.${userId}` },
         async (payload) => {
-          log("realtime workspace", payload.eventType, payload.new ?? payload.old);
+          log("realtime workspace", payload.eventType);
           if (payload.eventType === "DELETE") {
             const id = (payload.old as { id?: string } | null)?.id;
             if (id) {
               await tauri.deleteWorkspace(id).catch(() => {});
             }
           } else {
-            // INSERT / UPDATE → re-run the pull so we apply the changed row.
             await pullWorkspaces(supabase).catch(() => {});
           }
           queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "tasks", filter: `user_id=eq.${userId}` },
-        async (payload) => {
-          log("realtime task", payload.eventType, payload.new ?? payload.old);
-          if (payload.eventType === "DELETE") {
-            const id = (payload.old as { id?: string } | null)?.id;
-            if (id) {
-              await tauri.deleteTask(id).catch(() => {});
-            }
-          } else {
-            await pullTasks(supabase).catch(() => {});
-          }
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
         },
       )
       .subscribe((status) => log("realtime channel status", status));
@@ -180,6 +175,18 @@ type MirrorHandler = (
 ) => Promise<void>;
 
 const HANDLERS: Record<string, MirrorHandler> = {
+  createRepository: async (sb, userId, data) => {
+    if (!data) return;
+    await pushRepository(sb, userId, data as Repository);
+  },
+  updateRepository: async (sb, userId, data) => {
+    if (!data) return;
+    await pushRepository(sb, userId, data as Repository);
+  },
+  deleteRepository: async (sb, _userId, _data, variables) => {
+    if (typeof variables !== "string") return;
+    await deleteRepositoryFromCloud(sb, variables);
+  },
   createWorkspace: async (sb, userId, data) => {
     if (!data) return;
     await pushWorkspace(sb, userId, data as Workspace);
@@ -189,21 +196,9 @@ const HANDLERS: Record<string, MirrorHandler> = {
     await pushWorkspace(sb, userId, data as Workspace);
   },
   deleteWorkspace: async (sb, _userId, _data, variables) => {
-    if (typeof variables !== "string") return;
-    await deleteWorkspaceFromCloud(sb, variables);
-  },
-  createTask: async (sb, userId, data) => {
-    if (!data) return;
-    await pushTask(sb, userId, data as Task);
-  },
-  updateTask: async (sb, userId, data) => {
-    if (!data) return;
-    await pushTask(sb, userId, data as Task);
-  },
-  deleteTask: async (sb, _userId, _data, variables) => {
     if (!variables || typeof variables !== "object" || !("id" in variables)) return;
     const id = (variables as { id: string }).id;
-    await deleteTaskFromCloud(sb, id);
+    await deleteWorkspaceFromCloud(sb, id);
   },
 };
 

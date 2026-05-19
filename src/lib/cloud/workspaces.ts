@@ -1,55 +1,62 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { tauri } from "@/lib/tauri";
 import type { Workspace } from "@/lib/types";
-import { getMachineId } from "@/lib/supabase";
+import { pushRepository } from "./repositories";
 
 interface CloudWorkspaceRow {
   id: string;
   user_id: string;
+  repository_id: string;
   name: string;
-  remote_url: string | null;
-  local_paths: Record<string, string>;
-  default_branch: string;
+  prompt: string | null;
+  preset_id: string | null;
+  command: string;
+  status: string;
+  branch: string | null;
+  worktree_path: string | null;
+  exit_code: number | null;
   created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  archived_at: string | null;
   updated_at: string;
 }
 
-function pickLocalPath(row: CloudWorkspaceRow): string | null {
-  return row.local_paths[getMachineId()] ?? null;
-}
-
-/**
- * Mirrors a locally-created or -updated workspace to the cloud. Adds
- * the current machine's local path under its machine id so other
- * machines don't see this device's path.
- */
 export async function pushWorkspace(
   client: SupabaseClient,
   userId: string,
   workspace: Workspace,
 ): Promise<void> {
-  const machineId = getMachineId();
-  // Fetch existing local_paths to preserve other machines' entries.
-  const { data: existing } = await client
-    .from("workspaces")
-    .select("local_paths")
-    .eq("id", workspace.id)
-    .maybeSingle();
-  const localPaths: Record<string, string> = {
-    ...((existing?.local_paths as Record<string, string> | null) ?? {}),
-  };
-  if (workspace.localPath) {
-    localPaths[machineId] = workspace.localPath;
+  // Pre-push the parent repository so the FK is always satisfied
+  // (mirror dispatch runs all mutations concurrently).
+  try {
+    const repos = await tauri.listRepositories();
+    const parent = repos.find((r) => r.id === workspace.repositoryId);
+    if (parent) {
+      await pushRepository(client, userId, parent);
+    }
+  } catch (err) {
+    console.warn("[cloud] pre-push repository failed (continuing)", err);
   }
 
   const { error } = await client.from("workspaces").upsert({
     id: workspace.id,
     user_id: userId,
+    repository_id: workspace.repositoryId,
     name: workspace.name,
-    remote_url: workspace.remoteUrl,
-    local_paths: localPaths,
-    default_branch: workspace.defaultBranch,
+    prompt: workspace.prompt,
+    // Phase 6/7: presets aren't yet synced cross-device, so we drop
+    // the link. Phase 8 will use deterministic seed preset IDs.
+    preset_id: null,
+    command: workspace.command,
+    status: workspace.status,
+    branch: workspace.branch,
+    worktree_path: workspace.worktreePath,
+    exit_code: workspace.exitCode,
     created_at: workspace.createdAt,
+    started_at: workspace.startedAt,
+    finished_at: workspace.finishedAt,
+    archived_at: workspace.archivedAt,
     updated_at: workspace.updatedAt,
   });
   if (error) throw error;
@@ -63,68 +70,62 @@ export async function deleteWorkspaceFromCloud(
   if (error) throw error;
 }
 
-/** Push every local workspace that's missing from the cloud. */
-export async function pushMissingWorkspaces(
-  client: SupabaseClient,
-  userId: string,
-  cloudIds: Set<string>,
-): Promise<void> {
-  const locals = await tauri.listWorkspaces();
-  for (const ws of locals) {
-    if (cloudIds.has(ws.id)) continue;
+export async function pullWorkspaces(client: SupabaseClient): Promise<void> {
+  const { data, error } = await client.from("workspaces").select("*");
+  if (error) throw error;
+  const rows = (data ?? []) as CloudWorkspaceRow[];
+
+  const localRepos = new Set((await tauri.listRepositories()).map((r) => r.id));
+
+  for (const row of rows) {
+    if (!localRepos.has(row.repository_id)) {
+      console.warn("skipping cloud workspace for missing repository", row.repository_id);
+      continue;
+    }
     try {
-      await pushWorkspace(client, userId, ws);
+      const existing = await tauri.getWorkspace(row.id).catch(() => null);
+      if (!existing) {
+        await tauri.createWorkspace({
+          repositoryId: row.repository_id,
+          name: row.name,
+          command: row.command,
+          ...(row.prompt ? { prompt: row.prompt } : {}),
+          ...(row.preset_id ? { presetId: row.preset_id } : {}),
+        });
+      } else if (Date.parse(row.updated_at) > Date.parse(existing.updatedAt)) {
+        await tauri.updateWorkspace(row.id, {
+          name: row.name,
+          ...(row.prompt ? { prompt: row.prompt } : {}),
+          ...(row.preset_id ? { presetId: row.preset_id } : {}),
+          command: row.command,
+          ...(row.branch ? { branch: row.branch } : {}),
+          ...(row.worktree_path ? { worktreePath: row.worktree_path } : {}),
+          ...(row.exit_code != null ? { exitCode: row.exit_code } : {}),
+        });
+      }
     } catch (err) {
-      console.warn("backfill workspace push failed", ws.id, err);
+      console.warn("failed to materialise cloud workspace locally", row.id, err);
     }
   }
 }
 
-/**
- * Pulls all workspaces for the signed-in user and upserts them into
- * local SQLite. Returns the set of cloud workspace ids so callers can
- * detect local-only ones that should be pushed up.
- */
-export async function pullWorkspaces(client: SupabaseClient): Promise<Set<string>> {
-  const { data, error } = await client
-    .from("workspaces")
-    .select("*")
-    .order("updated_at", { ascending: false });
-  if (error) throw error;
-  const rows = (data ?? []) as CloudWorkspaceRow[];
+export async function pushMissingWorkspaces(
+  client: SupabaseClient,
+  userId: string,
+): Promise<void> {
+  const repos = await tauri.listRepositories();
+  const { data: cloudRows } = await client.from("workspaces").select("id");
+  const cloudIds = new Set((cloudRows ?? []).map((row) => row.id as string));
 
-  const localList = await tauri.listWorkspaces();
-  const localById = new Map(localList.map((w) => [w.id, w]));
-
-  for (const row of rows) {
-    const localPath = pickLocalPath(row);
-    const local = localById.get(row.id);
-    if (!local) {
-      // Cloud-only: create locally with this machine's local_path (or
-      // null if cloud didn't have one for us).
+  for (const repo of repos) {
+    const workspaces = await tauri.listWorkspaces(repo.id);
+    for (const workspace of workspaces) {
+      if (cloudIds.has(workspace.id)) continue;
       try {
-        await tauri.createWorkspace({
-          name: row.name,
-          ...(localPath ? { localPath } : {}),
-          ...(row.remote_url ? { remoteUrl: row.remote_url } : {}),
-        });
-        // Note: createWorkspace generates a fresh UUID locally. We
-        // accept that drift for Phase 6 MVP — Phase 7 will add an
-        // upsert-by-id Tauri command so cloud IDs stay authoritative.
+        await pushWorkspace(client, userId, workspace);
       } catch (err) {
-        console.warn("failed to materialise cloud workspace locally", row.id, err);
+        console.warn("backfill workspace push failed", workspace.id, err);
       }
-    } else if (Date.parse(row.updated_at) > Date.parse(local.updatedAt)) {
-      // Cloud is newer.
-      await tauri
-        .updateWorkspace(local.id, {
-          name: row.name,
-          ...(row.remote_url ? { remoteUrl: row.remote_url } : {}),
-          ...(localPath ? { localPath } : {}),
-          defaultBranch: row.default_branch,
-        })
-        .catch((err) => console.warn("workspace update failed", err));
     }
   }
-  return new Set(rows.map((r) => r.id));
 }

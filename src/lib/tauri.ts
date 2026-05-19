@@ -6,72 +6,69 @@ import type {
   PathValidation,
   Preset,
   PtyEvent,
-  RunningTaskInfo,
-  Task,
-  TaskStatus,
+  Repository,
+  RunningWorkspaceInfo,
   UserSettings,
   Workspace,
+  WorkspaceStatus,
 } from "./types";
 
-interface CreateWorkspaceInput {
+interface CreateRepositoryInput {
   name: string;
   localPath?: string;
   remoteUrl?: string;
 }
 
-interface UpdateWorkspaceInput {
+interface UpdateRepositoryInput {
   name?: string;
   remoteUrl?: string;
   localPath?: string;
   defaultBranch?: string;
 }
 
-interface CreateTaskInput {
-  workspaceId: string;
+interface CreateWorkspaceInput {
+  repositoryId: string;
   name: string;
   command: string;
   prompt?: string;
   presetId?: string;
 }
 
-interface UpdateTaskInput {
+interface UpdateWorkspaceInput {
   name?: string;
   prompt?: string;
   presetId?: string;
   command?: string;
-  status?: TaskStatus;
+  status?: WorkspaceStatus;
   branch?: string;
   worktreePath?: string;
   exitCode?: number;
 }
 
-/**
- * Typed wrappers around Tauri commands. Components must never call
- * `invoke()` directly — go through these helpers so the contract stays
- * type-safe and discoverable.
- */
 export const tauri = {
   // ── auth ─────────────────────────────────────────────────────────────
   setSession: (jwt: string) => invoke<string>("set_session", { jwt }),
   clearSession: () => invoke<void>("clear_session"),
   currentUserId: () => invoke<string | null>("current_user_id"),
 
+  // ── repositories ─────────────────────────────────────────────────────
+  createRepository: (input: CreateRepositoryInput) =>
+    invoke<Repository>("create_repository", { input }),
+  listRepositories: () => invoke<Repository[]>("list_repositories"),
+  getRepository: (id: string) => invoke<Repository>("get_repository", { id }),
+  updateRepository: (id: string, input: UpdateRepositoryInput) =>
+    invoke<Repository>("update_repository", { id, input }),
+  deleteRepository: (id: string) => invoke<void>("delete_repository", { id }),
+
   // ── workspaces ───────────────────────────────────────────────────────
   createWorkspace: (input: CreateWorkspaceInput) =>
     invoke<Workspace>("create_workspace", { input }),
-  listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
+  listWorkspaces: (repositoryId: string) =>
+    invoke<Workspace[]>("list_workspaces", { repositoryId }),
   getWorkspace: (id: string) => invoke<Workspace>("get_workspace", { id }),
   updateWorkspace: (id: string, input: UpdateWorkspaceInput) =>
     invoke<Workspace>("update_workspace", { id, input }),
   deleteWorkspace: (id: string) => invoke<void>("delete_workspace", { id }),
-
-  // ── tasks ────────────────────────────────────────────────────────────
-  createTask: (input: CreateTaskInput) => invoke<Task>("create_task", { input }),
-  listTasks: (workspaceId: string) => invoke<Task[]>("list_tasks", { workspaceId }),
-  getTask: (id: string) => invoke<Task>("get_task", { id }),
-  updateTask: (id: string, input: UpdateTaskInput) =>
-    invoke<Task>("update_task", { id, input }),
-  deleteTask: (id: string) => invoke<void>("delete_task", { id }),
 
   // ── presets ──────────────────────────────────────────────────────────
   listPresets: () => invoke<Preset[]>("list_presets"),
@@ -84,35 +81,41 @@ export const tauri = {
     invoke<UserSettings>("update_user_settings", { settings }),
 
   // ── git ──────────────────────────────────────────────────────────────
-  gitStatus: (taskId: string) => invoke<FileChange[]>("git_status", { taskId }),
-  gitDiff: (taskId: string, scope: DiffScope, path?: string) =>
+  gitStatus: (workspaceId: string) => invoke<FileChange[]>("git_status", { workspaceId }),
+  gitDiff: (workspaceId: string, scope: DiffScope, path?: string) =>
     invoke<string>("git_diff", {
-      input: { taskId, scope, ...(path ? { path } : {}) },
+      input: { workspaceId, scope, ...(path ? { path } : {}) },
     }),
-  gitStage: (taskId: string, paths: string[]) =>
-    invoke<void>("git_stage", { taskId, paths }),
-  gitUnstage: (taskId: string, paths: string[]) =>
-    invoke<void>("git_unstage", { taskId, paths }),
-  gitDiscard: (taskId: string, paths: string[]) =>
-    invoke<void>("git_discard", { taskId, paths }),
-  gitCommit: (taskId: string, message: string) =>
-    invoke<CommitOutput>("git_commit", { taskId, message }),
-  gitPush: (taskId: string) => invoke<void>("git_push", { taskId }),
+  gitStage: (workspaceId: string, paths: string[]) =>
+    invoke<void>("git_stage", { workspaceId, paths }),
+  gitUnstage: (workspaceId: string, paths: string[]) =>
+    invoke<void>("git_unstage", { workspaceId, paths }),
+  gitDiscard: (workspaceId: string, paths: string[]) =>
+    invoke<void>("git_discard", { workspaceId, paths }),
+  gitCommit: (workspaceId: string, message: string) =>
+    invoke<CommitOutput>("git_commit", { workspaceId, message }),
+  gitPush: (workspaceId: string) => invoke<void>("git_push", { workspaceId }),
 
   // ── localfs ──────────────────────────────────────────────────────────
-  validateWorkspacePath: (path: string) =>
+  validateRepositoryPath: (path: string) =>
     invoke<PathValidation>("validate_workspace_path", { path }),
 
   // ── runtime (PTY) ────────────────────────────────────────────────────
-  startTask: (taskId: string, onEvent: Channel<PtyEvent>, rows = 24, cols = 80) =>
-    invoke<RunningTaskInfo>("start_task", { taskId, onEvent, rows, cols }),
-  readTaskLog: (taskId: string) => invoke<string>("read_task_log", { taskId }),
-  sendTaskInput: (taskId: string, data: string) =>
-    invoke<void>("send_task_input", { taskId, data }),
-  resizeTask: (taskId: string, rows: number, cols: number) =>
-    invoke<void>("resize_task", { taskId, rows, cols }),
-  interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
-  stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
+  startWorkspace: (
+    workspaceId: string,
+    onEvent: Channel<PtyEvent>,
+    rows = 24,
+    cols = 80,
+  ) => invoke<RunningWorkspaceInfo>("start_workspace", { workspaceId, onEvent, rows, cols }),
+  readWorkspaceLog: (workspaceId: string) =>
+    invoke<string>("read_workspace_log", { workspaceId }),
+  sendWorkspaceInput: (workspaceId: string, data: string) =>
+    invoke<void>("send_workspace_input", { workspaceId, data }),
+  resizeWorkspace: (workspaceId: string, rows: number, cols: number) =>
+    invoke<void>("resize_workspace", { workspaceId, rows, cols }),
+  interruptWorkspace: (workspaceId: string) =>
+    invoke<void>("interrupt_workspace", { workspaceId }),
+  stopWorkspace: (workspaceId: string) => invoke<void>("stop_workspace", { workspaceId }),
 };
 
 export { Channel };

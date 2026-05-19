@@ -3,21 +3,21 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, FolderOpen, XCircle } from "lucide-react";
 import { useState } from "react";
-import { useCreateWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
+import { useCreateRepository, useRepositories } from "@/lib/hooks/useRepositories";
 import { tauri } from "@/lib/tauri";
 
-export function AddWorkspaceForm() {
+export function AddRepositoryForm() {
   const [name, setName] = useState("");
   const [localPath, setLocalPath] = useState("");
-  const createWorkspace = useCreateWorkspace();
-  const { data: existingWorkspaces } = useWorkspaces();
+  const createRepository = useCreateRepository();
+  const { data: existing } = useRepositories();
   const navigate = useNavigate();
 
   const trimmedPath = localPath.trim();
 
   const validation = useQuery({
     queryKey: ["pathValidation", trimmedPath],
-    queryFn: () => tauri.validateWorkspacePath(trimmedPath),
+    queryFn: () => tauri.validateRepositoryPath(trimmedPath),
     enabled: trimmedPath.length > 0,
     staleTime: 1000,
   });
@@ -27,11 +27,20 @@ export function AddWorkspaceForm() {
     name.trim().length > 0 &&
     (trimmedPath.length === 0 || (status?.exists === true && status.isDir === true));
 
+  const duplicate = trimmedPath
+    ? existing?.find(
+        (r) =>
+          r.localPath &&
+          status?.absolutePath &&
+          r.localPath.replace(/\/$/, "") === status.absolutePath.replace(/\/$/, ""),
+      )
+    : undefined;
+
   const handleBrowse = async () => {
     const selected = await open({
       directory: true,
       multiple: false,
-      title: "Pick a folder to use as a workspace",
+      title: "Pick a folder to use as a repository",
     });
     if (typeof selected === "string") {
       setLocalPath(selected);
@@ -43,27 +52,18 @@ export function AddWorkspaceForm() {
     }
   };
 
-  const duplicate = trimmedPath
-    ? existingWorkspaces?.find(
-        (w) =>
-          w.localPath &&
-          status?.absolutePath &&
-          w.localPath.replace(/\/$/, "") === status.absolutePath.replace(/\/$/, ""),
-      )
-    : undefined;
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-    const workspace = await createWorkspace.mutateAsync({
+    const repository = await createRepository.mutateAsync({
       name: name.trim(),
       ...(trimmedPath ? { localPath: trimmedPath } : {}),
     });
     setName("");
     setLocalPath("");
     navigate({
-      to: "/workspaces/$workspaceId",
-      params: { workspaceId: workspace.id },
+      to: "/repositories/$repositoryId",
+      params: { repositoryId: repository.id },
     });
   };
 
@@ -73,7 +73,7 @@ export function AddWorkspaceForm() {
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Workspace name"
+          placeholder="Repository name"
           className="min-w-[180px] flex-1"
         />
         <div className="flex min-w-[280px] flex-[2] items-stretch gap-1">
@@ -95,10 +95,10 @@ export function AddWorkspaceForm() {
         </div>
         <button
           type="submit"
-          disabled={createWorkspace.isPending || !canSubmit}
+          disabled={createRepository.isPending || !canSubmit}
           className="rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white transition-colors hover:bg-(--color-accent-500) disabled:opacity-50"
         >
-          {createWorkspace.isPending ? "Adding…" : "Add workspace"}
+          {createRepository.isPending ? "Adding…" : "Add repository"}
         </button>
       </div>
 
@@ -110,8 +110,8 @@ export function AddWorkspaceForm() {
             type="button"
             onClick={() =>
               navigate({
-                to: "/workspaces/$workspaceId",
-                params: { workspaceId: duplicate.id },
+                to: "/repositories/$repositoryId",
+                params: { repositoryId: duplicate.id },
               })
             }
             className="rounded border border-(--color-border-default) px-2 py-0.5 text-xs hover:border-(--color-accent-500)"
@@ -149,7 +149,7 @@ function ValidationBadge({
         <AlertTriangle size={14} />
         <span>{status.message ?? "Folder is not a git repository"}</span>
         <span className="text-(--color-text-muted)">
-          (we'll offer to run `git init` later — workspace will still add)
+          (we'll offer to run `git init` later — repository will still add)
         </span>
       </div>
     );
@@ -159,7 +159,7 @@ function ValidationBadge({
       <CheckCircle2 size={14} />
       <span>
         Valid git repo
-        {status.absolutePath && status.absolutePath !== status.message ? (
+        {status.absolutePath ? (
           <span className="ml-2 text-(--color-text-muted)">{status.absolutePath}</span>
         ) : null}
       </span>

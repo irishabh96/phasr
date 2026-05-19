@@ -1,13 +1,13 @@
 import { useUser } from "@clerk/react";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { AddWorkspaceForm } from "@/components/AddWorkspaceForm";
-import { useDeleteWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
+import { AddRepositoryForm } from "@/components/AddRepositoryForm";
+import { useDeleteRepository, useRepositories } from "@/lib/hooks/useRepositories";
 import { usePresets } from "@/lib/hooks/usePresets";
 
 function Home() {
   const { user } = useUser();
-  const { data: workspaces, isLoading } = useWorkspaces();
-  const deleteWorkspace = useDeleteWorkspace();
+  const { data: repositories, isLoading } = useRepositories();
+  const deleteRepository = useDeleteRepository();
   const { data: presets } = usePresets();
 
   return (
@@ -17,42 +17,42 @@ function Home() {
         {user?.firstName ? `, ${user.firstName}` : ""}
       </h1>
       <p className="mt-2 text-sm text-(--color-text-secondary)">
-        Phase 3 sanity check: workspaces and presets persist in local SQLite.
+        Run multiple coding agents in parallel, each in an isolated git worktree.
       </p>
 
       <section className="mt-10 rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
-        <h2 className="text-sm font-medium">Workspaces ({workspaces?.length ?? 0})</h2>
+        <h2 className="text-sm font-medium">Repositories ({repositories?.length ?? 0})</h2>
         <p className="mt-1 text-xs text-(--color-text-muted)">
-          Stored in SQLite. Restart the app — they'll still be here.
+          A repository is your connection to a local git repo. Each one hosts many workspaces.
         </p>
 
         <div className="mt-4">
-          <AddWorkspaceForm />
+          <AddRepositoryForm />
         </div>
 
         <ul className="mt-6 divide-y divide-(--color-border-subtle)">
           {isLoading && <li className="py-3 text-xs text-(--color-text-muted)">Loading…</li>}
-          {!isLoading && workspaces?.length === 0 && (
+          {!isLoading && repositories?.length === 0 && (
             <li className="py-3 text-xs text-(--color-text-muted)">
-              No workspaces yet — add one above.
+              No repositories yet — add one above.
             </li>
           )}
-          {workspaces?.map((ws) => (
-            <li key={ws.id} className="flex items-center justify-between py-3">
+          {repositories?.map((repo) => (
+            <li key={repo.id} className="flex items-center justify-between py-3">
               <Link
-                to="/workspaces/$workspaceId"
-                params={{ workspaceId: ws.id }}
+                to="/repositories/$repositoryId"
+                params={{ repositoryId: repo.id }}
                 className="min-w-0 flex-1 hover:text-(--color-accent-400)"
               >
-                <div className="truncate text-sm">{ws.name}</div>
+                <div className="truncate text-sm">{repo.name}</div>
                 <div className="truncate text-xs text-(--color-text-muted)">
-                  {ws.localPath ?? "(no local path)"}
+                  {repo.localPath ?? "(no local path)"}
                 </div>
               </Link>
               <button
                 type="button"
-                onClick={() => deleteWorkspace.mutate(ws.id)}
-                disabled={deleteWorkspace.isPending}
+                onClick={() => deleteRepository.mutate(repo.id)}
+                disabled={deleteRepository.isPending}
                 className="rounded-md border border-(--color-border-default) px-2 py-1 text-xs text-(--color-text-secondary) hover:border-(--color-danger) hover:text-(--color-danger)"
               >
                 Delete
@@ -67,7 +67,7 @@ function Home() {
           Seeded agent presets ({presets?.length ?? 0})
         </h2>
         <p className="mt-1 text-xs text-(--color-text-muted)">
-          Auto-inserted on first DB init. Edit/toggle in Settings (Phase 7).
+          Auto-inserted on first DB init. Edit/toggle in Settings.
         </p>
         <ul className="mt-4 space-y-1 text-xs">
           {presets?.map((p) => (
