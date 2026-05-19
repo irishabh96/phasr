@@ -21,6 +21,7 @@ import { Route as AppSettingsAppearanceRouteImport } from './routes/_app/setting
 import { Route as AppSettingsAgentsRouteImport } from './routes/_app/settings/agents'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app/settings/account'
 import { Route as AppRepositoriesRepositoryIdIndexRouteImport } from './routes/_app/repositories/$repositoryId/index'
+import { Route as AppRepositoriesRepositoryIdSettingsRouteImport } from './routes/_app/repositories/$repositoryId/settings'
 import { Route as AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRouteImport } from './routes/_app/repositories/$repositoryId/workspaces/$workspaceId'
 
 const SignUpRoute = SignUpRouteImport.update({
@@ -83,6 +84,12 @@ const AppRepositoriesRepositoryIdIndexRoute =
     path: '/repositories/$repositoryId/',
     getParentRoute: () => AppRoute,
   } as any)
+const AppRepositoriesRepositoryIdSettingsRoute =
+  AppRepositoriesRepositoryIdSettingsRouteImport.update({
+    id: '/repositories/$repositoryId/settings',
+    path: '/repositories/$repositoryId/settings',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute =
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRouteImport.update({
     id: '/repositories/$repositoryId/workspaces/$workspaceId',
@@ -101,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/': typeof AppSettingsIndexRoute
+  '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
@@ -114,6 +122,7 @@ export interface FileRoutesByTo {
   '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings': typeof AppSettingsIndexRoute
+  '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/repositories/$repositoryId': typeof AppRepositoriesRepositoryIdIndexRoute
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
@@ -130,6 +139,7 @@ export interface FileRoutesById {
   '/_app/settings/agents': typeof AppSettingsAgentsRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
+  '/_app/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/_app/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
   '/_app/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
@@ -146,6 +156,7 @@ export interface FileRouteTypes {
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/'
+    | '/repositories/$repositoryId/settings'
     | '/repositories/$repositoryId/'
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings'
+    | '/repositories/$repositoryId/settings'
     | '/repositories/$repositoryId'
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   id:
@@ -174,6 +186,7 @@ export interface FileRouteTypes {
     | '/_app/settings/agents'
     | '/_app/settings/appearance'
     | '/_app/settings/'
+    | '/_app/repositories/$repositoryId/settings'
     | '/_app/repositories/$repositoryId/'
     | '/_app/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesById: FileRoutesById
@@ -270,6 +283,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppRepositoriesRepositoryIdIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/repositories/$repositoryId/settings': {
+      id: '/_app/repositories/$repositoryId/settings'
+      path: '/repositories/$repositoryId/settings'
+      fullPath: '/repositories/$repositoryId/settings'
+      preLoaderRoute: typeof AppRepositoriesRepositoryIdSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/repositories/$repositoryId/workspaces/$workspaceId': {
       id: '/_app/repositories/$repositoryId/workspaces/$workspaceId'
       path: '/repositories/$repositoryId/workspaces/$workspaceId'
@@ -301,6 +321,7 @@ const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
 interface AppRouteChildren {
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
+  AppRepositoriesRepositoryIdSettingsRoute: typeof AppRepositoriesRepositoryIdSettingsRoute
   AppRepositoriesRepositoryIdIndexRoute: typeof AppRepositoriesRepositoryIdIndexRoute
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute: typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
@@ -308,6 +329,8 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppSettingsRoute: AppSettingsRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
+  AppRepositoriesRepositoryIdSettingsRoute:
+    AppRepositoriesRepositoryIdSettingsRoute,
   AppRepositoriesRepositoryIdIndexRoute: AppRepositoriesRepositoryIdIndexRoute,
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute:
     AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute,

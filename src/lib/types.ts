@@ -109,6 +109,18 @@ export interface FileChange {
 
 export type DiffScope = "Unstaged" | "Staged" | "Head";
 
+export interface RunCommand {
+  id: string;
+  repositoryId: string;
+  name: string;
+  command: string;
+  shortcut: string | null;
+  pinned: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CommitOutput {
   sha: string;
   message: string;

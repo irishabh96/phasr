@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod git;
 pub mod repositories;
+pub mod run_commands;
 pub mod runtime;
 pub mod settings;
 pub mod workspaces;

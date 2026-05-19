@@ -1,6 +1,5 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { ThemeToggle } from "@/components/ThemeToggle";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { applyTheme } from "@/lib/theme";
@@ -32,14 +31,7 @@ function RootLayout() {
     }
   }, [settings?.accentColor]);
 
-  return (
-    <>
-      <Outlet />
-      <div className="pointer-events-auto fixed bottom-3 right-3 z-50">
-        <ThemeToggle />
-      </div>
-    </>
-  );
+  return <Outlet />;
 }
 
 function NotFound() {

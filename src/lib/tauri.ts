@@ -8,6 +8,7 @@ import type {
   PathValidation,
   PtyEvent,
   Repository,
+  RunCommand,
   RunningWorkspaceInfo,
   UserSettings,
   Workspace,
@@ -111,6 +112,39 @@ export const tauri = {
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),
   launchApp: (launcherId: string, path: string) =>
     invoke<void>("launch_app", { launcherId, path }),
+
+  // ── run commands ─────────────────────────────────────────────────────
+  listRunCommands: (repositoryId: string) =>
+    invoke<RunCommand[]>("list_run_commands", { repositoryId }),
+  createRunCommand: (input: {
+    repositoryId: string;
+    name: string;
+    command: string;
+    shortcut?: string;
+    pinned?: boolean;
+  }) => invoke<RunCommand>("create_run_command", { input }),
+  updateRunCommand: (
+    id: string,
+    input: {
+      name?: string;
+      command?: string;
+      shortcut?: string;
+      pinned?: boolean;
+      sortOrder?: number;
+    },
+  ) => invoke<RunCommand>("update_run_command", { id, input }),
+  deleteRunCommand: (id: string) => invoke<void>("delete_run_command", { id }),
+  startRunCommand: (
+    id: string,
+    onEvent: Channel<PtyEvent>,
+    rows = 24,
+    cols = 80,
+  ) => invoke<void>("start_run_command", { id, onEvent, rows, cols }),
+  stopRunCommand: (id: string) => invoke<void>("stop_run_command", { id }),
+  sendRunCommandInput: (id: string, data: string) =>
+    invoke<void>("send_run_command_input", { id, data }),
+  resizeRunCommand: (id: string, rows: number, cols: number) =>
+    invoke<void>("resize_run_command", { id, rows, cols }),
 
   // ── runtime (PTY) ────────────────────────────────────────────────────
   startWorkspace: (

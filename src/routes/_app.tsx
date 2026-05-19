@@ -2,6 +2,7 @@ import { useAuth, UserButton } from "@clerk/react";
 import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Search, Settings as SettingsIcon } from "lucide-react";
 import { CommandPalette } from "@/components/CommandPalette";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
 import { useRustSession } from "@/lib/use-rust-session";
@@ -48,6 +49,7 @@ function AppLayout() {
               ⌘ K
             </kbd>
           </button>
+          <ThemeToggle />
           <button
             type="button"
             onClick={() => navigate({ to: "/settings" })}

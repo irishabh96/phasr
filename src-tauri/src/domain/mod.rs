@@ -10,10 +10,12 @@
 
 pub mod agent;
 pub mod repository;
+pub mod run_command;
 pub mod settings;
 pub mod workspace;
 
 pub use agent::{seed_id, Agent};
 pub use repository::Repository;
+pub use run_command::RunCommand;
 pub use settings::UserSettings;
 pub use workspace::{Workspace, WorkspaceStatus};

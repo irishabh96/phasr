@@ -12,7 +12,8 @@ use std::sync::Arc;
 use auth::SessionState;
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, AgentRepo, RepositoryRepo, SettingsRepo, WorkspaceRepo,
+    default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo,
+    WorkspaceRepo,
 };
 use tauri::Manager;
 
@@ -45,6 +46,7 @@ pub fn run() {
                         }
                         handle.manage(RepositoryRepo::new(pool.clone()));
                         handle.manage(WorkspaceRepo::new(pool.clone()));
+                        handle.manage(RunCommandRepo::new(pool.clone()));
                         handle.manage(agent_repo);
                         handle.manage(SettingsRepo::new(pool));
                     }
@@ -94,6 +96,14 @@ pub fn run() {
             localfs::validate_workspace_path,
             launcher::list_launchers,
             launcher::launch_app,
+            commands::run_commands::create_run_command,
+            commands::run_commands::list_run_commands,
+            commands::run_commands::update_run_command,
+            commands::run_commands::delete_run_command,
+            commands::run_commands::start_run_command,
+            commands::run_commands::stop_run_command,
+            commands::run_commands::send_run_command_input,
+            commands::run_commands::resize_run_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

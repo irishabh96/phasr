@@ -1,12 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { ArrowLeft, Square } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { useCallback } from "react";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { OpenInMenu } from "@/components/OpenInMenu";
+import { RunCommandPicker } from "@/components/RunCommandPicker";
+import { RunCommandsPane } from "@/components/RunCommandsPane";
 import { Terminal } from "@/components/Terminal";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
-import { tauri } from "@/lib/tauri";
 
 function WorkspaceDetail() {
   const { repositoryId, workspaceId } = Route.useParams();
@@ -19,15 +20,6 @@ function WorkspaceDetail() {
       queryKey: ["workspaces", "repository", repositoryId],
     });
   }, [queryClient, workspaceId, repositoryId]);
-
-  const handleStop = async () => {
-    try {
-      await tauri.stopWorkspace(workspaceId);
-      refresh();
-    } catch (err) {
-      console.error("stop failed", err);
-    }
-  };
 
   if (!workspace) {
     return (
@@ -56,18 +48,8 @@ function WorkspaceDetail() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <RunCommandPicker repositoryId={repositoryId} />
           {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
-          <StatusPill status={workspace.status} />
-          {workspace.status === "running" && (
-            <button
-              type="button"
-              onClick={handleStop}
-              className="flex items-center gap-1 rounded-md border border-(--color-danger) bg-(--color-danger)/15 px-2.5 py-1 text-xs text-(--color-danger) hover:bg-(--color-danger)/25"
-            >
-              <Square size={12} fill="currentColor" />
-              Stop
-            </button>
-          )}
         </div>
       </header>
 
@@ -85,30 +67,8 @@ function WorkspaceDetail() {
           </aside>
         )}
       </div>
+      <RunCommandsPane repositoryId={repositoryId} />
     </div>
-  );
-}
-
-function StatusPill({ status }: { status: string }) {
-  const color =
-    {
-      running: "var(--color-info)",
-      completed: "var(--color-success)",
-      failed: "var(--color-danger)",
-      stopped: "var(--color-warning)",
-      archived: "var(--color-text-muted)",
-      pending: "var(--color-text-secondary)",
-    }[status] ?? "var(--color-text-secondary)";
-  return (
-    <span
-      className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide"
-      style={{
-        background: `color-mix(in oklab, ${color} 15%, transparent)`,
-        color,
-      }}
-    >
-      {status}
-    </span>
   );
 }
 

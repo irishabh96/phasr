@@ -1,9 +1,13 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
+import { Play, Plus, Settings as SettingsIcon } from "lucide-react";
 import { useState } from "react";
+import { RunCommandPicker } from "@/components/RunCommandPicker";
+import { RunCommandsPane } from "@/components/RunCommandsPane";
 import { useCreateWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { useRepository } from "@/lib/hooks/useRepositories";
+import { useRunCommands } from "@/lib/hooks/useRunCommands";
+import { useUiStore } from "@/lib/store";
 import type { Workspace } from "@/lib/types";
 
 function RepositoryView() {
@@ -12,7 +16,11 @@ function RepositoryView() {
   const { data: repository } = useRepository(repositoryId);
   const { data: workspaces } = useWorkspaces(repositoryId);
   const { data: agents } = useAgents();
+  const { data: runCommands } = useRunCommands(repositoryId);
+  const runPanel = useUiStore((s) => s.runPanel);
   const createWorkspace = useCreateWorkspace();
+
+  const pinnedRunCommands = (runCommands ?? []).filter((rc) => rc.pinned);
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
@@ -50,7 +58,9 @@ function RepositoryView() {
   const grouped = groupWorkspaces(workspaces ?? []);
 
   return (
-    <div className="mx-auto max-w-5xl px-8 py-10">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-8 py-10">
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <Link
@@ -66,14 +76,37 @@ function RepositoryView() {
             {repository?.localPath ?? "(no local path)"}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowForm((v) => !v)}
-          className="flex items-center gap-1 rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500)"
-        >
-          <Plus size={14} />
-          New workspace
-        </button>
+        <div className="flex items-center gap-2">
+          {pinnedRunCommands.map((rc) => (
+            <button
+              key={rc.id}
+              type="button"
+              onClick={() => runPanel.openTab(rc.id)}
+              title={rc.command}
+              className="flex items-center gap-1 rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-2.5 py-1 text-xs text-(--color-text-primary) hover:border-(--color-border-strong)"
+            >
+              <Play size={11} fill="currentColor" />
+              {rc.name}
+            </button>
+          ))}
+          <RunCommandPicker repositoryId={repositoryId} />
+          <Link
+            to="/repositories/$repositoryId/settings"
+            params={{ repositoryId }}
+            title="Repository settings"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-(--color-border-default) bg-(--color-bg-input) text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
+          >
+            <SettingsIcon size={14} />
+          </Link>
+          <button
+            type="button"
+            onClick={() => setShowForm((v) => !v)}
+            className="flex items-center gap-1 rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500)"
+          >
+            <Plus size={14} />
+            New workspace
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -182,6 +215,9 @@ function RepositoryView() {
           </p>
         )}
       </div>
+        </div>
+      </div>
+      <RunCommandsPane repositoryId={repositoryId} />
     </div>
   );
 }
