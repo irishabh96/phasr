@@ -19,6 +19,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AuthError {
+    // Reserved for the planned auth gate (see module docstring).
+    #[allow(dead_code)]
     #[error("not signed in")]
     NotSignedIn,
     #[error("malformed jwt: {0}")]
@@ -34,6 +36,7 @@ impl serde::Serialize for AuthError {
 #[derive(Debug, Clone, Deserialize)]
 struct JwtClaims {
     sub: String,
+    #[allow(dead_code)] // parsed for completeness; auth gate will check it
     #[serde(default)]
     exp: Option<i64>,
 }
@@ -41,6 +44,7 @@ struct JwtClaims {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub user_id: String,
+    #[allow(dead_code)] // held for the planned backend-call path
     pub jwt: String,
 }
 
@@ -64,6 +68,7 @@ impl SessionState {
 
     /// Returns the current session or an error suitable for surfacing to the
     /// frontend. Use this from protected Tauri commands.
+    #[allow(dead_code)] // wired up by the planned auth gate
     pub fn require(&self) -> Result<Session, AuthError> {
         self.current().ok_or(AuthError::NotSignedIn)
     }

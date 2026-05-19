@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 
@@ -129,11 +129,6 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeRef>, GitError> {
     Ok(worktrees)
 }
 
-pub fn prune_worktrees(repo_path: &Path) -> Result<(), GitError> {
-    run_git(repo_path, &["worktree", "prune"])?;
-    Ok(())
-}
-
 /// Force-deletes a local branch. Idempotent: missing branches return Ok.
 pub fn branch_delete(repo_path: &Path, branch: &str) -> Result<(), GitError> {
     if run_git(
@@ -146,11 +141,6 @@ pub fn branch_delete(repo_path: &Path, branch: &str) -> Result<(), GitError> {
     }
     run_git(repo_path, &["branch", "-D", branch])?;
     Ok(())
-}
-
-/// Composes a worktree directory for a task given the configured base.
-pub fn default_worktree_path(base: &Path, task_id: &str) -> PathBuf {
-    base.join(task_id)
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {

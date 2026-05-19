@@ -11,7 +11,7 @@ mod workspaces;
 
 pub use agents::AgentRepo;
 pub use error::StoreError;
-pub use pool::{default_db_path, init_pool, Db};
+pub use pool::{default_db_path, init_pool};
 pub use repositories::{RepositoryRepo, RepositoryUpdate};
 pub use run_commands::{RunCommandRepo, RunCommandUpdate};
 pub use settings::SettingsRepo;
