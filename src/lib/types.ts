@@ -51,6 +51,29 @@ export interface Preset {
   updatedAt: string;
 }
 
+export type FileStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted"
+  | "other";
+
+export interface FileChange {
+  path: string;
+  oldPath: string | null;
+  staged: FileStatus;
+  unstaged: FileStatus;
+}
+
+export type DiffScope = "Unstaged" | "Staged" | "Head";
+
+export interface CommitOutput {
+  sha: string;
+  message: string;
+}
+
 export type PtyEvent =
   | { type: "output"; taskId: string; chunk: string }
   | { type: "exit"; taskId: string; exitCode: number | null };

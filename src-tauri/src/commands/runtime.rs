@@ -75,12 +75,19 @@ pub async fn start_task(
         return Err(RuntimeError::AlreadyFinished(task.status.as_str().into()));
     }
 
-    let workspace = workspaces.get(&task.workspace_id).await?;
-    let cwd = workspace
-        .local_path
-        .as_ref()
-        .map(PathBuf::from)
-        .ok_or(RuntimeError::NoWorkspacePath)?;
+    // Prefer the task's worktree path (created in create_task); fall
+    // back to the workspace's local path for tasks created before
+    // worktree support landed.
+    let cwd = if let Some(worktree) = task.worktree_path.as_deref() {
+        PathBuf::from(worktree)
+    } else {
+        let workspace = workspaces.get(&task.workspace_id).await?;
+        workspace
+            .local_path
+            .as_ref()
+            .map(PathBuf::from)
+            .ok_or(RuntimeError::NoWorkspacePath)?
+    };
 
     let now = Utc::now();
     tasks

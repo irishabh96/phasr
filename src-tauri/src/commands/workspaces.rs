@@ -26,6 +26,26 @@ pub async fn create_workspace(
     input: CreateWorkspaceInput,
     repo: State<'_, WorkspaceRepo>,
 ) -> Result<Workspace, StoreError> {
+    // Idempotent: if a workspace with the same local_path is already
+    // connected, return that one instead of creating a duplicate.
+    // Comparison is canonicalised so symlink prefixes and trailing
+    // separators don't cause false misses.
+    if let Some(input_path) = input.local_path.as_deref() {
+        let candidate = std::fs::canonicalize(input_path)
+            .ok()
+            .unwrap_or_else(|| std::path::PathBuf::from(input_path));
+        for existing in repo.list().await? {
+            if let Some(existing_path) = existing.local_path.as_deref() {
+                let resolved = std::fs::canonicalize(existing_path)
+                    .ok()
+                    .unwrap_or_else(|| std::path::PathBuf::from(existing_path));
+                if resolved == candidate {
+                    return Ok(existing);
+                }
+            }
+        }
+    }
+
     let workspace = Workspace::new(input.name, input.local_path, input.remote_url);
     repo.insert(&workspace).await?;
     Ok(workspace)

@@ -1,6 +1,7 @@
 mod auth;
 mod commands;
 mod domain;
+mod git;
 mod localfs;
 mod pty;
 mod store;
@@ -79,6 +80,13 @@ pub fn run() {
             commands::runtime::resize_task,
             commands::runtime::interrupt_task,
             commands::runtime::stop_task,
+            commands::git::git_status,
+            commands::git::git_diff,
+            commands::git::git_stage,
+            commands::git::git_unstage,
+            commands::git::git_discard,
+            commands::git::git_commit,
+            commands::git::git_push,
             localfs::validate_workspace_path,
         ])
         .run(tauri::generate_context!())

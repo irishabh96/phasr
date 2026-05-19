@@ -1,14 +1,17 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, FolderOpen, XCircle } from "lucide-react";
 import { useState } from "react";
-import { useCreateWorkspace } from "@/lib/hooks/useWorkspaces";
+import { useCreateWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { tauri } from "@/lib/tauri";
 
 export function AddWorkspaceForm() {
   const [name, setName] = useState("");
   const [localPath, setLocalPath] = useState("");
   const createWorkspace = useCreateWorkspace();
+  const { data: existingWorkspaces } = useWorkspaces();
+  const navigate = useNavigate();
 
   const trimmedPath = localPath.trim();
 
@@ -40,15 +43,28 @@ export function AddWorkspaceForm() {
     }
   };
 
+  const duplicate = trimmedPath
+    ? existingWorkspaces?.find(
+        (w) =>
+          w.localPath &&
+          status?.absolutePath &&
+          w.localPath.replace(/\/$/, "") === status.absolutePath.replace(/\/$/, ""),
+      )
+    : undefined;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-    await createWorkspace.mutateAsync({
+    const workspace = await createWorkspace.mutateAsync({
       name: name.trim(),
       ...(trimmedPath ? { localPath: trimmedPath } : {}),
     });
     setName("");
     setLocalPath("");
+    navigate({
+      to: "/workspaces/$workspaceId",
+      params: { workspaceId: workspace.id },
+    });
   };
 
   return (
@@ -87,6 +103,23 @@ export function AddWorkspaceForm() {
       </div>
 
       {trimmedPath.length > 0 && status && <ValidationBadge status={status} />}
+      {duplicate && (
+        <div className="flex items-center gap-2 text-xs text-(--color-text-secondary)">
+          <span>Already connected as "{duplicate.name}".</span>
+          <button
+            type="button"
+            onClick={() =>
+              navigate({
+                to: "/workspaces/$workspaceId",
+                params: { workspaceId: duplicate.id },
+              })
+            }
+            className="rounded border border-(--color-border-default) px-2 py-0.5 text-xs hover:border-(--color-accent-500)"
+          >
+            Open it
+          </button>
+        </div>
+      )}
     </form>
   );
 }

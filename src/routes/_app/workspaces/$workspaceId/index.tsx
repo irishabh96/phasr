@@ -27,23 +27,28 @@ function WorkspaceView() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !activePreset) return;
-    // The preset launches the agent interactively. The prompt is sent
-    // as keystrokes by the PTY runtime after the agent starts up — see
-    // src-tauri/src/pty/handle.rs.
-    const task = await createTask.mutateAsync({
-      workspaceId,
-      name: name.trim(),
-      command: activePreset.command,
-      ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-      ...(activePresetId ? { presetId: activePresetId } : {}),
-    });
-    setName("");
-    setPrompt("");
-    setShowForm(false);
-    navigate({
-      to: "/workspaces/$workspaceId/tasks/$taskId",
-      params: { workspaceId, taskId: task.id },
-    });
+    try {
+      // The preset launches the agent interactively. The prompt is sent
+      // as keystrokes by the PTY runtime after the agent starts up.
+      const task = await createTask.mutateAsync({
+        workspaceId,
+        name: name.trim(),
+        command: activePreset.command,
+        ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
+        ...(activePresetId ? { presetId: activePresetId } : {}),
+      });
+      setName("");
+      setPrompt("");
+      setShowForm(false);
+      navigate({
+        to: "/workspaces/$workspaceId/tasks/$taskId",
+        params: { workspaceId, taskId: task.id },
+      });
+    } catch (err) {
+      console.error("create task failed", err);
+      // The mutation hook surfaces `createTask.error` to the form
+      // footer; no extra UI needed here.
+    }
   };
 
   const grouped = groupTasks(tasks ?? []);
@@ -116,7 +121,12 @@ function WorkspaceView() {
               className="w-full resize-y"
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="flex items-center justify-end gap-2">
+            {createTask.error && (
+              <span className="mr-auto text-xs text-(--color-danger)">
+                {String(createTask.error)}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setShowForm(false)}

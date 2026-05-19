@@ -1,5 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  CommitOutput,
+  DiffScope,
+  FileChange,
   PathValidation,
   Preset,
   PtyEvent,
@@ -79,6 +82,22 @@ export const tauri = {
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),
   updateUserSettings: (settings: UserSettings) =>
     invoke<UserSettings>("update_user_settings", { settings }),
+
+  // ── git ──────────────────────────────────────────────────────────────
+  gitStatus: (taskId: string) => invoke<FileChange[]>("git_status", { taskId }),
+  gitDiff: (taskId: string, scope: DiffScope, path?: string) =>
+    invoke<string>("git_diff", {
+      input: { taskId, scope, ...(path ? { path } : {}) },
+    }),
+  gitStage: (taskId: string, paths: string[]) =>
+    invoke<void>("git_stage", { taskId, paths }),
+  gitUnstage: (taskId: string, paths: string[]) =>
+    invoke<void>("git_unstage", { taskId, paths }),
+  gitDiscard: (taskId: string, paths: string[]) =>
+    invoke<void>("git_discard", { taskId, paths }),
+  gitCommit: (taskId: string, message: string) =>
+    invoke<CommitOutput>("git_commit", { taskId, message }),
+  gitPush: (taskId: string) => invoke<void>("git_push", { taskId }),
 
   // ── localfs ──────────────────────────────────────────────────────────
   validateWorkspacePath: (path: string) =>

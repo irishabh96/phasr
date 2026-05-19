@@ -3,6 +3,7 @@
 //! business logic here, push it into the application/use-case layer
 //! instead (introduced in later phases).
 
+pub mod git;
 pub mod presets;
 pub mod runtime;
 pub mod settings;

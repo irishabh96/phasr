@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { ArrowLeft, Square } from "lucide-react";
 import { useCallback } from "react";
+import { ChangesPanel } from "@/components/ChangesPanel";
 import { Terminal } from "@/components/Terminal";
 import { useTask } from "@/lib/hooks/useTasks";
 import { tauri } from "@/lib/tauri";
@@ -66,8 +67,15 @@ function TaskDetail() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1">
-        <Terminal taskId={taskId} status={task.status} onExit={refresh} />
+      <div className="flex min-h-0 flex-1">
+        <div className="min-h-0 flex-1">
+          <Terminal taskId={taskId} status={task.status} onExit={refresh} />
+        </div>
+        {task.worktreePath && (
+          <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-(--color-border-subtle) bg-(--color-bg-surface)">
+            <ChangesPanel taskId={taskId} />
+          </aside>
+        )}
       </div>
     </div>
   );
