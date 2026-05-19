@@ -21,10 +21,8 @@ pub use error::GitError;
 pub use files::list_files;
 pub use init::init_repo;
 pub use merge::has_unpushed_commits;
-pub use pr::{build_pull_request_target, PullRequestTarget};
+pub use pr::build_pull_request_target;
 pub use remote::{get_default_branch, get_remote_url};
-pub use status::{status, FileChange, FileStatus};
+pub use status::{status, FileChange};
 pub use template::init_from_template;
-pub use worktree::{
-    branch_delete, create_worktree, list_worktrees, prune_worktrees, remove_worktree, WorktreeRef,
-};
+pub use worktree::{branch_delete, create_worktree, remove_worktree};

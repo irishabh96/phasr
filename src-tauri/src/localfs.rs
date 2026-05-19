@@ -3,7 +3,7 @@
 //! and the existence of a `.git` directory.
 
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

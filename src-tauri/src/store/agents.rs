@@ -125,20 +125,6 @@ impl AgentRepo {
         Ok(())
     }
 
-    /// Returns user-defined custom agents only.
-    pub async fn list_custom(&self) -> Result<Vec<Agent>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id, name, command, icon, is_default, is_enabled, is_seed, sort_order,
-                    created_at, updated_at
-             FROM agents
-             WHERE is_seed = 0
-             ORDER BY sort_order ASC, name ASC",
-        )
-        .fetch_all(&self.db)
-        .await?;
-        rows.iter().map(row_to_agent).collect()
-    }
-
     /// Returns every agent row (seeds + customs) ordered for display.
     pub async fn list_all(&self) -> Result<Vec<Agent>, StoreError> {
         let rows = sqlx::query(
@@ -192,17 +178,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_custom_returns_empty_on_fresh_db() {
+    async fn list_all_returns_empty_on_fresh_db() {
         let repo = fresh().await;
-        assert!(repo.list_custom().await.unwrap().is_empty());
+        assert!(repo.list_all().await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn insert_and_list_custom() {
+    async fn insert_and_list_all() {
         let repo = fresh().await;
         let agent = Agent::new_custom("My GPT-4", "chat-cli -m gpt-4");
         repo.insert(&agent).await.unwrap();
-        let list = repo.list_custom().await.unwrap();
+        let list = repo.list_all().await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "My GPT-4");
     }

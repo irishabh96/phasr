@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use portable_pty::{
-    native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize,
-};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -71,13 +69,11 @@ pub struct PtySpawnOptions {
 
 /// Owns one running task's PTY. Cheaply cloneable (`Arc` inside).
 pub struct PtyHandle {
-    task_id: String,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     /// Writer for the PTY's stdin. `MasterPty::take_writer()` is
     /// **one-shot**, so we take it once at spawn time and lock it for
     /// each write afterwards.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     /// Separate killer handle. We have to hold this because the wait
     /// thread parks on `child.wait()` while holding the child mutex —
     /// calling `child.lock().kill()` from another thread would
@@ -160,10 +156,8 @@ impl PtyHandle {
         let child = Arc::new(Mutex::new(child));
 
         let handle = Arc::new(Self {
-            task_id: task_id.clone(),
             master,
             writer,
-            child: child.clone(),
             killer: Mutex::new(killer),
             tx: tx.clone(),
         });
@@ -236,10 +230,6 @@ impl PtyHandle {
             .map_err(PtyError::from)?;
 
         Ok(handle)
-    }
-
-    pub fn task_id(&self) -> &str {
-        &self.task_id
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PtyEvent> {

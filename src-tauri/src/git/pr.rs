@@ -126,6 +126,7 @@ mod tests {
         let (host, owner, repo) =
             parse_remote_url("https://github.com/foo/bar/").unwrap();
         assert_eq!(host, "github.com");
+        assert_eq!(owner, "foo");
         assert_eq!(repo, "bar");
     }
 

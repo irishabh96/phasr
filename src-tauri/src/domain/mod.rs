@@ -14,7 +14,7 @@ pub mod run_command;
 pub mod settings;
 pub mod workspace;
 
-pub use agent::{seed_id, Agent};
+pub use agent::Agent;
 pub use repository::Repository;
 pub use run_command::RunCommand;
 pub use settings::UserSettings;

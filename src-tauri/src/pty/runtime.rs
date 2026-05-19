@@ -61,10 +61,6 @@ impl TaskRuntime {
     pub fn drop_task(&self, task_id: &str) {
         self.running.lock().remove(task_id);
     }
-
-    pub fn running_count(&self) -> usize {
-        self.running.lock().len()
-    }
 }
 
 #[cfg(test)]
