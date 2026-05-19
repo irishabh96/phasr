@@ -1,6 +1,7 @@
 mod auth;
 mod commands;
 mod domain;
+mod fswatch;
 mod git;
 mod launcher;
 mod localfs;
@@ -15,6 +16,7 @@ use store::{
     default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo,
     WorkspaceRepo,
 };
+use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,6 +28,42 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(session_state)
         .setup(|app| {
+            // Replace the default macOS menu so `⌘W` is no longer claimed
+            // by `Window → Close Window`. JS handles ⌘W to close the
+            // active in-app tab. Edit + App items keep their native
+            // accelerators (⌘C, ⌘V, ⌘Q, etc.).
+            let app_submenu = SubmenuBuilder::new(app, "Phasr")
+                .items(&[
+                    &PredefinedMenuItem::about(app, None, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::show_all(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ])
+                .build()?;
+            let edit_submenu = SubmenuBuilder::new(app, "Edit")
+                .items(&[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ])
+                .build()?;
+            let window_submenu = SubmenuBuilder::new(app, "Window")
+                .items(&[&PredefinedMenuItem::minimize(app, None)?])
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&app_submenu, &edit_submenu, &window_submenu])
+                .build()?;
+            app.set_menu(menu)?;
+
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -35,6 +73,11 @@ pub fn run() {
 
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
             app.manage(task_runtime);
+
+            let watch_registry = Arc::new(fswatch::WorktreeWatchRegistry::new(
+                app.handle().clone(),
+            ));
+            app.manage(watch_registry.clone());
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -67,11 +110,20 @@ pub fn run() {
             commands::repositories::get_repository,
             commands::repositories::update_repository,
             commands::repositories::delete_repository,
+            commands::repositories::git_init_repository,
+            commands::repositories::git_clone_repository,
+            commands::repositories::git_init_from_template,
+            commands::repositories::list_repo_files,
             commands::workspaces::create_workspace,
             commands::workspaces::list_workspaces,
             commands::workspaces::get_workspace,
             commands::workspaces::update_workspace,
+            commands::workspaces::archive_workspace,
+            commands::workspaces::open_pull_request,
+            commands::workspaces::check_workspace_delete,
             commands::workspaces::delete_workspace,
+            commands::workspaces::watch_workspace,
+            commands::workspaces::unwatch_workspace,
             commands::agents::list_agents,
             commands::agents::set_agent_enabled,
             commands::agents::set_agent_command,
@@ -94,6 +146,8 @@ pub fn run() {
             commands::git::git_commit,
             commands::git::git_push,
             localfs::validate_workspace_path,
+            localfs::default_projects_dir,
+            localfs::ensure_dir,
             launcher::list_launchers,
             launcher::launch_app,
             commands::run_commands::create_run_command,
@@ -104,6 +158,11 @@ pub fn run() {
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,
             commands::run_commands::resize_run_command,
+            commands::session_terminal::start_session_terminal,
+            commands::session_terminal::send_session_input,
+            commands::session_terminal::resize_session,
+            commands::session_terminal::stop_session_terminal,
+            commands::files::read_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

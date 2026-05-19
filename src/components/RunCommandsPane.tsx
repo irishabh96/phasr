@@ -1,8 +1,10 @@
 import { ChevronDown, ChevronUp, Square, X } from "lucide-react";
 import { RunCommandTerminal } from "@/components/RunCommandTerminal";
+import { GlassButton } from "@/components/ui/GlassButton";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
 
 interface RunCommandsPaneProps {
   repositoryId: string;
@@ -28,84 +30,92 @@ export function RunCommandsPane({ repositoryId }: RunCommandsPaneProps) {
 
   return (
     <div
-      className="flex shrink-0 flex-col border-t border-(--color-border-subtle) bg-(--color-bg-surface)"
+      className="flex shrink-0 flex-col border-t border-(--glass-border-hairline) bg-(--color-bg-surface)"
       style={{ height: collapsed ? 36 : 280 }}
     >
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-(--color-border-subtle) px-2">
-        {openedHere.map((id) => {
-          const rc = runCommands?.find((r) => r.id === id);
-          if (!rc) return null;
-          const isActive = runPanel.activeTab === id;
-          return (
-            <div
-              key={id}
-              className="flex items-center rounded-md text-xs"
-              style={{
-                background: isActive ? "var(--color-bg-input)" : "transparent",
-                color: isActive ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => runPanel.setActiveTab(id)}
-                className="py-1.5 pl-3 pr-2"
+      <div className="flex h-9 shrink-0 items-center gap-1 px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          {openedHere.map((id) => {
+            const rc = runCommands?.find((r) => r.id === id);
+            if (!rc) return null;
+            const isActive = runPanel.activeTab === id;
+            return (
+              <div
+                key={id}
+                className={cn(
+                  "flex h-7 shrink-0 items-center gap-0.5 rounded-full pl-2.5 pr-1",
+                  "text-[12px] leading-none",
+                  "transition-colors duration-150",
+                  isActive
+                    ? "bg-[color-mix(in_oklab,var(--color-accent-500)_18%,transparent)] text-(--color-text-primary)"
+                    : "text-(--color-text-secondary) hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)",
+                )}
               >
-                {rc.name}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void tauri.stopRunCommand(id).catch(() => {});
-                  runPanel.closeTab(id);
-                }}
-                title="Stop and close"
-                aria-label={`Close ${rc.name}`}
-                className="mr-1 flex h-6 w-6 items-center justify-center rounded text-(--color-text-muted) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)"
-              >
-                <X size={13} />
-              </button>
-            </div>
-          );
-        })}
+                <button
+                  type="button"
+                  onClick={() => runPanel.setActiveTab(id)}
+                  className="flex items-center gap-1.5"
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full",
+                      isActive ? "bg-(--color-accent-500)" : "bg-(--color-text-muted)",
+                    )}
+                  />
+                  {rc.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void tauri.stopRunCommand(id).catch(() => {});
+                    runPanel.closeTab(id);
+                  }}
+                  title="Stop and close"
+                  aria-label={`Close ${rc.name}`}
+                  className="ml-0.5 flex h-5 w-5 items-center justify-center rounded-full text-(--color-text-muted) transition-colors hover:bg-[color-mix(in_oklab,white_10%,transparent)] hover:text-(--color-text-primary)"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1 pl-1">
           {!collapsed && runPanel.activeTab && (
-            <button
-              type="button"
-              onClick={() =>
-                void tauri.stopRunCommand(runPanel.activeTab!).catch(() => {})
-              }
+            <GlassButton
+              variant="danger"
+              size="sm"
+              onClick={() => void tauri.stopRunCommand(runPanel.activeTab!).catch(() => {})}
               title="Send SIGTERM"
-              className="flex items-center gap-1 rounded-md border border-(--color-danger) bg-(--color-danger)/15 px-2 py-0.5 text-[10px] text-(--color-danger) hover:bg-(--color-danger)/25"
+              className="h-6"
             >
               <Square size={9} fill="currentColor" />
               Stop
-            </button>
+            </GlassButton>
           )}
-          <button
-            type="button"
+          <GlassButton
+            variant="ghost"
+            size="icon"
             onClick={() => (collapsed ? runPanel.showPanel() : runPanel.hidePanel())}
             title={collapsed ? "Expand pane" : "Collapse pane"}
-            className="rounded-md border border-(--color-border-default) p-1 text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
+            className="h-6 w-6"
           >
             {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          </button>
+          </GlassButton>
         </div>
       </div>
 
       {!collapsed && (
-        <div className="relative min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1 border-t border-(--glass-border-hairline)">
           {openedHere.map((id) => (
             <div
               key={id}
               className="absolute inset-0"
               style={{ display: runPanel.activeTab === id ? "block" : "none" }}
             >
-              <RunCommandTerminal
-                runCommandId={id}
-                visible={runPanel.activeTab === id}
-              />
+              <RunCommandTerminal runCommandId={id} visible={runPanel.activeTab === id} />
             </div>
           ))}
         </div>

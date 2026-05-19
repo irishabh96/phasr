@@ -2,7 +2,43 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::domain::Repository;
+use crate::git::{self, GitError};
 use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError};
+
+#[derive(Debug)]
+pub enum RepositoryCmdError {
+    Store(StoreError),
+    Git(GitError),
+    NoLocalPath,
+}
+
+impl From<StoreError> for RepositoryCmdError {
+    fn from(e: StoreError) -> Self {
+        Self::Store(e)
+    }
+}
+
+impl From<GitError> for RepositoryCmdError {
+    fn from(e: GitError) -> Self {
+        Self::Git(e)
+    }
+}
+
+impl std::fmt::Display for RepositoryCmdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(e) => write!(f, "{e}"),
+            Self::Git(e) => write!(f, "{e}"),
+            Self::NoLocalPath => write!(f, "repository has no local path on this machine"),
+        }
+    }
+}
+
+impl serde::Serialize for RepositoryCmdError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +88,17 @@ pub async fn create_repository(
             .and_then(|p| crate::git::get_remote_url(std::path::Path::new(p)))
     });
 
-    let repository = Repository::new(input.name, input.local_path, resolved_remote_url);
+    let mut repository = Repository::new(input.name, input.local_path, resolved_remote_url);
+
+    // Replace the hardcoded "main" with whatever the local repo
+    // actually uses (master, develop, …) so merge/worktree commands
+    // don't fail with `pathspec 'main' did not match`.
+    if let Some(local_path) = repository.local_path.as_deref() {
+        if let Some(detected) = crate::git::get_default_branch(std::path::Path::new(local_path)) {
+            repository.default_branch = detected;
+        }
+    }
+
     repo.insert(&repository).await?;
     Ok(repository)
 }
@@ -93,4 +139,67 @@ pub async fn delete_repository(
     repo: State<'_, RepositoryRepo>,
 ) -> Result<(), StoreError> {
     repo.delete(&id).await
+}
+
+/// Initialize the repository's local folder as a git repo (mockup 4
+/// recovery flow). Runs `git init -b main` plus an empty initial
+/// commit so HEAD exists, then refreshes `default_branch` on the
+/// stored row.
+#[tauri::command]
+pub async fn git_init_repository(
+    id: String,
+    repo: State<'_, RepositoryRepo>,
+) -> Result<Repository, RepositoryCmdError> {
+    let repository = repo.get(&id).await?;
+    let local_path = repository
+        .local_path
+        .as_deref()
+        .ok_or(RepositoryCmdError::NoLocalPath)?;
+    git::init_repo(std::path::Path::new(local_path))?;
+
+    let detected = git::get_default_branch(std::path::Path::new(local_path));
+    let patch = RepositoryUpdate {
+        default_branch: detected,
+        ..Default::default()
+    };
+    Ok(repo.update(&id, patch).await?)
+}
+
+/// Clone `url` into `destination_path`. Used by the new-project wizard
+/// for the "Clone URL" flow. The destination must not exist or must be
+/// empty — we never overwrite a user folder.
+///
+/// This does NOT create a repository row in the store; the frontend
+/// follows up with `create_repository` once the clone succeeds, so the
+/// row gets the auto-detected `remote_url` and `default_branch`.
+#[tauri::command]
+pub async fn git_clone_repository(
+    url: String,
+    destination_path: String,
+) -> Result<String, GitError> {
+    let dest = std::path::Path::new(&destination_path);
+    git::clone_repo(&url, dest)?;
+    Ok(destination_path)
+}
+
+/// Clone a template repo into `destination_path`, drop its history, and
+/// re-init git so the user owns commit 0. Same destination contract as
+/// `git_clone_repository`. The frontend follows up with
+/// `create_repository` to register the row.
+#[tauri::command]
+pub async fn git_init_from_template(
+    template_git_url: String,
+    destination_path: String,
+) -> Result<String, GitError> {
+    let dest = std::path::Path::new(&destination_path);
+    git::init_from_template(&template_git_url, dest)?;
+    Ok(destination_path)
+}
+
+/// List files inside a repository for the file-search modal. Honors
+/// `.gitignore` when the path is a git repo; falls back to a manual
+/// walk that skips heavy folders otherwise.
+#[tauri::command]
+pub async fn list_repo_files(path: String) -> Result<Vec<String>, GitError> {
+    git::list_files(std::path::Path::new(&path))
 }

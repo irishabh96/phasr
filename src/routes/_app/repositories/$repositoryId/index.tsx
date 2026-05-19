@@ -1,223 +1,376 @@
+import { open } from "@tauri-apps/plugin-dialog";
+import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Play, Plus, Settings as SettingsIcon } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, FolderOpen, GitBranch, Play, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { NewWorkspaceForm } from "@/components/NewWorkspaceForm";
+import { RepositoryQuickActions } from "@/components/RepositoryQuickActions";
+import { RepoTabBar } from "@/components/RepoTabBar";
+import { RepoTabContent } from "@/components/RepoTabContent";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
-import { useCreateWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
-import { useAgents } from "@/lib/hooks/useAgents";
-import { useRepository } from "@/lib/hooks/useRepositories";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { StatusDot } from "@/components/ui/StatusDot";
+import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
+import {
+  useDeleteRepository,
+  useGitInitRepository,
+  useRepository,
+  useUpdateRepository,
+} from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useUiStore } from "@/lib/store";
-import type { Workspace } from "@/lib/types";
+import { tauri } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
+import type { Repository, Workspace, WorkspaceStatus } from "@/lib/types";
+
+const STATUS_ORDER: WorkspaceStatus[] = [
+  "running",
+  "pending",
+  "completed",
+  "failed",
+  "stopped",
+  "archived",
+];
 
 function RepositoryView() {
   const { repositoryId } = Route.useParams();
   const navigate = useNavigate();
   const { data: repository } = useRepository(repositoryId);
   const { data: workspaces } = useWorkspaces(repositoryId);
-  const { data: agents } = useAgents();
   const { data: runCommands } = useRunCommands(repositoryId);
   const runPanel = useUiStore((s) => s.runPanel);
-  const createWorkspace = useCreateWorkspace();
+  const ensureTabs = useUiStore((s) => s.ensureTabs);
+  const pendingNewWorkspaceRepoId = useUiStore((s) => s.pendingNewWorkspaceRepoId);
+  const clearPendingNewWorkspace = useUiStore((s) => s.clearPendingNewWorkspace);
+
+  const localPath = repository?.localPath ?? null;
+  const validation = useQuery({
+    queryKey: ["repoPathValidation", repositoryId, localPath],
+    queryFn: () => tauri.validateRepositoryPath(localPath ?? ""),
+    enabled: !!localPath,
+  });
 
   const pinnedRunCommands = (runCommands ?? []).filter((rc) => rc.pinned);
+  const hasPickerCommands = (runCommands ?? []).length > 0;
+  const hasHeaderActions = pinnedRunCommands.length > 0 || hasPickerCommands;
 
   const [showForm, setShowForm] = useState(false);
-  const [name, setName] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [agentId, setAgentId] = useState<string | null>(null);
 
-  const enabledAgents = agents?.filter((a) => a.isEnabled) ?? [];
-  const defaultAgent = enabledAgents.find((a) => a.isDefault) ?? enabledAgents[0];
-  const activeAgentId = agentId ?? defaultAgent?.id ?? null;
-  const activeAgent = enabledAgents.find((a) => a.id === activeAgentId);
+  // Initialize the tab strip for this repo on first visit.
+  useEffect(() => {
+    ensureTabs(repositoryId);
+  }, [repositoryId, ensureTabs]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !activeAgent) return;
-    try {
-      const workspace = await createWorkspace.mutateAsync({
-        repositoryId,
-        name: name.trim(),
-        command: activeAgent.command,
-        ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-        ...(activeAgentId ? { agentId: activeAgentId } : {}),
-      });
-      setName("");
-      setPrompt("");
-      setShowForm(false);
-      navigate({
-        to: "/repositories/$repositoryId/workspaces/$workspaceId",
-        params: { repositoryId, workspaceId: workspace.id },
-      });
-    } catch (err) {
-      console.error("create workspace failed", err);
+  // ⌘W → close active tab (instead of the OS-default Close Window).
+  // The Tauri menu in `lib.rs` strips the OS accelerator so this listener
+  // gets the keystroke first.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key.toLowerCase() !== "w" || e.shiftKey) return;
+      const state = useUiStore.getState().repoTabs[repositoryId];
+      if (!state) return;
+      const active = state.tabs.find((t) => t.id === state.activeTabId);
+      if (!active?.closable) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const closed = useUiStore.getState().closeRepoTab(repositoryId, active.id);
+      if (closed?.kind === "terminal" && closed.ptySessionId) {
+        void tauri.stopSessionTerminal(closed.ptySessionId).catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [repositoryId]);
+
+  // Right-click menu's "New workspace" sets a Zustand flag and navigates
+  // here. Consume + clear so the form opens once.
+  useEffect(() => {
+    if (pendingNewWorkspaceRepoId === repositoryId) {
+      setShowForm(true);
+      clearPendingNewWorkspace();
     }
-  };
+  }, [pendingNewWorkspaceRepoId, repositoryId, clearPendingNewWorkspace]);
 
-  const grouped = groupWorkspaces(workspaces ?? []);
+  if (repository && localPath && validation.data && !validation.data.isGitRepo) {
+    return (
+      <BrokenRepositoryView
+        repositoryId={repositoryId}
+        repositoryName={repository.name}
+        localPath={localPath}
+        folderExists={validation.data.exists && validation.data.isDir}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-8 py-10">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <Link
-            to="/"
-            className="text-xs text-(--color-text-muted) hover:text-(--color-text-primary)"
-          >
-            ← All repositories
-          </Link>
-          <h1 className="mt-1 truncate text-xl font-semibold tracking-tight">
-            {repository?.name}
-          </h1>
-          <p className="truncate text-xs text-(--color-text-muted)">
-            {repository?.localPath ?? "(no local path)"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+      {hasHeaderActions && (
+        <div className="flex shrink-0 items-center justify-end gap-1 px-6 pt-3">
           {pinnedRunCommands.map((rc) => (
-            <button
+            <GlassButton
               key={rc.id}
-              type="button"
+              variant="outline"
+              size="sm"
               onClick={() => runPanel.openTab(rc.id)}
               title={rc.command}
-              className="flex items-center gap-1 rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-2.5 py-1 text-xs text-(--color-text-primary) hover:border-(--color-border-strong)"
             >
-              <Play size={11} fill="currentColor" />
+              <Play size={10} fill="currentColor" />
               {rc.name}
-            </button>
+            </GlassButton>
           ))}
           <RunCommandPicker repositoryId={repositoryId} />
-          <Link
-            to="/repositories/$repositoryId/settings"
-            params={{ repositoryId }}
-            title="Repository settings"
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-(--color-border-default) bg-(--color-bg-input) text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
-          >
-            <SettingsIcon size={14} />
-          </Link>
-          <button
-            type="button"
-            onClick={() => setShowForm((v) => !v)}
-            className="flex items-center gap-1 rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500)"
-          >
-            <Plus size={14} />
-            New workspace
-          </button>
         </div>
-      </div>
-
-      {showForm && (
-        <form
-          onSubmit={handleCreate}
-          className="mt-6 space-y-3 rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-4"
-        >
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Workspace name (e.g. fix login redirect bug)"
-            className="w-full"
-            autoFocus
-          />
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-(--color-text-secondary)">Agent</label>
-            <select
-              value={activeAgentId ?? ""}
-              onChange={(e) => setAgentId(e.target.value)}
-              className="w-full"
-            >
-              {enabledAgents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-            {activeAgent && (
-              <code className="block truncate text-[11px] text-(--color-text-muted)">
-                {activeAgent.command}
-              </code>
-            )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-(--color-text-secondary)">Prompt</label>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="What should the agent do?"
-              rows={4}
-              className="w-full resize-y"
-            />
-          </div>
-          <div className="flex items-center justify-end gap-2">
-            {createWorkspace.error && (
-              <span className="mr-auto text-xs text-(--color-danger)">
-                {String(createWorkspace.error)}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowForm(false)}
-              className="rounded-md border border-(--color-border-default) px-3 py-1.5 text-sm text-(--color-text-secondary) hover:border-(--color-border-strong)"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={createWorkspace.isPending || !name.trim() || !activeAgent}
-              className="rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500) disabled:opacity-50"
-            >
-              {createWorkspace.isPending ? "Creating…" : "Create & open"}
-            </button>
-          </div>
-        </form>
       )}
 
-      <div className="mt-8 space-y-6">
-        {(["running", "pending", "completed", "failed", "stopped", "archived"] as const).map(
-          (status) => {
-            const list = grouped[status];
-            if (!list || list.length === 0) return null;
-            return (
-              <section key={status}>
-                <h2 className="text-[11px] font-medium uppercase tracking-wide text-(--color-text-muted)">
-                  {status} ({list.length})
-                </h2>
-                <ul className="mt-2 divide-y divide-(--color-border-subtle)">
-                  {list.map((workspace) => (
-                    <li key={workspace.id} className="py-2.5">
-                      <Link
-                        to="/repositories/$repositoryId/workspaces/$workspaceId"
-                        params={{ repositoryId, workspaceId: workspace.id }}
-                        className="flex items-center justify-between gap-3 hover:text-(--color-accent-400)"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate text-sm">{workspace.name}</div>
-                          <code className="block truncate text-xs text-(--color-text-muted)">
-                            {workspace.command}
-                          </code>
-                        </div>
-                        <span className="shrink-0 text-xs text-(--color-text-muted)">
-                          {relativeTime(workspace.createdAt)}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            );
-          },
-        )}
-        {(!workspaces || workspaces.length === 0) && (
-          <p className="text-xs text-(--color-text-muted)">
-            No workspaces yet. Click "New workspace" to create one.
-          </p>
-        )}
-      </div>
-        </div>
-      </div>
+      <RepoTabBar repositoryId={repositoryId} />
+
+      <RepoTabContent
+        repositoryId={repositoryId}
+        repoPath={localPath ?? ""}
+        workspacesContent={
+          <WorkspacesTabBody
+            repository={repository}
+            workspaces={workspaces ?? []}
+            repositoryId={repositoryId}
+            showForm={showForm}
+            onCancelForm={() => setShowForm(false)}
+            onWorkspaceCreated={(workspace) => {
+              setShowForm(false);
+              navigate({
+                to: "/repositories/$repositoryId/workspaces/$workspaceId",
+                params: { repositoryId, workspaceId: workspace.id },
+              });
+            }}
+            onNewWorkspace={() => setShowForm(true)}
+          />
+        }
+      />
+
       <RunCommandsPane repositoryId={repositoryId} />
+    </div>
+  );
+}
+
+function WorkspacesTabBody({
+  repository,
+  workspaces,
+  repositoryId,
+  showForm,
+  onCancelForm,
+  onWorkspaceCreated,
+  onNewWorkspace,
+}: {
+  repository: Repository | undefined;
+  workspaces: Workspace[];
+  repositoryId: string;
+  showForm: boolean;
+  onCancelForm: () => void;
+  onWorkspaceCreated: (workspace: Workspace) => void;
+  onNewWorkspace: () => void;
+}) {
+  const grouped = groupWorkspaces(workspaces);
+  const isEmpty = workspaces.length === 0 && !showForm;
+
+  // Empty state: center QuickActions vertically + horizontally in the
+  // entire tab area so the page reads as a focused entry point.
+  if (isEmpty && repository) {
+    return (
+      <div className="flex h-full w-full items-center justify-center px-8 py-8">
+        <RepositoryQuickActions repository={repository} onNewWorkspace={onNewWorkspace} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl px-8 py-8">
+      {showForm && (
+        <GlassPanel className="p-4">
+          <NewWorkspaceForm
+            repositoryId={repositoryId}
+            onCreated={onWorkspaceCreated}
+            onCancel={onCancelForm}
+          />
+        </GlassPanel>
+      )}
+
+      <div className={cn(showForm && "mt-8", "space-y-6")}>
+        {STATUS_ORDER.map((status) => {
+          const list = grouped[status];
+          if (!list || list.length === 0) return null;
+          return (
+            <section key={status}>
+              <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
+                {status} <span className="text-(--color-text-secondary)">{list.length}</span>
+              </h2>
+              <GlassPanel className="mt-2 divide-y divide-(--glass-border-hairline)">
+                {list.map((workspace) => (
+                  <WorkspaceRow
+                    key={workspace.id}
+                    repositoryId={repositoryId}
+                    workspace={workspace}
+                  />
+                ))}
+              </GlassPanel>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceRow({
+  repositoryId,
+  workspace,
+}: {
+  repositoryId: string;
+  workspace: Workspace;
+}) {
+  return (
+    <Link
+      to="/repositories/$repositoryId/workspaces/$workspaceId"
+      params={{ repositoryId, workspaceId: workspace.id }}
+      className={cn(
+        "flex items-center gap-3 px-4 py-2.5",
+        "transition-colors duration-150",
+        "hover:bg-[color-mix(in_oklab,white_4%,transparent)]",
+      )}
+    >
+      <StatusDot status={workspace.status} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] leading-none">{workspace.name}</div>
+        <code className="mt-1 block truncate text-[11px] text-(--color-text-muted)">
+          {workspace.command}
+        </code>
+      </div>
+      <span className="shrink-0 text-[11px] text-(--color-text-muted)">
+        {relativeTime(workspace.createdAt)}
+      </span>
+    </Link>
+  );
+}
+
+function BrokenRepositoryView({
+  repositoryId,
+  repositoryName,
+  localPath,
+  folderExists,
+}: {
+  repositoryId: string;
+  repositoryName: string;
+  localPath: string;
+  folderExists: boolean;
+}) {
+  const navigate = useNavigate();
+  const initRepository = useGitInitRepository();
+  const updateRepository = useUpdateRepository(repositoryId);
+  const deleteRepository = useDeleteRepository();
+  const [error, setError] = useState<string | null>(null);
+
+  const handleInit = async () => {
+    setError(null);
+    try {
+      await initRepository.mutateAsync(repositoryId);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handlePickAnother = async () => {
+    setError(null);
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Pick a different folder for this repository",
+    });
+    if (typeof selected !== "string") return;
+    try {
+      await updateRepository.mutateAsync({ localPath: selected });
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleRemove = async () => {
+    if (!window.confirm(`Remove "${repositoryName}" from Phasr?`)) return;
+    try {
+      await deleteRepository.mutateAsync(repositoryId);
+      navigate({ to: "/" });
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl px-8 py-10">
+      <Link
+        to="/"
+        className="text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary)"
+      >
+        ← All repositories
+      </Link>
+      <h1 className="mt-1 truncate text-[20px] font-semibold tracking-tight leading-none">
+        {repositoryName}
+      </h1>
+      <code className="mt-1 block truncate text-[11.5px] text-(--color-text-muted)">
+        {localPath}
+      </code>
+
+      <GlassPanel className="mt-8 p-6">
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-(--color-warning)" />
+          <div className="min-w-0">
+            <h2 className="text-[13px] font-medium">
+              {folderExists
+                ? "This folder isn't a git repository"
+                : "This folder no longer exists on disk"}
+            </h2>
+            <p className="mt-1 text-[12px] text-(--color-text-secondary)">
+              {folderExists
+                ? "Phasr needs git to isolate agent work in worktrees. Choose one:"
+                : "It may have been moved or deleted. Pick a different folder, or remove the repository."}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 flex flex-col items-start gap-2">
+          {folderExists && (
+            <GlassButton
+              variant="primary"
+              size="sm"
+              onClick={handleInit}
+              disabled={initRepository.isPending}
+            >
+              <GitBranch size={12} />
+              {initRepository.isPending ? "Initializing…" : "Initialize git here"}
+            </GlassButton>
+          )}
+          <GlassButton
+            variant="outline"
+            size="sm"
+            onClick={handlePickAnother}
+            disabled={updateRepository.isPending}
+          >
+            <FolderOpen size={12} />
+            Pick a different folder
+          </GlassButton>
+          <GlassButton
+            variant="ghost"
+            size="sm"
+            onClick={handleRemove}
+            disabled={deleteRepository.isPending}
+            className="text-(--color-danger) hover:bg-[color-mix(in_oklab,var(--color-danger)_10%,transparent)]"
+          >
+            <Trash2 size={12} />
+            Remove this repository
+          </GlassButton>
+        </div>
+
+        {error && <p className="mt-4 text-[12px] text-(--color-danger)">{error}</p>}
+      </GlassPanel>
     </div>
   );
 }

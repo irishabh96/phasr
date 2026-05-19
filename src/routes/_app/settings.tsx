@@ -1,5 +1,6 @@
 import { Link, Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
 import { ArrowLeft, Bot, Palette, UserCircle } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface NavItem {
   label: string;
@@ -8,9 +9,9 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { label: "Account", to: "/settings/account", icon: <UserCircle size={14} /> },
-  { label: "Appearance", to: "/settings/appearance", icon: <Palette size={14} /> },
-  { label: "Agents", to: "/settings/agents", icon: <Bot size={14} /> },
+  { label: "Account", to: "/settings/account", icon: <UserCircle size={13} /> },
+  { label: "Appearance", to: "/settings/appearance", icon: <Palette size={13} /> },
+  { label: "Agents", to: "/settings/agents", icon: <Bot size={13} /> },
 ];
 
 function SettingsLayout() {
@@ -18,16 +19,16 @@ function SettingsLayout() {
   const active = location.pathname;
 
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-5xl gap-6 px-8 py-10">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-5xl gap-8 px-8 py-10">
       <aside className="w-44 shrink-0">
         <Link
           to="/"
-          className="mb-4 flex items-center gap-1.5 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
+          className="mb-5 inline-flex items-center gap-1.5 text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary)"
         >
-          <ArrowLeft size={12} />
-          Back to repositories
+          <ArrowLeft size={11} />
+          Back
         </Link>
-        <h1 className="mb-4 text-xs font-medium uppercase tracking-wide text-(--color-text-muted)">
+        <h1 className="mb-3 text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
           Settings
         </h1>
         <ul className="space-y-0.5">
@@ -37,12 +38,13 @@ function SettingsLayout() {
               <li key={item.to}>
                 <Link
                   to={item.to}
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
-                  data-active={isActive}
-                  style={{
-                    background: isActive ? "var(--color-bg-elevated)" : "transparent",
-                    color: isActive ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                  }}
+                  className={cn(
+                    "flex items-center gap-2 rounded-[8px] px-2 py-1.5 text-[13px] leading-none",
+                    "transition-colors duration-150",
+                    isActive
+                      ? "bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)] text-(--color-text-primary)"
+                      : "text-(--color-text-secondary) hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)",
+                  )}
                 >
                   {item.icon}
                   {item.label}

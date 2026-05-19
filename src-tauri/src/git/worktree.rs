@@ -134,6 +134,20 @@ pub fn prune_worktrees(repo_path: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Force-deletes a local branch. Idempotent: missing branches return Ok.
+pub fn branch_delete(repo_path: &Path, branch: &str) -> Result<(), GitError> {
+    if run_git(
+        repo_path,
+        &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+    )
+    .is_err()
+    {
+        return Ok(());
+    }
+    run_git(repo_path, &["branch", "-D", branch])?;
+    Ok(())
+}
+
 /// Composes a worktree directory for a task given the configured base.
 pub fn default_worktree_path(base: &Path, task_id: &str) -> PathBuf {
     base.join(task_id)

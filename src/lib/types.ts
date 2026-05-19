@@ -126,6 +126,17 @@ export interface CommitOutput {
   message: string;
 }
 
+export interface OpenPullRequestOutcome {
+  url: string;
+  provider: string;
+  headBranch: string;
+  baseBranch: string;
+}
+
+export interface WorkspaceDeleteCheck {
+  hasUnpushedCommits: boolean;
+}
+
 export type LauncherKind = "editor" | "terminal" | "filemanager";
 
 export interface Launcher {

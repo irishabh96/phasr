@@ -1,88 +1,97 @@
 import { useUser } from "@clerk/react";
-import { Link, createFileRoute } from "@tanstack/react-router";
-import { AddRepositoryForm } from "@/components/AddRepositoryForm";
-import { useDeleteRepository, useRepositories } from "@/lib/hooks/useRepositories";
-import { useAgents } from "@/lib/hooks/useAgents";
+import { Navigate, createFileRoute } from "@tanstack/react-router";
+import { FolderOpen, Sparkles } from "lucide-react";
+import { useRepositories } from "@/lib/hooks/useRepositories";
+import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
+import { useUiStore } from "@/lib/store";
 
 function Home() {
   const { user } = useUser();
   const { data: repositories, isLoading } = useRepositories();
-  const deleteRepository = useDeleteRepository();
-  const { data: agents } = useAgents();
+  const mostRecentRepo = repositories?.[0];
+  const { data: workspaces, isLoading: wsLoading } = useWorkspaces(mostRecentRepo?.id);
+
+  if (isLoading || (mostRecentRepo && wsLoading)) {
+    return (
+      <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
+        Loading…
+      </div>
+    );
+  }
+
+  if (!repositories || repositories.length === 0) {
+    return <EmptyState firstName={user?.firstName ?? null} />;
+  }
+
+  // Most-recent repo is guaranteed by the empty check above.
+  const repo = mostRecentRepo!;
+  const ws = workspaces?.[0];
+
+  if (ws) {
+    return (
+      <Navigate
+        to="/repositories/$repositoryId/workspaces/$workspaceId"
+        params={{ repositoryId: repo.id, workspaceId: ws.id }}
+        replace
+      />
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-4xl px-8 py-12">
-      <h1 className="text-2xl font-semibold tracking-tight">
-        Welcome
-        {user?.firstName ? `, ${user.firstName}` : ""}
-      </h1>
-      <p className="mt-2 text-sm text-(--color-text-secondary)">
-        Run multiple coding agents in parallel, each in an isolated git worktree.
-      </p>
+    <Navigate to="/repositories/$repositoryId" params={{ repositoryId: repo.id }} replace />
+  );
+}
 
-      <section className="mt-10 rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
-        <h2 className="text-sm font-medium">Repositories ({repositories?.length ?? 0})</h2>
-        <p className="mt-1 text-xs text-(--color-text-muted)">
-          A repository is your connection to a local git repo. Each one hosts many workspaces.
+function EmptyState({ firstName }: { firstName: string | null }) {
+  const openNewProject = useUiStore((s) => s.openNewProjectModal);
+  const openExisting = useUiStore((s) => s.openOpenExistingModal);
+
+  return (
+    <div className="flex h-full items-center justify-center px-8">
+      <div className="w-full max-w-2xl text-center">
+        <h1 className="text-[24px] font-semibold tracking-tight leading-none">
+          Welcome to Phasr{firstName ? `, ${firstName}` : ""}
+        </h1>
+        <p className="mt-3 text-[13px] text-(--color-text-secondary)">
+          Run multiple coding agents in parallel, each in its own isolated git worktree.
         </p>
 
-        <div className="mt-4">
-          <AddRepositoryForm />
+        <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={openNewProject}
+            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong) hover:shadow-[var(--shadow-glow)]"
+          >
+            <div className="flex items-center gap-2 text-(--color-accent-400)">
+              <Sparkles size={15} />
+              <span className="text-[13px] font-medium">New project</span>
+            </div>
+            <p className="mt-2 text-[12px] text-(--color-text-secondary)">
+              Empty repo, clone from URL, or start from a template.
+            </p>
+            <span className="mt-4 inline-flex h-7 items-center gap-1 rounded-[8px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,white_4%,transparent)] px-2.5 text-[12px] text-(--color-text-primary)">
+              Get started →
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openExisting}
+            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong) hover:shadow-[var(--shadow-glow)]"
+          >
+            <div className="flex items-center gap-2 text-(--color-text-secondary)">
+              <FolderOpen size={15} />
+              <span className="text-[13px] font-medium">Open existing project</span>
+            </div>
+            <p className="mt-2 text-[12px] text-(--color-text-muted)">
+              Point Phasr at a folder on disk that's already a git repo.
+            </p>
+            <span className="mt-4 inline-flex h-7 items-center gap-1 rounded-[8px] border border-(--glass-border-hairline) px-2.5 text-[12px] text-(--color-text-secondary)">
+              Browse…
+            </span>
+          </button>
         </div>
-
-        <ul className="mt-6 divide-y divide-(--color-border-subtle)">
-          {isLoading && <li className="py-3 text-xs text-(--color-text-muted)">Loading…</li>}
-          {!isLoading && repositories?.length === 0 && (
-            <li className="py-3 text-xs text-(--color-text-muted)">
-              No repositories yet — add one above.
-            </li>
-          )}
-          {repositories?.map((repo) => (
-            <li key={repo.id} className="flex items-center justify-between py-3">
-              <Link
-                to="/repositories/$repositoryId"
-                params={{ repositoryId: repo.id }}
-                className="min-w-0 flex-1 hover:text-(--color-accent-400)"
-              >
-                <div className="truncate text-sm">{repo.name}</div>
-                <div className="truncate text-xs text-(--color-text-muted)">
-                  {repo.localPath ?? "(no local path)"}
-                </div>
-              </Link>
-              <button
-                type="button"
-                onClick={() => deleteRepository.mutate(repo.id)}
-                disabled={deleteRepository.isPending}
-                className="rounded-md border border-(--color-border-default) px-2 py-1 text-xs text-(--color-text-secondary) hover:border-(--color-danger) hover:text-(--color-danger)"
-              >
-                Delete
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="mt-6 rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
-        <h2 className="text-sm font-medium">
-          Available agents ({agents?.length ?? 0})
-        </h2>
-        <p className="mt-1 text-xs text-(--color-text-muted)">
-          AI CLI tools you can launch in a workspace. Edit/toggle in Settings.
-        </p>
-        <ul className="mt-4 space-y-1 text-xs">
-          {agents?.map((a) => (
-            <li key={a.id} className="flex items-center gap-3">
-              <span className="min-w-[110px] font-medium">{a.name}</span>
-              <code className="truncate text-(--color-text-muted)">{a.command}</code>
-              {a.isDefault && (
-                <span className="ml-auto rounded bg-(--color-accent-600)/15 px-1.5 text-[10px] text-(--color-accent-400)">
-                  default
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
+      </div>
     </div>
   );
 }

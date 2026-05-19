@@ -5,6 +5,7 @@ import type {
   DiffScope,
   FileChange,
   Launcher,
+  OpenPullRequestOutcome,
   PathValidation,
   PtyEvent,
   Repository,
@@ -12,6 +13,7 @@ import type {
   RunningWorkspaceInfo,
   UserSettings,
   Workspace,
+  WorkspaceDeleteCheck,
   WorkspaceStatus,
 } from "./types";
 
@@ -61,6 +63,28 @@ export const tauri = {
   updateRepository: (id: string, input: UpdateRepositoryInput) =>
     invoke<Repository>("update_repository", { id, input }),
   deleteRepository: (id: string) => invoke<void>("delete_repository", { id }),
+  gitInitRepository: (id: string) =>
+    invoke<Repository>("git_init_repository", { id }),
+  gitCloneRepository: (url: string, destinationPath: string) =>
+    invoke<string>("git_clone_repository", { url, destinationPath }),
+  gitInitFromTemplate: (templateGitUrl: string, destinationPath: string) =>
+    invoke<string>("git_init_from_template", { templateGitUrl, destinationPath }),
+  listRepoFiles: (path: string) => invoke<string[]>("list_repo_files", { path }),
+  readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
+
+  // ── session terminals (in-app shell PTYs for the repo tab system) ──
+  startSessionTerminal: (cwd: string, onEvent: Channel<PtyEvent>, rows?: number, cols?: number) =>
+    invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
+  sendSessionInput: (sessionId: string, data: string) =>
+    invoke<void>("send_session_input", { sessionId, data }),
+  resizeSession: (sessionId: string, rows: number, cols: number) =>
+    invoke<void>("resize_session", { sessionId, rows, cols }),
+  stopSessionTerminal: (sessionId: string) =>
+    invoke<void>("stop_session_terminal", { sessionId }),
+
+  // ── localfs ──────────────────────────────────────────────────────────
+  defaultProjectsDir: () => invoke<string>("default_projects_dir"),
+  ensureDir: (path: string) => invoke<string>("ensure_dir", { path }),
 
   // ── workspaces ───────────────────────────────────────────────────────
   createWorkspace: (input: CreateWorkspaceInput) =>
@@ -70,7 +94,14 @@ export const tauri = {
   getWorkspace: (id: string) => invoke<Workspace>("get_workspace", { id }),
   updateWorkspace: (id: string, input: UpdateWorkspaceInput) =>
     invoke<Workspace>("update_workspace", { id, input }),
+  archiveWorkspace: (id: string) => invoke<Workspace>("archive_workspace", { id }),
+  openPullRequest: (id: string) =>
+    invoke<OpenPullRequestOutcome>("open_pull_request", { id }),
+  checkWorkspaceDelete: (id: string) =>
+    invoke<WorkspaceDeleteCheck>("check_workspace_delete", { id }),
   deleteWorkspace: (id: string) => invoke<void>("delete_workspace", { id }),
+  watchWorkspace: (id: string) => invoke<void>("watch_workspace", { id }),
+  unwatchWorkspace: (id: string) => invoke<void>("unwatch_workspace", { id }),
 
   // ── agents ───────────────────────────────────────────────────────────
   listAgents: () => invoke<Agent[]>("list_agents"),

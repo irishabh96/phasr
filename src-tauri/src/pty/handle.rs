@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{
+    native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize,
+};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -76,6 +78,12 @@ pub struct PtyHandle {
     /// each write afterwards.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    /// Separate killer handle. We have to hold this because the wait
+    /// thread parks on `child.wait()` while holding the child mutex —
+    /// calling `child.lock().kill()` from another thread would
+    /// deadlock. `ChildKiller` lets us signal the child without going
+    /// through that mutex.
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     tx: broadcast::Sender<PtyEvent>,
 }
 
@@ -130,6 +138,10 @@ impl PtyHandle {
             .slave
             .spawn_command(cmd)
             .map_err(|e| PtyError::Pty(e.to_string()))?;
+        // Grab a kill handle BEFORE handing the child off to the
+        // wait-thread mutex. The waiter parks on `wait()` while
+        // holding the mutex; without this, `kill()` would deadlock.
+        let killer = child.clone_killer();
         drop(pty_pair.slave);
 
         let master = pty_pair.master;
@@ -152,6 +164,7 @@ impl PtyHandle {
             master,
             writer,
             child: child.clone(),
+            killer: Mutex::new(killer),
             tx: tx.clone(),
         });
 
@@ -258,10 +271,12 @@ impl PtyHandle {
         self.write(b"\x03")
     }
 
-    /// Forcefully kills the child process.
+    /// Forcefully kills the child process. Signals via the separate
+    /// `ChildKiller` handle so we don't block on the waiter thread's
+    /// long-held lock on the child itself.
     pub fn kill(&self) -> Result<(), PtyError> {
-        let mut child = self.child.lock();
-        child.kill().map_err(|e| PtyError::Pty(e.to_string()))?;
+        let mut killer = self.killer.lock();
+        killer.kill().map_err(|e| PtyError::Pty(e.to_string()))?;
         Ok(())
     }
 }

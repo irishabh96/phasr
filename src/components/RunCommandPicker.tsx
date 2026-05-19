@@ -1,5 +1,6 @@
 import { ChevronDown, Play } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { GlassButton } from "@/components/ui/GlassButton";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useUiStore } from "@/lib/store";
 
@@ -7,12 +8,6 @@ interface RunCommandPickerProps {
   repositoryId: string;
 }
 
-/**
- * "Run ▾" dropdown that lists every run command defined for the
- * repository and opens the picked one in the docked terminal pane.
- * Designed to sit alongside <OpenInMenu> in any header that has
- * `repositoryId` in scope (repository view, workspace detail).
- */
 export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
   const { data: runCommands } = useRunCommands(repositoryId);
   const runPanel = useUiStore((s) => s.runPanel);
@@ -47,29 +42,29 @@ export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
 
   return (
     <div ref={containerRef} className="relative">
-      <button
-        type="button"
+      <GlassButton
+        variant="ghost"
+        size="sm"
         onClick={() => setOpen((v) => !v)}
         title="Run a repository command"
-        className="flex items-center gap-1 rounded-md border border-(--color-border-default) bg-(--color-bg-input) px-2.5 py-1 text-xs text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
       >
-        <Play size={11} fill="currentColor" />
+        <Play size={10} fill="currentColor" />
         Run
-        <ChevronDown size={11} />
-      </button>
+        <ChevronDown size={11} className="opacity-60" />
+      </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 min-w-44 overflow-hidden rounded-md border border-(--color-border-default) bg-(--color-bg-elevated) shadow-lg">
-          <ul className="py-1">
+        <div className="absolute right-0 top-full z-50 mt-1.5 min-w-52 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
+          <ul className="p-1">
             {runCommands.map((rc) => (
               <li key={rc.id}>
                 <button
                   type="button"
                   onClick={() => handlePick(rc.id)}
-                  className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-base)"
+                  className="flex w-full items-center justify-between gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-[color-mix(in_oklab,white_6%,transparent)]"
                 >
-                  <span className="truncate">{rc.name}</span>
-                  <code className="truncate text-(--color-text-muted)">
+                  <span className="truncate leading-none">{rc.name}</span>
+                  <code className="truncate text-[11px] text-(--color-text-muted)">
                     {rc.command}
                   </code>
                 </button>

@@ -65,3 +65,44 @@ export function useDeleteRepository() {
     },
   });
 }
+
+export function useGitInitRepository() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // Mirrors as an updateRepository so the cloud sees the new
+    // default_branch — same key as a manual edit.
+    mutationKey: ["mirror", "updateRepository", "init"] as const,
+    mutationFn: (id: string) => tauri.gitInitRepository(id),
+    onSuccess: (repository: Repository) => {
+      queryClient.invalidateQueries({ queryKey: repositoryKeys.list() });
+      queryClient.setQueryData(repositoryKeys.detail(repository.id), repository);
+    },
+  });
+}
+
+export function useDefaultProjectsDir() {
+  return useQuery({
+    queryKey: ["defaultProjectsDir"],
+    queryFn: () => tauri.defaultProjectsDir(),
+    staleTime: Infinity,
+  });
+}
+
+export function useGitCloneRepository() {
+  return useMutation({
+    mutationFn: ({ url, destinationPath }: { url: string; destinationPath: string }) =>
+      tauri.gitCloneRepository(url, destinationPath),
+  });
+}
+
+export function useGitInitFromTemplate() {
+  return useMutation({
+    mutationFn: ({
+      templateGitUrl,
+      destinationPath,
+    }: {
+      templateGitUrl: string;
+      destinationPath: string;
+    }) => tauri.gitInitFromTemplate(templateGitUrl, destinationPath),
+  });
+}

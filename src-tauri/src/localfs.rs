@@ -72,6 +72,27 @@ pub fn validate_workspace_path(path: String) -> PathValidation {
     validate(&path)
 }
 
+/// Returns the default folder where Phasr creates new projects.
+/// `<home>/PhasrProjects`. Doesn't create the directory; that happens on
+/// first project creation via `ensure_dir`.
+#[tauri::command]
+pub fn default_projects_dir() -> Result<String, String> {
+    home_dir()
+        .map(|h| h.join("PhasrProjects").to_string_lossy().into_owned())
+        .ok_or_else(|| "could not resolve home directory".into())
+}
+
+/// `mkdir -p` for an arbitrary path. Returns the canonical absolute path
+/// on success. Used by the new-project wizard before invoking `git init`
+/// / `git clone`.
+#[tauri::command]
+pub fn ensure_dir(path: String) -> Result<String, String> {
+    let expanded = expand_tilde(&path);
+    std::fs::create_dir_all(&expanded).map_err(|e| e.to_string())?;
+    let canonical = std::fs::canonicalize(&expanded).map_err(|e| e.to_string())?;
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

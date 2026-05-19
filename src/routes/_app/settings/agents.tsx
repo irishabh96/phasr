@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Check, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import { useState } from "react";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { GlassInput } from "@/components/ui/GlassInput";
+import { GlassPanel } from "@/components/ui/GlassPanel";
 import {
   useAgents,
   useCreateCustomAgent,
@@ -9,6 +12,7 @@ import {
   useSetAgentDefault,
   useSetAgentEnabled,
 } from "@/lib/hooks/useAgents";
+import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/types";
 
 function AgentsPage() {
@@ -56,21 +60,20 @@ function AgentsPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <header>
-        <h2 className="text-base font-semibold tracking-tight">Agents</h2>
-        <p className="mt-1 text-xs text-(--color-text-muted)">
-          Toggle which AI tools appear in the "New workspace" form. Click
-          ✎ to change the launch command, ⭐ to set as default, or add a
-          custom agent of your own.
+        <h2 className="text-[15px] font-semibold tracking-tight leading-none">Agents</h2>
+        <p className="mt-1.5 text-[12px] text-(--color-text-muted)">
+          Toggle which AI tools appear in the "New workspace" form. Edit the launch command, set
+          a default, or add a custom agent.
         </p>
       </header>
 
       <section className="space-y-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-(--color-text-muted)">
+        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
           Built-in
         </div>
-        <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface)">
+        <GlassPanel className="divide-y divide-(--glass-border-hairline) overflow-hidden">
           {seeds.map((agent) => (
             <AgentRow
               key={agent.id}
@@ -81,79 +84,69 @@ function AgentsPage() {
               onStartEdit={() => startEdit(agent)}
               onCancelEdit={cancelEdit}
               onSaveEdit={() => saveEdit(agent.id)}
-              onToggle={(enabled) =>
-                setEnabled.mutate({ id: agent.id, enabled })
-              }
+              onToggle={(enabled) => setEnabled.mutate({ id: agent.id, enabled })}
               onSetDefault={() => setDefault.mutate(agent.id)}
             />
           ))}
-        </ul>
+        </GlassPanel>
       </section>
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <div className="text-xs font-medium uppercase tracking-wide text-(--color-text-muted)">
-            Custom ({customs.length})
+          <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
+            Custom <span className="text-(--color-text-secondary)">{customs.length}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowAdd((v) => !v)}
-            className="flex items-center gap-1 rounded-md border border-(--color-border-default) px-2 py-1 text-xs hover:border-(--color-border-strong)"
-          >
-            <Plus size={12} />
-            Add custom agent
-          </button>
+          <GlassButton variant="outline" size="sm" onClick={() => setShowAdd((v) => !v)}>
+            <Plus size={11} />
+            Add agent
+          </GlassButton>
         </div>
 
         {showAdd && (
-          <form
-            onSubmit={handleAdd}
-            className="space-y-2 rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-3"
-          >
-            <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Display name (e.g. My GPT-4)"
-              className="w-full"
-              autoFocus
-            />
-            <input
-              value={newCommand}
-              onChange={(e) => setNewCommand(e.target.value)}
-              placeholder="Command (e.g. chat-cli -m gpt-4)"
-              className="w-full font-mono text-xs"
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAdd(false);
-                  setNewName("");
-                  setNewCommand("");
-                }}
-                className="rounded-md border border-(--color-border-default) px-2 py-1 text-xs hover:border-(--color-border-strong)"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={
-                  createCustom.isPending || !newName.trim() || !newCommand.trim()
-                }
-                className="rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-2 py-1 text-xs text-white hover:bg-(--color-accent-500) disabled:opacity-50"
-              >
-                {createCustom.isPending ? "Adding…" : "Add"}
-              </button>
-            </div>
-          </form>
+          <GlassPanel className="p-4">
+            <form onSubmit={handleAdd} className="space-y-2.5">
+              <GlassInput
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Display name (e.g. My GPT-4)"
+                autoFocus
+              />
+              <GlassInput
+                value={newCommand}
+                onChange={(e) => setNewCommand(e.target.value)}
+                placeholder="Command (e.g. chat-cli -m gpt-4)"
+                className="font-mono"
+              />
+              <div className="flex justify-end gap-2">
+                <GlassButton
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  onClick={() => {
+                    setShowAdd(false);
+                    setNewName("");
+                    setNewCommand("");
+                  }}
+                >
+                  Cancel
+                </GlassButton>
+                <GlassButton
+                  variant="primary"
+                  size="sm"
+                  type="submit"
+                  disabled={createCustom.isPending || !newName.trim() || !newCommand.trim()}
+                >
+                  {createCustom.isPending ? "Adding…" : "Add"}
+                </GlassButton>
+              </div>
+            </form>
+          </GlassPanel>
         )}
 
         {customs.length === 0 && !showAdd ? (
-          <p className="text-xs text-(--color-text-muted)">
-            No custom agents yet.
-          </p>
+          <p className="text-[12px] text-(--color-text-muted)">No custom agents yet.</p>
         ) : customs.length > 0 ? (
-          <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface)">
+          <GlassPanel className="divide-y divide-(--glass-border-hairline) overflow-hidden">
             {customs.map((agent) => (
               <AgentRow
                 key={agent.id}
@@ -164,9 +157,7 @@ function AgentsPage() {
                 onStartEdit={() => startEdit(agent)}
                 onCancelEdit={cancelEdit}
                 onSaveEdit={() => saveEdit(agent.id)}
-                onToggle={(enabled) =>
-                  setEnabled.mutate({ id: agent.id, enabled })
-                }
+                onToggle={(enabled) => setEnabled.mutate({ id: agent.id, enabled })}
                 onSetDefault={() => setDefault.mutate(agent.id)}
                 onDelete={() => {
                   if (window.confirm(`Delete agent "${agent.name}"?`)) {
@@ -175,7 +166,7 @@ function AgentsPage() {
                 }}
               />
             ))}
-          </ul>
+          </GlassPanel>
         ) : null}
       </section>
     </div>
@@ -208,116 +199,96 @@ function AgentRow({
   onDelete,
 }: AgentRowProps) {
   return (
-    <li className="px-4 py-3">
-      <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="font-medium">{agent.name}</span>
-            {agent.isDefault && (
-              <span className="flex items-center gap-1 rounded bg-(--color-accent-600)/15 px-1.5 text-[10px] uppercase tracking-wide text-(--color-accent-400)">
-                <Star size={9} fill="currentColor" />
-                default
-              </span>
-            )}
-          </div>
-          {isEditing ? (
-            <input
-              autoFocus
-              value={editedCommand}
-              onChange={(e) => onEditedCommandChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") onSaveEdit();
-                if (e.key === "Escape") onCancelEdit();
-              }}
-              className="mt-1 w-full font-mono text-xs"
-            />
-          ) : (
-            <code className="mt-0.5 block truncate text-xs text-(--color-text-muted)">
-              {agent.command}
-            </code>
+    <div className="group/agent flex items-center gap-3 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-medium leading-none">{agent.name}</span>
+          {agent.isDefault && (
+            <span className="flex items-center gap-1 rounded-full bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-(--color-accent-400)">
+              <Star size={9} fill="currentColor" />
+              default
+            </span>
           )}
         </div>
-
-        <div className="flex shrink-0 items-center gap-1">
-          {isEditing ? (
-            <>
-              <button
-                type="button"
-                onClick={onSaveEdit}
-                title="Save"
-                className="rounded-md border border-(--color-accent-600) bg-(--color-accent-600) p-1 text-white hover:bg-(--color-accent-500)"
-              >
-                <Check size={12} />
-              </button>
-              <button
-                type="button"
-                onClick={onCancelEdit}
-                title="Cancel"
-                className="rounded-md border border-(--color-border-default) p-1 text-(--color-text-secondary) hover:border-(--color-border-strong)"
-              >
-                <X size={12} />
-              </button>
-            </>
-          ) : (
-            <>
-              {!agent.isDefault && (
-                <button
-                  type="button"
-                  onClick={onSetDefault}
-                  title="Set as default"
-                  className="rounded-md border border-(--color-border-default) p-1 text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
-                >
-                  <Star size={12} />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onStartEdit}
-                title="Edit command"
-                className="rounded-md border border-(--color-border-default) p-1 text-(--color-text-secondary) hover:border-(--color-border-strong) hover:text-(--color-text-primary)"
-              >
-                <Pencil size={12} />
-              </button>
-              {onDelete && (
-                <button
-                  type="button"
-                  onClick={onDelete}
-                  title="Delete agent"
-                  className="rounded-md border border-(--color-border-default) p-1 text-(--color-text-secondary) hover:border-(--color-danger) hover:text-(--color-danger)"
-                >
-                  <Trash2 size={12} />
-                </button>
-              )}
-              <Toggle checked={agent.isEnabled} onChange={onToggle} />
-            </>
-          )}
-        </div>
+        {isEditing ? (
+          <GlassInput
+            autoFocus
+            value={editedCommand}
+            onChange={(e) => onEditedCommandChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onSaveEdit();
+              if (e.key === "Escape") onCancelEdit();
+            }}
+            className="mt-2 font-mono text-[11.5px]"
+          />
+        ) : (
+          <code className="mt-1.5 block truncate text-[11.5px] text-(--color-text-muted)">
+            {agent.command}
+          </code>
+        )}
       </div>
-    </li>
+
+      <div className="flex shrink-0 items-center gap-1">
+        {isEditing ? (
+          <>
+            <GlassButton variant="primary" size="sm" onClick={onSaveEdit} title="Save">
+              <Check size={11} />
+            </GlassButton>
+            <GlassButton variant="ghost" size="sm" onClick={onCancelEdit} title="Cancel">
+              <X size={11} />
+            </GlassButton>
+          </>
+        ) : (
+          <>
+            {!agent.isDefault && (
+              <GlassButton variant="ghost" size="icon" onClick={onSetDefault} title="Set as default">
+                <Star size={12} />
+              </GlassButton>
+            )}
+            <GlassButton variant="ghost" size="icon" onClick={onStartEdit} title="Edit command">
+              <Pencil size={12} />
+            </GlassButton>
+            {onDelete && (
+              <GlassButton
+                variant="ghost"
+                size="icon"
+                onClick={onDelete}
+                title="Delete agent"
+                className="text-(--color-text-muted) hover:text-(--color-danger)"
+              >
+                <Trash2 size={12} />
+              </GlassButton>
+            )}
+            <Toggle checked={agent.isEnabled} onChange={onToggle} />
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
-function Toggle({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange(next: boolean): void;
-}) {
+function Toggle({ checked, onChange }: { checked: boolean; onChange(next: boolean): void }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="relative ml-1 inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
-      style={{
-        background: checked ? "var(--color-accent-600)" : "var(--color-bg-elevated)",
-      }}
+      className={cn(
+        "relative ml-1 inline-flex h-[18px] w-8 shrink-0 items-center rounded-full",
+        "transition-colors duration-150",
+        "border border-(--glass-border-hairline)",
+        checked
+          ? "bg-(--color-accent-500) shadow-[inset_0_1px_0_0_color-mix(in_oklab,white_20%,transparent)]"
+          : "bg-[color-mix(in_oklab,white_4%,transparent)]",
+      )}
     >
       <span
-        className="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
-        style={{ transform: checked ? "translateX(18px)" : "translateX(2px)" }}
+        className={cn(
+          "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-md",
+          "transition-transform duration-150",
+        )}
+        style={{ transform: checked ? "translateX(14px)" : "translateX(2px)" }}
       />
     </button>
   );
