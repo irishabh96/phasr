@@ -13,12 +13,44 @@ export function useAgents() {
 }
 
 export function useSetAgentEnabled() {
-  const queryClient = useQueryClient();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       tauri.setAgentEnabled(id, enabled),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: agentKeys.all });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
+  });
+}
+
+export function useSetAgentCommand() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, command }: { id: string; command: string }) =>
+      tauri.setAgentCommand(id, command),
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
+  });
+}
+
+export function useSetAgentDefault() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => tauri.setAgentDefault(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
+  });
+}
+
+export function useCreateCustomAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; command: string }) =>
+      tauri.createCustomAgent(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
+  });
+}
+
+export function useDeleteAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => tauri.deleteAgent(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
   });
 }

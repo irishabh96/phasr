@@ -7,16 +7,18 @@ import {
   deleteWorkspaceFromCloud,
   pullCustomAgents,
   pullRepositories,
+  pullUserSettings,
   pullWorkspaces,
   pushCustomAgents,
   pushMissingRepositories,
   pushMissingWorkspaces,
   pushRepository,
+  pushUserSettings,
   pushWorkspace,
 } from "@/lib/cloud";
 import { createPhasrSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { tauri } from "@/lib/tauri";
-import type { Repository, Workspace } from "@/lib/types";
+import type { Repository, UserSettings, Workspace } from "@/lib/types";
 
 const DEBUG = true;
 const log = (...args: unknown[]) => {
@@ -60,6 +62,9 @@ export function useCloudSync() {
         if (cancelled) return;
         log("bootstrap: pushing custom agents");
         await pushCustomAgents(supabase, userId);
+        if (cancelled) return;
+        log("bootstrap: syncing user settings");
+        await pullUserSettings(supabase);
         if (cancelled) return;
         log("bootstrap: pushing local-only repositories");
         await pushMissingRepositories(supabase, userId, cloudRepoIds);
@@ -183,6 +188,15 @@ export function useCloudSync() {
           queryClient.invalidateQueries({ queryKey: ["workspaces"] });
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "user_settings", filter: `user_id=eq.${userId}` },
+        async () => {
+          log("realtime user_settings");
+          await pullUserSettings(supabase).catch(() => {});
+          queryClient.invalidateQueries({ queryKey: ["userSettings"] });
+        },
+      )
       .subscribe((status) => log("realtime channel status", status));
 
     // Set the initial token, then refresh ahead of expiry.
@@ -229,6 +243,10 @@ const HANDLERS: Record<string, MirrorHandler> = {
     if (!variables || typeof variables !== "object" || !("id" in variables)) return;
     const id = (variables as { id: string }).id;
     await deleteWorkspaceFromCloud(sb, id);
+  },
+  updateUserSettings: async (sb, userId, data) => {
+    if (!data) return;
+    await pushUserSettings(sb, userId, data as UserSettings);
   },
 };
 

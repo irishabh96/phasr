@@ -11,3 +11,4 @@ export {
   pushWorkspace,
 } from "./workspaces";
 export { pullCustomAgents, pushCustomAgents } from "./agents";
+export { pullUserSettings, pushUserSettings } from "./settings";

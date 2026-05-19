@@ -73,6 +73,58 @@ impl AgentRepo {
         Ok(())
     }
 
+    /// Set the command of a seed agent (creates a per-install override
+    /// row tied to the deterministic seed UUID) or a custom agent.
+    pub async fn set_command(&self, id: &str, command: &str) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            "UPDATE agents SET command = ?, updated_at = ?, dirty = 1 WHERE id = ?",
+        )
+        .bind(command)
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Mark exactly one agent as the default; clear the flag everywhere
+    /// else in one transaction so the invariant always holds.
+    pub async fn set_default(&self, id: &str) -> Result<(), StoreError> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.db.begin().await?;
+        sqlx::query("UPDATE agents SET is_default = 0, updated_at = ?, dirty = 1")
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        let res = sqlx::query(
+            "UPDATE agents SET is_default = 1, updated_at = ?, dirty = 1 WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if res.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Err(StoreError::NotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
+        let res = sqlx::query("DELETE FROM agents WHERE id = ?")
+            .bind(id)
+            .execute(&self.db)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
     /// Returns user-defined custom agents only.
     pub async fn list_custom(&self) -> Result<Vec<Agent>, StoreError> {
         let rows = sqlx::query(
@@ -81,6 +133,19 @@ impl AgentRepo {
              FROM agents
              WHERE is_seed = 0
              ORDER BY sort_order ASC, name ASC",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_agent).collect()
+    }
+
+    /// Returns every agent row (seeds + customs) ordered for display.
+    pub async fn list_all(&self) -> Result<Vec<Agent>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, name, command, icon, is_default, is_enabled, is_seed, sort_order,
+                    created_at, updated_at
+             FROM agents
+             ORDER BY is_seed DESC, sort_order ASC, name ASC",
         )
         .fetch_all(&self.db)
         .await?;

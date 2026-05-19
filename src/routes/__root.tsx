@@ -1,11 +1,13 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { applyTheme } from "@/lib/theme";
 
 function RootLayout() {
   const theme = useUiStore((state) => state.theme);
+  const { data: settings } = useUserSettings();
 
   useEffect(() => {
     applyTheme(theme);
@@ -18,6 +20,17 @@ function RootLayout() {
     media.addEventListener("change", listener);
     return () => media.removeEventListener("change", listener);
   }, [theme]);
+
+  // Live-apply the user's accent choice. Removing the attribute when
+  // it's the default (`indigo`) keeps the DOM clean.
+  useEffect(() => {
+    const accent = settings?.accentColor;
+    if (!accent || accent === "indigo") {
+      document.documentElement.removeAttribute("data-accent");
+    } else {
+      document.documentElement.setAttribute("data-accent", accent);
+    }
+  }, [settings?.accentColor]);
 
   return (
     <>
