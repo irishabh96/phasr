@@ -11,7 +11,7 @@ interface AccentChoice {
 }
 
 const ACCENTS: AccentChoice[] = [
-  { id: "indigo", swatch: "#6366f1" },
+  { id: "coral", swatch: "#f78166" },
   { id: "blue", swatch: "#3b82f6" },
   { id: "violet", swatch: "#8b5cf6" },
   { id: "fuchsia", swatch: "#d946ef" },
@@ -28,7 +28,7 @@ function AppearancePage() {
   const updateSettings = useUpdateUserSettings();
   const { theme, setTheme } = useUiStore();
 
-  const accent = settings?.accentColor ?? "indigo";
+  const accent = settings?.accentColor ?? "coral";
 
   const setAccent = (id: string) => {
     if (!settings) return;
@@ -115,8 +115,8 @@ function AppearancePage() {
 }
 
 function ThemePreview({ option }: { option: Theme }) {
-  const bg = option === "light" ? "#fafafb" : option === "system" ? "linear-gradient(135deg, #0a0a0b 50%, #fafafb 50%)" : "#0a0a0b";
-  const fg = option === "light" ? "#0a0a0b" : "#e8e8ec";
+  const bg = option === "light" ? "#fafafb" : option === "system" ? "linear-gradient(135deg, #010409 50%, #fafafb 50%)" : "#010409";
+  const fg = option === "light" ? "#010409" : "#e6edf3";
   return (
     <div
       aria-hidden

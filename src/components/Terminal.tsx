@@ -41,11 +41,20 @@ export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
     const fitNow = () => {
       try {
         fit.fit();
+        // Force WebGL renderer to repaint immediately at the new dimensions.
+        // Without this, the canvas keeps its old pixel size for ~1 frame
+        // after resize, and the wrapper's overflow-hidden clips text near
+        // the right edge — visible as "text hiding" when sidebars open.
+        if (term.rows > 0) term.refresh(0, term.rows - 1);
       } catch {
         /* layout still settling */
       }
     };
-    requestAnimationFrame(fitNow);
+    // Fit synchronously so term.rows/term.cols reflect the real container
+    // size before startWorkspace reads them. Otherwise the PTY spawns at
+    // xterm's default 24x80 and TUIs (Codex, Claude CLI) lay out for that
+    // size — leaving the rest of the visible area unused.
+    fitNow();
     term.focus();
 
     const resizeObserver = new ResizeObserver(fitNow);
@@ -129,11 +138,11 @@ export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
         const buf = containerRef.current?.querySelector("textarea");
         (buf as HTMLTextAreaElement | null)?.focus();
       }}
-      className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-input)"
+      className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
       style={{
         paddingTop: 10,
         paddingRight: 8,
-        paddingBottom: 16,
+        paddingBottom: 2,
         paddingLeft: 16,
       }}
     >
@@ -144,18 +153,37 @@ export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
 
 function createTerminal() {
   const computed = getComputedStyle(document.documentElement);
+  const css = (name: string, fallback: string) =>
+    computed.getPropertyValue(name).trim() || fallback;
   return new XtermTerminal({
-    fontFamily: computed.getPropertyValue("--font-mono").trim() || "JetBrains Mono",
+    fontFamily: css("--font-mono", "ui-monospace, Menlo, monospace"),
     fontSize: 13,
+    lineHeight: 1.0,
     cursorBlink: true,
     convertEol: true,
     allowProposedApi: true,
     scrollback: 10000,
     theme: {
-      background: computed.getPropertyValue("--color-bg-input").trim() || "#0e0e11",
-      foreground: computed.getPropertyValue("--color-text-primary").trim() || "#e8e8ec",
-      cursor: computed.getPropertyValue("--color-accent-500").trim() || "#6366f1",
-      selectionBackground: "#3a3a45",
+      background: css("--color-bg-terminal", "#000000"),
+      foreground: css("--color-text-primary", "#e6edf3"),
+      cursor: css("--color-accent-500", "#f78166"),
+      selectionBackground: "rgba(247,129,102,0.28)",
+      black: css("--ansi-black", "#484f58"),
+      red: css("--ansi-red", "#ff7b72"),
+      green: css("--ansi-green", "#3fb950"),
+      yellow: css("--ansi-yellow", "#d29922"),
+      blue: css("--ansi-blue", "#58a6ff"),
+      magenta: css("--ansi-magenta", "#bc8cff"),
+      cyan: css("--ansi-cyan", "#39c5cf"),
+      white: css("--ansi-white", "#b1bac4"),
+      brightBlack: css("--ansi-bright-black", "#6e7681"),
+      brightRed: css("--ansi-bright-red", "#ffa198"),
+      brightGreen: css("--ansi-bright-green", "#56d364"),
+      brightYellow: css("--ansi-bright-yellow", "#e3b341"),
+      brightBlue: css("--ansi-bright-blue", "#79c0ff"),
+      brightMagenta: css("--ansi-bright-magenta", "#d2a8ff"),
+      brightCyan: css("--ansi-bright-cyan", "#56d4dd"),
+      brightWhite: css("--ansi-bright-white", "#ffffff"),
     },
   });
 }

@@ -3,40 +3,74 @@
 /* ---------- Design tokens (from the rebuild plan: Theming) ---------- */
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
 
-  --color-bg-base: #0a0a0b;
-  --color-bg-surface: #111114;
-  --color-bg-elevated: #1a1a1f;
-  --color-bg-input: #0e0e11;
+  /* Phasr Dark — GitHub-Dark-inspired surfaces */
+  --color-bg-base: #010409;
+  --color-bg-surface: #0d1117;
+  --color-bg-elevated: #161b22;
+  --color-bg-input: #010409;
+  --color-bg-sidebar: #0b0f14;
+  --color-bg-terminal: #000000;
+  --color-bg-tooltip: #1b212c;
+  --color-bg-dropdown: #161b22;
 
-  --color-border-subtle: #1f1f25;
-  --color-border-default: #2a2a33;
-  --color-border-strong: #3a3a45;
+  --color-border-subtle: #21262d;
+  --color-border-default: #30363d;
+  --color-border-strong: #484f58;
 
-  --color-text-primary: #e8e8ec;
-  --color-text-secondary: #a0a0ab;
-  --color-text-muted: #6b6b76;
+  --color-text-primary: #e6edf3;
+  --color-text-secondary: #b1bac4;
+  --color-text-muted: #6e7681;
+  --color-text-inverse: #010409;
 
-  /* Accent palette (default = indigo). Swapped at runtime via
-     `data-accent` on <html>, see overrides below. */
-  --color-accent-50: #eef2ff;
-  --color-accent-100: #e0e7ff;
-  --color-accent-200: #c7d2fe;
-  --color-accent-300: #a5b4fc;
-  --color-accent-400: #818cf8;
-  --color-accent-500: #6366f1;
-  --color-accent-600: #4f46e5;
-  --color-accent-700: #4338ca;
-  --color-accent-800: #3730a3;
-  --color-accent-900: #312e81;
-  --color-accent-950: #1e1b4b;
+  /* Accent palette (default = coral, Phasr identity). 50–950 scale is
+     derived around the spec's #F78166 so existing `accent-500` callers
+     keep working. Swapped at runtime via `data-accent` on <html>, see
+     overrides below. */
+  --color-accent-50: #fff1ec;
+  --color-accent-100: #ffe0d5;
+  --color-accent-200: #ffc4ae;
+  --color-accent-300: #ffa88a;
+  --color-accent-400: #ff9b85;
+  --color-accent-500: #f78166;
+  --color-accent-600: #ff6a4d;
+  --color-accent-700: #d4583a;
+  --color-accent-800: #a8442c;
+  --color-accent-900: #7a3220;
+  --color-accent-950: #3e1810;
 
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-danger: #ef4444;
-  --color-info: #3b82f6;
+  --color-accent-primary: var(--color-accent-500);
+  --color-accent-hover: var(--color-accent-400);
+  --color-accent-active: var(--color-accent-600);
+
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-danger: #ff7b72;
+  --color-info: #58a6ff;
+  --color-purple: #bc8cff;
+  --color-cyan: #39c5cf;
+
+  /* ANSI palette — consumed by xterm wiring in Terminal components */
+  --ansi-black: #484f58;
+  --ansi-red: #ff7b72;
+  --ansi-green: #3fb950;
+  --ansi-yellow: #d29922;
+  --ansi-blue: #58a6ff;
+  --ansi-magenta: #bc8cff;
+  --ansi-cyan: #39c5cf;
+  --ansi-white: #b1bac4;
+  --ansi-bright-black: #6e7681;
+  --ansi-bright-red: #ffa198;
+  --ansi-bright-green: #56d364;
+  --ansi-bright-yellow: #e3b341;
+  --ansi-bright-blue: #79c0ff;
+  --ansi-bright-magenta: #d2a8ff;
+  --ansi-bright-cyan: #56d4dd;
+  --ansi-bright-white: #ffffff;
 
   /* Glass material tokens. Derived from the base palette via color-mix so
      accent and theme swaps recolor every glass surface automatically. */
@@ -53,13 +87,23 @@
   --blur-modal: 40px;
 
   --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
-  --shadow-modal: 0 20px 60px -10px rgba(0, 0, 0, 0.7);
+  --shadow-modal: 0 24px 80px rgba(0, 0, 0, 0.45);
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.18);
+  --shadow-tooltip: 0 12px 30px rgba(0, 0, 0, 0.35);
+  --shadow-button-primary: 0 8px 24px rgba(247, 129, 102, 0.18);
+  --shadow-button-primary-hover: 0 12px 30px rgba(247, 129, 102, 0.28);
   --shadow-glow: 0 0 24px -6px color-mix(in oklab, var(--color-accent-500) 50%, transparent);
   --shadow-glow-danger: 0 0 24px -6px color-mix(in oklab, var(--color-danger) 50%, transparent);
 
+  --radius-sm: 6px;
   --radius-control: 10px;
   --radius-panel: 14px;
   --radius-modal: 18px;
+  --radius-full: 999px;
+
+  --layout-sidebar-width: 260px;
+  --layout-header-height: 40px;
+  --layout-toolbar-height: 52px;
 
   --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-glass: 180ms;
@@ -307,4 +351,20 @@ select:focus {
     opacity: 1;
     transform: scale(1);
   }
+}
+
+/* ---------- xterm.js scrollbar ----------
+   xterm.css sets `overflow-y: scroll` on .xterm-viewport. On WKWebView
+   (Tauri on macOS) the native scrollbar ignores width/appearance overrides
+   and stays visible at system size. Hide it — xterm.js handles scroll via
+   mouse wheel, trackpad, and Shift+PgUp/PgDn just fine without a bar. */
+
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
