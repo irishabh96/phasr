@@ -1,10 +1,14 @@
 import { useAuth, UserButton } from "@clerk/react";
 import { Outlet, Navigate, createFileRoute } from "@tanstack/react-router";
+import { useCloudSync } from "@/lib/hooks/useCloudSync";
+import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
 import { useRustSession } from "@/lib/use-rust-session";
 
 function AppLayout() {
   const { isLoaded, isSignedIn } = useAuth();
   useRustSession();
+  useCloudSync();
+  useTaskEvents();
 
   if (!isLoaded) {
     return (

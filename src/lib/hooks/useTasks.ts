@@ -8,6 +8,12 @@ const taskKeys = {
   detail: (id: string) => [...taskKeys.all, "detail", id] as const,
 };
 
+export const taskMutationKeys = {
+  create: ["mirror", "createTask"] as const,
+  update: (id: string) => ["mirror", "updateTask", id] as const,
+  delete: ["mirror", "deleteTask"] as const,
+};
+
 export function useTasks(workspaceId: string | null | undefined) {
   return useQuery({
     queryKey: taskKeys.byWorkspace(workspaceId ?? ""),
@@ -21,20 +27,15 @@ export function useTask(id: string | null | undefined) {
     queryKey: taskKeys.detail(id ?? ""),
     queryFn: () => tauri.getTask(id ?? ""),
     enabled: !!id,
-    // Poll while the task is in flight so status badges reflect reality
-    // even before the PTY exits.
-    refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      if (!status) return 1500;
-      const settled = status === "completed" || status === "failed" || status === "archived";
-      return settled ? false : 1500;
-    },
+    // No polling: Rust emits `phasr://task-status` whenever a task row
+    // transitions, and `useTaskEvents` invalidates this query.
   });
 }
 
 export function useCreateTask() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: taskMutationKeys.create,
     mutationFn: tauri.createTask,
     onSuccess: (task: Task) => {
       queryClient.invalidateQueries({ queryKey: taskKeys.byWorkspace(task.workspaceId) });
@@ -46,6 +47,7 @@ export function useCreateTask() {
 export function useUpdateTask(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: taskMutationKeys.update(id),
     mutationFn: (input: Parameters<typeof tauri.updateTask>[1]) => tauri.updateTask(id, input),
     onSuccess: (task: Task) => {
       queryClient.invalidateQueries({ queryKey: taskKeys.byWorkspace(task.workspaceId) });
@@ -57,6 +59,7 @@ export function useUpdateTask(id: string) {
 export function useDeleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: taskMutationKeys.delete,
     mutationFn: ({ id }: { id: string; workspaceId: string }) => tauri.deleteTask(id),
     onSuccess: (_v, { id, workspaceId }) => {
       queryClient.invalidateQueries({ queryKey: taskKeys.byWorkspace(workspaceId) });

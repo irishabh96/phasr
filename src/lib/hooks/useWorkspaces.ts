@@ -8,6 +8,17 @@ const workspaceKeys = {
   detail: (id: string) => [...workspaceKeys.all, "detail", id] as const,
 };
 
+/**
+ * Mutation keys used by the cloud-sync layer to dispatch mirroring.
+ * Adding/removing items here must stay in lockstep with
+ * `src/lib/hooks/useCloudSync.ts` HANDLERS.
+ */
+export const workspaceMutationKeys = {
+  create: ["mirror", "createWorkspace"] as const,
+  update: (id: string) => ["mirror", "updateWorkspace", id] as const,
+  delete: (id: string) => ["mirror", "deleteWorkspace", id] as const,
+};
+
 export function useWorkspaces() {
   return useQuery({
     queryKey: workspaceKeys.list(),
@@ -26,6 +37,7 @@ export function useWorkspace(id: string | null | undefined) {
 export function useCreateWorkspace() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: workspaceMutationKeys.create,
     mutationFn: tauri.createWorkspace,
     onSuccess: (workspace: Workspace) => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
@@ -37,6 +49,7 @@ export function useCreateWorkspace() {
 export function useUpdateWorkspace(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: workspaceMutationKeys.update(id),
     mutationFn: (input: Parameters<typeof tauri.updateWorkspace>[1]) =>
       tauri.updateWorkspace(id, input),
     onSuccess: (workspace: Workspace) => {
@@ -49,6 +62,7 @@ export function useUpdateWorkspace(id: string) {
 export function useDeleteWorkspace() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ["mirror", "deleteWorkspace"] as const,
     mutationFn: (id: string) => tauri.deleteWorkspace(id),
     onSuccess: (_v, id) => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });

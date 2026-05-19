@@ -9,11 +9,13 @@
 mod commit;
 mod diff;
 mod error;
+mod remote;
 mod status;
 mod worktree;
 
 pub use commit::{commit, discard, push, stage, unstage, CommitOutput};
 pub use diff::{diff, DiffScope};
 pub use error::GitError;
+pub use remote::get_remote_url;
 pub use status::{status, FileChange, FileStatus};
 pub use worktree::{create_worktree, list_worktrees, prune_worktrees, remove_worktree, WorktreeRef};

@@ -7,9 +7,23 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
+
+/// Tauri event name fired whenever a task row's status changes server-side
+/// (PTY exit, status transitions driven by start/stop). Frontend listens
+/// to this and invalidates its task queries.
+pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatusPayload {
+    pub task_id: String,
+    pub workspace_id: String,
+    pub status: String,
+    pub exit_code: Option<i64>,
+}
 
 use crate::domain::TaskStatus;
 use crate::pty::{PtyEvent, TaskRuntime};
@@ -52,6 +66,7 @@ pub async fn start_task(
     on_event: Channel<PtyEvent>,
     rows: Option<u16>,
     cols: Option<u16>,
+    app: AppHandle,
     tasks: State<'_, TaskRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     runtime: State<'_, Arc<TaskRuntime>>,
@@ -61,7 +76,7 @@ pub async fn start_task(
     // If already running, just subscribe.
     if let Some(handle) = runtime.get(&task_id) {
         let rx = handle.subscribe();
-        spawn_event_forwarder(rx, on_event, task_id.clone(), None, None);
+        spawn_event_forwarder(rx, on_event, task_id.clone(), None, None, None);
         return Ok(RunningTaskInfo {
             task_id,
             started_at: task.started_at.unwrap_or_else(Utc::now),
@@ -103,6 +118,17 @@ pub async fn start_task(
         )
         .await?;
 
+    // Notify the frontend that this task just transitioned to running.
+    let _ = app.emit(
+        TASK_STATUS_EVENT,
+        TaskStatusPayload {
+            task_id: task_id.clone(),
+            workspace_id: task.workspace_id.clone(),
+            status: "running".into(),
+            exit_code: None,
+        },
+    );
+
     let initial_command = if task.command.trim().is_empty() {
         None
     } else {
@@ -134,6 +160,7 @@ pub async fn start_task(
         task_id.clone(),
         Some(tasks.inner().clone()),
         Some(runtime.inner().clone()),
+        Some(app.clone()),
     );
 
     Ok(RunningTaskInfo {
@@ -153,6 +180,7 @@ fn spawn_event_forwarder(
     task_id: String,
     task_repo: Option<TaskRepo>,
     runtime: Option<Arc<TaskRuntime>>,
+    app: Option<AppHandle>,
 ) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -173,7 +201,7 @@ fn spawn_event_forwarder(
                             } else {
                                 TaskStatus::Failed
                             };
-                            let _ = repo
+                            let updated = repo
                                 .update(
                                     &task_id,
                                     TaskUpdate {
@@ -183,8 +211,21 @@ fn spawn_event_forwarder(
                                         ..Default::default()
                                     },
                                 )
-                                .await;
+                                .await
+                                .ok();
                             rt.drop_task(&task_id);
+
+                            if let (Some(app), Some(task)) = (app.as_ref(), updated) {
+                                let _ = app.emit(
+                                    TASK_STATUS_EVENT,
+                                    TaskStatusPayload {
+                                        task_id: task_id.clone(),
+                                        workspace_id: task.workspace_id,
+                                        status: next_status.as_str().into(),
+                                        exit_code,
+                                    },
+                                );
+                            }
                         }
                         break;
                     }

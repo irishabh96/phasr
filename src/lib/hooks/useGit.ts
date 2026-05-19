@@ -13,7 +13,10 @@ export function useGitStatus(taskId: string | null | undefined) {
     queryKey: gitKeys.status(taskId ?? ""),
     queryFn: () => tauri.gitStatus(taskId ?? ""),
     enabled: !!taskId,
-    refetchInterval: 2000,
+    // Conservative: status only changes when the agent (or user) writes,
+    // and we refresh manually after stage/unstage/discard/commit
+    // mutations via invalidate.
+    refetchInterval: 6000,
   });
 }
 

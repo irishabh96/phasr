@@ -46,7 +46,17 @@ pub async fn create_workspace(
         }
     }
 
-    let workspace = Workspace::new(input.name, input.local_path, input.remote_url);
+    // Auto-detect the origin URL from the local repo if the caller
+    // didn't provide one. Lets users add a workspace by path and have
+    // its cloud entry know enough to clone on another machine.
+    let resolved_remote_url = input.remote_url.or_else(|| {
+        input
+            .local_path
+            .as_deref()
+            .and_then(|p| crate::git::get_remote_url(std::path::Path::new(p)))
+    });
+
+    let workspace = Workspace::new(input.name, input.local_path, resolved_remote_url);
     repo.insert(&workspace).await?;
     Ok(workspace)
 }
