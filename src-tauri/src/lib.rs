@@ -1,5 +1,7 @@
 mod auth;
 mod commands;
+#[cfg(target_os = "macos")]
+mod dock_icon;
 mod domain;
 mod fswatch;
 mod git;
@@ -28,6 +30,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(session_state)
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            dock_icon::set_dock_icon();
+
             // Replace the default macOS menu so `⌘W` is no longer claimed
             // by `Window → Close Window`. JS handles ⌘W to close the
             // active in-app tab. Edit + App items keep their native

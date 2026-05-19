@@ -278,23 +278,67 @@ fn pump_pty_output(
     tx: broadcast::Sender<PtyEvent>,
 ) {
     let mut buf = [0u8; 4096];
+    // Holds the trailing bytes of an incomplete UTF-8 codepoint from the
+    // previous read. PTY reads can split a multi-byte codepoint (box-drawing
+    // chars used by TUIs are 3 bytes each) — decoding mid-codepoint
+    // produces `` and corrupts xterm.js's column tracking.
+    let mut pending: Vec<u8> = Vec::with_capacity(4);
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                if !pending.is_empty() {
+                    let chunk = String::from_utf8_lossy(&pending).into_owned();
+                    let _ = tx.send(PtyEvent::Output {
+                        task_id: task_id.clone(),
+                        chunk,
+                    });
+                    pending.clear();
+                }
+                break;
+            }
             Ok(n) => {
                 let slice = &buf[..n];
                 let _ = log_file.write_all(slice);
-                let chunk = String::from_utf8_lossy(slice).into_owned();
-                // If no subscribers, the send fails — that's fine, we still
-                // wrote to the log.
-                let _ = tx.send(PtyEvent::Output {
-                    task_id: task_id.clone(),
-                    chunk,
-                });
+
+                let combined: &[u8] = if pending.is_empty() {
+                    slice
+                } else {
+                    pending.extend_from_slice(slice);
+                    &pending[..]
+                };
+                let split = last_utf8_boundary(combined);
+                let chunk = String::from_utf8_lossy(&combined[..split]).into_owned();
+                let tail = combined[split..].to_vec();
+                pending = tail;
+
+                if !chunk.is_empty() {
+                    // If no subscribers, the send fails — that's fine, we still
+                    // wrote to the log.
+                    let _ = tx.send(PtyEvent::Output {
+                        task_id: task_id.clone(),
+                        chunk,
+                    });
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
+    }
+}
+
+/// Returns the byte index at which to split `bytes` so the prefix ends on a
+/// UTF-8 codepoint boundary (or contains only definitively invalid bytes that
+/// can't become valid with more data). The suffix is held for the next read.
+fn last_utf8_boundary(bytes: &[u8]) -> usize {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        Err(e) => match e.error_len() {
+            // Trailing bytes are incomplete — wait for more.
+            None => e.valid_up_to(),
+            // Definitively invalid bytes in the middle — emit everything lossy
+            // rather than hold garbage forever.
+            Some(_) => bytes.len(),
+        },
     }
 }
 

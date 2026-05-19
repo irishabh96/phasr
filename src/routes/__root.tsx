@@ -21,10 +21,10 @@ function RootLayout() {
   }, [theme]);
 
   // Live-apply the user's accent choice. Removing the attribute when
-  // it's the default (`indigo`) keeps the DOM clean.
+  // it's the default (`coral`) keeps the DOM clean.
   useEffect(() => {
     const accent = settings?.accentColor;
-    if (!accent || accent === "indigo") {
+    if (!accent || accent === "coral") {
       document.documentElement.removeAttribute("data-accent");
     } else {
       document.documentElement.setAttribute("data-accent", accent);

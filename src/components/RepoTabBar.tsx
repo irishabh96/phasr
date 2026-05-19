@@ -18,7 +18,7 @@ export function RepoTabBar({ repositoryId }: RepoTabBarProps) {
   if (tabs.length === 0) return null;
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-(--glass-border-hairline) px-2">
+    <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-(--color-border-subtle) bg-(--color-bg-base) p-1">
       {tabs.map((tab) => (
         <TabPill
           key={tab.id}
@@ -51,12 +51,12 @@ function TabPill({
   return (
     <div
       className={cn(
-        "group/tab flex h-7 shrink-0 items-center gap-1.5 rounded-full pl-2.5 pr-1",
-        "text-[12px] leading-none",
+        "group/tab flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] pl-3.5 pr-1.5",
+        "text-[13px] font-medium leading-none",
         "transition-colors duration-150",
         active
-          ? "bg-[color-mix(in_oklab,var(--color-accent-500)_18%,transparent)] text-(--color-text-primary)"
-          : "text-(--color-text-secondary) hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)",
+          ? "bg-(--color-bg-elevated) text-(--color-text-primary)"
+          : "text-(--color-text-secondary) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
       )}
     >
       <button type="button" onClick={onActivate} className="flex items-center gap-1.5 outline-none">

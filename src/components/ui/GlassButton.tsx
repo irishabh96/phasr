@@ -14,14 +14,15 @@ const button = cva(
   {
     variants: {
       variant: {
-        // Filled accent. The "primary call to action" — soft glow on hover.
+        // Filled accent. The "primary call to action" — soft glow on hover,
+        // lifts on hover and depresses on active per spec.
         primary: [
-          "bg-[var(--color-accent-500)] text-white",
+          "bg-[var(--color-accent-500)] text-[var(--color-text-inverse)]",
           "border border-[color-mix(in_oklab,white_18%,transparent)]",
-          "shadow-[inset_0_1px_0_0_color-mix(in_oklab,white_22%,transparent)]",
-          "hover:bg-[var(--color-accent-400)] hover:shadow-[var(--shadow-glow)]",
-          "active:bg-[var(--color-accent-600)]",
-          "focus-visible:shadow-[var(--shadow-glow),0_0_0_2px_var(--color-accent-300)]",
+          "shadow-[var(--shadow-button-primary)]",
+          "hover:bg-[var(--color-accent-400)] hover:shadow-[var(--shadow-button-primary-hover)] hover:-translate-y-px",
+          "active:bg-[var(--color-accent-600)] active:translate-y-0 active:scale-[0.98]",
+          "focus-visible:shadow-[var(--shadow-button-primary-hover),0_0_0_2px_var(--color-accent-300)]",
         ].join(" "),
         // Transparent. Hovers to a subtle white-tinted glass.
         ghost: [
@@ -51,9 +52,9 @@ const button = cva(
         ].join(" "),
       },
       size: {
-        sm: "h-7 px-2.5 text-[12px] rounded-[8px]",
-        md: "h-8 px-3 text-[13px] rounded-[10px]",
-        lg: "h-10 px-4 text-[14px] rounded-[12px]",
+        sm: "h-8 px-3 text-[13px] rounded-[8px]",
+        md: "h-[38px] px-4 text-[14px] rounded-[10px]",
+        lg: "h-11 px-5 text-[14px] rounded-[12px]",
         icon: "h-8 w-8 rounded-[10px]",
       },
     },

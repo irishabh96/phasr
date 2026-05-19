@@ -24,13 +24,12 @@ export function AppSidebar() {
   return (
     <aside
       className={cn(
-        "glass-rail",
         "relative shrink-0",
         "flex flex-col",
-        "border-r border-(--glass-border-hairline)",
+        "bg-(--color-bg-sidebar) border-r border-(--color-border-subtle)",
         "transition-[width] duration-[220ms]",
         "[transition-timing-function:var(--ease-glass)]",
-        isExpanded ? "w-[224px]" : "w-[52px]",
+        isExpanded ? "w-[var(--layout-sidebar-width)]" : "w-[52px]",
       )}
     >
       <div className="min-h-0 flex-1 overflow-y-auto py-2">
@@ -71,11 +70,11 @@ function RepoBlock({
           to="/repositories/$repositoryId"
           params={{ repositoryId: repo.id }}
           className={cn(
-            "flex h-9 items-center rounded-[10px]",
-            isExpanded ? "px-1.5" : "justify-center",
+            "flex h-[38px] items-center rounded-[10px]",
+            isExpanded ? "px-3" : "justify-center",
             "transition-colors duration-150",
-            "hover:bg-[color-mix(in_oklab,white_5%,transparent)]",
-            isActive && "bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]",
+            "hover:bg-(--color-bg-elevated)",
+            isActive && "bg-[color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
           )}
         >
           <GlassTooltip content={repo.name} side="right" disabled={isExpanded}>
@@ -95,10 +94,8 @@ function RepoBlock({
           {isExpanded && (
             <span
               className={cn(
-                "ml-2.5 min-w-0 flex-1 truncate text-left text-[13px] leading-none",
-                isActive
-                  ? "font-medium text-(--color-text-primary)"
-                  : "text-(--color-text-secondary)",
+                "ml-2.5 min-w-0 flex-1 truncate text-left text-[14px] font-medium leading-none",
+                isActive ? "text-(--color-text-primary)" : "text-(--color-text-secondary)",
               )}
             >
               {repo.name}
@@ -167,8 +164,8 @@ function WorkspaceLink({
         "flex h-7 items-center rounded-[8px]",
         isExpanded ? "w-full px-2" : "h-7 w-7 justify-center",
         "transition-colors duration-150",
-        "hover:bg-[color-mix(in_oklab,white_5%,transparent)]",
-        active && "bg-[color-mix(in_oklab,white_8%,transparent)]",
+        "hover:bg-(--color-bg-elevated)",
+        active && "bg-(--color-bg-elevated)",
       )}
     >
       <GlassTooltip content={ws.name} side="right" disabled={isExpanded}>
@@ -197,11 +194,11 @@ function NewRepoButton({ isExpanded }: { isExpanded: boolean }) {
       type="button"
       onClick={openWizard}
       className={cn(
-        "flex h-9 items-center rounded-[10px]",
-        isExpanded ? "px-1.5" : "justify-center",
+        "flex h-[38px] items-center rounded-[10px]",
+        isExpanded ? "px-3" : "justify-center",
         "text-(--color-text-muted)",
         "transition-colors duration-150",
-        "hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)",
+        "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
       )}
     >
       <GlassTooltip content="New project" side="right" disabled={isExpanded}>
@@ -210,7 +207,7 @@ function NewRepoButton({ isExpanded }: { isExpanded: boolean }) {
         </span>
       </GlassTooltip>
       {isExpanded && (
-        <span className="ml-2.5 min-w-0 flex-1 truncate text-left text-[13px] leading-none">
+        <span className="ml-2.5 min-w-0 flex-1 truncate text-left text-[14px] font-medium leading-none">
           New project
         </span>
       )}
@@ -228,7 +225,7 @@ function SidebarFooter({
   return (
     <div
       className={cn(
-        "border-t border-(--glass-border-hairline) p-1.5",
+        "border-t border-(--color-border-subtle) p-1.5",
         isExpanded ? "flex justify-end" : "flex justify-center",
       )}
     >
@@ -243,7 +240,7 @@ function SidebarFooter({
             "flex h-7 w-7 items-center justify-center rounded-[8px]",
             "text-(--color-text-muted)",
             "transition-colors duration-150",
-            "hover:bg-[color-mix(in_oklab,white_6%,transparent)] hover:text-(--color-text-primary)",
+            "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
           )}
         >
           {isExpanded ? <PanelLeftClose size={14} /> : <PanelLeft size={14} />}

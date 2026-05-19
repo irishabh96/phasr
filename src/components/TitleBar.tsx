@@ -24,7 +24,7 @@ export function TitleBar({ breadcrumb }: TitleBarProps) {
   return (
     <div
       data-tauri-drag-region
-      className="relative z-20 flex h-12 shrink-0 items-center justify-between border-b border-(--glass-border-hairline)"
+      className="relative z-20 flex h-[var(--layout-header-height)] shrink-0 items-center justify-between border-b border-(--color-border-subtle)"
       style={{
         paddingLeft: isMac ? 92 : 14,
         paddingRight: 10,

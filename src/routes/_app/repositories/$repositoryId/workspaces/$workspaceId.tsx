@@ -74,9 +74,18 @@ function WorkspaceDetail() {
         <div className="min-h-0 flex-1">
           <Terminal workspaceId={workspaceId} status={workspace.status} onExit={refresh} />
         </div>
-        {workspace.worktreePath && !rightPanelCollapsed && (
-          <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-(--glass-border-hairline) bg-(--color-bg-surface)">
-            <ChangesPanel workspaceId={workspaceId} />
+        {workspace.worktreePath && (
+          <aside
+            aria-hidden={rightPanelCollapsed}
+            className={cn(
+              "flex h-full shrink-0 flex-col overflow-hidden border-l border-(--glass-border-hairline) bg-(--color-bg-surface)",
+              "transition-[width] duration-[220ms] [transition-timing-function:var(--ease-glass)]",
+              rightPanelCollapsed ? "w-0 border-l-0" : "w-[360px]",
+            )}
+          >
+            <div className="flex h-full w-[360px] min-w-[360px] flex-col">
+              <ChangesPanel workspaceId={workspaceId} />
+            </div>
           </aside>
         )}
       </div>
