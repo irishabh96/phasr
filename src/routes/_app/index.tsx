@@ -2,13 +2,13 @@ import { useUser } from "@clerk/react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { AddRepositoryForm } from "@/components/AddRepositoryForm";
 import { useDeleteRepository, useRepositories } from "@/lib/hooks/useRepositories";
-import { usePresets } from "@/lib/hooks/usePresets";
+import { useAgents } from "@/lib/hooks/useAgents";
 
 function Home() {
   const { user } = useUser();
   const { data: repositories, isLoading } = useRepositories();
   const deleteRepository = useDeleteRepository();
-  const { data: presets } = usePresets();
+  const { data: agents } = useAgents();
 
   return (
     <div className="mx-auto max-w-4xl px-8 py-12">
@@ -64,17 +64,17 @@ function Home() {
 
       <section className="mt-6 rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
         <h2 className="text-sm font-medium">
-          Seeded agent presets ({presets?.length ?? 0})
+          Available agents ({agents?.length ?? 0})
         </h2>
         <p className="mt-1 text-xs text-(--color-text-muted)">
-          Auto-inserted on first DB init. Edit/toggle in Settings.
+          AI CLI tools you can launch in a workspace. Edit/toggle in Settings.
         </p>
         <ul className="mt-4 space-y-1 text-xs">
-          {presets?.map((p) => (
-            <li key={p.id} className="flex items-center gap-3">
-              <span className="min-w-[110px] font-medium">{p.name}</span>
-              <code className="truncate text-(--color-text-muted)">{p.command}</code>
-              {p.isDefault && (
+          {agents?.map((a) => (
+            <li key={a.id} className="flex items-center gap-3">
+              <span className="min-w-[110px] font-medium">{a.name}</span>
+              <code className="truncate text-(--color-text-muted)">{a.command}</code>
+              {a.isDefault && (
                 <span className="ml-auto rounded bg-(--color-accent-600)/15 px-1.5 text-[10px] text-(--color-accent-400)">
                   default
                 </span>

@@ -9,7 +9,7 @@ interface CloudWorkspaceRow {
   repository_id: string;
   name: string;
   prompt: string | null;
-  preset_id: string | null;
+  agent_id: string | null;
   command: string;
   status: string;
   branch: string | null;
@@ -39,15 +39,25 @@ export async function pushWorkspace(
     console.warn("[cloud] pre-push repository failed (continuing)", err);
   }
 
+  // Resolve agent_id for cloud:
+  //   - Seeded agents have stable UUIDs that are identical on every
+  //     install (uuid_v5 of the agent name). They aren't stored in
+  //     the cloud `agents` table, so we drop the FK link and just
+  //     keep `agent_id` for display.
+  //   - Custom agents are user-created and DO live in the cloud
+  //     `agents` table — store their UUID and trust the FK.
+  // For now we send `null` since the FK doesn't allow seed UUIDs and
+  // we haven't yet wired the upsert path for custom-only customs.
+  // The workspace's `command` field already captures what to run.
+  const cloudAgentIdForWorkspace: string | null = null;
+
   const { error } = await client.from("workspaces").upsert({
     id: workspace.id,
     user_id: userId,
     repository_id: workspace.repositoryId,
     name: workspace.name,
     prompt: workspace.prompt,
-    // Phase 6/7: presets aren't yet synced cross-device, so we drop
-    // the link. Phase 8 will use deterministic seed preset IDs.
-    preset_id: null,
+    agent_id: cloudAgentIdForWorkspace,
     command: workspace.command,
     status: workspace.status,
     branch: workspace.branch,
@@ -90,13 +100,13 @@ export async function pullWorkspaces(client: SupabaseClient): Promise<void> {
           name: row.name,
           command: row.command,
           ...(row.prompt ? { prompt: row.prompt } : {}),
-          ...(row.preset_id ? { presetId: row.preset_id } : {}),
+          ...(row.agent_id ? { agentId: row.agent_id } : {}),
         });
       } else if (Date.parse(row.updated_at) > Date.parse(existing.updatedAt)) {
         await tauri.updateWorkspace(row.id, {
           name: row.name,
           ...(row.prompt ? { prompt: row.prompt } : {}),
-          ...(row.preset_id ? { presetId: row.preset_id } : {}),
+          ...(row.agent_id ? { agentId: row.agent_id } : {}),
           command: row.command,
           ...(row.branch ? { branch: row.branch } : {}),
           ...(row.worktree_path ? { worktreePath: row.worktree_path } : {}),

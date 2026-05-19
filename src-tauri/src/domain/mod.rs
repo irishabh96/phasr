@@ -4,15 +4,16 @@
 //!   - `Repository` — a connection to one local git repository.
 //!   - `Workspace`  — one agent run inside a repository, with its own
 //!     git worktree, branch, and PTY session.
-//!   - `Preset`     — a saved agent command template.
+//!   - `Agent`      — an AI tool/CLI that can be run as a workspace's
+//!     command (Claude, Codex, Cursor, …).
 //!   - `UserSettings` — per-user app settings.
 
-pub mod preset;
+pub mod agent;
 pub mod repository;
 pub mod settings;
 pub mod workspace;
 
-pub use preset::Preset;
+pub use agent::{seed_id, Agent};
 pub use repository::Repository;
 pub use settings::UserSettings;
 pub use workspace::{Workspace, WorkspaceStatus};

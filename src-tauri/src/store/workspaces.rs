@@ -10,7 +10,7 @@ use super::pool::Db;
 pub struct WorkspaceUpdate {
     pub name: Option<String>,
     pub prompt: Option<Option<String>>,
-    pub preset_id: Option<Option<String>>,
+    pub agent_id: Option<Option<String>>,
     pub command: Option<String>,
     pub status: Option<WorkspaceStatus>,
     pub branch: Option<Option<String>>,
@@ -34,7 +34,7 @@ impl WorkspaceRepo {
     pub async fn insert(&self, workspace: &Workspace) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO workspaces (
-                id, repository_id, name, prompt, preset_id, command, status,
+                id, repository_id, name, prompt, agent_id, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
                 synced_at, dirty
@@ -44,7 +44,7 @@ impl WorkspaceRepo {
         .bind(&workspace.repository_id)
         .bind(&workspace.name)
         .bind(&workspace.prompt)
-        .bind(&workspace.preset_id)
+        .bind(&workspace.agent_id)
         .bind(&workspace.command)
         .bind(workspace.status.as_str())
         .bind(&workspace.branch)
@@ -65,7 +65,7 @@ impl WorkspaceRepo {
         repository_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, name, prompt, preset_id, command, status,
+            "SELECT id, repository_id, name, prompt, agent_id, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -80,7 +80,7 @@ impl WorkspaceRepo {
 
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
-            "SELECT id, repository_id, name, prompt, preset_id, command, status,
+            "SELECT id, repository_id, name, prompt, agent_id, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -105,8 +105,8 @@ impl WorkspaceRepo {
         if let Some(prompt) = patch.prompt {
             current.prompt = prompt;
         }
-        if let Some(preset_id) = patch.preset_id {
-            current.preset_id = preset_id;
+        if let Some(agent_id) = patch.agent_id {
+            current.agent_id = agent_id;
         }
         if let Some(command) = patch.command {
             current.command = command;
@@ -146,7 +146,7 @@ impl WorkspaceRepo {
 
         sqlx::query(
             "UPDATE workspaces SET
-                name = ?, prompt = ?, preset_id = ?, command = ?, status = ?,
+                name = ?, prompt = ?, agent_id = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 started_at = ?, finished_at = ?, archived_at = ?, updated_at = ?,
                 dirty = 1
@@ -154,7 +154,7 @@ impl WorkspaceRepo {
         )
         .bind(&current.name)
         .bind(&current.prompt)
-        .bind(&current.preset_id)
+        .bind(&current.agent_id)
         .bind(&current.command)
         .bind(current.status.as_str())
         .bind(&current.branch)
@@ -195,7 +195,7 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         repository_id: row.try_get("repository_id")?,
         name: row.try_get("name")?,
         prompt: row.try_get("prompt")?,
-        preset_id: row.try_get("preset_id")?,
+        agent_id: row.try_get("agent_id")?,
         command: row.try_get("command")?,
         status,
         branch: row.try_get("branch")?,

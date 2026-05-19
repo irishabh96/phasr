@@ -11,7 +11,7 @@ use std::sync::Arc;
 use auth::SessionState;
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, PresetRepo, RepositoryRepo, SettingsRepo, WorkspaceRepo,
+    default_db_path, init_pool, AgentRepo, RepositoryRepo, SettingsRepo, WorkspaceRepo,
 };
 use tauri::Manager;
 
@@ -38,16 +38,13 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match init_pool(&db_path).await {
                     Ok(pool) => {
-                        let preset_repo = PresetRepo::new(pool.clone());
-                        if let Err(err) = preset_repo.seed_if_empty().await {
-                            eprintln!("preset seeding failed: {err}");
-                        }
-                        if let Err(err) = preset_repo.sync_seeded().await {
-                            eprintln!("preset sync failed: {err}");
+                        let agent_repo = AgentRepo::new(pool.clone());
+                        if let Err(err) = agent_repo.ensure_seeded().await {
+                            eprintln!("agent seeding failed: {err}");
                         }
                         handle.manage(RepositoryRepo::new(pool.clone()));
                         handle.manage(WorkspaceRepo::new(pool.clone()));
-                        handle.manage(preset_repo);
+                        handle.manage(agent_repo);
                         handle.manage(SettingsRepo::new(pool));
                     }
                     Err(err) => {
@@ -72,8 +69,8 @@ pub fn run() {
             commands::workspaces::get_workspace,
             commands::workspaces::update_workspace,
             commands::workspaces::delete_workspace,
-            commands::presets::list_presets,
-            commands::presets::set_preset_enabled,
+            commands::agents::list_agents,
+            commands::agents::set_agent_enabled,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
             commands::runtime::start_workspace,

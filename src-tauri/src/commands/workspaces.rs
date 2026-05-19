@@ -16,7 +16,7 @@ pub struct CreateWorkspaceInput {
     pub name: String,
     pub command: String,
     pub prompt: Option<String>,
-    pub preset_id: Option<String>,
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -24,7 +24,7 @@ pub struct CreateWorkspaceInput {
 pub struct UpdateWorkspaceInput {
     pub name: Option<String>,
     pub prompt: Option<String>,
-    pub preset_id: Option<String>,
+    pub agent_id: Option<String>,
     pub command: Option<String>,
     pub status: Option<WorkspaceStatus>,
     pub branch: Option<String>,
@@ -86,7 +86,7 @@ pub async fn create_workspace(
 
     let mut workspace = Workspace::new(input.repository_id.clone(), input.name, input.command);
     workspace.prompt = input.prompt;
-    workspace.preset_id = input.preset_id;
+    workspace.agent_id = input.agent_id;
 
     if let Some(repo_path_str) = repository.local_path.as_deref() {
         let repo_path = PathBuf::from(repo_path_str);
@@ -133,7 +133,7 @@ pub async fn update_workspace(
     let patch = WorkspaceUpdate {
         name: input.name,
         prompt: input.prompt.map(Some),
-        preset_id: input.preset_id.map(Some),
+        agent_id: input.agent_id.map(Some),
         command: input.command,
         status: input.status,
         branch: input.branch.map(Some),

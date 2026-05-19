@@ -2,7 +2,7 @@ import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useCreateWorkspace, useWorkspaces } from "@/lib/hooks/useWorkspaces";
-import { usePresets } from "@/lib/hooks/usePresets";
+import { useAgents } from "@/lib/hooks/useAgents";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import type { Workspace } from "@/lib/types";
 
@@ -11,29 +11,29 @@ function RepositoryView() {
   const navigate = useNavigate();
   const { data: repository } = useRepository(repositoryId);
   const { data: workspaces } = useWorkspaces(repositoryId);
-  const { data: presets } = usePresets();
+  const { data: agents } = useAgents();
   const createWorkspace = useCreateWorkspace();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [presetId, setPresetId] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string | null>(null);
 
-  const enabledPresets = presets?.filter((p) => p.isEnabled) ?? [];
-  const defaultPreset = enabledPresets.find((p) => p.isDefault) ?? enabledPresets[0];
-  const activePresetId = presetId ?? defaultPreset?.id ?? null;
-  const activePreset = enabledPresets.find((p) => p.id === activePresetId);
+  const enabledAgents = agents?.filter((a) => a.isEnabled) ?? [];
+  const defaultAgent = enabledAgents.find((a) => a.isDefault) ?? enabledAgents[0];
+  const activeAgentId = agentId ?? defaultAgent?.id ?? null;
+  const activeAgent = enabledAgents.find((a) => a.id === activeAgentId);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !activePreset) return;
+    if (!name.trim() || !activeAgent) return;
     try {
       const workspace = await createWorkspace.mutateAsync({
         repositoryId,
         name: name.trim(),
-        command: activePreset.command,
+        command: activeAgent.command,
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-        ...(activePresetId ? { presetId: activePresetId } : {}),
+        ...(activeAgentId ? { agentId: activeAgentId } : {}),
       });
       setName("");
       setPrompt("");
@@ -91,19 +91,19 @@ function RepositoryView() {
           <div className="flex flex-col gap-1">
             <label className="text-xs text-(--color-text-secondary)">Agent</label>
             <select
-              value={activePresetId ?? ""}
-              onChange={(e) => setPresetId(e.target.value)}
+              value={activeAgentId ?? ""}
+              onChange={(e) => setAgentId(e.target.value)}
               className="w-full"
             >
-              {enabledPresets.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
+              {enabledAgents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
                 </option>
               ))}
             </select>
-            {activePreset && (
+            {activeAgent && (
               <code className="block truncate text-[11px] text-(--color-text-muted)">
-                {activePreset.command}
+                {activeAgent.command}
               </code>
             )}
           </div>
@@ -132,7 +132,7 @@ function RepositoryView() {
             </button>
             <button
               type="submit"
-              disabled={createWorkspace.isPending || !name.trim() || !activePreset}
+              disabled={createWorkspace.isPending || !name.trim() || !activeAgent}
               className="rounded-md border border-(--color-accent-600) bg-(--color-accent-600) px-3 py-1.5 text-sm text-white hover:bg-(--color-accent-500) disabled:opacity-50"
             >
               {createWorkspace.isPending ? "Creating…" : "Create & open"}

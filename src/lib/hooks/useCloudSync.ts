@@ -5,8 +5,10 @@ import { useEffect, useMemo, useRef } from "react";
 import {
   deleteRepositoryFromCloud,
   deleteWorkspaceFromCloud,
+  pullCustomAgents,
   pullRepositories,
   pullWorkspaces,
+  pushCustomAgents,
   pushMissingRepositories,
   pushMissingWorkspaces,
   pushRepository,
@@ -50,8 +52,14 @@ export function useCloudSync() {
         log("bootstrap: pulling repositories");
         const cloudRepoIds = await pullRepositories(supabase);
         if (cancelled) return;
+        log("bootstrap: pulling custom agents");
+        await pullCustomAgents(supabase);
+        if (cancelled) return;
         log("bootstrap: pulling workspaces");
         await pullWorkspaces(supabase);
+        if (cancelled) return;
+        log("bootstrap: pushing custom agents");
+        await pushCustomAgents(supabase, userId);
         if (cancelled) return;
         log("bootstrap: pushing local-only repositories");
         await pushMissingRepositories(supabase, userId, cloudRepoIds);
@@ -61,6 +69,7 @@ export function useCloudSync() {
         if (cancelled) return;
         queryClient.invalidateQueries({ queryKey: ["repositories"] });
         queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+        queryClient.invalidateQueries({ queryKey: ["agents"] });
         log("bootstrap complete");
       } catch (err) {
         console.error("[cloud sync] bootstrap failed", err);
@@ -124,7 +133,21 @@ export function useCloudSync() {
 
   // (3) Realtime fan-out: reconcile local store on remote change.
   useEffect(() => {
-    if (!supabase || !userId) return;
+    if (!supabase || !userId || !session) return;
+
+    let cancelled = false;
+    let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+    // Realtime is a single WebSocket connection, so the `accessToken`
+    // callback on the REST client doesn't reach it. We have to push a
+    // fresh JWT into the realtime client explicitly and re-push it on
+    // a schedule (Clerk JWTs default to a 60s lifetime).
+    const refreshAuth = async () => {
+      const token = await session.getToken();
+      if (cancelled || !token) return;
+      supabase.realtime.setAuth(token);
+    };
+
     log("subscribing to realtime");
     const channel = supabase
       .channel("phasr-sync")
@@ -161,10 +184,17 @@ export function useCloudSync() {
         },
       )
       .subscribe((status) => log("realtime channel status", status));
+
+    // Set the initial token, then refresh ahead of expiry.
+    void refreshAuth();
+    refreshTimer = setInterval(refreshAuth, 45_000);
+
     return () => {
+      cancelled = true;
+      if (refreshTimer) clearInterval(refreshTimer);
       void supabase.removeChannel(channel);
     };
-  }, [supabase, userId, queryClient]);
+  }, [supabase, userId, session, queryClient]);
 }
 
 type MirrorHandler = (

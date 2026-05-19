@@ -24,7 +24,7 @@ export interface Workspace {
   repositoryId: string;
   name: string;
   prompt: string | null;
-  presetId: string | null;
+  agentId: string | null;
   command: string;
   status: WorkspaceStatus;
   branch: string | null;
@@ -37,7 +37,7 @@ export interface Workspace {
   updatedAt: string;
 }
 
-export interface Preset {
+export interface Agent {
   id: string;
   name: string;
   command: string;
@@ -61,7 +61,8 @@ export interface UserSettings {
   terminalScrollback: number;
   defaultEditor: string;
   defaultTerminal: string;
-  defaultPresetId: string | null;
+  defaultAgentId: string | null;
+  disabledAgentIds: string;
   keyboardShortcuts: string;
   branchPrefixTemplate: string;
   worktreeBasePath: string;

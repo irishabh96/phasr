@@ -1,24 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tauri } from "@/lib/tauri";
 
-const presetKeys = {
-  all: ["presets"] as const,
+const agentKeys = {
+  all: ["agents"] as const,
 };
 
-export function usePresets() {
+export function useAgents() {
   return useQuery({
-    queryKey: presetKeys.all,
-    queryFn: () => tauri.listPresets(),
+    queryKey: agentKeys.all,
+    queryFn: () => tauri.listAgents(),
   });
 }
 
-export function useSetPresetEnabled() {
+export function useSetAgentEnabled() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      tauri.setPresetEnabled(id, enabled),
+      tauri.setAgentEnabled(id, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: presetKeys.all });
+      queryClient.invalidateQueries({ queryKey: agentKeys.all });
     },
   });
 }

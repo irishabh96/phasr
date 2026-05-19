@@ -30,7 +30,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 async-trait = "0.1"
 portable-pty = "0.9"
 tokio-util = { version = "0.7", features = ["compat"] }

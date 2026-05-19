@@ -1,10 +1,10 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  Agent,
   CommitOutput,
   DiffScope,
   FileChange,
   PathValidation,
-  Preset,
   PtyEvent,
   Repository,
   RunningWorkspaceInfo,
@@ -31,13 +31,13 @@ interface CreateWorkspaceInput {
   name: string;
   command: string;
   prompt?: string;
-  presetId?: string;
+  agentId?: string;
 }
 
 interface UpdateWorkspaceInput {
   name?: string;
   prompt?: string;
-  presetId?: string;
+  agentId?: string;
   command?: string;
   status?: WorkspaceStatus;
   branch?: string;
@@ -70,10 +70,10 @@ export const tauri = {
     invoke<Workspace>("update_workspace", { id, input }),
   deleteWorkspace: (id: string) => invoke<void>("delete_workspace", { id }),
 
-  // ── presets ──────────────────────────────────────────────────────────
-  listPresets: () => invoke<Preset[]>("list_presets"),
-  setPresetEnabled: (id: string, enabled: boolean) =>
-    invoke<void>("set_preset_enabled", { id, enabled }),
+  // ── agents ───────────────────────────────────────────────────────────
+  listAgents: () => invoke<Agent[]>("list_agents"),
+  setAgentEnabled: (id: string, enabled: boolean) =>
+    invoke<void>("set_agent_enabled", { id, enabled }),
 
   // ── settings ─────────────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),
