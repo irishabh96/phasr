@@ -1,0 +1,299 @@
+@import "tailwindcss";
+
+/* ---------- Design tokens (from the rebuild plan: Theming) ---------- */
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+
+  /* Phasr Dark — GitHub-Dark-inspired surfaces */
+  --color-bg-base: #010409;
+  --color-bg-surface: #0d1117;
+  --color-bg-elevated: #161b22;
+  --color-bg-input: #010409;
+  --color-bg-sidebar: #0b0f14;
+  --color-bg-terminal: #000000;
+  --color-bg-tooltip: #1b212c;
+  --color-bg-dropdown: #161b22;
+  --color-bg-hover: #161b22;
+  --color-bg-active: #1f2630;
+  --color-bg-overlay: rgba(0, 0, 0, 0.42);
+
+  --color-border-subtle: #21262d;
+  --color-border-default: #30363d;
+  --color-border-strong: #484f58;
+
+  --color-text-primary: #e6edf3;
+  --color-text-secondary: #b1bac4;
+  --color-text-muted: #6e7681;
+  --color-text-inverse: #010409;
+
+  /* Accent palette — Phasr coral. 50–950 scale is derived around the
+     spec's #F78166 so existing `accent-500` callers keep working. */
+  --color-accent-50: #fff1ec;
+  --color-accent-100: #ffe0d5;
+  --color-accent-200: #ffc4ae;
+  --color-accent-300: #ffa88a;
+  --color-accent-400: #ff9b85;
+  --color-accent-500: #f78166;
+  --color-accent-600: #ff6a4d;
+  --color-accent-700: #d4583a;
+  --color-accent-800: #a8442c;
+  --color-accent-900: #7a3220;
+  --color-accent-950: #3e1810;
+
+  --color-accent-primary: var(--color-accent-500);
+  --color-accent-hover: var(--color-accent-400);
+  --color-accent-active: var(--color-accent-600);
+
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-danger: #ff7b72;
+  --color-info: #58a6ff;
+  --color-purple: #bc8cff;
+  --color-cyan: #39c5cf;
+
+  /* ANSI palette — consumed by xterm wiring in Terminal components */
+  --ansi-black: #484f58;
+  --ansi-red: #ff7b72;
+  --ansi-green: #3fb950;
+  --ansi-yellow: #d29922;
+  --ansi-blue: #58a6ff;
+  --ansi-magenta: #bc8cff;
+  --ansi-cyan: #39c5cf;
+  --ansi-white: #b1bac4;
+  --ansi-bright-black: #6e7681;
+  --ansi-bright-red: #ffa198;
+  --ansi-bright-green: #56d364;
+  --ansi-bright-yellow: #e3b341;
+  --ansi-bright-blue: #79c0ff;
+  --ansi-bright-magenta: #d2a8ff;
+  --ansi-bright-cyan: #56d4dd;
+  --ansi-bright-white: #ffffff;
+
+  /* Glass material tokens. Derived from the base palette via color-mix so
+     accent and theme swaps recolor every glass surface automatically. */
+  --glass-rail: color-mix(in oklab, var(--color-bg-surface) 70%, transparent);
+  --glass-panel: color-mix(in oklab, var(--color-bg-elevated) 60%, transparent);
+  --glass-modal: color-mix(in oklab, var(--color-bg-elevated) 50%, transparent);
+
+  --glass-border-hairline: color-mix(in oklab, white 6%, transparent);
+  --glass-border-strong: color-mix(in oklab, white 12%, transparent);
+  --glass-highlight-top: color-mix(in oklab, white 10%, transparent);
+
+  --blur-rail: 24px;
+  --blur-panel: 32px;
+  --blur-modal: 40px;
+
+  /* Shadow tokens collapsed to `none` per the flat-UI direction. Kept as
+     tokens so `var(--shadow-…)` references in components continue to
+     resolve. Re-enable per-token if a future surface needs depth. */
+  --shadow-panel: none;
+  --shadow-modal: none;
+  --shadow-card: none;
+  --shadow-tooltip: none;
+  --shadow-button-primary: none;
+  --shadow-button-primary-hover: none;
+  --shadow-glow: none;
+  --shadow-glow-danger: none;
+
+  --radius-sm: 6px;
+  --radius-control: 10px;
+  --radius-panel: 14px;
+  --radius-modal: 18px;
+  --radius-full: 999px;
+
+  --layout-sidebar-width: 260px;
+  --layout-header-height: 40px;
+  --layout-toolbar-height: 52px;
+
+  --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-glass: 180ms;
+}
+
+/* Light mode overrides */
+[data-theme="light"] {
+  --color-bg-base: #fafafb;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-input: #f4f4f5;
+
+  --color-border-subtle: #ebebef;
+  --color-border-default: #d8d8de;
+  --color-border-strong: #b6b6c0;
+
+  --color-text-primary: #0a0a0b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #8e8e96;
+
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-info: #2563eb;
+
+  /* Glass tokens — light variant. White-tinted instead of black-tinted. */
+  --glass-rail: color-mix(in oklab, var(--color-bg-surface) 75%, transparent);
+  --glass-panel: color-mix(in oklab, var(--color-bg-elevated) 65%, transparent);
+  --glass-modal: color-mix(in oklab, var(--color-bg-elevated) 55%, transparent);
+
+  --glass-border-hairline: color-mix(in oklab, black 6%, transparent);
+  --glass-border-strong: color-mix(in oklab, black 12%, transparent);
+  --glass-highlight-top: color-mix(in oklab, white 60%, transparent);
+
+  /* Surfaces that exist only in the new token set need explicit light
+     variants. Terminal + tooltips flip to light here per design call. */
+  --color-bg-sidebar: #f4f5f7;
+  --color-bg-terminal: #fafafb;
+  --color-bg-tooltip: #ffffff;
+  --color-bg-dropdown: #ffffff;
+  --color-bg-hover: #f1f1f3;
+  --color-bg-active: #e6e6ea;
+  --color-bg-overlay: rgba(15, 18, 24, 0.18);
+  --color-text-inverse: #ffffff;
+  --color-purple: #8b5cf6;
+  --color-cyan: #06b6d4;
+
+  /* GitHub Light syntax palette — used by xterm when --data-theme is light. */
+  --ansi-black: #24292f;
+  --ansi-red: #cf222e;
+  --ansi-green: #116329;
+  --ansi-yellow: #4d2d00;
+  --ansi-blue: #0969da;
+  --ansi-magenta: #8250df;
+  --ansi-cyan: #1b7c83;
+  --ansi-white: #6e7781;
+  --ansi-bright-black: #57606a;
+  --ansi-bright-red: #a40e26;
+  --ansi-bright-green: #1a7f37;
+  --ansi-bright-yellow: #633c01;
+  --ansi-bright-blue: #218bff;
+  --ansi-bright-magenta: #a475f9;
+  --ansi-bright-cyan: #3192aa;
+  --ansi-bright-white: #8c959f;
+}
+
+/* ---------- Base resets ---------- */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button {
+  font: inherit;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--color-accent-500);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+}
+
+/* ---------- Glass surface utilities (Tailwind v4 @utility) ---------- */
+
+@utility glass-rail {
+  background: var(--glass-rail);
+  backdrop-filter: blur(var(--blur-rail)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--blur-rail)) saturate(140%);
+  border: 1px solid var(--glass-border-hairline);
+}
+
+@utility glass-panel {
+  background: var(--glass-panel);
+  backdrop-filter: blur(var(--blur-panel)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--blur-panel)) saturate(140%);
+  border: 1px solid var(--glass-border-hairline);
+  border-radius: var(--radius-panel);
+}
+
+@utility glass-modal {
+  background: var(--glass-modal);
+  backdrop-filter: blur(var(--blur-modal)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--blur-modal)) saturate(160%);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-modal);
+}
+
+/* ---------- Animations ---------- */
+
+@keyframes pulse-dot {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color, var(--color-info)) 60%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--pulse-color, var(--color-info)) 0%, transparent);
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ---------- xterm.js scrollbar ----------
+   xterm.css sets `overflow-y: scroll` on .xterm-viewport. On WKWebView
+   (Tauri on macOS) the native scrollbar ignores width/appearance overrides
+   and stays visible at system size. Hide it — xterm.js handles scroll via
+   mouse wheel, trackpad, and Shift+PgUp/PgDn just fine without a bar. */
+
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}

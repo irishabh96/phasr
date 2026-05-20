@@ -1,13 +1,51 @@
-bin/
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri / Rust build artifacts
+src-tauri/target/
+src-tauri/gen/schemas
+
+# TypeScript incremental build outputs
+*.tsbuildinfo
+
+# TanStack Router plugin cache
+.tanstack/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Env
 .env
-internal/api/frontend/node_modules/
-internal/api/frontend/.vite/
-internal/api/frontend/test-results/
-internal/api/frontend/playwright-report/
-dist/
-internal/api/static/dist/
-internal/api/static/ui-build-counter.json
-node_modules/
-/phasr
-/phasr-desktop
+.env.local
+.env.*.local
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# Phasr local data dir (used by E2E tests)
+.phasr-test/
+
+# Claude Code session files (plans, etc.)
+.claude/

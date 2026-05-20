@@ -1,0 +1,95 @@
+import * as Dialog from "@radix-ui/react-dialog";
+import { FolderOpen, Sparkles, X } from "lucide-react";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { useUiStore } from "@/lib/store";
+
+/**
+ * Two-choice picker that fans out the sidebar's single "Add repository"
+ * footer button. Click "New project" → opens the NewProjectWizard.
+ * Click "Open existing" → opens the OpenExistingProjectModal.
+ *
+ * Mounted at the app shell; driven by `addRepositoryPickerOpen`.
+ */
+export function AddRepositoryPickerModal() {
+  const open = useUiStore((s) => s.addRepositoryPickerOpen);
+  const close = useUiStore((s) => s.closeAddRepositoryPicker);
+  const openNewProject = useUiStore((s) => s.openNewProjectModal);
+  const openOpenExisting = useUiStore((s) => s.openOpenExistingModal);
+
+  const onNewProject = () => {
+    close();
+    openNewProject();
+  };
+  const onOpenExisting = () => {
+    close();
+    openOpenExisting();
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={(o) => !o && close()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Content className="fixed left-1/2 top-[16vh] z-[190] w-[min(520px,calc(100vw-32px))] -translate-x-1/2 outline-none">
+          <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
+            <header className="flex h-12 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+              <Dialog.Title asChild>
+                <h2 className="text-[13.5px] font-semibold leading-none">Add a repository</h2>
+              </Dialog.Title>
+              <div className="ml-auto">
+                <GlassButton
+                  variant="ghost"
+                  size="icon"
+                  onClick={close}
+                  className="h-7 w-7"
+                  title="Close"
+                >
+                  <X size={13} />
+                </GlassButton>
+              </div>
+            </header>
+            <div className="grid grid-cols-2 gap-3 p-5">
+              <PickerCard
+                icon={<Sparkles size={18} className="text-(--color-accent-400)" />}
+                title="New project"
+                description="Empty repo, clone from URL, or start from a template."
+                onClick={onNewProject}
+              />
+              <PickerCard
+                icon={<FolderOpen size={18} className="text-(--color-text-secondary)" />}
+                title="Open existing"
+                description="Point Phasr at a folder on disk that's already a git repo."
+                onClick={onOpenExisting}
+              />
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function PickerCard({
+  icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="glass-panel group flex flex-col gap-2 p-4 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
+    >
+      <div className="flex items-center gap-2">
+        {icon}
+        <span className="text-[13.5px] font-medium leading-none">{title}</span>
+      </div>
+      <p className="text-[12px] text-(--color-text-secondary)">{description}</p>
+    </button>
+  );
+}

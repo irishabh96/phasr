@@ -1,0 +1,48 @@
+name: CI
+
+# Cheap per-commit checks. The release pipeline (release.yml) handles
+# the actual macOS bundle build — too slow to run on every push.
+
+on:
+  pull_request:
+  push:
+    branches: [master, rebuild]
+
+jobs:
+  web:
+    name: Web — typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # pnpm version sourced from package.json "packageManager" —
+      # passing `with: version:` here too trips ERR_PNPM_BAD_PM_VERSION.
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      # `pnpm test` skipped — re-enable once test files exist.
+      # - run: pnpm test
+
+  rust:
+    name: Rust — check + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Linux deps for tauri-build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --manifest-path src-tauri/Cargo.toml

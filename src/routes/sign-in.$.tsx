@@ -1,0 +1,33 @@
+import { SignIn, useAuth } from "@clerk/react";
+import { Navigate, createFileRoute } from "@tanstack/react-router";
+import { clerkAppearance, isClerkConfigured } from "@/lib/clerk";
+
+function SignInRoute() {
+  if (!isClerkConfigured) {
+    return <Navigate to="/" replace />;
+  }
+  return <ClerkSignInSplat />;
+}
+
+function ClerkSignInSplat() {
+  const { isLoaded, isSignedIn } = useAuth();
+  if (isLoaded && isSignedIn) {
+    return <Navigate to="/" replace />;
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-4">
+      <SignIn
+        appearance={clerkAppearance()}
+        routing="path"
+        path="/sign-in"
+        signUpUrl="/sign-up"
+        forceRedirectUrl="/"
+      />
+    </div>
+  );
+}
+
+export const Route = createFileRoute("/sign-in/$")({
+  component: SignInRoute,
+});
