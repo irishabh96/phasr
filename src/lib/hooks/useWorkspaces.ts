@@ -66,6 +66,15 @@ export function useDeleteWorkspace() {
     mutationKey: workspaceMutationKeys.delete,
     mutationFn: ({ id }: { id: string; repositoryId: string }) => tauri.deleteWorkspace(id),
     onSuccess: (_v, { id, repositoryId }) => {
+      // Optimistically drop the workspace from the repo's list so any
+      // route that reads it (sidebar, home redirect) sees the new
+      // truth immediately — invalidateQueries alone returns stale
+      // data until the background refetch lands, which caused the
+      // home page to redirect to a workspace that was just deleted.
+      queryClient.setQueryData<Workspace[]>(
+        workspaceKeys.byRepository(repositoryId),
+        (prev) => (prev ? prev.filter((w) => w.id !== id) : prev),
+      );
       queryClient.invalidateQueries({ queryKey: workspaceKeys.byRepository(repositoryId) });
       queryClient.removeQueries({ queryKey: workspaceKeys.detail(id) });
     },

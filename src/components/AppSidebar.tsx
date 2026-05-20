@@ -235,27 +235,25 @@ function SidebarFooter({
   return (
     <div className="flex flex-col gap-1 border-t border-(--color-border-subtle) p-1.5">
       {isExpanded ? (
-        <>
+        <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={openAddRepositoryPicker}
-            className="flex h-[34px] items-center gap-2 rounded-[8px] px-2.5 text-[13px] font-medium text-(--color-text-secondary) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+            className="flex h-[34px] min-w-0 flex-1 items-center gap-2 rounded-[8px] px-2.5 text-[13px] font-medium text-(--color-text-secondary) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
           >
             <Plus size={13} className="text-(--color-accent-400)" />
             Add repository
           </button>
-          <div className="mt-0.5 flex justify-end">
-            <GlassTooltip content="Collapse sidebar (⌘B)" side="right">
-              <button
-                type="button"
-                onClick={onToggle}
-                className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-              >
-                <PanelLeftClose size={14} />
-              </button>
-            </GlassTooltip>
-          </div>
-        </>
+          <GlassTooltip content="Collapse sidebar (⌘B)" side="right">
+            <button
+              type="button"
+              onClick={onToggle}
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          </GlassTooltip>
+        </div>
       ) : (
         <div className="flex flex-col items-center gap-1">
           <GlassTooltip content="Add repository" side="right">

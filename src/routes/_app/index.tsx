@@ -1,27 +1,17 @@
 import { useUser } from "@clerk/react";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
-import { useEffect } from "react";
-import { FolderOpen, Sparkles } from "lucide-react";
+import { FolderOpen, Plus, Sparkles } from "lucide-react";
+import { GlassButton } from "@/components/ui/GlassButton";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
+import type { Repository } from "@/lib/types";
 
 function Home() {
   const { user } = useUser();
   const { data: repositories, isLoading } = useRepositories();
   const mostRecentRepo = repositories?.[0];
   const { data: workspaces, isLoading: wsLoading } = useWorkspaces(mostRecentRepo?.id);
-  const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
-  const pendingRepoId = useUiStore((s) => s.pendingNewWorkspaceRepoId);
-
-  // If there's a recent repo but no workspaces, surface the new-workspace
-  // modal so the user has somewhere to land. Skip if a request is already
-  // pending (e.g. user navigated here while a different prompt is open).
-  useEffect(() => {
-    if (mostRecentRepo && workspaces && workspaces.length === 0 && !pendingRepoId) {
-      requestNewWorkspace(mostRecentRepo.id);
-    }
-  }, [mostRecentRepo, workspaces, pendingRepoId, requestNewWorkspace]);
 
   if (isLoading || (mostRecentRepo && wsLoading)) {
     return (
@@ -32,7 +22,7 @@ function Home() {
   }
 
   if (!repositories || repositories.length === 0) {
-    return <EmptyState firstName={user?.firstName ?? null} />;
+    return <WelcomeState firstName={user?.firstName ?? null} />;
   }
 
   const repo = mostRecentRepo!;
@@ -48,12 +38,45 @@ function Home() {
     );
   }
 
-  // Repo exists but has no workspaces — render the empty state behind the
-  // NewWorkspaceModal that the effect above just requested.
-  return <EmptyState firstName={user?.firstName ?? null} />;
+  // Repo exists but has no workspaces — show a contextual landing for
+  // that repo. The user gets a clear "+ New workspace" CTA instead of
+  // an auto-popped modal that re-opens itself if dismissed.
+  return <RepoEmptyState repo={repo} />;
 }
 
-function EmptyState({ firstName }: { firstName: string | null }) {
+function RepoEmptyState({ repo }: { repo: Repository }) {
+  const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
+
+  return (
+    <div className="flex h-full items-center justify-center px-8">
+      <div className="w-full max-w-md text-center">
+        <h1 className="truncate text-[22px] font-semibold leading-tight tracking-tight">
+          {repo.name}
+        </h1>
+        <p className="mt-2 text-[13px] text-(--color-text-secondary)">
+          No workspaces yet. Spin one up to start working.
+        </p>
+        {repo.localPath && (
+          <code className="mt-3 block truncate text-[11.5px] text-(--color-text-muted)">
+            {repo.localPath}
+          </code>
+        )}
+        <div className="mt-8 flex items-center justify-center">
+          <GlassButton
+            variant="primary"
+            size="md"
+            onClick={() => requestNewWorkspace(repo.id)}
+          >
+            <Plus size={13} />
+            New workspace
+          </GlassButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WelcomeState({ firstName }: { firstName: string | null }) {
   const openNewProject = useUiStore((s) => s.openNewProjectModal);
   const openExisting = useUiStore((s) => s.openOpenExistingModal);
 
