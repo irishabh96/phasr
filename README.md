@@ -14,12 +14,13 @@ worktrees, live terminal streaming, and an integrated git workflow.
 
 2. Open the DMG and drag **Phasr** to your **Applications** folder.
 
-3. **First launch — Gatekeeper bypass (one-time).** Phasr is not yet code-signed, so macOS will refuse to open it by double-click. Either:
-   - Right-click *Phasr.app* in Applications → **Open** → **Open** in the dialog. Subsequent launches work normally.
-   - Or, from Terminal:
-     ```sh
-     xattr -dr com.apple.quarantine /Applications/Phasr.app
-     ```
+3. **First launch — Gatekeeper bypass (one-time).** Phasr is not yet code-signed, so macOS will refuse to open it and may show *"Phasr is damaged and can't be opened. You should move it to the Bin."* — the binary is fine, just quarantined. In Terminal, run:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Phasr.app
+   ```
+
+   Then double-click Phasr normally. *(On macOS Sequoia and later, Apple removed the right-click → Open bypass dialog for unsigned apps, so the `xattr` command is the only path.)*
 
    We're working on a signed build for a future release.
 
