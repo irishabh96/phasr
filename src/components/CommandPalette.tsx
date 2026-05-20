@@ -116,7 +116,7 @@ export function CommandPalette() {
             </Command.Empty>
 
             {recentWorkspaces.length > 0 && (
-              <Command.Group heading="Workspaces" className={GROUP_CLS}>
+              <PaletteGroup heading="Workspaces">
                 {recentWorkspaces.map((ws) => (
                   <Command.Item
                     key={ws.id}
@@ -142,11 +142,11 @@ export function CommandPalette() {
                     </div>
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
 
             {repositories && repositories.length > 0 && (
-              <Command.Group heading="Repositories" className={GROUP_CLS}>
+              <PaletteGroup heading="Repositories">
                 {repositories.map((repo: Repository) => (
                   <Command.Item
                     key={repo.id}
@@ -163,10 +163,10 @@ export function CommandPalette() {
                     </div>
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
 
-            <Command.Group heading="Actions" className={GROUP_CLS}>
+            <PaletteGroup heading="Actions">
               {repositories?.map((repo) => (
                 <Command.Item
                   key={`new-${repo.id}`}
@@ -181,9 +181,9 @@ export function CommandPalette() {
                   <Shortcut keys={["⌘", "N"]} />
                 </Command.Item>
               ))}
-            </Command.Group>
+            </PaletteGroup>
 
-            <Command.Group heading="Settings" className={GROUP_CLS}>
+            <PaletteGroup heading="Settings">
               <Command.Item
                 value="settings account profile sign out user"
                 onSelect={() => go(() => navigate({ to: "/settings/account" }))}
@@ -216,9 +216,9 @@ export function CommandPalette() {
                 <Settings size={15} className="shrink-0 text-(--color-text-secondary)" />
                 <span className="flex-1 text-[15px]">Open settings</span>
               </Command.Item>
-            </Command.Group>
+            </PaletteGroup>
 
-            <Command.Group heading="Theme" className={GROUP_CLS}>
+            <PaletteGroup heading="Theme">
               <Command.Item
                 value="theme dark"
                 onSelect={() => go(() => setTheme("dark"))}
@@ -243,9 +243,9 @@ export function CommandPalette() {
                 <Palette size={15} className="shrink-0 text-(--color-text-secondary)" />
                 <span className="flex-1 text-[15px]">Match system theme</span>
               </Command.Item>
-            </Command.Group>
+            </PaletteGroup>
 
-            <Command.Group heading="Session" className={GROUP_CLS}>
+            <PaletteGroup heading="Session">
               <Command.Item
                 value="sign out logout"
                 onSelect={() => go(() => void signOut())}
@@ -254,7 +254,7 @@ export function CommandPalette() {
                 <LogOut size={15} className="shrink-0 text-(--color-danger)" />
                 <span className="flex-1 text-[15px] text-(--color-danger)">Sign out</span>
               </Command.Item>
-            </Command.Group>
+            </PaletteGroup>
           </Command.List>
 
           <div className="flex items-center gap-4 border-t border-(--glass-border-hairline) px-4 py-2.5 text-[11.5px] text-(--color-text-muted)">
@@ -265,6 +265,31 @@ export function CommandPalette() {
         </div>
       </div>
     </Command.Dialog>
+  );
+}
+
+/**
+ * cmdk's internal `scrollIntoView` calls `scrollIntoView({ block: "nearest" })`
+ * on the group HEADING — but only when the selected item is the very first
+ * child of its group's items container. That heading-scroll drags the new
+ * item up toward the top of the viewport, producing the "jump back to top"
+ * flicker when arrow-keying across group boundaries.
+ *
+ * `<PaletteGroup>` wraps `<Command.Group>` and prepends a hidden dummy
+ * element as the first child of the items container. Because cmdk's check
+ * (`e.parentElement?.firstChild === e`) sees the dummy as the firstChild
+ * instead of the actual first item, the heading-scroll branch is always
+ * skipped. cmdk falls through to plain `item.scrollIntoView({ block: "nearest" })`,
+ * which keeps the highlight at the edge as the list scrolls.
+ *
+ * The dummy has no `cmdk-item` attribute, so cmdk's item queries ignore it.
+ */
+function PaletteGroup({ heading, children }: { heading: string; children: ReactNode }) {
+  return (
+    <Command.Group heading={heading} className={GROUP_CLS}>
+      <span hidden aria-hidden="true" />
+      {children}
+    </Command.Group>
   );
 }
 
@@ -310,6 +335,7 @@ const GROUP_CLS =
 
 const ITEM_CLS = [
   "flex cursor-pointer items-center gap-3 rounded-[8px] px-3 py-2.5",
+  "scroll-my-2",
   "text-(--color-text-primary)",
   "transition-colors duration-100",
   "aria-selected:bg-(--color-bg-hover)",

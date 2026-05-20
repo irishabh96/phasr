@@ -11,7 +11,7 @@ const AGENT_NAMESPACE: Uuid = Uuid::from_bytes([
 
 /// An AI tool/CLI that can be run as a workspace's command.
 ///
-/// Seeded agents (Claude, Codex, Cursor, …) live as hardcoded constants
+/// Seeded agents (Claude, Codex, Copilot, …) live as hardcoded constants
 /// in the app with deterministic UUIDs — they are NOT stored in the
 /// `agents` table. The table only stores user-defined custom agents.
 ///
@@ -56,12 +56,14 @@ impl Agent {
         let now = Utc::now();
         let entries = [
             ("Claude", "claude --dangerously-skip-permissions", true),
-            ("Claude Code", "claude --dangerously-skip-permissions", false),
-            ("Codex", "codex", false),
-            ("Cursor", "cursor-agent", false),
+            ("Copilot", "copilot --allow-all", false),
             ("OpenCode", "opencode", false),
-            ("Copilot", "gh copilot suggest", false),
-            ("Gemini", "gemini", false),
+            ("Gemini", "gemini --yolo", false),
+            (
+                "Codex",
+                r#"codex -c model_reasoning_effort="high" --dangerously-bypass-approvals-and-sandbox -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#,
+                false,
+            ),
         ];
         entries
             .into_iter()
@@ -93,13 +95,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seeded_includes_all_seven_agents() {
+    fn seeded_includes_all_five_agents() {
         let seeded = Agent::seeded();
         let names: Vec<_> = seeded.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["Claude", "Claude Code", "Codex", "Cursor", "OpenCode", "Copilot", "Gemini"]
-        );
+        assert_eq!(names, ["Claude", "Copilot", "OpenCode", "Gemini", "Codex"]);
         assert!(seeded.iter().all(|a| a.is_seed));
         assert_eq!(seeded.iter().filter(|a| a.is_default).count(), 1);
     }

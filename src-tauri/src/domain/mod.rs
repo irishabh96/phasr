@@ -5,7 +5,7 @@
 //!   - `Workspace`  — one agent run inside a repository, with its own
 //!     git worktree, branch, and PTY session.
 //!   - `Agent`      — an AI tool/CLI that can be run as a workspace's
-//!     command (Claude, Codex, Cursor, …).
+//!     command (Claude, Codex, Copilot, …).
 //!   - `UserSettings` — per-user app settings.
 
 pub mod agent;
