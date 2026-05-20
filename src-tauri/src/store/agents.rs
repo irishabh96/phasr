@@ -46,9 +46,33 @@ impl AgentRepo {
     /// `agents` table so the `workspaces.agent_id` FK constraint is
     /// always satisfied when a workspace references a seed. Idempotent:
     /// matches existing rows by deterministic UUID.
+    ///
+    /// Also removes seed rows that are no longer in the current seed
+    /// list (e.g. agents we dropped between app releases) — the
+    /// `workspaces.agent_id` FK is `ON DELETE SET NULL`, so any
+    /// workspace that referenced a removed seed keeps its row with a
+    /// null agent_id (its stored `command` snapshot still runs).
     pub async fn ensure_seeded(&self) -> Result<(), StoreError> {
         let now = Utc::now().to_rfc3339();
-        for agent in Agent::seeded() {
+        let seeded = Agent::seeded();
+
+        // Drop stale seed rows whose IDs are no longer in the current
+        // seed list. Build a NOT IN (?, ?, ...) clause from the live IDs.
+        let live_ids: Vec<String> = seeded.iter().map(|a| a.id.clone()).collect();
+        let placeholders = std::iter::repeat("?")
+            .take(live_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let delete_sql = format!(
+            "DELETE FROM agents WHERE is_seed = 1 AND id NOT IN ({placeholders})"
+        );
+        let mut q = sqlx::query(&delete_sql);
+        for id in &live_ids {
+            q = q.bind(id);
+        }
+        q.execute(&self.db).await?;
+
+        for agent in seeded {
             // Use OR REPLACE so a command-text update in a new app
             // release lands on next boot without manual migration.
             sqlx::query(

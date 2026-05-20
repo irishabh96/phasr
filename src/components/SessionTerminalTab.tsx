@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { PtyEvent } from "@/lib/types";
@@ -194,6 +194,11 @@ export function SessionTerminalTab({
 
     const refit = () => {
       try {
+        const c = entry!.container;
+        // Skip when hidden — fit on a 0×0 container collapses xterm to
+        // a 1×1 grid and the WebGL canvas gets stuck rendering into a
+        // tiny region even after the tab becomes visible again.
+        if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
         entry!.fit.fit();
         if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
       } catch {
@@ -216,6 +221,26 @@ export function SessionTerminalTab({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, tabId, cwd]);
+
+  // When the tab becomes visible (display: none → block), the browser
+  // has just laid out the container — fit + refresh synchronously here
+  // so the first frame after the visibility flip uses correct
+  // dimensions. Prevents the squeezed-to-strip render after a tab
+  // switch in. ResizeObserver alone fires on a later tick; doing this
+  // synchronously in useLayoutEffect avoids the flicker frame.
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const entry = sessionXtermCache.get(tabId);
+    if (!entry) return;
+    try {
+      const c = entry.container;
+      if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
+      entry.fit.fit();
+      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
+    } catch {
+      /* layout still settling */
+    }
+  }, [visible, tabId]);
 
   return (
     <div

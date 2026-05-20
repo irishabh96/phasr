@@ -76,14 +76,11 @@ export function WorkspaceTabContent({
         const active = tab.id === activeTabId;
         if (tab.kind === "main") {
           return (
-            <div
-              key={tab.id}
-              className="absolute inset-0"
-              style={{ display: active ? "block" : "none" }}
-            >
+            <div key={tab.id} className="absolute inset-0">
               <Terminal
                 workspaceId={workspaceId}
                 status={workspace.status}
+                visible={active}
                 {...(onMainExit ? { onExit: onMainExit } : {})}
               />
             </div>

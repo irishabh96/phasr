@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { tauri } from "@/lib/tauri";
 import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
@@ -11,6 +11,8 @@ export interface TerminalProps {
   workspaceId: string;
   /** Snapshot of status at the moment the user opened the workspace. */
   status: WorkspaceStatus;
+  /** Whether this terminal's tab is currently the active inner tab. */
+  visible: boolean;
   onExit?: (exitCode: number | null) => void;
 }
 
@@ -80,7 +82,7 @@ export function disposeMainXterm(workspaceId: string) {
   mainXtermCache.delete(workspaceId);
 }
 
-export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
+export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const initialStatusRef = useRef(status);
 
@@ -192,6 +194,11 @@ export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
 
     const refit = () => {
       try {
+        const c = entry!.container;
+        // Skip when hidden — fit on a 0×0 container collapses xterm to
+        // a 1×1 grid and the WebGL canvas gets stuck rendering into a
+        // tiny region even after the tab becomes visible again.
+        if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
         entry!.fit.fit();
         if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
       } catch {
@@ -215,6 +222,26 @@ export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
+  // When the tab becomes visible (display: none → block), the browser
+  // has just laid out the container — fit + refresh synchronously here
+  // so the first frame after the visibility flip uses correct
+  // dimensions. Prevents the squeezed-to-strip render after a tab
+  // switch in. ResizeObserver alone fires on a later tick; doing this
+  // synchronously in useLayoutEffect avoids the flicker frame.
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const entry = mainXtermCache.get(workspaceId);
+    if (!entry) return;
+    try {
+      const c = entry.container;
+      if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
+      entry.fit.fit();
+      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
+    } catch {
+      /* layout still settling */
+    }
+  }, [visible, workspaceId]);
+
   return (
     <div
       onClick={() => {
@@ -223,6 +250,7 @@ export function Terminal({ workspaceId, status, onExit }: TerminalProps) {
       }}
       className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
       style={{
+        display: visible ? "block" : "none",
         paddingTop: 10,
         paddingRight: 8,
         paddingBottom: 2,
