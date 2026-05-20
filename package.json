@@ -35,6 +35,7 @@
     "lucide-react": "^0.451.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "shiki": "4.1.0",
     "tailwind-merge": "^2.5.4",
     "tailwindcss": "^4.0.0",
     "uuid": "^14.0.0",
