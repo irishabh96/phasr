@@ -42,10 +42,10 @@ jobs:
         with:
           node-version: '20'
 
+      # pnpm version sourced from package.json "packageManager" —
+      # passing `with: version:` here too trips ERR_PNPM_BAD_PM_VERSION.
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: '8'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
