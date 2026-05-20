@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Search, Settings as SettingsIcon } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { isClerkConfigured } from "@/lib/clerk";
 import { useUiStore } from "@/lib/store";
 import type { ReactNode } from "react";
 
@@ -59,15 +60,17 @@ export function TitleBar({ breadcrumb }: TitleBarProps) {
         >
           <SettingsIcon size={13} />
         </GlassButton>
-        <div className="ml-1 flex items-center">
-          <UserButton
-            appearance={{
-              elements: {
-                avatarBox: { width: 24, height: 24 },
-              },
-            }}
-          />
-        </div>
+        {isClerkConfigured && (
+          <div className="ml-1 flex items-center">
+            <UserButton
+              appearance={{
+                elements: {
+                  avatarBox: { width: 24, height: 24 },
+                },
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

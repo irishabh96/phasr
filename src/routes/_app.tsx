@@ -14,6 +14,7 @@ import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
+import { isClerkConfigured } from "@/lib/clerk";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
@@ -22,8 +23,38 @@ import { useRustSession } from "@/lib/use-rust-session";
 import { tauri } from "@/lib/tauri";
 import type { Repository } from "@/lib/types";
 
+/**
+ * Top-level shell. In cloud mode (Clerk configured), AuthGate gets to
+ * call `useAuth()` and gate on sign-in. In local-only mode (no Clerk),
+ * we skip the gate entirely and render the shell directly — `useAuth`
+ * would throw without a ClerkProvider parent in the tree.
+ */
 function AppLayout() {
+  if (!isClerkConfigured) {
+    return <AppShell />;
+  }
+  return <AuthGate />;
+}
+
+function AuthGate() {
   const { isLoaded, isSignedIn } = useAuth();
+
+  if (!isLoaded) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) text-sm text-(--color-text-muted)">
+        Loading…
+      </div>
+    );
+  }
+
+  if (!isSignedIn) {
+    return <Navigate to="/sign-in" replace />;
+  }
+
+  return <AppShell />;
+}
+
+function AppShell() {
   const toggleSidebarPin = useUiStore((s) => s.toggleSidebarPin);
   const toggleSidebarHidden = useUiStore((s) => s.toggleSidebarHidden);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
@@ -109,18 +140,6 @@ function AppLayout() {
     window.addEventListener("keydown", handler, { capture: true });
     return () => window.removeEventListener("keydown", handler, { capture: true });
   }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient]);
-
-  if (!isLoaded) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) text-sm text-(--color-text-muted)">
-        Loading…
-      </div>
-    );
-  }
-
-  if (!isSignedIn) {
-    return <Navigate to="/sign-in" replace />;
-  }
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">

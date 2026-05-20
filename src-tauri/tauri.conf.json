@@ -18,6 +18,7 @@
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
+        "maximized": true,
         "fullscreen": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
@@ -29,13 +30,18 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "app"],
+    "category": "DeveloperTool",
+    "copyright": "Copyright © 2026 Phasr Contributors",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
   }
 }

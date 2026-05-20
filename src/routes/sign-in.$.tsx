@@ -1,8 +1,15 @@
 import { SignIn, useAuth } from "@clerk/react";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
-import { clerkAppearance } from "@/lib/clerk";
+import { clerkAppearance, isClerkConfigured } from "@/lib/clerk";
 
 function SignInRoute() {
+  if (!isClerkConfigured) {
+    return <Navigate to="/" replace />;
+  }
+  return <ClerkSignInSplat />;
+}
+
+function ClerkSignInSplat() {
   const { isLoaded, isSignedIn } = useAuth();
   if (isLoaded && isSignedIn) {
     return <Navigate to="/" replace />;

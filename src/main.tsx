@@ -7,7 +7,7 @@ import "./index.css";
 import { routeTree } from "./routeTree.gen";
 import { queryClient } from "./lib/query";
 import { applyTheme, readStoredTheme } from "./lib/theme";
-import { CLERK_PUBLISHABLE_KEY, clerkAppearance } from "./lib/clerk";
+import { CLERK_PUBLISHABLE_KEY, clerkAppearance, isClerkConfigured } from "./lib/clerk";
 
 // Apply theme before React mounts to prevent FOUC.
 applyTheme(readStoredTheme());
@@ -29,10 +29,18 @@ if (!rootElement) {
   throw new Error("Missing #root element in index.html");
 }
 
+const appTree = (
+  <QueryClientProvider client={queryClient}>
+    <RouterProvider router={router} />
+  </QueryClientProvider>
+);
+
 createRoot(rootElement).render(
-  <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} appearance={clerkAppearance()}>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
-  </ClerkProvider>,
+  isClerkConfigured ? (
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY!} appearance={clerkAppearance()}>
+      {appTree}
+    </ClerkProvider>
+  ) : (
+    appTree
+  ),
 );

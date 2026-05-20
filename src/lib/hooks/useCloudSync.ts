@@ -16,6 +16,7 @@ import {
   pushUserSettings,
   pushWorkspace,
 } from "@/lib/cloud";
+import { isClerkConfigured } from "@/lib/clerk";
 import { createPhasrSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { tauri } from "@/lib/tauri";
 import type { Repository, UserSettings, Workspace } from "@/lib/types";
@@ -25,7 +26,19 @@ const log = (...args: unknown[]) => {
   if (DEBUG) console.info("[cloud sync]", ...args);
 };
 
+/**
+ * No-op when Clerk/Supabase aren't configured. In local-only mode this
+ * hook short-circuits before any Clerk hook fires — they require a
+ * ClerkProvider parent that doesn't exist in the keyless tree.
+ */
 export function useCloudSync() {
+  if (!isClerkConfigured || !isSupabaseConfigured) {
+    return;
+  }
+  return useCloudSyncInner();
+}
+
+function useCloudSyncInner() {
   const { isLoaded, isSignedIn } = useAuth();
   const { session } = useSession();
   const { user } = useUser();

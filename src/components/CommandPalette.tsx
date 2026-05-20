@@ -1,4 +1,5 @@
 import { useClerk } from "@clerk/react";
+import { isClerkConfigured } from "@/lib/clerk";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
@@ -31,7 +32,6 @@ export function CommandPalette() {
   const togglePalette = useUiStore((s) => s.toggleCommandPalette);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
-  const { signOut } = useClerk();
   const { setTheme } = useUiStore();
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const navigateToRepoEntry = useNavigateToRepoEntry();
@@ -245,16 +245,7 @@ export function CommandPalette() {
               </Command.Item>
             </PaletteGroup>
 
-            <PaletteGroup heading="Session">
-              <Command.Item
-                value="sign out logout"
-                onSelect={() => go(() => void signOut())}
-                className={ITEM_CLS}
-              >
-                <LogOut size={15} className="shrink-0 text-(--color-danger)" />
-                <span className="flex-1 text-[15px] text-(--color-danger)">Sign out</span>
-              </Command.Item>
-            </PaletteGroup>
+            {isClerkConfigured && <SignOutGroup onPick={go} />}
           </Command.List>
 
           <div className="flex items-center gap-4 border-t border-(--glass-border-hairline) px-4 py-2.5 text-[11.5px] text-(--color-text-muted)">
@@ -290,6 +281,27 @@ function PaletteGroup({ heading, children }: { heading: string; children: ReactN
       <span hidden aria-hidden="true" />
       {children}
     </Command.Group>
+  );
+}
+
+/**
+ * Sign-out entry. Lives in its own component so `useClerk()` is only
+ * called when Clerk is configured — without a ClerkProvider in the
+ * tree the hook would throw.
+ */
+function SignOutGroup({ onPick }: { onPick: (fn: () => void) => void }) {
+  const { signOut } = useClerk();
+  return (
+    <PaletteGroup heading="Session">
+      <Command.Item
+        value="sign out logout"
+        onSelect={() => onPick(() => void signOut())}
+        className={ITEM_CLS}
+      >
+        <LogOut size={15} className="shrink-0 text-(--color-danger)" />
+        <span className="flex-1 text-[15px] text-(--color-danger)">Sign out</span>
+      </Command.Item>
+    </PaletteGroup>
   );
 }
 
