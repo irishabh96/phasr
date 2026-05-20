@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Search, Settings as SettingsIcon } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { useUiStore } from "@/lib/store";
 import type { ReactNode } from "react";
 
 type TitleBarProps = {
@@ -20,6 +21,7 @@ const isMac =
  */
 export function TitleBar({ breadcrumb }: TitleBarProps) {
   const navigate = useNavigate();
+  const openCommandPalette = useUiStore((s) => s.openCommandPalette);
 
   return (
     <div
@@ -43,9 +45,7 @@ export function TitleBar({ breadcrumb }: TitleBarProps) {
         <GlassButton
           variant="ghost"
           size="icon"
-          onClick={() => {
-            window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
-          }}
+          onClick={openCommandPalette}
           title="Search (⌘K)"
         >
           <Search size={13} />

@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
   Bot,
+  CornerDownLeft,
   FolderGit2,
   LogOut,
   Palette,
@@ -11,7 +12,7 @@ import {
   Settings,
   UserCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { StatusDot } from "@/components/ui/StatusDot";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
@@ -24,7 +25,10 @@ interface WorkspaceEntry extends Workspace {
 }
 
 export function CommandPalette() {
-  const [open, setOpen] = useState(false);
+  const open = useUiStore((s) => s.commandPaletteOpen);
+  const openPalette = useUiStore((s) => s.openCommandPalette);
+  const closePalette = useUiStore((s) => s.closeCommandPalette);
+  const togglePalette = useUiStore((s) => s.toggleCommandPalette);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { signOut } = useClerk();
@@ -62,15 +66,15 @@ export function CommandPalette() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setOpen((v) => !v);
+        togglePalette();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, []);
+  }, [togglePalette]);
 
   const close = () => {
-    setOpen(false);
+    closePalette();
     setQuery("");
   };
 
@@ -88,38 +92,26 @@ export function CommandPalette() {
   return (
     <Command.Dialog
       open={open}
-      onOpenChange={(o) => (o ? setOpen(true) : close())}
+      onOpenChange={(o) => (o ? openPalette() : close())}
       label="Command palette"
       className="fixed inset-0 z-[200] flex items-start justify-center bg-(--color-bg-overlay) p-0 pt-[14vh] backdrop-blur-md"
       shouldFilter
     >
-      <div className="relative w-full max-w-xl" onClick={(e) => e.stopPropagation()}>
-        {/* Accent halo behind the modal */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute -inset-8 -z-10 rounded-[28px] opacity-60 blur-2xl"
-          style={{
-            background:
-              "radial-gradient(60% 50% at 50% 0%, color-mix(in oklab, var(--color-accent-500) 35%, transparent), transparent)",
-          }}
-        />
-        <div className="glass-modal animate-[modal-in_200ms_var(--ease-glass)] overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-(--glass-border-hairline) px-3">
-            <Search size={13} className="text-(--color-text-muted)" />
+      <div className="relative w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
+        <div className="overflow-hidden rounded-[var(--radius-modal)] bg-(--glass-modal) backdrop-blur-xl animate-[modal-in_200ms_var(--ease-glass)]">
+          <div className="flex items-center gap-3 px-5 pt-5 pb-2">
+            <Search size={18} className="shrink-0 text-(--color-text-muted)" />
             <Command.Input
               autoFocus
-              placeholder="Type to search repositories, workspaces, settings…"
+              placeholder="Type a command…"
               value={query}
               onValueChange={setQuery}
-              className="h-12 w-full border-0 bg-transparent text-[13.5px] focus:outline-none"
+              className="h-10 w-full border-0 bg-transparent text-[17px] placeholder:text-(--color-text-muted) shadow-none! outline-none focus:border-transparent! focus:shadow-none! focus:outline-none"
             />
-            <kbd className="rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-hover) px-1.5 py-0.5 text-[10px] text-(--color-text-muted)">
-              esc
-            </kbd>
           </div>
 
-          <Command.List className="max-h-[60vh] overflow-y-auto p-2">
-            <Command.Empty className="px-3 py-6 text-center text-[12px] text-(--color-text-muted)">
+          <Command.List className="max-h-[60vh] overflow-y-auto px-3 pb-2">
+            <Command.Empty className="px-3 py-6 text-center text-[13px] text-(--color-text-muted)">
               No matches.
             </Command.Empty>
 
@@ -143,8 +135,8 @@ export function CommandPalette() {
                       <StatusDot status={ws.status} />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate">{ws.name}</div>
-                      <div className="truncate text-[10.5px] text-(--color-text-muted)">
+                      <div className="truncate text-[15px]">{ws.name}</div>
+                      <div className="truncate text-[11.5px] text-(--color-text-muted)">
                         {ws.repositoryName} · {ws.status}
                       </div>
                     </div>
@@ -162,10 +154,10 @@ export function CommandPalette() {
                     onSelect={() => go(() => void navigateToRepoEntry(repo.id))}
                     className={ITEM_CLS}
                   >
-                    <FolderGit2 size={13} className="text-(--color-text-secondary)" />
+                    <FolderGit2 size={15} className="shrink-0 text-(--color-text-secondary)" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate">{repo.name}</div>
-                      <div className="truncate text-[10.5px] text-(--color-text-muted)">
+                      <div className="truncate text-[15px]">{repo.name}</div>
+                      <div className="truncate text-[11.5px] text-(--color-text-muted)">
                         {repo.localPath ?? "(no local path)"}
                       </div>
                     </div>
@@ -182,10 +174,11 @@ export function CommandPalette() {
                   onSelect={() => go(() => requestNewWorkspace(repo.id))}
                   className={ITEM_CLS}
                 >
-                  <Plus size={13} className="text-(--color-text-secondary)" />
-                  <span>
+                  <Plus size={15} className="shrink-0 text-(--color-text-secondary)" />
+                  <span className="flex-1 text-[15px]">
                     New workspace in <span className="font-medium">{repo.name}</span>
                   </span>
+                  <Shortcut keys={["⌘", "N"]} />
                 </Command.Item>
               ))}
             </Command.Group>
@@ -196,32 +189,32 @@ export function CommandPalette() {
                 onSelect={() => go(() => navigate({ to: "/settings/account" }))}
                 className={ITEM_CLS}
               >
-                <UserCircle size={13} className="text-(--color-text-secondary)" />
-                Account
+                <UserCircle size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Account</span>
               </Command.Item>
               <Command.Item
                 value="settings appearance theme accent color"
                 onSelect={() => go(() => navigate({ to: "/settings/appearance" }))}
                 className={ITEM_CLS}
               >
-                <Palette size={13} className="text-(--color-text-secondary)" />
-                Appearance
+                <Palette size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Appearance</span>
               </Command.Item>
               <Command.Item
                 value="settings agents ai claude codex cursor"
                 onSelect={() => go(() => navigate({ to: "/settings/agents" }))}
                 className={ITEM_CLS}
               >
-                <Bot size={13} className="text-(--color-text-secondary)" />
-                Agents
+                <Bot size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Agents</span>
               </Command.Item>
               <Command.Item
                 value="settings all"
                 onSelect={() => go(() => navigate({ to: "/settings" }))}
                 className={ITEM_CLS}
               >
-                <Settings size={13} className="text-(--color-text-secondary)" />
-                Open settings
+                <Settings size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Open settings</span>
               </Command.Item>
             </Command.Group>
 
@@ -231,24 +224,24 @@ export function CommandPalette() {
                 onSelect={() => go(() => setTheme("dark"))}
                 className={ITEM_CLS}
               >
-                <Palette size={13} className="text-(--color-text-secondary)" />
-                Switch to dark theme
+                <Palette size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Switch to dark theme</span>
               </Command.Item>
               <Command.Item
                 value="theme light"
                 onSelect={() => go(() => setTheme("light"))}
                 className={ITEM_CLS}
               >
-                <Palette size={13} className="text-(--color-text-secondary)" />
-                Switch to light theme
+                <Palette size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Switch to light theme</span>
               </Command.Item>
               <Command.Item
                 value="theme system"
                 onSelect={() => go(() => setTheme("system"))}
                 className={ITEM_CLS}
               >
-                <Palette size={13} className="text-(--color-text-secondary)" />
-                Match system theme
+                <Palette size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">Match system theme</span>
               </Command.Item>
             </Command.Group>
 
@@ -258,24 +251,16 @@ export function CommandPalette() {
                 onSelect={() => go(() => void signOut())}
                 className={ITEM_CLS}
               >
-                <LogOut size={13} className="text-(--color-danger)" />
-                <span className="text-(--color-danger)">Sign out</span>
+                <LogOut size={15} className="shrink-0 text-(--color-danger)" />
+                <span className="flex-1 text-[15px] text-(--color-danger)">Sign out</span>
               </Command.Item>
             </Command.Group>
           </Command.List>
 
-          <div className="flex items-center justify-between border-t border-(--glass-border-hairline) px-3 py-2 text-[10.5px] text-(--color-text-muted)">
-            <span className="flex items-center gap-1.5">
-              <kbd className={KBD_CLS}>↑</kbd>
-              <kbd className={KBD_CLS}>↓</kbd>
-              <span className="ml-0.5">navigate</span>
-              <kbd className={`${KBD_CLS} ml-2`}>↵</kbd>
-              <span className="ml-0.5">open</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <kbd className={KBD_CLS}>⌘K</kbd>
-              <span>toggle</span>
-            </span>
+          <div className="flex items-center gap-4 border-t border-(--glass-border-hairline) px-4 py-2.5 text-[11.5px] text-(--color-text-muted)">
+            <FooterHint icon={<span className="text-[12px] leading-none">↕</span>} label="Navigate" />
+            <FooterHint icon={<CornerDownLeft size={11} />} label="Select" />
+            <FooterHint icon={<span className="text-[10px]">esc</span>} label="Close" boxed />
           </div>
         </div>
       </div>
@@ -283,17 +268,52 @@ export function CommandPalette() {
   );
 }
 
+function Shortcut({ keys }: { keys: string[] }) {
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {keys.map((k) => (
+        <kbd key={k} className={KBD_CLS}>
+          {k}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+function FooterHint({
+  icon,
+  label,
+  boxed = false,
+}: {
+  icon: ReactNode;
+  label: string;
+  boxed?: boolean;
+}) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span
+        className={
+          boxed
+            ? "inline-flex h-5 items-center rounded-[5px] bg-(--color-bg-hover) px-1.5 text-(--color-text-secondary)"
+            : "inline-flex h-5 w-5 items-center justify-center rounded-[5px] bg-(--color-bg-hover) text-(--color-text-secondary)"
+        }
+      >
+        {icon}
+      </span>
+      {label}
+    </span>
+  );
+}
+
 const GROUP_CLS =
-  "[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.14em] [&_[cmdk-group-heading]]:text-(--color-text-muted)";
+  "[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[12px] [&_[cmdk-group-heading]]:font-normal [&_[cmdk-group-heading]]:text-(--color-text-muted)";
 
 const ITEM_CLS = [
-  "relative flex cursor-pointer items-center gap-2 rounded-[8px] px-2 py-2 text-[13px]",
-  "text-(--color-text-secondary)",
+  "flex cursor-pointer items-center gap-3 rounded-[8px] px-3 py-2.5",
+  "text-(--color-text-primary)",
   "transition-colors duration-100",
-  "aria-selected:bg-[color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
-  "aria-selected:text-(--color-text-primary)",
-  "aria-selected:before:absolute aria-selected:before:left-0 aria-selected:before:top-1.5 aria-selected:before:bottom-1.5 aria-selected:before:w-0.5 aria-selected:before:rounded-r-full aria-selected:before:bg-(--color-accent-500)",
+  "aria-selected:bg-(--color-bg-hover)",
 ].join(" ");
 
 const KBD_CLS =
-  "inline-block rounded-[4px] border border-(--glass-border-hairline) bg-(--color-bg-hover) px-1 text-[9.5px] text-(--color-text-secondary)";
+  "inline-flex h-5 min-w-[20px] items-center justify-center rounded-[5px] bg-(--color-bg-hover) px-1 text-[10.5px] font-medium text-(--color-text-secondary)";

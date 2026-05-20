@@ -120,6 +120,13 @@ interface UiState {
   openAddRepositoryPicker: () => void;
   closeAddRepositoryPicker: () => void;
 
+  /** Global ⌘K command palette. Opened by both the TitleBar search
+   *  button and the ⌘K hotkey inside the palette component. */
+  commandPaletteOpen: boolean;
+  openCommandPalette: () => void;
+  closeCommandPalette: () => void;
+  toggleCommandPalette: () => void;
+
   // ---------- Active workspace context ----------
   activeWorkspaceContext: ActiveWorkspaceContext | null;
   setActiveWorkspaceContext: (ctx: ActiveWorkspaceContext | null) => void;
@@ -199,6 +206,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   addRepositoryPickerOpen: false,
   openAddRepositoryPicker: () => set({ addRepositoryPickerOpen: true }),
   closeAddRepositoryPicker: () => set({ addRepositoryPickerOpen: false }),
+
+  commandPaletteOpen: false,
+  openCommandPalette: () => set({ commandPaletteOpen: true }),
+  closeCommandPalette: () => set({ commandPaletteOpen: false }),
+  toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
 
   activeWorkspaceContext: null,
   setActiveWorkspaceContext: (ctx) => set({ activeWorkspaceContext: ctx }),
