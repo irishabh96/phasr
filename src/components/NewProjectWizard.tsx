@@ -52,7 +52,7 @@ export function NewProjectWizard() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && close()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/40 backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content className="fixed left-1/2 top-[12vh] z-[190] w-[min(620px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
             <WizardBody onClose={close} />
@@ -220,7 +220,7 @@ function Tile({
       className={cn(
         "glass-panel group flex items-center gap-3 p-4 text-left",
         "transition-all duration-150",
-        "hover:border-(--glass-border-strong) hover:shadow-[var(--shadow-glow)]",
+        "hover:border-(--glass-border-strong)",
       )}
     >
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] text-(--color-accent-400)">
@@ -429,7 +429,7 @@ function TemplatePickStep({ onPick }: { onPick: (template: Template) => void }) 
           key={t.id}
           type="button"
           onClick={() => onPick(t)}
-          className="glass-panel group flex flex-col gap-1.5 p-4 text-left transition-all duration-150 hover:border-(--glass-border-strong) hover:shadow-[var(--shadow-glow)]"
+          className="glass-panel group flex flex-col gap-1.5 p-4 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
         >
           <div className="flex items-center justify-between">
             <span className="text-[13.5px] font-medium leading-none">{t.name}</span>
@@ -505,7 +505,7 @@ function TemplateConfigStep({
 
   return (
     <form onSubmit={submit} className="space-y-3">
-      <div className="rounded-[10px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,white_3%,transparent)] p-3">
+      <div className="rounded-[10px] border border-(--glass-border-hairline) bg-(--color-bg-hover) p-3">
         <div className="text-[12px] text-(--color-text-secondary)">{template.description}</div>
         <code className="mt-1 block truncate text-[10.5px] text-(--color-text-muted)">
           {template.gitUrl}
@@ -579,17 +579,10 @@ function CreatingStep({ status }: { status: string }) {
   );
 }
 
-// ── Step 4: workspace creation (or skip → repo detail) ─────────────
+// ── Step 4: workspace creation (or skip) ───────────────────────────
 
 function WorkspaceStep({ repository, onDone }: { repository: Repository; onDone: () => void }) {
   const navigate = useNavigate();
-  const skipToRepo = () => {
-    onDone();
-    navigate({
-      to: "/repositories/$repositoryId",
-      params: { repositoryId: repository.id },
-    });
-  };
   return (
     <div className="space-y-4">
       <p className="text-[12.5px] text-(--color-text-secondary)">
@@ -602,14 +595,14 @@ function WorkspaceStep({ repository, onDone }: { repository: Repository; onDone:
         showCancel={false}
         onCreated={(workspace) => {
           onDone();
-          navigate({
+          void navigate({
             to: "/repositories/$repositoryId/workspaces/$workspaceId",
             params: { repositoryId: repository.id, workspaceId: workspace.id },
           });
         }}
       />
       <div className="flex justify-start border-t border-(--glass-border-hairline) pt-3">
-        <GlassButton variant="ghost" size="sm" onClick={skipToRepo}>
+        <GlassButton variant="ghost" size="sm" onClick={onDone}>
           skip
         </GlassButton>
       </div>

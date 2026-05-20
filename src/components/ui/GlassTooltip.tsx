@@ -32,9 +32,8 @@ export function GlassTooltip({
             sideOffset={6}
             className={cn(
               "z-50 px-2 py-1 text-[12px] font-medium",
-              "bg-[var(--glass-modal)] backdrop-blur-xl text-[var(--color-text-primary)]",
-              "border border-[var(--glass-border-hairline)] rounded-[8px]",
-              "shadow-[inset_0_1px_0_0_var(--glass-highlight-top),var(--shadow-panel)]",
+              "bg-(--color-bg-tooltip) text-(--color-text-primary)",
+              "border border-(--color-border-default) rounded-[8px]",
               "data-[state=delayed-open]:animate-[modal-in_180ms_cubic-bezier(0.16,1,0.3,1)]",
             )}
           >

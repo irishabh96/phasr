@@ -1,11 +1,12 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, FolderOpen, XCircle } from "lucide-react";
 import { useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
+import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useCreateRepository, useRepositories } from "@/lib/hooks/useRepositories";
+import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 
 export function AddRepositoryForm() {
@@ -13,7 +14,9 @@ export function AddRepositoryForm() {
   const [localPath, setLocalPath] = useState("");
   const createRepository = useCreateRepository();
   const { data: existing } = useRepositories();
-  const navigate = useNavigate();
+  const navigateToRepoEntry = useNavigateToRepoEntry();
+  const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
+  const closeOpenExistingModal = useUiStore((s) => s.closeOpenExistingModal);
 
   const trimmedPath = localPath.trim();
 
@@ -63,10 +66,11 @@ export function AddRepositoryForm() {
     });
     setName("");
     setLocalPath("");
-    navigate({
-      to: "/repositories/$repositoryId",
-      params: { repositoryId: repository.id },
-    });
+    // Newly-added repos have no workspaces yet — prompt creation. Close
+    // the "Open existing" modal (no-op if invoked from elsewhere) so the
+    // NewWorkspaceModal can take its place.
+    closeOpenExistingModal();
+    requestNewWorkspace(repository.id);
   };
 
   return (
@@ -114,12 +118,10 @@ export function AddRepositoryForm() {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() =>
-              navigate({
-                to: "/repositories/$repositoryId",
-                params: { repositoryId: duplicate.id },
-              })
-            }
+            onClick={() => {
+              closeOpenExistingModal();
+              void navigateToRepoEntry(duplicate.id);
+            }}
           >
             Open it
           </GlassButton>

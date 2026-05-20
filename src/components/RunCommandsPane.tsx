@@ -48,7 +48,7 @@ export function RunCommandsPane({ repositoryId }: RunCommandsPaneProps) {
                   "transition-colors duration-150",
                   isActive
                     ? "bg-[color-mix(in_oklab,var(--color-accent-500)_18%,transparent)] text-(--color-text-primary)"
-                    : "text-(--color-text-secondary) hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)",
+                    : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
                 )}
               >
                 <button
@@ -73,7 +73,7 @@ export function RunCommandsPane({ repositoryId }: RunCommandsPaneProps) {
                   }}
                   title="Stop and close"
                   aria-label={`Close ${rc.name}`}
-                  className="ml-0.5 flex h-5 w-5 items-center justify-center rounded-full text-(--color-text-muted) transition-colors hover:bg-[color-mix(in_oklab,white_10%,transparent)] hover:text-(--color-text-primary)"
+                  className="ml-0.5 flex h-5 w-5 items-center justify-center rounded-full text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
                 >
                   <X size={11} />
                 </button>

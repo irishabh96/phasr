@@ -61,7 +61,7 @@ export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
                 <button
                   type="button"
                   onClick={() => handlePick(rc.id)}
-                  className="flex w-full items-center justify-between gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-[color-mix(in_oklab,white_6%,transparent)]"
+                  className="flex w-full items-center justify-between gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-(--color-bg-hover)"
                 >
                   <span className="truncate leading-none">{rc.name}</span>
                   <code className="truncate text-[11px] text-(--color-text-muted)">

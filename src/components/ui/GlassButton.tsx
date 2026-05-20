@@ -14,40 +14,37 @@ const button = cva(
   {
     variants: {
       variant: {
-        // Filled accent. The "primary call to action" — soft glow on hover,
-        // lifts on hover and depresses on active per spec.
+        // Filled accent. The "primary call to action" — flat coral that
+        // lifts on hover and depresses on active.
         primary: [
           "bg-[var(--color-accent-500)] text-[var(--color-text-inverse)]",
-          "border border-[color-mix(in_oklab,white_18%,transparent)]",
-          "shadow-[var(--shadow-button-primary)]",
-          "hover:bg-[var(--color-accent-400)] hover:shadow-[var(--shadow-button-primary-hover)] hover:-translate-y-px",
+          "border border-[color-mix(in_oklab,var(--color-text-primary)_18%,transparent)]",
+          "hover:bg-[var(--color-accent-400)] hover:-translate-y-px",
           "active:bg-[var(--color-accent-600)] active:translate-y-0 active:scale-[0.98]",
-          "focus-visible:shadow-[var(--shadow-button-primary-hover),0_0_0_2px_var(--color-accent-300)]",
+          "focus-visible:shadow-[0_0_0_2px_var(--color-accent-300)]",
         ].join(" "),
-        // Transparent. Hovers to a subtle white-tinted glass.
+        // Transparent. Hovers to the elevated surface tone.
         ghost: [
           "bg-transparent text-[var(--color-text-primary)]",
           "border border-transparent",
-          "hover:bg-[color-mix(in_oklab,white_6%,transparent)]",
+          "hover:bg-[var(--color-bg-hover)]",
           "hover:border-[var(--glass-border-hairline)]",
-          "active:bg-[color-mix(in_oklab,white_10%,transparent)]",
+          "active:bg-[var(--color-bg-active)]",
           "focus-visible:border-[var(--color-accent-500)]",
         ].join(" "),
         // Outlined glass — soft pill, used in dialogs and toolbars.
         outline: [
           "bg-[var(--glass-panel)] backdrop-blur-md text-[var(--color-text-primary)]",
           "border border-[var(--glass-border-hairline)]",
-          "shadow-[inset_0_1px_0_0_var(--glass-highlight-top)]",
           "hover:border-[var(--glass-border-strong)]",
-          "hover:bg-[color-mix(in_oklab,white_8%,transparent)]",
+          "hover:bg-[var(--color-bg-hover)]",
           "focus-visible:border-[var(--color-accent-500)]",
         ].join(" "),
-        // Destructive. Red-tinted with red glow on hover.
+        // Destructive. Flat red.
         danger: [
           "bg-[var(--color-danger)] text-white",
-          "border border-[color-mix(in_oklab,white_15%,transparent)]",
-          "shadow-[inset_0_1px_0_0_color-mix(in_oklab,white_18%,transparent)]",
-          "hover:shadow-[var(--shadow-glow-danger)]",
+          "border border-[color-mix(in_oklab,var(--color-text-primary)_15%,transparent)]",
+          "hover:brightness-110",
           "active:brightness-90",
         ].join(" "),
       },

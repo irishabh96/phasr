@@ -47,18 +47,14 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-(--glass-border-hairline) px-3">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-(--color-border-subtle) px-3">
         <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
           Changes <span className="text-(--color-text-secondary)">{changes?.length ?? 0}</span>
         </span>
         {stagedFiles.length > 0 && (
-          <button
-            type="button"
-            onClick={() => unstage.mutate([])}
-            className="rounded-[6px] px-1.5 py-0.5 text-[11px] text-(--color-text-secondary) transition-colors hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)"
-          >
+          <GlassButton variant="ghost" size="sm" onClick={() => unstage.mutate([])}>
             Unstage all
-          </button>
+          </GlassButton>
         )}
       </div>
 
@@ -81,7 +77,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         ))}
       </ul>
 
-      <div className="min-h-0 flex-1 overflow-auto border-y border-(--glass-border-hairline) px-3 py-2 font-mono text-[11.5px]">
+      <div className="min-h-0 flex-1 overflow-auto border-y border-(--color-border-subtle) px-3 py-2 font-mono text-[11.5px]">
         {selectedPath ? (
           diffError ? (
             <p className="text-(--color-danger)">{String(diffError)}</p>
@@ -161,7 +157,7 @@ function FileRow({ change, selected, onSelect, onStage, onUnstage, onDiscard }: 
       className={cn(
         "group flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px]",
         "transition-colors duration-150",
-        "hover:bg-[color-mix(in_oklab,white_4%,transparent)]",
+        "hover:bg-(--color-bg-hover)",
         "data-[active=true]:bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]",
         "data-[active=true]:text-(--color-text-primary)",
       )}
@@ -233,7 +229,7 @@ function RowIconButton({
       className={cn(
         "flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px]",
         "transition-colors",
-        "hover:bg-[color-mix(in_oklab,white_8%,transparent)]",
+        "hover:bg-(--color-bg-hover)",
         danger && "text-(--color-danger)",
       )}
     >

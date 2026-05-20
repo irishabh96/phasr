@@ -5,26 +5,31 @@ import { useRepoFiles } from "@/lib/hooks/useRepoFiles";
 import { useUiStore } from "@/lib/store";
 
 /**
- * Repo-scoped file picker. Opened via `useUiStore.openFileSearch(repoId, path)`.
- * On select: opens an in-app preview tab on that repo via the tab system.
+ * File picker. Opened via `useUiStore.openFileSearch(repoId, path)` — for
+ * example by the ⌘P hotkey when a workspace tab is active. On select,
+ * opens a file-preview inner tab in the currently active workspace.
  */
 export function RepoFileSearchModal() {
   const target = useUiStore((s) => s.fileSearchTarget);
   const close = useUiStore((s) => s.closeFileSearch);
-  const openPreviewTab = useUiStore((s) => s.openPreviewTab);
+  const openInnerPreviewTab = useUiStore((s) => s.openInnerPreviewTab);
+  const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceContext?.workspaceId ?? null);
   const open = target !== null;
   const { data: files, isLoading } = useRepoFiles(target?.path ?? null);
 
   const onSelect = (relative: string) => {
-    if (!target) return;
-    openPreviewTab(target.repositoryId, relative);
+    if (!target || !activeWorkspaceId) {
+      close();
+      return;
+    }
+    openInnerPreviewTab(activeWorkspaceId, relative);
     close();
   };
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && close()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[200] bg-black/30 backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[200] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content className="fixed left-1/2 top-[14vh] z-[210] w-[min(640px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
             <Command label="Search files" shouldFilter>
@@ -40,7 +45,7 @@ export function RepoFileSearchModal() {
                   }
                   className="h-12 w-full border-0 bg-transparent text-[13.5px] focus:outline-none"
                 />
-                <kbd className="rounded-[5px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,white_4%,transparent)] px-1.5 py-0.5 text-[10px] text-(--color-text-muted)">
+                <kbd className="rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-hover) px-1.5 py-0.5 text-[10px] text-(--color-text-muted)">
                   esc
                 </kbd>
               </div>

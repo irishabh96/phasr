@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tauri } from "@/lib/tauri";
 import type { Workspace } from "@/lib/types";
 
-const workspaceKeys = {
+export const workspaceKeys = {
   all: ["workspaces"] as const,
   byRepository: (repositoryId: string) =>
     [...workspaceKeys.all, "repository", repositoryId] as const,

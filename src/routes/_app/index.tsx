@@ -1,5 +1,6 @@
 import { useUser } from "@clerk/react";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { FolderOpen, Sparkles } from "lucide-react";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
@@ -10,6 +11,17 @@ function Home() {
   const { data: repositories, isLoading } = useRepositories();
   const mostRecentRepo = repositories?.[0];
   const { data: workspaces, isLoading: wsLoading } = useWorkspaces(mostRecentRepo?.id);
+  const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
+  const pendingRepoId = useUiStore((s) => s.pendingNewWorkspaceRepoId);
+
+  // If there's a recent repo but no workspaces, surface the new-workspace
+  // modal so the user has somewhere to land. Skip if a request is already
+  // pending (e.g. user navigated here while a different prompt is open).
+  useEffect(() => {
+    if (mostRecentRepo && workspaces && workspaces.length === 0 && !pendingRepoId) {
+      requestNewWorkspace(mostRecentRepo.id);
+    }
+  }, [mostRecentRepo, workspaces, pendingRepoId, requestNewWorkspace]);
 
   if (isLoading || (mostRecentRepo && wsLoading)) {
     return (
@@ -23,7 +35,6 @@ function Home() {
     return <EmptyState firstName={user?.firstName ?? null} />;
   }
 
-  // Most-recent repo is guaranteed by the empty check above.
   const repo = mostRecentRepo!;
   const ws = workspaces?.[0];
 
@@ -37,9 +48,9 @@ function Home() {
     );
   }
 
-  return (
-    <Navigate to="/repositories/$repositoryId" params={{ repositoryId: repo.id }} replace />
-  );
+  // Repo exists but has no workspaces — render the empty state behind the
+  // NewWorkspaceModal that the effect above just requested.
+  return <EmptyState firstName={user?.firstName ?? null} />;
 }
 
 function EmptyState({ firstName }: { firstName: string | null }) {
@@ -60,7 +71,7 @@ function EmptyState({ firstName }: { firstName: string | null }) {
           <button
             type="button"
             onClick={openNewProject}
-            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong) hover:shadow-[var(--shadow-glow)]"
+            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
             <div className="flex items-center gap-2 text-(--color-accent-400)">
               <Sparkles size={15} />
@@ -69,7 +80,7 @@ function EmptyState({ firstName }: { firstName: string | null }) {
             <p className="mt-2 text-[12px] text-(--color-text-secondary)">
               Empty repo, clone from URL, or start from a template.
             </p>
-            <span className="mt-4 inline-flex h-7 items-center gap-1 rounded-[8px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,white_4%,transparent)] px-2.5 text-[12px] text-(--color-text-primary)">
+            <span className="mt-4 inline-flex h-7 items-center gap-1 rounded-[8px] border border-(--glass-border-hairline) bg-(--color-bg-hover) px-2.5 text-[12px] text-(--color-text-primary)">
               Get started →
             </span>
           </button>
@@ -77,7 +88,7 @@ function EmptyState({ firstName }: { firstName: string | null }) {
           <button
             type="button"
             onClick={openExisting}
-            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong) hover:shadow-[var(--shadow-glow)]"
+            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
             <div className="flex items-center gap-2 text-(--color-text-secondary)">
               <FolderOpen size={15} />

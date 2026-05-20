@@ -39,11 +39,11 @@ function SettingsLayout() {
                 <Link
                   to={item.to}
                   className={cn(
-                    "flex items-center gap-2 rounded-[8px] px-2 py-1.5 text-[13px] leading-none",
+                    "flex h-[38px] items-center gap-2 rounded-[10px] px-3 text-[14px] font-medium leading-none",
                     "transition-colors duration-150",
                     isActive
-                      ? "bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)] text-(--color-text-primary)"
-                      : "text-(--color-text-secondary) hover:bg-[color-mix(in_oklab,white_5%,transparent)] hover:text-(--color-text-primary)",
+                      ? "bg-[color-mix(in_oklab,var(--color-accent-500)_12%,transparent)] text-(--color-text-primary)"
+                      : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
                   )}
                 >
                   {item.icon}

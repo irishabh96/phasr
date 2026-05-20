@@ -18,9 +18,8 @@ interface RepositorySidebarMenuProps {
  * Wraps a sidebar repo row in a Radix context menu. Right-clicking the
  * row opens a glass dropdown with three actions:
  *
- *   1. New workspace — sets a `useUiStore` flag, navigates to the repo
- *      detail page (or stays put if already there). The detail page
- *      consumes the flag and pops the new-workspace form.
+ *   1. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
+ *      NewWorkspaceModal picks it up and opens.
  *   2. Settings — navigate to /repositories/<id>/settings.
  *   3. Remove project — opens a glass confirm dialog; on confirm,
  *      deletes only the DB row (local clone untouched).
@@ -33,7 +32,6 @@ export function RepositorySidebarMenu({ repository, children }: RepositorySideba
 
   const onNewWorkspace = () => {
     requestNewWorkspace(repository.id);
-    navigate({ to: "/repositories/$repositoryId", params: { repositoryId: repository.id } });
   };
 
   const onOpenSettings = () => {
@@ -107,7 +105,7 @@ function Item({
         "flex cursor-pointer items-center gap-2 rounded-[8px] px-2 py-1.5",
         "text-[12.5px] leading-none outline-none",
         "transition-colors duration-100",
-        "data-[highlighted]:bg-[color-mix(in_oklab,white_6%,transparent)]",
+        "data-[highlighted]:bg-(--color-bg-hover)",
         danger
           ? "text-(--color-danger) data-[highlighted]:bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)]"
           : "text-(--color-text-primary)",
@@ -145,7 +143,7 @@ function RemoveConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-black/40 backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-[160] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}

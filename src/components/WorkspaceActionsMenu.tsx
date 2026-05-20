@@ -39,6 +39,12 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const checkDelete = useCheckWorkspaceDelete();
   const deleteWorkspace = useDeleteWorkspace();
 
+  // After archive/delete, kick the user back to home — the sidebar will
+  // surface a different workspace to select.
+  const leaveWorkspace = () => {
+    void navigate({ to: "/" });
+  };
+
   const [open, setOpen] = useState(false);
   const [errorTitle, setErrorTitle] = useState("Action failed");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -72,11 +78,7 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const handleArchive = () => {
     setOpen(false);
     archive.mutate(workspace.id, {
-      onSuccess: () =>
-        navigate({
-          to: "/repositories/$repositoryId",
-          params: { repositoryId: workspace.repositoryId },
-        }),
+      onSuccess: leaveWorkspace,
       onError: (err) => showError("Couldn't archive workspace", String(err)),
     });
   };
@@ -114,11 +116,7 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         deleteWorkspace.mutate(
           { id: workspace.id, repositoryId: workspace.repositoryId },
           {
-            onSuccess: () =>
-              navigate({
-                to: "/repositories/$repositoryId",
-                params: { repositoryId: workspace.repositoryId },
-              }),
+            onSuccess: leaveWorkspace,
             onError: (err) => showError("Couldn't delete workspace", String(err)),
           },
         );
@@ -207,7 +205,7 @@ function MenuItem({
         className={cn(
           "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left",
           "transition-colors duration-100",
-          "hover:bg-[color-mix(in_oklab,white_6%,transparent)]",
+          "hover:bg-(--color-bg-hover)",
           danger
             ? "text-(--color-danger) hover:bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)]"
             : "text-(--color-text-primary)",
@@ -232,7 +230,7 @@ function ConfirmDialog({ state, onCancel }: { state: ConfirmState; onCancel(): v
 
   return (
     <div
-      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/40 p-4 backdrop-blur-md"
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-(--color-bg-overlay) p-4 backdrop-blur-md"
       onClick={onCancel}
     >
       <div
@@ -273,7 +271,7 @@ function ErrorDialog({
 }) {
   return (
     <div
-      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/40 p-4 backdrop-blur-md"
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-(--color-bg-overlay) p-4 backdrop-blur-md"
       onClick={onClose}
     >
       <div

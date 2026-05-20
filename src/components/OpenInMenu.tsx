@@ -98,7 +98,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                     key={launcher.id}
                     type="button"
                     onClick={() => handleLaunch(launcher.id)}
-                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-[color-mix(in_oklab,white_6%,transparent)]"
+                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-(--color-bg-hover)"
                   >
                     <KindIcon kind={launcher.kind} />
                     <span className="leading-none">{launcher.name}</span>

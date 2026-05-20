@@ -17,6 +17,9 @@
   --color-bg-terminal: #000000;
   --color-bg-tooltip: #1b212c;
   --color-bg-dropdown: #161b22;
+  --color-bg-hover: #161b22;
+  --color-bg-active: #1f2630;
+  --color-bg-overlay: rgba(0, 0, 0, 0.42);
 
   --color-border-subtle: #21262d;
   --color-border-default: #30363d;
@@ -27,10 +30,8 @@
   --color-text-muted: #6e7681;
   --color-text-inverse: #010409;
 
-  /* Accent palette (default = coral, Phasr identity). 50–950 scale is
-     derived around the spec's #F78166 so existing `accent-500` callers
-     keep working. Swapped at runtime via `data-accent` on <html>, see
-     overrides below. */
+  /* Accent palette — Phasr coral. 50–950 scale is derived around the
+     spec's #F78166 so existing `accent-500` callers keep working. */
   --color-accent-50: #fff1ec;
   --color-accent-100: #ffe0d5;
   --color-accent-200: #ffc4ae;
@@ -86,14 +87,17 @@
   --blur-panel: 32px;
   --blur-modal: 40px;
 
-  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
-  --shadow-modal: 0 24px 80px rgba(0, 0, 0, 0.45);
-  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.18);
-  --shadow-tooltip: 0 12px 30px rgba(0, 0, 0, 0.35);
-  --shadow-button-primary: 0 8px 24px rgba(247, 129, 102, 0.18);
-  --shadow-button-primary-hover: 0 12px 30px rgba(247, 129, 102, 0.28);
-  --shadow-glow: 0 0 24px -6px color-mix(in oklab, var(--color-accent-500) 50%, transparent);
-  --shadow-glow-danger: 0 0 24px -6px color-mix(in oklab, var(--color-danger) 50%, transparent);
+  /* Shadow tokens collapsed to `none` per the flat-UI direction. Kept as
+     tokens so `var(--shadow-…)` references in components continue to
+     resolve. Re-enable per-token if a future surface needs depth. */
+  --shadow-panel: none;
+  --shadow-modal: none;
+  --shadow-card: none;
+  --shadow-tooltip: none;
+  --shadow-button-primary: none;
+  --shadow-button-primary-hover: none;
+  --shadow-glow: none;
+  --shadow-glow-danger: none;
 
   --radius-sm: 6px;
   --radius-control: 10px;
@@ -107,107 +111,6 @@
 
   --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-glass: 180ms;
-}
-
-/* Accent palette overrides. Selected at runtime by setting
-   `data-accent="<id>"` on <html>. */
-
-[data-accent="blue"] {
-  --color-accent-50: #eff6ff;
-  --color-accent-100: #dbeafe;
-  --color-accent-200: #bfdbfe;
-  --color-accent-300: #93c5fd;
-  --color-accent-400: #60a5fa;
-  --color-accent-500: #3b82f6;
-  --color-accent-600: #2563eb;
-  --color-accent-700: #1d4ed8;
-  --color-accent-800: #1e40af;
-  --color-accent-900: #1e3a8a;
-  --color-accent-950: #172554;
-}
-
-[data-accent="violet"] {
-  --color-accent-50: #f5f3ff;
-  --color-accent-100: #ede9fe;
-  --color-accent-200: #ddd6fe;
-  --color-accent-300: #c4b5fd;
-  --color-accent-400: #a78bfa;
-  --color-accent-500: #8b5cf6;
-  --color-accent-600: #7c3aed;
-  --color-accent-700: #6d28d9;
-  --color-accent-800: #5b21b6;
-  --color-accent-900: #4c1d95;
-  --color-accent-950: #2e1065;
-}
-
-[data-accent="fuchsia"] {
-  --color-accent-50: #fdf4ff;
-  --color-accent-100: #fae8ff;
-  --color-accent-200: #f5d0fe;
-  --color-accent-300: #f0abfc;
-  --color-accent-400: #e879f9;
-  --color-accent-500: #d946ef;
-  --color-accent-600: #c026d3;
-  --color-accent-700: #a21caf;
-  --color-accent-800: #86198f;
-  --color-accent-900: #701a75;
-  --color-accent-950: #4a044e;
-}
-
-[data-accent="rose"] {
-  --color-accent-50: #fff1f2;
-  --color-accent-100: #ffe4e6;
-  --color-accent-200: #fecdd3;
-  --color-accent-300: #fda4af;
-  --color-accent-400: #fb7185;
-  --color-accent-500: #f43f5e;
-  --color-accent-600: #e11d48;
-  --color-accent-700: #be123c;
-  --color-accent-800: #9f1239;
-  --color-accent-900: #881337;
-  --color-accent-950: #4c0519;
-}
-
-[data-accent="amber"] {
-  --color-accent-50: #fffbeb;
-  --color-accent-100: #fef3c7;
-  --color-accent-200: #fde68a;
-  --color-accent-300: #fcd34d;
-  --color-accent-400: #fbbf24;
-  --color-accent-500: #f59e0b;
-  --color-accent-600: #d97706;
-  --color-accent-700: #b45309;
-  --color-accent-800: #92400e;
-  --color-accent-900: #78350f;
-  --color-accent-950: #451a03;
-}
-
-[data-accent="emerald"] {
-  --color-accent-50: #ecfdf5;
-  --color-accent-100: #d1fae5;
-  --color-accent-200: #a7f3d0;
-  --color-accent-300: #6ee7b7;
-  --color-accent-400: #34d399;
-  --color-accent-500: #10b981;
-  --color-accent-600: #059669;
-  --color-accent-700: #047857;
-  --color-accent-800: #065f46;
-  --color-accent-900: #064e3b;
-  --color-accent-950: #022c22;
-}
-
-[data-accent="slate"] {
-  --color-accent-50: #f8fafc;
-  --color-accent-100: #f1f5f9;
-  --color-accent-200: #e2e8f0;
-  --color-accent-300: #cbd5e1;
-  --color-accent-400: #94a3b8;
-  --color-accent-500: #64748b;
-  --color-accent-600: #475569;
-  --color-accent-700: #334155;
-  --color-accent-800: #1e293b;
-  --color-accent-900: #0f172a;
-  --color-accent-950: #020617;
 }
 
 /* Light mode overrides */
@@ -239,8 +142,36 @@
   --glass-border-strong: color-mix(in oklab, black 12%, transparent);
   --glass-highlight-top: color-mix(in oklab, white 60%, transparent);
 
-  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -8px rgba(0, 0, 0, 0.1);
-  --shadow-modal: 0 20px 60px -10px rgba(0, 0, 0, 0.15);
+  /* Surfaces that exist only in the new token set need explicit light
+     variants. Terminal + tooltips flip to light here per design call. */
+  --color-bg-sidebar: #f4f5f7;
+  --color-bg-terminal: #fafafb;
+  --color-bg-tooltip: #ffffff;
+  --color-bg-dropdown: #ffffff;
+  --color-bg-hover: #f1f1f3;
+  --color-bg-active: #e6e6ea;
+  --color-bg-overlay: rgba(15, 18, 24, 0.18);
+  --color-text-inverse: #ffffff;
+  --color-purple: #8b5cf6;
+  --color-cyan: #06b6d4;
+
+  /* GitHub Light syntax palette — used by xterm when --data-theme is light. */
+  --ansi-black: #24292f;
+  --ansi-red: #cf222e;
+  --ansi-green: #116329;
+  --ansi-yellow: #4d2d00;
+  --ansi-blue: #0969da;
+  --ansi-magenta: #8250df;
+  --ansi-cyan: #1b7c83;
+  --ansi-white: #6e7781;
+  --ansi-bright-black: #57606a;
+  --ansi-bright-red: #a40e26;
+  --ansi-bright-green: #1a7f37;
+  --ansi-bright-yellow: #633c01;
+  --ansi-bright-blue: #218bff;
+  --ansi-bright-magenta: #a475f9;
+  --ansi-bright-cyan: #3192aa;
+  --ansi-bright-white: #8c959f;
 }
 
 /* ---------- Base resets ---------- */
@@ -319,7 +250,6 @@ select:focus {
   -webkit-backdrop-filter: blur(var(--blur-panel)) saturate(140%);
   border: 1px solid var(--glass-border-hairline);
   border-radius: var(--radius-panel);
-  box-shadow: inset 0 1px 0 0 var(--glass-highlight-top), var(--shadow-panel);
 }
 
 @utility glass-modal {
@@ -328,7 +258,6 @@ select:focus {
   -webkit-backdrop-filter: blur(var(--blur-modal)) saturate(160%);
   border: 1px solid var(--glass-border-strong);
   border-radius: var(--radius-modal);
-  box-shadow: inset 0 1px 0 0 var(--glass-highlight-top), var(--shadow-modal);
 }
 
 /* ---------- Animations ---------- */

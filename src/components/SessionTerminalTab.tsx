@@ -9,131 +9,218 @@ import { tauri } from "@/lib/tauri";
 import type { PtyEvent } from "@/lib/types";
 
 interface SessionTerminalTabProps {
-  /** Repository id — keys the tab back to the right strip. */
-  repositoryId: string;
+  /** Workspace id — keys the tab back to the workspace's inner tab strip. */
+  workspaceId: string;
   tabId: string;
   cwd: string;
-  /** Persisted from the previous mount, if any. Reattaches when set. */
+  /** Persisted from the previous mount, if any. */
   ptySessionId: string | undefined;
   visible: boolean;
 }
 
 /**
- * In-app shell terminal — the content of a `terminal` tab on the repo
- * detail page. Models RunCommandTerminal closely; the difference is the
- * backend tracks sessions in-memory by uuid (no DB row). We persist the
- * returned sessionId on the tab so re-mounting the tab (e.g. switching
- * between tabs) reuses the same PTY.
+ * In-app shell terminal. Each instance owns a persistent container DIV
+ * that stays in the document forever — when the React component
+ * unmounts (route swap, tab visibility flip, HMR) the container is
+ * parked in a hidden offscreen host so xterm's canvas never leaves the
+ * DOM. WebGL keeps its GPU context, scrollback stays, and the next
+ * mount just moves the container back into the visible slot.
+ *
+ * Only the explicit `disposeSessionXterm(tabId)` call (close-tab,
+ * close-workspace, ⌘W on a terminal pill) destroys the xterm.
  */
+interface CachedSession {
+  term: XtermTerminal;
+  fit: FitAddon;
+  webgl: WebglAddon | null;
+  /** Persistent DOM container that hosts the xterm canvas. Lives in
+   *  either a workspace's mount slot or the hidden host — never
+   *  detached from the document. */
+  container: HTMLDivElement;
+  channel: Channel<PtyEvent>;
+  sessionId: string | null;
+  /** Input/resize handlers — replaced on each remount. */
+  inputDisposables: { dispose(): void }[];
+}
+
+const sessionXtermCache = new Map<string, CachedSession>();
+
+let hiddenHost: HTMLDivElement | null = null;
+function getHiddenHost(): HTMLDivElement {
+  if (!hiddenHost) {
+    hiddenHost = document.createElement("div");
+    hiddenHost.setAttribute("aria-hidden", "true");
+    Object.assign(hiddenHost.style, {
+      position: "fixed",
+      left: "-9999px",
+      top: "0",
+      width: "1px",
+      height: "1px",
+      overflow: "hidden",
+      visibility: "hidden",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(hiddenHost);
+  }
+  return hiddenHost;
+}
+
+/** Public teardown. Called when the user explicitly closes a terminal tab. */
+export function disposeSessionXterm(tabId: string) {
+  const entry = sessionXtermCache.get(tabId);
+  if (!entry) return;
+  for (const d of entry.inputDisposables) d.dispose();
+  if (entry.webgl) {
+    try {
+      entry.webgl.dispose();
+    } catch {
+      /* noop */
+    }
+  }
+  entry.term.dispose();
+  if (entry.container.parentNode) {
+    entry.container.parentNode.removeChild(entry.container);
+  }
+  sessionXtermCache.delete(tabId);
+}
+
 export function SessionTerminalTab({
-  repositoryId,
+  workspaceId,
   tabId,
   cwd,
   ptySessionId,
   visible,
 }: SessionTerminalTabProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const setTabPtySession = useUiStore((s) => s.setTabPtySession);
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const setInnerTabPtySession = useUiStore((s) => s.setInnerTabPtySession);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    let cancelled = false;
-    let sessionId = ptySessionId ?? null;
+    const mount = mountRef.current;
+    if (!mount) return;
 
-    const term = createTerminal();
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(container);
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch {
-      /* canvas fallback */
+    let entry = sessionXtermCache.get(tabId);
+
+    if (!entry) {
+      // Fresh — create the persistent container and open xterm in it.
+      const container = document.createElement("div");
+      container.className = "h-full w-full";
+
+      const term = createTerminal();
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(container);
+      let webgl: WebglAddon | null = null;
+      try {
+        webgl = new WebglAddon();
+        term.loadAddon(webgl);
+      } catch {
+        /* canvas fallback */
+      }
+
+      mount.appendChild(container);
+
+      const channel = new Channel<PtyEvent>();
+      entry = {
+        term,
+        fit,
+        webgl,
+        container,
+        channel,
+        sessionId: ptySessionId ?? null,
+        inputDisposables: [],
+      };
+      sessionXtermCache.set(tabId, entry);
+
+      channel.onmessage = (event) => {
+        if (event.type === "output") {
+          term.write(event.chunk);
+        } else if (event.type === "exit") {
+          term.write(
+            `\r\n\x1b[2m── shell exited${
+              event.exitCode == null ? "" : ` (code ${event.exitCode})`
+            } ──\x1b[0m\r\n`,
+          );
+        }
+      };
+
+      const wireInteractive = (id: string) => {
+        entry!.inputDisposables = [
+          term.onData((data) => {
+            void tauri.sendSessionInput(id, data).catch(() => {});
+          }),
+          term.onResize(({ rows, cols }) => {
+            void tauri.resizeSession(id, rows, cols).catch(() => {});
+          }),
+        ];
+        term.focus();
+      };
+
+      const start = async () => {
+        try {
+          const id = await tauri.startSessionTerminal(cwd, channel, term.rows, term.cols);
+          entry!.sessionId = id;
+          setInnerTabPtySession(workspaceId, tabId, id);
+          wireInteractive(id);
+        } catch (err) {
+          term.write(`\r\n\x1b[31m✗ Failed to start shell: ${String(err)}\x1b[0m\r\n`);
+        }
+      };
+
+      if (entry.sessionId) {
+        wireInteractive(entry.sessionId);
+      } else {
+        void start();
+      }
+    } else {
+      // Cache hit — move the persistent container back into this mount.
+      // appendChild moves the node from wherever it currently lives
+      // (hidden host, or a previous mount) without disposing anything.
+      mount.appendChild(entry.container);
+
+      // Re-wire React-bound input handlers against the live session.
+      const id = entry.sessionId;
+      if (id) {
+        entry.inputDisposables = [
+          entry.term.onData((data) => {
+            void tauri.sendSessionInput(id, data).catch(() => {});
+          }),
+          entry.term.onResize(({ rows, cols }) => {
+            void tauri.resizeSession(id, rows, cols).catch(() => {});
+          }),
+        ];
+        entry.term.focus();
+      }
     }
 
-    const fitNow = () => {
+    const refit = () => {
       try {
-        fit.fit();
-        if (term.rows > 0) term.refresh(0, term.rows - 1);
+        entry!.fit.fit();
+        if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
       } catch {
         /* layout settling */
       }
     };
-    // Fit synchronously so startSessionTerminal receives real rows/cols
-    // rather than xterm's default 24x80 — see Terminal.tsx for context.
-    fitNow();
+    const rafId = requestAnimationFrame(refit);
 
-    const resizeObserver = new ResizeObserver(fitNow);
-    resizeObserver.observe(container);
-
-    const disposables: { dispose(): void }[] = [];
-
-    const channel = new Channel<PtyEvent>();
-    channel.onmessage = (event) => {
-      if (cancelled) return;
-      if (event.type === "output") {
-        term.write(event.chunk);
-      } else if (event.type === "exit") {
-        term.write(
-          `\r\n\x1b[2m── shell exited${
-            event.exitCode == null ? "" : ` (code ${event.exitCode})`
-          } ──\x1b[0m\r\n`,
-        );
-      }
-    };
-
-    const wireInteractive = (id: string) => {
-      disposables.push(
-        term.onData((data) => {
-          if (cancelled) return;
-          void tauri.sendSessionInput(id, data).catch(() => {});
-        }),
-        term.onResize(({ rows, cols }) => {
-          if (cancelled) return;
-          void tauri.resizeSession(id, rows, cols).catch(() => {});
-        }),
-      );
-      term.focus();
-    };
-
-    const start = async () => {
-      term.write("\x1b[2m── starting shell ──\x1b[0m\r\n");
-      try {
-        const id = await tauri.startSessionTerminal(cwd, channel, term.rows, term.cols);
-        if (cancelled) return;
-        sessionId = id;
-        setTabPtySession(repositoryId, tabId, id);
-        wireInteractive(id);
-      } catch (err) {
-        if (cancelled) return;
-        term.write(`\r\n\x1b[31m✗ Failed to start shell: ${String(err)}\x1b[0m\r\n`);
-      }
-    };
-
-    if (sessionId) {
-      // Re-attach: just wire interactive handlers; the PTY is still
-      // alive on the Rust side. Output already streamed before this
-      // mount is lost (xterm scrollback would have it if the previous
-      // mount wasn't disposed) — accepted v1 trade-off.
-      wireInteractive(sessionId);
-      term.write("\x1b[2m── reattached ──\x1b[0m\r\n");
-    } else {
-      void start();
-    }
+    const resizeObserver = new ResizeObserver(refit);
+    resizeObserver.observe(entry.container);
 
     return () => {
-      cancelled = true;
+      cancelAnimationFrame(rafId);
       resizeObserver.disconnect();
-      for (const d of disposables) d.dispose();
-      term.dispose();
+      for (const d of entry!.inputDisposables) d.dispose();
+      entry!.inputDisposables = [];
+      // Park the persistent container in the hidden host so the canvas
+      // stays in the document — preserves the WebGL GPU context.
+      getHiddenHost().appendChild(entry!.container);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repositoryId, tabId, cwd]);
+  }, [workspaceId, tabId, cwd]);
 
   return (
     <div
       onClick={() => {
-        const buf = containerRef.current?.querySelector("textarea");
+        const buf = mountRef.current?.querySelector("textarea");
         (buf as HTMLTextAreaElement | null)?.focus();
       }}
       style={{
@@ -145,7 +232,7 @@ export function SessionTerminalTab({
       }}
       className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
     >
-      <div ref={containerRef} className="h-full w-full" />
+      <div ref={mountRef} className="h-full w-full" />
     </div>
   );
 }

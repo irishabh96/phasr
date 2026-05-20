@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusDot } from "@/components/ui/StatusDot";
+import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -28,6 +29,8 @@ export function CommandPalette() {
   const navigate = useNavigate();
   const { signOut } = useClerk();
   const { setTheme } = useUiStore();
+  const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
+  const navigateToRepoEntry = useNavigateToRepoEntry();
 
   const { data: repositories } = useRepositories();
 
@@ -87,7 +90,7 @@ export function CommandPalette() {
       open={open}
       onOpenChange={(o) => (o ? setOpen(true) : close())}
       label="Command palette"
-      className="fixed inset-0 z-[200] flex items-start justify-center bg-black/30 p-0 pt-[14vh] backdrop-blur-md"
+      className="fixed inset-0 z-[200] flex items-start justify-center bg-(--color-bg-overlay) p-0 pt-[14vh] backdrop-blur-md"
       shouldFilter
     >
       <div className="relative w-full max-w-xl" onClick={(e) => e.stopPropagation()}>
@@ -110,7 +113,7 @@ export function CommandPalette() {
               onValueChange={setQuery}
               className="h-12 w-full border-0 bg-transparent text-[13.5px] focus:outline-none"
             />
-            <kbd className="rounded-[5px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,white_4%,transparent)] px-1.5 py-0.5 text-[10px] text-(--color-text-muted)">
+            <kbd className="rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-hover) px-1.5 py-0.5 text-[10px] text-(--color-text-muted)">
               esc
             </kbd>
           </div>
@@ -156,14 +159,7 @@ export function CommandPalette() {
                   <Command.Item
                     key={repo.id}
                     value={`repository ${repo.name} ${repo.localPath ?? ""} ${repo.remoteUrl ?? ""}`}
-                    onSelect={() =>
-                      go(() =>
-                        navigate({
-                          to: "/repositories/$repositoryId",
-                          params: { repositoryId: repo.id },
-                        }),
-                      )
-                    }
+                    onSelect={() => go(() => void navigateToRepoEntry(repo.id))}
                     className={ITEM_CLS}
                   >
                     <FolderGit2 size={13} className="text-(--color-text-secondary)" />
@@ -183,14 +179,7 @@ export function CommandPalette() {
                 <Command.Item
                   key={`new-${repo.id}`}
                   value={`action new workspace in ${repo.name}`}
-                  onSelect={() =>
-                    go(() =>
-                      navigate({
-                        to: "/repositories/$repositoryId",
-                        params: { repositoryId: repo.id },
-                      }),
-                    )
-                  }
+                  onSelect={() => go(() => requestNewWorkspace(repo.id))}
                   className={ITEM_CLS}
                 >
                   <Plus size={13} className="text-(--color-text-secondary)" />
@@ -307,4 +296,4 @@ const ITEM_CLS = [
 ].join(" ");
 
 const KBD_CLS =
-  "inline-block rounded-[4px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,white_4%,transparent)] px-1 text-[9.5px] text-(--color-text-secondary)";
+  "inline-block rounded-[4px] border border-(--glass-border-hairline) bg-(--color-bg-hover) px-1 text-[9.5px] text-(--color-text-secondary)";

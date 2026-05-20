@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tauri } from "@/lib/tauri";
 import type { Repository } from "@/lib/types";
 
-const repositoryKeys = {
+export const repositoryKeys = {
   all: ["repositories"] as const,
   list: () => [...repositoryKeys.all, "list"] as const,
   detail: (id: string) => [...repositoryKeys.all, "detail", id] as const,

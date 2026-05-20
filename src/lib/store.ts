@@ -2,11 +2,25 @@ import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
 import { applyTheme, readStoredTheme, writeStoredTheme, type Theme } from "./theme";
 
-export type RepoTabKind = "workspaces" | "terminal" | "preview";
+// ---------- Active workspace context ----------
 
-export interface RepoTab {
+/**
+ * The workspace currently shown in the main area. Set by the workspace
+ * page on mount, cleared on unmount. Read by global keydown handlers
+ * (⌘T / ⌘N / ⌘W / ⌘P) that can't reach React route params.
+ */
+export interface ActiveWorkspaceContext {
+  workspaceId: string;
+  repositoryId: string;
+}
+
+// ---------- Per-workspace inner tab strip ----------
+
+export type InnerTabKind = "main" | "terminal" | "preview";
+
+export interface InnerTab {
   id: string;
-  kind: RepoTabKind;
+  kind: InnerTabKind;
   title: string;
   closable: boolean;
   /** Terminal — backend session uuid. Set after `start_session_terminal` returns. */
@@ -15,10 +29,13 @@ export interface RepoTab {
   filePath?: string;
 }
 
-export interface RepoTabState {
-  tabs: RepoTab[];
+export interface InnerTabState {
+  /** First entry is always the pinned "main" tab. */
+  tabs: InnerTab[];
   activeTabId: string;
 }
+
+// ---------- Run-command bottom pane ----------
 
 interface RunPanelState {
   /** ordered list of currently-open run command ids */
@@ -82,22 +99,42 @@ interface UiState {
   closeFileSearch: () => void;
 
   /**
-   * One-shot trigger so the right-click "New workspace" menu item can ask
-   * the repo detail page to pop the form. Set when the menu is invoked,
-   * cleared once the page consumes it.
+   * Drives the NewWorkspaceModal mounted in the app shell. Set by:
+   * - sidebar `+` icon per repo row
+   * - sidebar repo row click when the repo has no workspaces yet
+   * - ⌘N hotkey (resolves to the active workspace's repo)
+   * - context menus, command palette, post-add-repo flows
+   * Cleared when the modal closes / a workspace is created.
    */
   pendingNewWorkspaceRepoId: string | null;
   requestNewWorkspace: (repoId: string) => void;
   clearPendingNewWorkspace: () => void;
 
-  /** Per-repo in-app tab strip. See plan: tab system. */
-  repoTabs: Record<string, RepoTabState>;
-  ensureTabs: (repoId: string) => void;
-  openTerminalTab: (repoId: string) => RepoTab;
-  openPreviewTab: (repoId: string, filePath: string) => RepoTab;
-  closeRepoTab: (repoId: string, tabId: string) => RepoTab | null;
-  setActiveRepoTab: (repoId: string, tabId: string) => void;
-  setTabPtySession: (repoId: string, tabId: string, sessionId: string) => void;
+  /** Drives RenameWorkspaceModal — sidebar right-click → Rename… sets this. */
+  pendingRenameWorkspaceId: string | null;
+  requestRenameWorkspace: (workspaceId: string) => void;
+  clearPendingRenameWorkspace: () => void;
+
+  /** Add-repository picker modal — single-button footer fans out to two choices. */
+  addRepositoryPickerOpen: boolean;
+  openAddRepositoryPicker: () => void;
+  closeAddRepositoryPicker: () => void;
+
+  // ---------- Active workspace context ----------
+  activeWorkspaceContext: ActiveWorkspaceContext | null;
+  setActiveWorkspaceContext: (ctx: ActiveWorkspaceContext | null) => void;
+
+  // ---------- Per-workspace inner tabs ----------
+  innerTabs: Record<string, InnerTabState>;
+  ensureInnerTabs: (workspaceId: string, mainTitle: string) => void;
+  /** Focus existing "main" tab or create one (used by "+ Open agent" + empty state). */
+  openInnerAgentTab: (workspaceId: string, title: string) => InnerTab;
+  openInnerTerminalTab: (workspaceId: string) => InnerTab;
+  openInnerPreviewTab: (workspaceId: string, filePath: string) => InnerTab;
+  /** Refuses to close the non-closable "main" tab. */
+  closeInnerTab: (workspaceId: string, tabId: string) => InnerTab | null;
+  setActiveInnerTab: (workspaceId: string, tabId: string) => void;
+  setInnerTabPtySession: (workspaceId: string, tabId: string, ptySessionId: string) => void;
 
   runPanel: RunPanelState;
 }
@@ -148,72 +185,106 @@ export const useUiStore = create<UiState>((set, get) => ({
   closeOpenExistingModal: () => set({ openExistingModalOpen: false }),
 
   fileSearchTarget: null,
-  openFileSearch: (repositoryId, path) =>
-    set({ fileSearchTarget: { repositoryId, path } }),
+  openFileSearch: (repositoryId, path) => set({ fileSearchTarget: { repositoryId, path } }),
   closeFileSearch: () => set({ fileSearchTarget: null }),
 
   pendingNewWorkspaceRepoId: null,
   requestNewWorkspace: (repoId) => set({ pendingNewWorkspaceRepoId: repoId }),
   clearPendingNewWorkspace: () => set({ pendingNewWorkspaceRepoId: null }),
 
-  repoTabs: {},
-  ensureTabs: (repoId) => {
-    const { repoTabs } = get();
-    if (repoTabs[repoId]) return;
-    const defaultTab: RepoTab = {
+  pendingRenameWorkspaceId: null,
+  requestRenameWorkspace: (workspaceId) => set({ pendingRenameWorkspaceId: workspaceId }),
+  clearPendingRenameWorkspace: () => set({ pendingRenameWorkspaceId: null }),
+
+  addRepositoryPickerOpen: false,
+  openAddRepositoryPicker: () => set({ addRepositoryPickerOpen: true }),
+  closeAddRepositoryPicker: () => set({ addRepositoryPickerOpen: false }),
+
+  activeWorkspaceContext: null,
+  setActiveWorkspaceContext: (ctx) => set({ activeWorkspaceContext: ctx }),
+
+  innerTabs: {},
+  ensureInnerTabs: (workspaceId, mainTitle) => {
+    const state = get().innerTabs[workspaceId];
+    if (state) return;
+    const mainTab: InnerTab = {
       id: uuidv4(),
-      kind: "workspaces",
-      title: "Workspaces",
-      closable: false,
+      kind: "main",
+      title: mainTitle,
+      closable: true,
     };
     set({
-      repoTabs: {
-        ...repoTabs,
-        [repoId]: { tabs: [defaultTab], activeTabId: defaultTab.id },
+      innerTabs: {
+        ...get().innerTabs,
+        [workspaceId]: { tabs: [mainTab], activeTabId: mainTab.id },
       },
     });
   },
-  openTerminalTab: (repoId) => {
-    const state = get().repoTabs[repoId];
+  openInnerAgentTab: (workspaceId, title) => {
+    const state = get().innerTabs[workspaceId];
+    const existing = state?.tabs.find((t) => t.kind === "main");
+    if (existing && state) {
+      set({
+        innerTabs: {
+          ...get().innerTabs,
+          [workspaceId]: { ...state, activeTabId: existing.id },
+        },
+      });
+      return existing;
+    }
+    const tab: InnerTab = {
+      id: uuidv4(),
+      kind: "main",
+      title,
+      closable: true,
+    };
+    // Insert main at the front so it always reads as the first pill.
+    const next: InnerTabState = state
+      ? { tabs: [tab, ...state.tabs], activeTabId: tab.id }
+      : { tabs: [tab], activeTabId: tab.id };
+    set({ innerTabs: { ...get().innerTabs, [workspaceId]: next } });
+    return tab;
+  },
+  openInnerTerminalTab: (workspaceId) => {
+    const state = get().innerTabs[workspaceId];
     const existingTerminals = (state?.tabs ?? []).filter((t) => t.kind === "terminal").length;
-    const tab: RepoTab = {
+    const tab: InnerTab = {
       id: uuidv4(),
       kind: "terminal",
       title: existingTerminals > 0 ? `Terminal ${existingTerminals + 1}` : "Terminal",
       closable: true,
     };
-    const next: RepoTabState = state
+    const next: InnerTabState = state
       ? { tabs: [...state.tabs, tab], activeTabId: tab.id }
       : { tabs: [tab], activeTabId: tab.id };
-    set({ repoTabs: { ...get().repoTabs, [repoId]: next } });
+    set({ innerTabs: { ...get().innerTabs, [workspaceId]: next } });
     return tab;
   },
-  openPreviewTab: (repoId, filePath) => {
-    const state = get().repoTabs[repoId];
-    // If a preview tab for the same file already exists, reuse it.
+  openInnerPreviewTab: (workspaceId, filePath) => {
+    const state = get().innerTabs[workspaceId];
     const existing = state?.tabs.find((t) => t.kind === "preview" && t.filePath === filePath);
     if (existing && state) {
       set({
-        repoTabs: { ...get().repoTabs, [repoId]: { ...state, activeTabId: existing.id } },
+        innerTabs: { ...get().innerTabs, [workspaceId]: { ...state, activeTabId: existing.id } },
       });
       return existing;
     }
     const filename = filePath.split(/[/\\]/).pop() ?? filePath;
-    const tab: RepoTab = {
+    const tab: InnerTab = {
       id: uuidv4(),
       kind: "preview",
       title: filename,
       closable: true,
       filePath,
     };
-    const next: RepoTabState = state
+    const next: InnerTabState = state
       ? { tabs: [...state.tabs, tab], activeTabId: tab.id }
       : { tabs: [tab], activeTabId: tab.id };
-    set({ repoTabs: { ...get().repoTabs, [repoId]: next } });
+    set({ innerTabs: { ...get().innerTabs, [workspaceId]: next } });
     return tab;
   },
-  closeRepoTab: (repoId, tabId) => {
-    const state = get().repoTabs[repoId];
+  closeInnerTab: (workspaceId, tabId) => {
+    const state = get().innerTabs[workspaceId];
     if (!state) return null;
     const closed = state.tabs.find((t) => t.id === tabId) ?? null;
     if (!closed || !closed.closable) return null;
@@ -223,29 +294,29 @@ export const useUiStore = create<UiState>((set, get) => ({
         ? (remaining[remaining.length - 1]?.id ?? remaining[0]?.id ?? "")
         : state.activeTabId;
     set({
-      repoTabs: {
-        ...get().repoTabs,
-        [repoId]: { tabs: remaining, activeTabId: newActive },
+      innerTabs: {
+        ...get().innerTabs,
+        [workspaceId]: { tabs: remaining, activeTabId: newActive },
       },
     });
     return closed;
   },
-  setActiveRepoTab: (repoId, tabId) => {
-    const state = get().repoTabs[repoId];
+  setActiveInnerTab: (workspaceId, tabId) => {
+    const state = get().innerTabs[workspaceId];
     if (!state) return;
     set({
-      repoTabs: { ...get().repoTabs, [repoId]: { ...state, activeTabId: tabId } },
+      innerTabs: { ...get().innerTabs, [workspaceId]: { ...state, activeTabId: tabId } },
     });
   },
-  setTabPtySession: (repoId, tabId, sessionId) => {
-    const state = get().repoTabs[repoId];
+  setInnerTabPtySession: (workspaceId, tabId, ptySessionId) => {
+    const state = get().innerTabs[workspaceId];
     if (!state) return;
     set({
-      repoTabs: {
-        ...get().repoTabs,
-        [repoId]: {
+      innerTabs: {
+        ...get().innerTabs,
+        [workspaceId]: {
           ...state,
-          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ptySessionId: sessionId } : t)),
+          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ptySessionId } : t)),
         },
       },
     });
@@ -272,7 +343,7 @@ export const useUiStore = create<UiState>((set, get) => ({
           openTabs: remaining,
           activeTab:
             runPanel.activeTab === id
-              ? remaining[remaining.length - 1] ?? null
+              ? (remaining[remaining.length - 1] ?? null)
               : runPanel.activeTab,
         },
       });

@@ -275,20 +275,18 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange(next: boolea
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={cn(
-        "relative ml-1 inline-flex h-[18px] w-8 shrink-0 items-center rounded-full",
+        "relative ml-1 inline-flex h-5 w-9 shrink-0 items-center rounded-full",
         "transition-colors duration-150",
         "border border-(--glass-border-hairline)",
-        checked
-          ? "bg-(--color-accent-500) shadow-[inset_0_1px_0_0_color-mix(in_oklab,white_20%,transparent)]"
-          : "bg-[color-mix(in_oklab,white_4%,transparent)]",
+        checked ? "bg-(--color-accent-500)" : "bg-(--color-bg-hover)",
       )}
     >
       <span
         className={cn(
-          "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-md",
+          "inline-block h-4 w-4 rounded-full bg-white",
           "transition-transform duration-150",
         )}
-        style={{ transform: checked ? "translateX(14px)" : "translateX(2px)" }}
+        style={{ transform: checked ? "translateX(16px)" : "translateX(2px)" }}
       />
     </button>
   );

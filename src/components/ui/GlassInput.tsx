@@ -8,12 +8,11 @@ const baseClasses = [
   "text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]",
   "border border-[var(--glass-border-hairline)]",
   "rounded-[10px]",
-  "shadow-[inset_0_1px_0_0_var(--glass-highlight-top)]",
   "transition-all duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
   "outline-none",
   "hover:border-[var(--color-border-strong)]",
   "focus:border-[var(--color-accent-500)]",
-  "focus:shadow-[inset_0_1px_0_0_var(--glass-highlight-top),0_0_0_4px_color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
+  "focus:shadow-[0_0_0_4px_color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
   "disabled:opacity-50 disabled:cursor-not-allowed",
 ].join(" ");
 
