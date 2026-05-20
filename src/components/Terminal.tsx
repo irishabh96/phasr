@@ -111,6 +111,19 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
 
       mount.appendChild(container);
 
+      // Fit synchronously before starting the PTY so the agent process
+      // (e.g. `claude`) inherits the real terminal width on launch.
+      // Without this, term defaults to 80×24, the PTY is started at
+      // 80×24, and the agent draws its welcome screen narrow even
+      // though later refits resize the grid.
+      try {
+        if (container.clientWidth >= 1 && container.clientHeight >= 1) {
+          fit.fit();
+        }
+      } catch {
+        /* layout settling — trailing refits will catch up */
+      }
+
       entry = {
         term,
         fit,
@@ -154,6 +167,10 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
           await tauri.startWorkspace(workspaceId, channel, term.rows, term.cols);
           entry!.started = true;
           wireInteractive();
+          // Catch any fit() that fired between start request and reply —
+          // the onResize handler isn't wired during the await, so a
+          // resize there is otherwise lost.
+          void tauri.resizeWorkspace(workspaceId, term.rows, term.cols).catch(() => {});
         } catch (err) {
           term.write(`\r\n\x1b[31m✗ Failed to start: ${String(err)}\x1b[0m\r\n`);
         }
@@ -206,12 +223,28 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
       }
     };
     const rafId = requestAnimationFrame(refit);
+    // The OS may finish applying `maximized: true` after the WebView has
+    // already painted and after our first rAF refit. ResizeObserver
+    // catches container-size changes, but on macOS the post-maximize
+    // resize sometimes lands without the inner flex layout updating in
+    // the same tick, so the observer's first fire measures the old
+    // width. These trailing refits catch that case.
+    const settleTimers = [
+      window.setTimeout(refit, 60),
+      window.setTimeout(refit, 250),
+      window.setTimeout(refit, 600),
+    ];
+
+    const onWindowResize = () => refit();
+    window.addEventListener("resize", onWindowResize);
 
     const resizeObserver = new ResizeObserver(refit);
     resizeObserver.observe(entry.container);
 
     return () => {
       cancelAnimationFrame(rafId);
+      for (const t of settleTimers) window.clearTimeout(t);
+      window.removeEventListener("resize", onWindowResize);
       resizeObserver.disconnect();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];

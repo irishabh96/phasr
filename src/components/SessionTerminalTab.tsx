@@ -119,6 +119,19 @@ export function SessionTerminalTab({
 
       mount.appendChild(container);
 
+      // Fit synchronously now that the container is in the DOM so the
+      // PTY is started at the real terminal width — otherwise the
+      // shell (and anything it spawns, like `claude`) inherits xterm's
+      // 80×24 defaults and draws its welcome screen at the narrow
+      // width even after later resizes.
+      try {
+        if (container.clientWidth >= 1 && container.clientHeight >= 1) {
+          fit.fit();
+        }
+      } catch {
+        /* layout settling — trailing refits will catch up */
+      }
+
       const channel = new Channel<PtyEvent>();
       entry = {
         term,
@@ -161,6 +174,10 @@ export function SessionTerminalTab({
           entry!.sessionId = id;
           setInnerTabPtySession(workspaceId, tabId, id);
           wireInteractive(id);
+          // Catch any fit() that fired between start request and reply —
+          // the onResize handler isn't wired during the await, so a
+          // resize there is otherwise lost.
+          void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
         } catch (err) {
           term.write(`\r\n\x1b[31m✗ Failed to start shell: ${String(err)}\x1b[0m\r\n`);
         }
@@ -206,12 +223,24 @@ export function SessionTerminalTab({
       }
     };
     const rafId = requestAnimationFrame(refit);
+    // See Terminal.tsx — trailing refits catch a delayed window
+    // maximize whose ResizeObserver fire lands on stale layout.
+    const settleTimers = [
+      window.setTimeout(refit, 60),
+      window.setTimeout(refit, 250),
+      window.setTimeout(refit, 600),
+    ];
+
+    const onWindowResize = () => refit();
+    window.addEventListener("resize", onWindowResize);
 
     const resizeObserver = new ResizeObserver(refit);
     resizeObserver.observe(entry.container);
 
     return () => {
       cancelAnimationFrame(rafId);
+      for (const t of settleTimers) window.clearTimeout(t);
+      window.removeEventListener("resize", onWindowResize);
       resizeObserver.disconnect();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
