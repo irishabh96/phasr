@@ -7,12 +7,14 @@ mod fswatch;
 mod git;
 mod launcher;
 mod localfs;
+mod orchestrator;
 mod pty;
 mod store;
 
 use std::sync::Arc;
 
 use auth::SessionState;
+use orchestrator::TaskOrchestrator;
 use pty::TaskRuntime;
 use store::{
     default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo,
@@ -77,7 +79,7 @@ pub fn run() {
             let log_dir = app_data_dir.join("logs");
 
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
-            app.manage(task_runtime);
+            app.manage(task_runtime.clone());
 
             let watch_registry = Arc::new(fswatch::WorktreeWatchRegistry::new(
                 app.handle().clone(),
@@ -85,6 +87,7 @@ pub fn run() {
             app.manage(watch_registry.clone());
 
             let handle = app.handle().clone();
+            let runtime_for_async = task_runtime;
             tauri::async_runtime::spawn(async move {
                 match init_pool(&db_path).await {
                     Ok(pool) => {
@@ -92,11 +95,25 @@ pub fn run() {
                         if let Err(err) = agent_repo.ensure_seeded().await {
                             eprintln!("agent seeding failed: {err}");
                         }
-                        handle.manage(RepositoryRepo::new(pool.clone()));
-                        handle.manage(WorkspaceRepo::new(pool.clone()));
+                        let repository_repo = RepositoryRepo::new(pool.clone());
+                        let workspace_repo = WorkspaceRepo::new(pool.clone());
+                        let orchestrator = TaskOrchestrator::new(
+                            workspace_repo.clone(),
+                            repository_repo.clone(),
+                            agent_repo.clone(),
+                            runtime_for_async,
+                        );
+                        commands::orchestrator::spawn_status_bridge(
+                            Arc::new(orchestrator.clone()),
+                            handle.clone(),
+                        );
+
+                        handle.manage(repository_repo);
+                        handle.manage(workspace_repo);
                         handle.manage(RunCommandRepo::new(pool.clone()));
                         handle.manage(agent_repo);
                         handle.manage(SettingsRepo::new(pool));
+                        handle.manage(orchestrator);
                     }
                     Err(err) => {
                         eprintln!("failed to initialize SQLite at {}: {err}", db_path.display());
@@ -143,6 +160,9 @@ pub fn run() {
             commands::runtime::resize_workspace,
             commands::runtime::interrupt_workspace,
             commands::runtime::stop_workspace,
+            commands::orchestrator::start_task,
+            commands::orchestrator::stop_task,
+            commands::orchestrator::send_input_to_task,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,
