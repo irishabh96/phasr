@@ -1,7 +1,9 @@
 name: Release
 
-# Tag-triggered Mac builds. Push a v* tag to produce both arch DMGs in
-# a draft GitHub Release. The maintainer writes notes and publishes.
+# Tag-triggered macOS build. Push a v* tag to produce an Apple Silicon
+# DMG in a draft GitHub Release. The maintainer writes notes and
+# publishes. Intel Mac support isn't built pre-1.0 — adding it is a
+# second matrix entry when there's demand.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   VITE_CLERK_PUBLISHABLE_KEY
@@ -20,18 +22,8 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            target: aarch64-apple-darwin
-            arch: arm64
-          - runner: macos-13
-            target: x86_64-apple-darwin
-            arch: x64
-
-    runs-on: ${{ matrix.runner }}
+    name: Build aarch64 DMG
+    runs-on: macos-14
 
     steps:
       - name: Checkout
@@ -50,7 +42,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -72,4 +64,4 @@ jobs:
           releaseName: 'Phasr ${{ github.ref_name }}'
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target aarch64-apple-darwin

@@ -6,15 +6,11 @@ Phasr is a desktop app that orchestrates concurrent coding-agent sessions
 — Claude, Codex, Copilot, Gemini, OpenCode — with per-workspace git
 worktrees, live terminal streaming, and an integrated git workflow.
 
-> Pre-1.0, macOS only. Builds are unsigned for now (see Install below).
+> Pre-1.0, macOS (Apple Silicon) only. Builds are unsigned for now (see Install below). Intel Mac support isn't planned for pre-1.0.
 
-## Install (macOS)
+## Install (macOS, Apple Silicon)
 
-1. Grab the latest DMG for your Mac from [Releases](https://github.com/irishabh96/phasr/releases):
-   - **Apple Silicon** (M1, M2, M3, M4) → `Phasr_<version>_aarch64.dmg`
-   - **Intel** → `Phasr_<version>_x64.dmg`
-
-   Not sure? Apple menu → *About This Mac*. If "Chip" starts with "Apple", grab the aarch64 build. If it says "Intel", grab x64.
+1. Grab the latest DMG from [Releases](https://github.com/irishabh96/phasr/releases) — look for `Phasr_<version>_aarch64.dmg`.
 
 2. Open the DMG and drag **Phasr** to your **Applications** folder.
 
@@ -65,7 +61,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, common commands, and 
 
 ## Releases
 
-Releases are cut by tagging `v*` on `master`. GitHub Actions builds both arch DMGs and uploads them as a draft release. See [RELEASING.md](RELEASING.md) for the maintainer flow.
+Releases are cut by tagging `v*` on `master`. GitHub Actions builds the Apple Silicon DMG and uploads it as a draft release. See [RELEASING.md](RELEASING.md) for the maintainer flow.
 
 ## License
 
