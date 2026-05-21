@@ -67,11 +67,11 @@ function WorkspaceDetail() {
           </span>
           <TaskStatusPill status={workspace.status} />
           {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
-          {workspace.worktreePath && <SyncButton workspaceId={workspaceId} />}
         </div>
         <WorkspaceInnerTabBar workspaceId={workspaceId} />
         <div className="flex shrink-0 items-center gap-1">
           <RunCommandPicker repositoryId={repositoryId} />
+          {workspace.worktreePath && <SyncButton workspaceId={workspaceId} />}
           {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
           {workspace.worktreePath && (
             <ChangesToggle
