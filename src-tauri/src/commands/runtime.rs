@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::auth::{AuthError, SessionState};
 use crate::domain::WorkspaceStatus;
 use crate::pty::{PtyEvent, TaskRuntime};
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
@@ -33,6 +34,8 @@ pub enum RuntimeError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Pty(#[from] crate::pty::handle::PtyError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     #[error("repository has no local path; pick or clone one first")]
     NoRepositoryPath,
     #[error("no running pty for workspace `{0}`")]
@@ -66,7 +69,9 @@ pub async fn start_workspace(
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<RunningWorkspaceInfo, RuntimeError> {
+    session.require()?;
     let workspace = workspaces.get(&workspace_id).await?;
 
     if let Some(handle) = runtime.get(&workspace_id) {
@@ -228,7 +233,9 @@ fn spawn_event_forwarder(
 pub async fn read_workspace_log(
     workspace_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<String, RuntimeError> {
+    session.require()?;
     let path = runtime.log_dir.join(format!("{workspace_id}.log"));
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
@@ -243,7 +250,9 @@ pub async fn send_workspace_input(
     workspace_id: String,
     data: String,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RuntimeError> {
+    session.require()?;
     let handle = runtime
         .get(&workspace_id)
         .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
@@ -257,7 +266,9 @@ pub async fn resize_workspace(
     rows: u16,
     cols: u16,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RuntimeError> {
+    session.require()?;
     let handle = runtime
         .get(&workspace_id)
         .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
@@ -269,7 +280,9 @@ pub async fn resize_workspace(
 pub async fn interrupt_workspace(
     workspace_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RuntimeError> {
+    session.require()?;
     let handle = runtime
         .get(&workspace_id)
         .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;
@@ -281,7 +294,9 @@ pub async fn interrupt_workspace(
 pub async fn stop_workspace(
     workspace_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RuntimeError> {
+    session.require()?;
     let handle = runtime
         .get(&workspace_id)
         .ok_or_else(|| RuntimeError::NotRunning(workspace_id.clone()))?;

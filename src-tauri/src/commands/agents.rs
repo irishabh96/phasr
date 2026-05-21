@@ -1,8 +1,49 @@
+use std::sync::Arc;
+
 use serde::Deserialize;
 use tauri::State;
 
+use crate::auth::{AuthError, SessionState};
 use crate::domain::Agent;
 use crate::store::{AgentRepo, SettingsRepo, StoreError};
+
+/// Wraps `StoreError` so we can carry an auth-rejection variant on the
+/// command surface without churning every other call site that handles
+/// store errors. The `Display` impl flattens both variants to a string,
+/// matching the existing `serialize_str(&self.to_string())` envelope, so
+/// the frontend's error handling does not need to change.
+#[derive(Debug)]
+pub enum AgentCmdError {
+    Store(StoreError),
+    Auth(AuthError),
+}
+
+impl From<StoreError> for AgentCmdError {
+    fn from(e: StoreError) -> Self {
+        Self::Store(e)
+    }
+}
+
+impl From<AuthError> for AgentCmdError {
+    fn from(e: AuthError) -> Self {
+        Self::Auth(e)
+    }
+}
+
+impl std::fmt::Display for AgentCmdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(e) => write!(f, "{e}"),
+            Self::Auth(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl serde::Serialize for AgentCmdError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +61,9 @@ pub struct CreateAgentInput {
 pub async fn list_agents(
     agents: State<'_, AgentRepo>,
     settings: State<'_, SettingsRepo>,
-) -> Result<Vec<Agent>, StoreError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<Agent>, AgentCmdError> {
+    session.require()?;
     // Seeds are read straight from the DB so command edits land
     // immediately; custom agents come from the same table.
     let mut all = agents.list_all().await?;
@@ -39,7 +82,9 @@ pub async fn set_agent_enabled(
     id: String,
     enabled: bool,
     settings: State<'_, SettingsRepo>,
-) -> Result<(), StoreError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), AgentCmdError> {
+    session.require()?;
     let mut current = settings.get_or_init().await?;
     let mut disabled: Vec<String> =
         serde_json::from_str(&current.disabled_agent_ids).unwrap_or_default();
@@ -60,23 +105,31 @@ pub async fn set_agent_command(
     id: String,
     command: String,
     repo: State<'_, AgentRepo>,
-) -> Result<(), StoreError> {
-    repo.set_command(&id, &command).await
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), AgentCmdError> {
+    session.require()?;
+    repo.set_command(&id, &command).await?;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn set_agent_default(
     id: String,
     repo: State<'_, AgentRepo>,
-) -> Result<(), StoreError> {
-    repo.set_default(&id).await
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), AgentCmdError> {
+    session.require()?;
+    repo.set_default(&id).await?;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn create_custom_agent(
     input: CreateAgentInput,
     repo: State<'_, AgentRepo>,
-) -> Result<Agent, StoreError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Agent, AgentCmdError> {
+    session.require()?;
     let agent = Agent::new_custom(input.name, input.command);
     repo.insert(&agent).await?;
     Ok(agent)
@@ -86,6 +139,9 @@ pub async fn create_custom_agent(
 pub async fn delete_agent(
     id: String,
     repo: State<'_, AgentRepo>,
-) -> Result<(), StoreError> {
-    repo.delete(&id).await
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), AgentCmdError> {
+    session.require()?;
+    repo.delete(&id).await?;
+    Ok(())
 }

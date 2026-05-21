@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 
+use crate::auth::SessionState;
 use crate::orchestrator::{
     OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
 };
@@ -38,7 +39,9 @@ pub struct StartTaskInput {
 pub async fn start_task(
     input: StartTaskInput,
     orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<StartedTask, OrchestratorError> {
+    session.require()?;
     let request = StartTaskRequest {
         repository_id: input.repository_id,
         agent_id: input.agent_id,
@@ -55,7 +58,9 @@ pub async fn start_task(
 pub async fn stop_task(
     task_id: String,
     orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), OrchestratorError> {
+    session.require()?;
     orchestrator.stop_task(&task_id).await
 }
 
@@ -64,7 +69,9 @@ pub async fn send_input_to_task(
     task_id: String,
     data: String,
     orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), OrchestratorError> {
+    session.require()?;
     orchestrator.send_input(&task_id, data.as_bytes())
 }
 

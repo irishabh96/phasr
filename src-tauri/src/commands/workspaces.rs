@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use tauri::{Manager, State};
 
+use crate::auth::{AuthError, SessionState};
 use crate::domain::{Workspace, WorkspaceStatus};
 use crate::fswatch::WorktreeWatchRegistry;
 use crate::git;
@@ -37,6 +38,7 @@ pub struct UpdateWorkspaceInput {
 pub enum WorkspaceCmdError {
     Store(StoreError),
     Git(git::GitError),
+    Auth(AuthError),
 }
 
 impl From<StoreError> for WorkspaceCmdError {
@@ -51,11 +53,18 @@ impl From<git::GitError> for WorkspaceCmdError {
     }
 }
 
+impl From<AuthError> for WorkspaceCmdError {
+    fn from(e: AuthError) -> Self {
+        Self::Auth(e)
+    }
+}
+
 impl std::fmt::Display for WorkspaceCmdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(e) => write!(f, "{e}"),
             Self::Git(e) => write!(f, "{e}"),
+            Self::Auth(e) => write!(f, "{e}"),
         }
     }
 }
@@ -86,7 +95,9 @@ pub async fn watch_workspace(
     id: String,
     workspaces: State<'_, WorkspaceRepo>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), WorkspaceCmdError> {
+    session.require()?;
     let workspace = workspaces.get(&id).await?;
     if let Some(path) = workspace.worktree_path {
         watchers.start(id, PathBuf::from(path));
@@ -98,7 +109,9 @@ pub async fn watch_workspace(
 pub fn unwatch_workspace(
     id: String,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), WorkspaceCmdError> {
+    session.require()?;
     watchers.stop(&id);
     Ok(())
 }
@@ -108,7 +121,9 @@ pub async fn create_workspace(
     input: CreateWorkspaceInput,
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
+    session.require()?;
     let repository = repositories.get(&input.repository_id).await?;
 
     let mut workspace = Workspace::new(input.repository_id.clone(), input.name, input.command);
@@ -139,7 +154,9 @@ pub async fn create_workspace(
 pub async fn list_workspaces(
     repository_id: String,
     repo: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<Workspace>, WorkspaceCmdError> {
+    session.require()?;
     Ok(repo.list_by_repository(&repository_id).await?)
 }
 
@@ -147,7 +164,9 @@ pub async fn list_workspaces(
 pub async fn get_workspace(
     id: String,
     repo: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
+    session.require()?;
     Ok(repo.get(&id).await?)
 }
 
@@ -156,7 +175,9 @@ pub async fn update_workspace(
     id: String,
     input: UpdateWorkspaceInput,
     repo: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
+    session.require()?;
     let patch = WorkspaceUpdate {
         name: input.name,
         prompt: input.prompt.map(Some),
@@ -177,7 +198,9 @@ pub async fn archive_workspace(
     app: tauri::AppHandle,
     repo: State<'_, WorkspaceRepo>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<crate::domain::Workspace, WorkspaceCmdError> {
+    session.require()?;
     // Stop the PTY if it's running so the status flip doesn't race
     // against a still-alive shell.
     if let Some(runtime) = app.try_state::<Arc<TaskRuntime>>() {
@@ -216,7 +239,9 @@ pub async fn open_pull_request(
     id: String,
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<OpenPullRequestOutcome, WorkspaceCmdError> {
+    session.require()?;
     let workspace = workspaces.get(&id).await?;
     let branch = workspace.branch.clone().ok_or_else(|| {
         WorkspaceCmdError::Git(crate::git::GitError::CommandFailed(
@@ -289,7 +314,9 @@ pub async fn check_workspace_delete(
     id: String,
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<WorkspaceDeleteCheck, WorkspaceCmdError> {
+    session.require()?;
     let workspace = workspaces.get(&id).await?;
     let Some(branch) = workspace.branch.as_deref() else {
         return Ok(WorkspaceDeleteCheck {
@@ -316,7 +343,9 @@ pub async fn delete_workspace(
     repo: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), WorkspaceCmdError> {
+    session.require()?;
     watchers.stop(&id);
     let workspace = repo.get(&id).await.ok();
 

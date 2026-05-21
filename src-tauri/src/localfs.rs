@@ -4,6 +4,10 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::State;
+
+use crate::auth::{AuthError, SessionState};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,15 +72,24 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn validate_workspace_path(path: String) -> PathValidation {
-    validate(&path)
+pub fn validate_workspace_path(
+    path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<PathValidation, AuthError> {
+    session.require()?;
+    Ok(validate(&path))
 }
 
 /// Returns the default folder where Phasr creates new projects.
 /// `<home>/PhasrProjects`. Doesn't create the directory; that happens on
 /// first project creation via `ensure_dir`.
 #[tauri::command]
-pub fn default_projects_dir() -> Result<String, String> {
+pub fn default_projects_dir(
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, String> {
+    // Auth errors collapse into the existing `String` envelope so the TS
+    // signature stays unchanged.
+    session.require().map_err(|e| e.to_string())?;
     home_dir()
         .map(|h| h.join("PhasrProjects").to_string_lossy().into_owned())
         .ok_or_else(|| "could not resolve home directory".into())
@@ -86,7 +99,11 @@ pub fn default_projects_dir() -> Result<String, String> {
 /// on success. Used by the new-project wizard before invoking `git init`
 /// / `git clone`.
 #[tauri::command]
-pub fn ensure_dir(path: String) -> Result<String, String> {
+pub fn ensure_dir(
+    path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, String> {
+    session.require().map_err(|e| e.to_string())?;
     let expanded = expand_tilde(&path);
     std::fs::create_dir_all(&expanded).map_err(|e| e.to_string())?;
     let canonical = std::fs::canonicalize(&expanded).map_err(|e| e.to_string())?;

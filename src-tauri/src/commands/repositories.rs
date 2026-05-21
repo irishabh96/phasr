@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use serde::Deserialize;
 use tauri::State;
 
+use crate::auth::{AuthError, SessionState};
 use crate::domain::Repository;
 use crate::git::{self, GitError};
 use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError};
@@ -9,6 +12,7 @@ use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError};
 pub enum RepositoryCmdError {
     Store(StoreError),
     Git(GitError),
+    Auth(AuthError),
     NoLocalPath,
 }
 
@@ -24,11 +28,18 @@ impl From<GitError> for RepositoryCmdError {
     }
 }
 
+impl From<AuthError> for RepositoryCmdError {
+    fn from(e: AuthError) -> Self {
+        Self::Auth(e)
+    }
+}
+
 impl std::fmt::Display for RepositoryCmdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(e) => write!(f, "{e}"),
             Self::Git(e) => write!(f, "{e}"),
+            Self::Auth(e) => write!(f, "{e}"),
             Self::NoLocalPath => write!(f, "repository has no local path on this machine"),
         }
     }
@@ -61,7 +72,9 @@ pub struct UpdateRepositoryInput {
 pub async fn create_repository(
     input: CreateRepositoryInput,
     repo: State<'_, RepositoryRepo>,
-) -> Result<Repository, StoreError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Repository, RepositoryCmdError> {
+    session.require()?;
     // Idempotent: same canonical path returns the existing row.
     if let Some(input_path) = input.local_path.as_deref() {
         let candidate = std::fs::canonicalize(input_path)
@@ -106,16 +119,20 @@ pub async fn create_repository(
 #[tauri::command]
 pub async fn list_repositories(
     repo: State<'_, RepositoryRepo>,
-) -> Result<Vec<Repository>, StoreError> {
-    repo.list().await
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<Repository>, RepositoryCmdError> {
+    session.require()?;
+    Ok(repo.list().await?)
 }
 
 #[tauri::command]
 pub async fn get_repository(
     id: String,
     repo: State<'_, RepositoryRepo>,
-) -> Result<Repository, StoreError> {
-    repo.get(&id).await
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Repository, RepositoryCmdError> {
+    session.require()?;
+    Ok(repo.get(&id).await?)
 }
 
 #[tauri::command]
@@ -123,22 +140,27 @@ pub async fn update_repository(
     id: String,
     input: UpdateRepositoryInput,
     repo: State<'_, RepositoryRepo>,
-) -> Result<Repository, StoreError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Repository, RepositoryCmdError> {
+    session.require()?;
     let patch = RepositoryUpdate {
         name: input.name,
         remote_url: input.remote_url.map(Some),
         local_path: input.local_path.map(Some),
         default_branch: input.default_branch,
     };
-    repo.update(&id, patch).await
+    Ok(repo.update(&id, patch).await?)
 }
 
 #[tauri::command]
 pub async fn delete_repository(
     id: String,
     repo: State<'_, RepositoryRepo>,
-) -> Result<(), StoreError> {
-    repo.delete(&id).await
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), RepositoryCmdError> {
+    session.require()?;
+    repo.delete(&id).await?;
+    Ok(())
 }
 
 /// Initialize the repository's local folder as a git repo (mockup 4
@@ -149,7 +171,9 @@ pub async fn delete_repository(
 pub async fn git_init_repository(
     id: String,
     repo: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
+    session.require()?;
     let repository = repo.get(&id).await?;
     let local_path = repository
         .local_path
@@ -176,7 +200,9 @@ pub async fn git_init_repository(
 pub async fn git_clone_repository(
     url: String,
     destination_path: String,
-) -> Result<String, GitError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, RepositoryCmdError> {
+    session.require()?;
     let dest = std::path::Path::new(&destination_path);
     git::clone_repo(&url, dest)?;
     Ok(destination_path)
@@ -190,7 +216,9 @@ pub async fn git_clone_repository(
 pub async fn git_init_from_template(
     template_git_url: String,
     destination_path: String,
-) -> Result<String, GitError> {
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, RepositoryCmdError> {
+    session.require()?;
     let dest = std::path::Path::new(&destination_path);
     git::init_from_template(&template_git_url, dest)?;
     Ok(destination_path)
@@ -200,6 +228,10 @@ pub async fn git_init_from_template(
 /// `.gitignore` when the path is a git repo; falls back to a manual
 /// walk that skips heavy folders otherwise.
 #[tauri::command]
-pub async fn list_repo_files(path: String) -> Result<Vec<String>, GitError> {
-    git::list_files(std::path::Path::new(&path))
+pub async fn list_repo_files(
+    path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, RepositoryCmdError> {
+    session.require()?;
+    Ok(git::list_files(std::path::Path::new(&path))?)
 }

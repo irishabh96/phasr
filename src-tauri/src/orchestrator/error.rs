@@ -3,6 +3,7 @@
 
 use thiserror::Error;
 
+use crate::auth::AuthError;
 use crate::git::GitError;
 use crate::pty::handle::PtyError;
 use crate::store::StoreError;
@@ -15,6 +16,8 @@ pub enum OrchestratorError {
     Git(#[from] GitError),
     #[error(transparent)]
     Pty(#[from] PtyError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
 
     #[error("repository has no local path on this machine; pick or clone one first")]
     RepositoryHasNoLocalPath,

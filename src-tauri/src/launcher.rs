@@ -2,8 +2,12 @@
 //! launches them pointed at a worktree path.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Serialize;
+use tauri::State;
+
+use crate::auth::SessionState;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -167,16 +171,26 @@ fn find_def(id: &str) -> Option<&'static LauncherDef> {
 }
 
 #[tauri::command]
-pub fn list_launchers() -> Vec<Launcher> {
-    LAUNCHERS
+pub fn list_launchers(
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<Launcher>, String> {
+    // Auth errors collapse into the existing `String` envelope so the TS
+    // signature stays unchanged.
+    session.require().map_err(|e| e.to_string())?;
+    Ok(LAUNCHERS
         .iter()
         .filter(|d| is_available(d.detect))
         .map(|d| d.info.clone())
-        .collect()
+        .collect())
 }
 
 #[tauri::command]
-pub fn launch_app(launcher_id: String, path: String) -> Result<(), String> {
+pub fn launch_app(
+    launcher_id: String,
+    path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), String> {
+    session.require().map_err(|e| e.to_string())?;
     let def = find_def(&launcher_id).ok_or_else(|| format!("unknown launcher `{launcher_id}`"))?;
     let target = Path::new(&path);
     if !target.exists() {
