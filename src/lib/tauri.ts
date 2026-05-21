@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   Agent,
+  BranchStatus,
   CommitOutput,
   DiffScope,
   FileChange,
@@ -155,6 +156,8 @@ export const tauri = {
   gitCommit: (workspaceId: string, message: string) =>
     invoke<CommitOutput>("git_commit", { workspaceId, message }),
   gitPush: (workspaceId: string) => invoke<void>("git_push", { workspaceId }),
+  gitBranchStatus: (workspaceId: string) =>
+    invoke<BranchStatus>("git_branch_status", { workspaceId }),
 
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>

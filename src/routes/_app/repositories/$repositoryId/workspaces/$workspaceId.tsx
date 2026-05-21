@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect } from "react";
+import { BranchChip } from "@/components/BranchChip";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
@@ -64,6 +65,7 @@ function WorkspaceDetail() {
             {workspace.name}
           </span>
           <TaskStatusPill status={workspace.status} />
+          {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
         </div>
         <WorkspaceInnerTabBar workspaceId={workspaceId} />
         <div className="flex shrink-0 items-center gap-1">

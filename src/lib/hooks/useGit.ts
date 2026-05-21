@@ -6,6 +6,7 @@ import type { DiffScope } from "@/lib/types";
 
 const gitKeys = {
   status: (workspaceId: string) => ["git", "status", workspaceId] as const,
+  branchStatus: (workspaceId: string) => ["git", "branchStatus", workspaceId] as const,
   diff: (workspaceId: string, scope: DiffScope, path?: string) =>
     ["git", "diff", workspaceId, scope, path ?? null] as const,
 };
@@ -37,6 +38,10 @@ export function useGitStatus(workspaceId: string | null | undefined) {
       if (e.payload.workspaceId !== workspaceId) return;
       qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
       qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
+      // Local commits (made via the terminal) bump HEAD without
+      // changing the worktree, but `.git/HEAD` is inside the watched
+      // tree, so the same event flushes branch status too.
+      qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -94,13 +99,33 @@ export function useGitCommit(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (message: string) => tauri.gitCommit(workspaceId, message),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
+      qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
+    },
   });
 }
 
 export function useGitPush(workspaceId: string) {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: () => tauri.gitPush(workspaceId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) }),
+  });
+}
+
+/**
+ * Current branch + ahead/behind tracking for a workspace's worktree.
+ * The chip in the workspace header and the Push button's enablement
+ * both feed off this. Invalidated by fs-watcher events (which catch
+ * commits made via the embedded terminal) and after our own mutations.
+ */
+export function useGitBranchStatus(workspaceId: string | null | undefined) {
+  return useQuery({
+    queryKey: gitKeys.branchStatus(workspaceId ?? ""),
+    queryFn: () => tauri.gitBranchStatus(workspaceId ?? ""),
+    enabled: !!workspaceId,
+    refetchInterval: 60_000,
   });
 }
 

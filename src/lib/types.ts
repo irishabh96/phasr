@@ -147,6 +147,15 @@ export interface CommitOutput {
   message: string;
 }
 
+export interface BranchStatus {
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  hasRemote: boolean;
+  detached: boolean;
+}
+
 export interface OpenPullRequestOutcome {
   url: string;
   provider: string;
