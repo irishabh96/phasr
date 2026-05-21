@@ -65,15 +65,15 @@ function WelcomeState({ firstName }: { firstName: string | null }) {
   const navigate = useNavigate();
   const openExisting = useOpenExistingFlow();
 
+  const greeting = greetingForHour(new Date().getHours());
+
   return (
     <div className="flex h-full items-center justify-center px-8">
       <div className="w-full max-w-2xl text-center">
         <h1 className="text-[24px] font-semibold tracking-tight leading-none">
-          Welcome to Phasr{firstName ? `, ${firstName}` : ""}
+          {greeting}
+          {firstName ? `, ${firstName}` : ""}
         </h1>
-        <p className="mt-3 text-[13px] text-(--color-text-secondary)">
-          Run multiple coding agents in parallel, each in its own isolated git worktree.
-        </p>
 
         <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
@@ -113,6 +113,17 @@ function WelcomeState({ firstName }: { firstName: string | null }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Time-of-day greeting in local time. We skip "Good night" intentionally
+ * — Phasr is a productivity tool and the late-hours bucket stays as
+ * "Good evening" to avoid suggesting the user should sign off.
+ */
+function greetingForHour(hour: number): string {
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour >= 12 && hour < 17) return "Good afternoon";
+  return "Good evening";
 }
 
 export const Route = createFileRoute("/_app/")({
