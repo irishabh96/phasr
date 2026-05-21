@@ -156,6 +156,19 @@ export interface BranchStatus {
   detached: boolean;
 }
 
+export type MergeStrategy = "merge" | "squash" | "fastForward" | "rebase";
+
+export type MergeOutcome =
+  | { kind: "clean"; message: string }
+  | { kind: "conflicts"; files: string[] };
+
+export type InProgress =
+  | { kind: "none" }
+  | { kind: "merge"; conflicts: string[] }
+  | { kind: "rebase"; conflicts: string[] };
+
+export type ConflictSide = "ours" | "theirs";
+
 export interface OpenPullRequestOutcome {
   url: string;
   provider: string;

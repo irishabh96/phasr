@@ -3,9 +3,13 @@ import type {
   Agent,
   BranchStatus,
   CommitOutput,
+  ConflictSide,
   DiffScope,
   FileChange,
+  InProgress,
   Launcher,
+  MergeOutcome,
+  MergeStrategy,
   OpenPullRequestOutcome,
   PathValidation,
   PtyEvent,
@@ -158,6 +162,19 @@ export const tauri = {
   gitPush: (workspaceId: string) => invoke<void>("git_push", { workspaceId }),
   gitBranchStatus: (workspaceId: string) =>
     invoke<BranchStatus>("git_branch_status", { workspaceId }),
+  gitFetch: (workspaceId: string) => invoke<void>("git_fetch", { workspaceId }),
+  gitSyncWithMain: (workspaceId: string, strategy: MergeStrategy) =>
+    invoke<MergeOutcome>("git_sync_with_main", { workspaceId, strategy }),
+  gitMergeToMain: (workspaceId: string, strategy: MergeStrategy) =>
+    invoke<MergeOutcome>("git_merge_to_main", { workspaceId, strategy }),
+  gitMergeInProgress: (workspaceId: string) =>
+    invoke<InProgress>("git_merge_in_progress", { workspaceId }),
+  gitAbortMerge: (workspaceId: string) =>
+    invoke<void>("git_abort_merge", { workspaceId }),
+  gitContinueMerge: (workspaceId: string) =>
+    invoke<MergeOutcome>("git_continue_merge", { workspaceId }),
+  gitResolveConflict: (workspaceId: string, path: string, side: ConflictSide) =>
+    invoke<void>("git_resolve_conflict", { workspaceId, path, side }),
 
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>

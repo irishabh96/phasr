@@ -2,14 +2,26 @@ import { listen } from "@tauri-apps/api/event";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { tauri } from "@/lib/tauri";
-import type { DiffScope } from "@/lib/types";
+import type { ConflictSide, DiffScope, MergeStrategy } from "@/lib/types";
 
 const gitKeys = {
   status: (workspaceId: string) => ["git", "status", workspaceId] as const,
   branchStatus: (workspaceId: string) => ["git", "branchStatus", workspaceId] as const,
+  mergeInProgress: (workspaceId: string) =>
+    ["git", "mergeInProgress", workspaceId] as const,
   diff: (workspaceId: string, scope: DiffScope, path?: string) =>
     ["git", "diff", workspaceId, scope, path ?? null] as const,
 };
+
+function invalidateWorkspaceGit(
+  qc: ReturnType<typeof useQueryClient>,
+  workspaceId: string,
+) {
+  qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
+  qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
+  qc.invalidateQueries({ queryKey: gitKeys.mergeInProgress(workspaceId) });
+  qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
+}
 
 interface WorktreeChangedPayload {
   workspaceId: string;
@@ -36,12 +48,11 @@ export function useGitStatus(workspaceId: string | null | undefined) {
     tauri.watchWorkspace(workspaceId).catch(() => {});
     listen<WorktreeChangedPayload>("worktree-changed", (e) => {
       if (e.payload.workspaceId !== workspaceId) return;
-      qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
-      qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
       // Local commits (made via the terminal) bump HEAD without
       // changing the worktree, but `.git/HEAD` is inside the watched
-      // tree, so the same event flushes branch status too.
-      qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
+      // tree, so the same event flushes branch status and merge
+      // progress along with status + diffs.
+      invalidateWorkspaceGit(qc, workspaceId);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -72,7 +83,7 @@ export function useGitStage(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (paths: string[]) => tauri.gitStage(workspaceId, paths),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] }),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
   });
 }
 
@@ -80,7 +91,7 @@ export function useGitUnstage(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (paths: string[]) => tauri.gitUnstage(workspaceId, paths),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] }),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
   });
 }
 
@@ -88,10 +99,7 @@ export function useGitDiscard(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (paths: string[]) => tauri.gitDiscard(workspaceId, paths),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["git", "status", workspaceId] });
-      qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
-    },
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
   });
 }
 
@@ -99,10 +107,7 @@ export function useGitCommit(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (message: string) => tauri.gitCommit(workspaceId, message),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
-      qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
-    },
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
   });
 }
 
@@ -111,6 +116,70 @@ export function useGitPush(workspaceId: string) {
   return useMutation({
     mutationFn: () => tauri.gitPush(workspaceId),
     onSuccess: () => qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) }),
+  });
+}
+
+export function useGitFetch(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => tauri.gitFetch(workspaceId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) }),
+  });
+}
+
+export function useGitSyncWithMain(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (strategy: MergeStrategy) =>
+      tauri.gitSyncWithMain(workspaceId, strategy),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+  });
+}
+
+export function useGitMergeToMain(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (strategy: MergeStrategy) =>
+      tauri.gitMergeToMain(workspaceId, strategy),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+  });
+}
+
+export function useGitAbortMerge(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => tauri.gitAbortMerge(workspaceId),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+  });
+}
+
+export function useGitContinueMerge(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => tauri.gitContinueMerge(workspaceId),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+  });
+}
+
+export function useGitResolveConflict(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, side }: { path: string; side: ConflictSide }) =>
+      tauri.gitResolveConflict(workspaceId, path, side),
+    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+  });
+}
+
+/**
+ * Whether the worktree is in the middle of a merge or rebase, and
+ * which files are still conflicting. Drives ChangesPanel's
+ * Conflicts section + the in-progress banner.
+ */
+export function useGitMergeInProgress(workspaceId: string | null | undefined) {
+  return useQuery({
+    queryKey: gitKeys.mergeInProgress(workspaceId ?? ""),
+    queryFn: () => tauri.gitMergeInProgress(workspaceId ?? ""),
+    enabled: !!workspaceId,
   });
 }
 
