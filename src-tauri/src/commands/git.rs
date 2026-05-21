@@ -9,8 +9,8 @@ use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
 use crate::git::{
-    self, BranchStatus, CommitOutput, ConflictSide, DiffScope, FileChange, GitError, InProgress,
-    MergeOutcome, MergeStrategy,
+    self, BranchStatus, Commit, CommitFileChange, CommitOutput, ConflictSide, DiffScope,
+    FileChange, GitError, InProgress, LogOptions, MergeOutcome, MergeStrategy,
 };
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 
@@ -323,4 +323,58 @@ pub async fn git_resolve_conflict(
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     git::merge_set_resolution(&cwd, &path, side)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn git_log(
+    workspace_id: String,
+    opts: LogOptions,
+    workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<Commit>, GitCmdError> {
+    session.require()?;
+    let workspace = workspaces.get(&workspace_id).await?;
+    let cwd = workspace
+        .worktree_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or(GitCmdError::NoWorktree)?;
+    // Caller may have provided default_branch directly, but most
+    // React calls won't — resolve it from the repo row here so the
+    // hook signature stays branch-only=bool + grep/page only.
+    let mut opts = opts;
+    if opts.branch_only && opts.default_branch.is_none() {
+        opts.default_branch = repositories
+            .get(&workspace.repository_id)
+            .await
+            .ok()
+            .map(|r| r.default_branch);
+    }
+    Ok(git::git_log_query(&cwd, &opts)?)
+}
+
+#[tauri::command]
+pub async fn git_commit_files(
+    workspace_id: String,
+    sha: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<CommitFileChange>, GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    Ok(git::commit_files(&cwd, &sha)?)
+}
+
+#[tauri::command]
+pub async fn git_commit_diff(
+    workspace_id: String,
+    sha: String,
+    path: Option<String>,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    Ok(git::diff_for_commit(&cwd, &sha, path.as_deref())?)
 }

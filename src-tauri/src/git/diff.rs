@@ -14,6 +14,24 @@ pub enum DiffScope {
     Head,
 }
 
+/// Unified diff for a single commit (whole-commit when `path` is None,
+/// otherwise scoped to that one path). For merge commits, `-m
+/// --first-parent` produces a diff against the first parent rather
+/// than the default empty output.
+pub fn diff_for_commit(
+    cwd: &Path,
+    sha: &str,
+    path: Option<&str>,
+) -> Result<String, GitError> {
+    let mut args: Vec<&str> = vec!["show", "--no-color", "-m", "--first-parent", "--format="];
+    args.push(sha);
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    run_git(cwd, &args)
+}
+
 pub fn diff(cwd: &Path, scope: DiffScope, path: Option<&str>) -> Result<String, GitError> {
     // Untracked files don't show up in `git diff` at all — the diff
     // tools only know about indexed paths. Detect them and synthesise
