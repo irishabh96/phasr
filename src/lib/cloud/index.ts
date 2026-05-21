@@ -2,6 +2,7 @@ export {
   deleteRepositoryFromCloud,
   pullRepositories,
   pushMissingRepositories,
+  pushPendingRepositoryDeletes,
   pushRepository,
 } from "./repositories";
 export {

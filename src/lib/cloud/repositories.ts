@@ -69,6 +69,14 @@ export async function pullRepositories(client: SupabaseClient): Promise<Set<stri
   const localById = new Map(localList.map((r) => [r.id, r]));
 
   for (const row of rows) {
+    // Skip any cloud row whose id is soft-deleted locally. The local
+    // tombstone wins — pushing the delete back up to cloud is the
+    // bootstrap's earlier step (see useCloudSync); pulling must not
+    // resurrect rows the user already removed.
+    if (await tauri.repositoryIsSoftDeleted(row.id)) {
+      continue;
+    }
+
     const localPath = pickLocalPath(row);
     const local = localById.get(row.id);
     if (!local) {
@@ -93,6 +101,29 @@ export async function pullRepositories(client: SupabaseClient): Promise<Set<stri
     }
   }
   return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Best-effort push of any locally soft-deleted repositories whose
+ * cloud delete hasn't completed yet. Called by the cloud-sync
+ * bootstrap before the pull so a delete that failed to mirror on the
+ * previous session doesn't resurrect on this one.
+ *
+ * On success per id: clear local `dirty` via `mark_repository_synced`.
+ * On failure: leave the row tombstoned + dirty for next bootstrap.
+ */
+export async function pushPendingRepositoryDeletes(
+  client: SupabaseClient,
+): Promise<void> {
+  const ids = await tauri.listSoftDeletedRepositories();
+  for (const id of ids) {
+    try {
+      await deleteRepositoryFromCloud(client, id);
+      await tauri.markRepositorySynced(id);
+    } catch (err) {
+      console.warn("pending repo delete push failed; will retry next session", id, err);
+    }
+  }
 }
 
 export async function pushMissingRepositories(

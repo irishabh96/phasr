@@ -12,6 +12,7 @@ import {
   pushCustomAgents,
   pushMissingRepositories,
   pushMissingWorkspaces,
+  pushPendingRepositoryDeletes,
   pushRepository,
   pushUserSettings,
   pushWorkspace,
@@ -64,6 +65,14 @@ function useCloudSyncInner() {
     let cancelled = false;
     (async () => {
       try {
+        // BEFORE pulling: push any locally soft-deleted repos to cloud.
+        // If we don't, a pull from a cloud whose delete hadn't yet
+        // propagated would skip-but-keep the cloud row (via
+        // repositoryIsSoftDeleted check) and we'd never converge.
+        log("bootstrap: pushing pending repository deletes");
+        await pushPendingRepositoryDeletes(supabase);
+        if (cancelled) return;
+
         log("bootstrap: pulling repositories");
         const cloudRepoIds = await pullRepositories(supabase);
         if (cancelled) return;
