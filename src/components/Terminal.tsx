@@ -138,7 +138,12 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
       const wireInteractive = () => {
         entry!.inputDisposables = [
           term.onData((data) => {
-            void tauri.sendWorkspaceInput(workspaceId, data).catch((err) => {
+            // Routes user keystrokes through the orchestrator's
+            // `send_input_to_task` command. Writing through the new
+            // surface keeps the React side speaking the "task"
+            // vocabulary while the PTY runtime remains shared with
+            // the legacy `start_workspace` path.
+            void tauri.sendInputToTask(workspaceId, data).catch((err) => {
               term.write(`\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`);
             });
           }),
@@ -198,7 +203,7 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
 
       entry.inputDisposables = [
         entry.term.onData((data) => {
-          void tauri.sendWorkspaceInput(workspaceId, data).catch((err) => {
+          void tauri.sendInputToTask(workspaceId, data).catch((err) => {
             entry!.term.write(`\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`);
           });
         }),

@@ -7,7 +7,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
 import { CommandPalette } from "@/components/CommandPalette";
 import { NewProjectWizard } from "@/components/NewProjectWizard";
-import { NewWorkspaceModal } from "@/components/NewWorkspaceModal";
+import { NewTaskModal } from "@/components/NewTaskModal";
 import { OpenExistingProjectModal } from "@/components/OpenExistingProjectModal";
 import { RenameWorkspaceModal } from "@/components/RenameWorkspaceModal";
 import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
@@ -17,6 +17,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { isClerkConfigured } from "@/lib/clerk";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
+import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
 import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
 import { useUiStore } from "@/lib/store";
 import { useRustSession } from "@/lib/use-rust-session";
@@ -63,15 +64,16 @@ function AppShell() {
   useRustSession();
   useCloudSync();
   useWorkspaceEvents();
+  useTaskEvents();
 
   // Global chrome shortcuts.
   //   ⌘B  pin sidebar
   //   ⌘⇧B hide sidebar
   //   ⌘J  right panel
-  //   ⌘N  new workspace in the active workspace's repo
-  //   ⌘T  new terminal inner tab in the active workspace
+  //   ⌘N  new task in the active task's repo (alias of ⌘T)
+  //   ⌘T  new task — opens the New Task modal
   //   ⌘W  close active inner tab (if closable; no-op on "main")
-  //   ⌘P  open file search for the active workspace's repo
+  //   ⌘P  open file search for the active task's repo
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -97,13 +99,16 @@ function AppShell() {
         return;
       }
       if (key === "t" && !e.shiftKey) {
-        const { activeWorkspaceContext, openInnerTerminalTab } = useUiStore.getState();
+        const { activeWorkspaceContext, requestNewWorkspace } = useUiStore.getState();
         if (!activeWorkspaceContext) return;
         // Capture-phase + stopImmediatePropagation defeats Chromium's
-        // built-in "new tab" reservation on ⌘T.
+        // built-in "new tab" reservation on ⌘T. Opens the New Task
+        // modal scoped to the active task's repo (workspace=task in
+        // user-facing vocabulary; the schema renamed `tasks` →
+        // `workspaces` in migration 0002).
         e.preventDefault();
         e.stopImmediatePropagation();
-        openInnerTerminalTab(activeWorkspaceContext.workspaceId);
+        requestNewWorkspace(activeWorkspaceContext.repositoryId);
         return;
       }
       if (key === "p" && !e.shiftKey) {
@@ -153,7 +158,7 @@ function AppShell() {
       </div>
       <CommandPalette />
       <NewProjectWizard />
-      <NewWorkspaceModal />
+      <NewTaskModal />
       <RenameWorkspaceModal />
       <OpenExistingProjectModal />
       <AddRepositoryPickerModal />

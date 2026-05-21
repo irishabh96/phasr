@@ -11,6 +11,7 @@ import type {
   Repository,
   RunCommand,
   RunningWorkspaceInfo,
+  StartedTask,
   UserSettings,
   Workspace,
   WorkspaceDeleteCheck,
@@ -47,6 +48,16 @@ interface UpdateWorkspaceInput {
   branch?: string;
   worktreePath?: string;
   exitCode?: number;
+}
+
+interface StartTaskInput {
+  repositoryId: string;
+  agentId: string;
+  name: string;
+  prompt?: string;
+  baseBranch?: string;
+  rows?: number;
+  cols?: number;
 }
 
 export const tauri = {
@@ -176,6 +187,17 @@ export const tauri = {
     invoke<void>("send_run_command_input", { id, data }),
   resizeRunCommand: (id: string, rows: number, cols: number) =>
     invoke<void>("resize_run_command", { id, rows, cols }),
+
+  // ── orchestrator (new task lifecycle) ────────────────────────────────
+  // The new path that creates a workspace row, sets up its worktree,
+  // and spawns the PTY in one shot. Use this for ⌘T / "New task" UX.
+  // (The legacy `createWorkspace` + `startWorkspace` two-step is still
+  // wired below for the project-creation wizard until task #25 retires
+  // it.)
+  startTask: (input: StartTaskInput) => invoke<StartedTask>("start_task", { input }),
+  stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
+  sendInputToTask: (taskId: string, data: string) =>
+    invoke<void>("send_input_to_task", { taskId, data }),
 
   // ── runtime (PTY) ────────────────────────────────────────────────────
   startWorkspace: (

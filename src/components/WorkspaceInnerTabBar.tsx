@@ -19,7 +19,7 @@ interface WorkspaceInnerTabBarProps {
  *  - "main" / agent — the workspace's primary process; closable. The agent
  *    PTY keeps running on the backend even when the tab is closed.
  *    Re-open via the empty-state CTA when no tabs remain.
- *  - "terminal" — ad-hoc shells (⌘T or "+").
+ *  - "terminal" — ad-hoc shells (the "+" button to the right of the strip).
  *  - "preview" — file viewer (no UI to open today; ⌘P search opens one).
  */
 export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps) {
@@ -53,7 +53,7 @@ export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps)
           }}
         />
       ))}
-      <GlassTooltip content="New terminal (⌘T)" side="bottom">
+      <GlassTooltip content="New terminal" side="bottom">
         <button
           type="button"
           aria-label="New terminal"

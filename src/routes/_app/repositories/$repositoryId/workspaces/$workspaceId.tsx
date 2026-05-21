@@ -6,6 +6,7 @@ import { ChangesPanel } from "@/components/ChangesPanel";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
+import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
@@ -58,9 +59,12 @@ function WorkspaceDetail() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-[var(--layout-header-height)] shrink-0 items-center gap-3 border-b border-(--color-border-subtle) pl-4 pr-2">
-        <span className="shrink-0 truncate text-[13px] font-medium leading-none">
-          {workspace.name}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="truncate text-[13px] font-medium leading-none">
+            {workspace.name}
+          </span>
+          <TaskStatusPill status={workspace.status} />
+        </div>
         <WorkspaceInnerTabBar workspaceId={workspaceId} />
         <div className="flex shrink-0 items-center gap-1">
           <RunCommandPicker repositoryId={repositoryId} />

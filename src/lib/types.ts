@@ -82,6 +82,27 @@ export interface RunningWorkspaceInfo {
   startedAt: string;
 }
 
+/**
+ * Result of `start_task` — orchestrator-side vocabulary uses "task" but
+ * the persisted row is still in the `workspaces` table (renamed from
+ * `tasks` in migration 0002).
+ */
+export interface StartedTask {
+  taskId: string;
+  workspace: Workspace;
+}
+
+/**
+ * Payload broadcast on `phasr://task-status` whenever the orchestrator
+ * transitions a task between lifecycle states.
+ */
+export interface TaskStatusPayload {
+  taskId: string;
+  repositoryId: string;
+  status: WorkspaceStatus;
+  exitCode: number | null;
+}
+
 export interface PathValidation {
   path: string;
   absolutePath: string | null;
