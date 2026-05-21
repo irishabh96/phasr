@@ -158,16 +158,13 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
               {canMergeToMain && (
                 <MenuItem
                   icon={<GitMerge size={12} />}
-                  label={
-                    mergeBlocked
-                      ? `Merge to ${repository?.defaultBranch ?? "main"} — ${mergeBlocked}`
-                      : `Merge to ${repository?.defaultBranch ?? "main"}`
-                  }
+                  label={`Merge to ${repository?.defaultBranch ?? "main"}`}
                   onClick={() => {
                     setOpen(false);
                     setMergeOpen(true);
                   }}
                   disabled={!!mergeBlocked}
+                  {...(mergeBlocked ? { title: mergeBlocked } : {})}
                 />
               )}
               {canOpenPr && (
@@ -231,12 +228,14 @@ function MenuItem({
   onClick,
   disabled,
   danger,
+  title,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
+  title?: string;
 }) {
   return (
     <li>
@@ -244,6 +243,7 @@ function MenuItem({
         type="button"
         onClick={onClick}
         disabled={disabled}
+        title={title}
         className={cn(
           "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left",
           "transition-colors duration-100",
