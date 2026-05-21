@@ -99,6 +99,16 @@ interface UiState {
   closeFileSearch: () => void;
 
   /**
+   * Repo-scoped read-only file preview. Set when a file is opened from the
+   * file-search modal in a context that has no active workspace (e.g. the
+   * empty-repo state). Drives a full-screen overlay viewer mounted in
+   * `_app.tsx`. Cleared on Esc or close.
+   */
+  repoFilePreview: { repoPath: string; filePath: string } | null;
+  openRepoFilePreview: (repoPath: string, filePath: string) => void;
+  closeRepoFilePreview: () => void;
+
+  /**
    * Drives the NewWorkspaceModal mounted in the app shell. Set by:
    * - sidebar `+` icon per repo row
    * - sidebar repo row click when the repo has no workspaces yet
@@ -194,6 +204,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   fileSearchTarget: null,
   openFileSearch: (repositoryId, path) => set({ fileSearchTarget: { repositoryId, path } }),
   closeFileSearch: () => set({ fileSearchTarget: null }),
+
+  repoFilePreview: null,
+  openRepoFilePreview: (repoPath, filePath) =>
+    set({ repoFilePreview: { repoPath, filePath } }),
+  closeRepoFilePreview: () => set({ repoFilePreview: null }),
 
   pendingNewWorkspaceRepoId: null,
   requestNewWorkspace: (repoId) => set({ pendingNewWorkspaceRepoId: repoId }),
