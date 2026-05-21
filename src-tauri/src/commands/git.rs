@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
-use crate::git::{self, CommitOutput, DiffScope, FileChange, GitError};
+use crate::git::{self, BranchStatus, CommitOutput, DiffScope, FileChange, GitError};
 use crate::store::{StoreError, WorkspaceRepo};
 
 #[derive(Debug)]
@@ -167,4 +167,15 @@ pub async fn git_push(
     })?;
     git::push(&cwd, "origin", &branch)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn git_branch_status(
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<BranchStatus, GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    Ok(git::branch_status(&cwd)?)
 }

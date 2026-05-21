@@ -1,6 +1,7 @@
 //! Git operations. All commands shell out to the user's installed
 //! `git` binary — same flags, same hooks, same auth as their CLI.
 
+mod branch;
 mod clone;
 mod commit;
 mod diff;
@@ -14,6 +15,7 @@ mod status;
 mod template;
 mod worktree;
 
+pub use branch::{branch_status, BranchStatus};
 pub use clone::clone_repo;
 pub use commit::{commit, discard, push, stage, unstage, CommitOutput};
 pub use diff::{diff, DiffScope};

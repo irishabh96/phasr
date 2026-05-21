@@ -175,6 +175,7 @@ pub fn run() {
             commands::git::git_discard,
             commands::git::git_commit,
             commands::git::git_push,
+            commands::git::git_branch_status,
             localfs::validate_workspace_path,
             localfs::default_projects_dir,
             localfs::ensure_dir,
