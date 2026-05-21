@@ -10,7 +10,6 @@ import { NewProjectWizard } from "@/components/NewProjectWizard";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { OpenExistingProjectModal } from "@/components/OpenExistingProjectModal";
 import { RenameWorkspaceModal } from "@/components/RenameWorkspaceModal";
-import { RepoFilePreviewOverlay } from "@/components/RepoFilePreviewOverlay";
 import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
@@ -164,7 +163,6 @@ function AppShell() {
       <OpenExistingProjectModal />
       <AddRepositoryPickerModal />
       <RepoFileSearchModal />
-      <RepoFilePreviewOverlay />
     </div>
   );
 }
