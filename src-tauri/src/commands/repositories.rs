@@ -252,3 +252,14 @@ pub async fn list_repo_files(
     session.require()?;
     Ok(git::list_files(std::path::Path::new(&path))?)
 }
+
+/// Sorted list of local branch names in the repo. Used by the
+/// CreateFirstWorkspacePane base-branch dropdown.
+#[tauri::command]
+pub async fn list_local_branches(
+    path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, RepositoryCmdError> {
+    session.require()?;
+    Ok(git::list_local_branches(std::path::Path::new(&path))?)
+}

@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useAgents } from "@/lib/hooks/useAgents";
+import { useGitBranches } from "@/lib/hooks/useGit";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { slugify } from "@/lib/slug";
 import { useUiStore } from "@/lib/store";
@@ -41,6 +42,9 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
     staleTime: 5_000,
   });
   const isGit = isGitQuery.data?.isGitRepo ?? true;
+
+  const branchesQuery = useGitBranches(isGit ? repo.localPath : null);
+  const branches = branchesQuery.data ?? [];
 
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
@@ -122,6 +126,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
             previewBranch={previewBranch}
             baseBranch={baseBranch}
             setBaseBranch={setBaseBranch}
+            branches={branches}
             advancedOpen={advancedOpen}
             setAdvancedOpen={setAdvancedOpen}
             canContinue={trimmedName.length > 0 && isGit}
@@ -153,6 +158,7 @@ function Step1({
   previewBranch,
   baseBranch,
   setBaseBranch,
+  branches,
   advancedOpen,
   setAdvancedOpen,
   canContinue,
@@ -163,6 +169,7 @@ function Step1({
   previewBranch: string;
   baseBranch: string;
   setBaseBranch: (v: string) => void;
+  branches: string[];
   advancedOpen: boolean;
   setAdvancedOpen: (v: boolean) => void;
   canContinue: boolean;
@@ -220,13 +227,31 @@ function Step1({
             >
               Base branch
             </label>
-            <GlassInput
-              id="first-task-base-branch"
-              value={baseBranch}
-              onChange={(e) => setBaseBranch(e.target.value)}
-              placeholder="main"
-              className="h-10 font-mono"
-            />
+            {branches.length > 0 ? (
+              <select
+                id="first-task-base-branch"
+                value={branches.includes(baseBranch) ? baseBranch : branches[0]}
+                onChange={(e) => setBaseBranch(e.target.value)}
+                className="h-10 w-full rounded-[10px] border border-(--glass-border-hairline) bg-(--color-bg-input) px-3 font-mono text-[12.5px] text-(--color-text-primary) focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
+              >
+                {branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              // Fall back to a free-text field if the branch list isn't
+              // available (e.g. newly-init'd repo before the initial
+              // commit lands or a path that isn't a git repo yet).
+              <GlassInput
+                id="first-task-base-branch"
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+                placeholder="main"
+                className="h-10 font-mono"
+              />
+            )}
           </div>
         )}
       </div>
@@ -318,7 +343,10 @@ function Step2({
           id="first-task-prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="What should the agent do?"
+          placeholder={
+            "e.g. Add a dark mode toggle to the settings page and " +
+            "persist the choice in user preferences."
+          }
           rows={6}
         />
       </div>

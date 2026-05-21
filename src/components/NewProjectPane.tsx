@@ -130,8 +130,8 @@ export function NewProjectPane() {
   };
 
   return (
-    <div className="flex h-full min-h-0 items-start justify-center overflow-y-auto px-6 py-10">
-      <div className="w-full max-w-3xl space-y-6">
+    <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-10">
+      <div className="my-auto w-full max-w-3xl space-y-6">
         <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
           New Project
         </h1>
@@ -311,14 +311,23 @@ function ModeTile({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-[10px] border px-4 py-5 text-center transition-all",
+        "flex flex-col items-center gap-2 rounded-[10px] border-2 px-4 py-5 text-center transition-all",
         active
-          ? "border-(--glass-border-strong) bg-(--color-bg-hover)"
+          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]"
           : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
       )}
     >
-      <span className="text-(--color-text-primary)">{icon}</span>
-      <span className="text-[14px] font-medium text-(--color-text-primary)">{title}</span>
+      <span className={cn(active ? "text-(--color-accent-400)" : "text-(--color-text-primary)")}>
+        {icon}
+      </span>
+      <span
+        className={cn(
+          "text-[14px] text-(--color-text-primary)",
+          active ? "font-semibold" : "font-medium",
+        )}
+      >
+        {title}
+      </span>
       <span className="text-[11.5px] text-(--color-text-secondary)">{description}</span>
     </button>
   );
@@ -339,14 +348,19 @@ function TemplateCard({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col gap-1 rounded-[10px] border p-3 text-left transition-all",
+        "flex flex-col gap-1 rounded-[10px] border-2 p-3 text-left transition-all",
         active
-          ? "border-(--glass-border-strong) bg-(--color-bg-hover)"
+          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]"
           : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[13px] font-medium text-(--color-text-primary)">
+        <span
+          className={cn(
+            "text-[13px] text-(--color-text-primary)",
+            active ? "font-semibold" : "font-medium",
+          )}
+        >
           {template.name}
         </span>
         {template.tag && (

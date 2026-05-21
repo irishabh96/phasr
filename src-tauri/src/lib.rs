@@ -137,6 +137,7 @@ pub fn run() {
             commands::repositories::git_init_from_template,
             commands::repositories::git_init_empty_repository,
             commands::repositories::list_repo_files,
+            commands::repositories::list_local_branches,
             commands::workspaces::create_workspace,
             commands::workspaces::list_workspaces,
             commands::workspaces::get_workspace,

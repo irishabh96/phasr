@@ -103,3 +103,16 @@ export function useGitPush(workspaceId: string) {
     mutationFn: () => tauri.gitPush(workspaceId),
   });
 }
+
+/**
+ * Sorted list of local branch names for a repo path. Used by the
+ * CreateFirstWorkspacePane base-branch dropdown.
+ */
+export function useGitBranches(repoPath: string | null | undefined) {
+  return useQuery({
+    queryKey: ["git", "branches", repoPath ?? ""],
+    queryFn: () => tauri.listLocalBranches(repoPath ?? ""),
+    enabled: !!repoPath,
+    staleTime: 10_000,
+  });
+}

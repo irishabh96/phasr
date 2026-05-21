@@ -83,6 +83,8 @@ export const tauri = {
   gitInitEmptyRepository: (destinationPath: string) =>
     invoke<string>("git_init_empty_repository", { destinationPath }),
   listRepoFiles: (path: string) => invoke<string[]>("list_repo_files", { path }),
+  listLocalBranches: (path: string) =>
+    invoke<string[]>("list_local_branches", { path }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
 
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
