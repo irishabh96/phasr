@@ -78,9 +78,9 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const mergeBlocked =
     !branchStatus
       ? null
-      : branchStatus.ahead === 0
+      : branchStatus.aheadOfTarget === 0
         ? "Nothing to merge"
-        : branchStatus.behind > 0
+        : branchStatus.behindOfTarget > 0
           ? `Branch is behind ${repository?.defaultBranch ?? "main"} — sync first`
           : null;
 

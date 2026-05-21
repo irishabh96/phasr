@@ -154,6 +154,17 @@ export interface BranchStatus {
   behind: number;
   hasRemote: boolean;
   detached: boolean;
+  /**
+   * The resolved ref the workspace branch is compared against for
+   * merge-target purposes. Prefers `origin/<defaultBranch>` when a
+   * remote exists, otherwise the local default branch. `null` when
+   * the workspace is on the default branch itself.
+   */
+  targetRef: string | null;
+  /** Commits on this branch not reachable from `targetRef`. */
+  aheadOfTarget: number;
+  /** Commits on `targetRef` not reachable from this branch. */
+  behindOfTarget: number;
 }
 
 export type MergeStrategy = "merge" | "squash" | "fastForward" | "rebase";

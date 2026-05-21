@@ -176,11 +176,26 @@ pub async fn git_push(
 pub async fn git_branch_status(
     workspace_id: String,
     workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<BranchStatus, GitCmdError> {
     session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::branch_status(&cwd)?)
+    let workspace = workspaces.get(&workspace_id).await?;
+    let cwd = workspace
+        .worktree_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or(GitCmdError::NoWorktree)?;
+    // Look up the repo's merge target so the BranchStatus carries
+    // ahead/behind vs `<target>` in addition to vs upstream. The
+    // SyncButton and MergeToMain gates use the target-relative counts;
+    // BranchChip continues to show upstream-relative counts.
+    let target = repositories
+        .get(&workspace.repository_id)
+        .await
+        .ok()
+        .map(|r| r.default_branch);
+    Ok(git::branch_status(&cwd, target.as_deref())?)
 }
 
 #[tauri::command]

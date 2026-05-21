@@ -56,8 +56,11 @@ export function MergeToMainDialog({
     }
   }, [open, settings?.defaultMergeStrategy]);
 
-  const ahead = status?.ahead ?? 0;
-  const behind = status?.behind ?? 0;
+  // Gate on ahead/behind-of-TARGET, not upstream. The upstream is
+  // usually `origin/<this-branch>` which is in sync after a push;
+  // what matters here is the relationship to the merge target.
+  const ahead = status?.aheadOfTarget ?? 0;
+  const behind = status?.behindOfTarget ?? 0;
   const targetBranch = repository?.defaultBranch ?? "main";
   const sourceBranch = workspace.branch ?? "(no branch)";
   const blockedReason =

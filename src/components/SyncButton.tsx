@@ -58,7 +58,11 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
     };
   }, [open]);
 
-  if (!status || status.behind === 0 || !status.hasRemote || status.detached) {
+  // SyncButton is gated on "behind the merge target," NOT "behind
+  // upstream" — the upstream is usually `origin/<this-branch>`, which
+  // is in sync after a push; what we care about is whether `main`
+  // moved.
+  if (!status || status.behindOfTarget === 0 || status.detached) {
     return null;
   }
 
@@ -86,12 +90,12 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
         variant="outline"
         size="sm"
         onClick={() => setOpen((v) => !v)}
-        title={`Sync with ${status.upstream ?? "main"} (${status.behind} commit${status.behind === 1 ? "" : "s"} behind)`}
+        title={`Sync with ${status.targetRef ?? "main"} (${status.behindOfTarget} commit${status.behindOfTarget === 1 ? "" : "s"} behind)`}
         disabled={busy}
         className="gap-1"
       >
         <ArrowDownToLine size={11} />
-        Sync ({status.behind})
+        Sync ({status.behindOfTarget})
         <ChevronDown size={11} className="opacity-60" />
       </GlassButton>
 
@@ -104,7 +108,7 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
             <p className="mt-0.5 text-[12px] text-(--color-text-secondary)">
               Pull{" "}
               <code className="font-mono text-(--color-text-primary)">
-                {status.upstream ?? "main"}
+                {status.targetRef ?? "main"}
               </code>{" "}
               into this branch.
             </p>
