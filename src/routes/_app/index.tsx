@@ -1,15 +1,11 @@
 import { useUser } from "@clerk/react";
 import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FolderOpen, Sparkles } from "lucide-react";
-import { useEffect } from "react";
-import { RepoInnerTabBar } from "@/components/RepoInnerTabBar";
-import { RepoTabContent } from "@/components/RepoTabContent";
+import { RepoHomeShell } from "@/components/RepoHomeShell";
 import { isClerkConfigured } from "@/lib/clerk";
 import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
-import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
-import { useUiStore, REPO_HOME_TAB_ID } from "@/lib/store";
 import type { Repository } from "@/lib/types";
 
 /**
@@ -62,40 +58,7 @@ function Home() {
 }
 
 function RepoEmptyState({ repo }: { repo: Repository }) {
-  const ensureRepoInnerTabs = useUiStore((s) => s.ensureRepoInnerTabs);
-  const closeRepoInnerTab = useUiStore((s) => s.closeRepoInnerTab);
-  const activeTabId = useUiStore(
-    (s) => s.repoInnerTabs[repo.id]?.activeTabId ?? null,
-  );
-
-  // Seed the home tab once we know the repo.
-  useEffect(() => {
-    ensureRepoInnerTabs(repo.id);
-  }, [repo.id, ensureRepoInnerTabs]);
-
-  // ⌘W closes the active non-home tab. Home is not closable, so the
-  // shortcut is a no-op there. The global ⌘W in `_app.tsx` requires an
-  // active workspace context, so we bind our own here.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!matchShortcut(e, SHORTCUTS.closeActiveTab)) return;
-      const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
-      if (!activeTabId || activeTabId === REPO_HOME_TAB_ID) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      closeRepoInnerTab(repo.id, activeTabId);
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [activeTabId, closeRepoInnerTab, repo.id]);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <RepoInnerTabBar repositoryId={repo.id} />
-      <RepoTabContent repo={repo} />
-    </div>
-  );
+  return <RepoHomeShell repo={repo} />;
 }
 
 function WelcomeState({ firstName }: { firstName: string | null }) {
