@@ -8,7 +8,6 @@ import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
-import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
@@ -62,10 +61,6 @@ function WorkspaceDetail() {
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-[var(--layout-header-height)] shrink-0 items-center gap-3 border-b border-(--color-border-subtle) pl-4 pr-2">
         <div className="flex shrink-0 items-center gap-2">
-          <span className="truncate text-[13px] font-medium leading-none">
-            {workspace.name}
-          </span>
-          <TaskStatusPill status={workspace.status} />
           {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
         </div>
         <WorkspaceInnerTabBar workspaceId={workspaceId} />
