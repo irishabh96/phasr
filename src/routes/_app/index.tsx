@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { RepoInnerTabBar } from "@/components/RepoInnerTabBar";
 import { RepoTabContent } from "@/components/RepoTabContent";
 import { isClerkConfigured } from "@/lib/clerk";
+import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
@@ -99,7 +100,7 @@ function RepoEmptyState({ repo }: { repo: Repository }) {
 
 function WelcomeState({ firstName }: { firstName: string | null }) {
   const openNewProject = useUiStore((s) => s.openNewProjectModal);
-  const openExisting = useUiStore((s) => s.openOpenExistingModal);
+  const openExisting = useOpenExistingFlow();
 
   return (
     <div className="flex h-full items-center justify-center px-8">
@@ -131,7 +132,7 @@ function WelcomeState({ firstName }: { firstName: string | null }) {
 
           <button
             type="button"
-            onClick={openExisting}
+            onClick={() => void openExisting()}
             className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
             <div className="flex items-center gap-2 text-(--color-text-secondary)">

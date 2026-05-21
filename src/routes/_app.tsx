@@ -9,7 +9,6 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewProjectWizard } from "@/components/NewProjectWizard";
 import { NewTaskModal } from "@/components/NewTaskModal";
-import { OpenExistingProjectModal } from "@/components/OpenExistingProjectModal";
 import { RenameWorkspaceModal } from "@/components/RenameWorkspaceModal";
 import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
@@ -155,7 +154,6 @@ function AppShell() {
       <NewProjectWizard />
       <NewTaskModal />
       <RenameWorkspaceModal />
-      <OpenExistingProjectModal />
       <AddRepositoryPickerModal />
       <RepoFileSearchModal />
       <GitInitConfirmModal />

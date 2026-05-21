@@ -116,11 +116,6 @@ interface UiState {
   openNewProjectModal: () => void;
   closeNewProjectModal: () => void;
 
-  /** Existing-project ("Open existing") modal — same shell-mounted pattern. */
-  openExistingModalOpen: boolean;
-  openOpenExistingModal: () => void;
-  closeOpenExistingModal: () => void;
-
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
    * or New-project Empty flow lands on a non-git folder; cleared when the
@@ -240,10 +235,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   newProjectModalOpen: false,
   openNewProjectModal: () => set({ newProjectModalOpen: true }),
   closeNewProjectModal: () => set({ newProjectModalOpen: false }),
-
-  openExistingModalOpen: false,
-  openOpenExistingModal: () => set({ openExistingModalOpen: true }),
-  closeOpenExistingModal: () => set({ openExistingModalOpen: false }),
 
   pendingGitInitRepoId: null,
   requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),
