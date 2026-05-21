@@ -39,10 +39,17 @@ export function NewProjectPane() {
   const [location, setLocation] = useState("");
   const [mode, setMode] = useState<Mode>("empty");
 
-  const [name, setName] = useState("");
+  // Empty mode pre-fills "my-project" rather than just showing it as
+  // placeholder — Create is one click away.
+  const [name, setName] = useState("my-project");
   const [url, setUrl] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [templateName, setTemplateName] = useState("");
+  // Tracks whether the user has edited the template-mode name field.
+  // While `false`, switching templates re-fills the field with the
+  // newly-selected template's id. The first manual edit flips it
+  // permanently for this session.
+  const [templateNameDirty, setTemplateNameDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,15 +154,15 @@ export function NewProjectPane() {
               placeholder="/Users/you/projects"
               className="h-10 flex-1 font-mono text-[12.5px]"
             />
-            <GlassButton
+            <button
               type="button"
-              variant="outline"
-              size="md"
               onClick={browse}
+              aria-label="Browse for parent folder"
               title="Browse for parent folder"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-(--glass-border-strong) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
             >
-              <FolderOpen size={13} />
-            </GlassButton>
+              <FolderOpen size={14} />
+            </button>
           </div>
         </div>
 
@@ -249,7 +256,13 @@ export function NewProjectPane() {
                   active={selectedTemplate?.id === t.id}
                   onClick={() => {
                     setSelectedTemplate(t);
-                    if (!templateName) setTemplateName(t.id);
+                    // Refill the name field with the new template's id
+                    // unless the user has manually edited it. An empty
+                    // field is treated as "still auto-fillable".
+                    if (!templateNameDirty || templateName.trim().length === 0) {
+                      setTemplateName(t.id);
+                      setTemplateNameDirty(false);
+                    }
                   }}
                 />
               ))}
@@ -261,7 +274,10 @@ export function NewProjectPane() {
                 </label>
                 <GlassInput
                   value={templateName}
-                  onChange={(e) => setTemplateName(e.target.value)}
+                  onChange={(e) => {
+                    setTemplateName(e.target.value);
+                    setTemplateNameDirty(true);
+                  }}
                   placeholder={selectedTemplate.id}
                   className="h-10"
                 />
@@ -313,7 +329,7 @@ function ModeTile({
       className={cn(
         "flex flex-col items-center gap-2 rounded-[10px] border-2 px-4 py-5 text-center transition-all",
         active
-          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]"
+          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
           : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
       )}
     >
@@ -350,7 +366,7 @@ function TemplateCard({
       className={cn(
         "flex flex-col gap-1 rounded-[10px] border-2 p-3 text-left transition-all",
         active
-          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]"
+          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
           : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
       )}
     >
