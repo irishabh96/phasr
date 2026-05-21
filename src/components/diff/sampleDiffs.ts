@@ -131,3 +131,16 @@ export const SAMPLE_DIFFS: SampleDiff[] = [
     raw: MANY_HUNKS,
   },
 ];
+
+/**
+ * Worktree-style file set used by the DiffList preview: one file of
+ * each status shape (modify / new / rename / delete / binary), ordered
+ * roughly how a reviewer would see them.
+ */
+export const SAMPLE_DIFF_LIST: { path: string; raw: string }[] = [
+  { path: "src/auth/redirect.ts", raw: TS_MODIFY },
+  { path: "src-tauri/src/git/cherry.rs", raw: RS_NEW },
+  { path: "src/new-name.ts", raw: RENAME },
+  { path: "scripts/cleanup.py", raw: PY_DELETE },
+  { path: "public/logo.png", raw: BINARY },
+];

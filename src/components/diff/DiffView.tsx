@@ -48,6 +48,15 @@ export interface DiffViewProps {
   className?: string;
   /** Override the persisted view mode (mainly for stories/tests). */
   initialMode?: DiffViewMode;
+  /**
+   * Controlled view mode. When both `mode` and `onModeChange` are
+   * supplied, the parent owns the toggle (used by DiffList so the ⌘\
+   * shortcut flips every card in sync).
+   */
+  mode?: DiffViewMode;
+  onModeChange?: (m: DiffViewMode) => void;
+  /** Hide the built-in file header — DiffList renders its own. */
+  noHeader?: boolean;
 }
 
 function readStoredMode(): DiffViewMode {
@@ -64,12 +73,21 @@ export function DiffView({
   loading,
   className,
   initialMode,
+  mode: controlledMode,
+  onModeChange,
+  noHeader,
 }: DiffViewProps) {
-  const [mode, setMode] = useState<DiffViewMode>(() => initialMode ?? readStoredMode());
+  const controlled = controlledMode !== undefined && onModeChange !== undefined;
+  const [internalMode, setInternalMode] = useState<DiffViewMode>(
+    () => initialMode ?? readStoredMode(),
+  );
+  const mode = controlled ? (controlledMode as DiffViewMode) : internalMode;
   const [visibleHunks, setVisibleHunks] = useState(HUNK_BATCH_SIZE);
 
   // ⌘\ / Ctrl+\ toggles split↔inline. Skip when a text input is focused.
+  // When parent-controlled, the parent owns the shortcut.
   useEffect(() => {
+    if (controlled) return;
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key !== "\\") return;
@@ -77,7 +95,7 @@ export function DiffView({
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (target?.isContentEditable) return;
       e.preventDefault();
-      setMode((m) => {
+      setInternalMode((m) => {
         const next: DiffViewMode = m === "side-by-side" ? "inline" : "side-by-side";
         try {
           window.localStorage.setItem(VIEW_MODE_KEY, next);
@@ -89,10 +107,14 @@ export function DiffView({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [controlled]);
 
   const setModeStored = (next: DiffViewMode) => {
-    setMode(next);
+    if (controlled) {
+      onModeChange?.(next);
+      return;
+    }
+    setInternalMode(next);
     try {
       window.localStorage.setItem(VIEW_MODE_KEY, next);
     } catch {
@@ -119,12 +141,14 @@ export function DiffView({
         className,
       )}
     >
-      <DiffHeader
-        title={title}
-        mode={mode}
-        onChangeMode={setModeStored}
-        parsed={parsed}
-      />
+      {!noHeader && (
+        <DiffHeader
+          title={title}
+          mode={mode}
+          onChangeMode={setModeStored}
+          parsed={parsed}
+        />
+      )}
       <div className="min-h-0 flex-1 overflow-auto">
         {loading && <DiffMessage>Loading diff…</DiffMessage>}
         {!loading && errorMessage && (
