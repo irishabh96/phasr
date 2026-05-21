@@ -36,9 +36,7 @@ export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
     setOpen(false);
   };
 
-  if (!runCommands || runCommands.length === 0) {
-    return null;
-  }
+  const empty = !runCommands || runCommands.length === 0;
 
   return (
     <div ref={containerRef} className="relative">
@@ -46,17 +44,22 @@ export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
         variant="ghost"
         size="sm"
         onClick={() => setOpen((v) => !v)}
-        title="Run a repository command"
+        disabled={empty}
+        title={
+          empty
+            ? "No run commands defined for this repository"
+            : "Run a repository command"
+        }
       >
         <Play size={10} fill="currentColor" />
         Run
         <ChevronDown size={11} className="opacity-60" />
       </GlassButton>
 
-      {open && (
+      {open && !empty && (
         <div className="absolute right-0 top-full z-50 mt-1.5 min-w-52 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
           <ul className="p-1">
-            {runCommands.map((rc) => (
+            {runCommands!.map((rc) => (
               <li key={rc.id}>
                 <button
                   type="button"

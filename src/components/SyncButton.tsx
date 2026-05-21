@@ -61,10 +61,19 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
   // SyncButton is gated on "behind the merge target," NOT "behind
   // upstream" — the upstream is usually `origin/<this-branch>`, which
   // is in sync after a push; what we care about is whether `main`
-  // moved.
-  if (!status || status.behindOfTarget === 0 || status.detached) {
-    return null;
-  }
+  // moved. We keep the button visible (with a disabled state +
+  // tooltip) so the action is always discoverable.
+  const behind = status?.behindOfTarget ?? 0;
+  const detached = !!status?.detached;
+  const targetLabel = status?.targetRef ?? "main";
+  const blockReason = !status
+    ? "Loading branch status…"
+    : detached
+      ? "Detached HEAD — checkout a branch to sync"
+      : behind === 0
+        ? `Up to date with ${targetLabel}`
+        : null;
+  const canSync = blockReason === null;
 
   const handleSync = async () => {
     setError(null);
@@ -90,12 +99,16 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
         variant="outline"
         size="sm"
         onClick={() => setOpen((v) => !v)}
-        title={`Sync with ${status.targetRef ?? "main"} (${status.behindOfTarget} commit${status.behindOfTarget === 1 ? "" : "s"} behind)`}
-        disabled={busy}
+        title={
+          blockReason
+            ? blockReason
+            : `Sync with ${targetLabel} (${behind} commit${behind === 1 ? "" : "s"} behind)`
+        }
+        disabled={busy || !canSync}
         className="gap-1"
       >
         <ArrowDownToLine size={11} />
-        Sync ({status.behindOfTarget})
+        Sync{behind > 0 ? ` (${behind})` : ""}
         <ChevronDown size={11} className="opacity-60" />
       </GlassButton>
 
@@ -108,7 +121,7 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
             <p className="mt-0.5 text-[12px] text-(--color-text-secondary)">
               Pull{" "}
               <code className="font-mono text-(--color-text-primary)">
-                {status.targetRef ?? "main"}
+                {targetLabel}
               </code>{" "}
               into this branch.
             </p>
