@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { useGitBranches } from "@/lib/hooks/useGit";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { slugify } from "@/lib/slug";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -95,6 +96,30 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
       setSubmitting(false);
     }
   };
+
+  // ⌘+Enter advances Step 1 → Step 2 (when the task name is set) and
+  // submits on Step 2 (when an agent is picked and the repo is git).
+  // Skips when the target gate isn't satisfied so the user can't
+  // accidentally fire an incomplete form.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!matchShortcut(e, SHORTCUTS.submitForm)) return;
+      if (step === 1) {
+        if (trimmedName.length > 0 && isGit) {
+          e.preventDefault();
+          setStep(2);
+        }
+      } else if (activeAgent && !submitting && isGit) {
+        e.preventDefault();
+        void handleStart();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // handleStart is reconstructed each render but the effect re-binds
+    // cheaply; the alternative (a ref dance) buys nothing here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, trimmedName, isGit, activeAgent, submitting]);
 
   return (
     <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-10">

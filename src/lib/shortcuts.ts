@@ -97,6 +97,14 @@ export const SHORTCUTS = {
     display: ["⌘", "\\"],
     label: "Toggle split / inline diff",
   },
+
+  // Forms
+  submitForm: {
+    key: "enter",
+    meta: true,
+    display: ["⌘", "↵"],
+    label: "Submit",
+  },
 } as const satisfies Record<string, Shortcut>;
 
 export type ShortcutId = keyof typeof SHORTCUTS;
