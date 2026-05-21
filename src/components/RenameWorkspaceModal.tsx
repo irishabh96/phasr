@@ -83,7 +83,7 @@ function RenameBody({ workspaceId, onDone }: { workspaceId: string; onDone: () =
         <p className="text-[11px] text-(--color-danger)">{String(update.error)}</p>
       )}
       <div className="flex items-center justify-end gap-2">
-        <GlassButton variant="ghost" size="sm" type="button" onClick={onDone}>
+        <GlassButton variant="outline" size="sm" type="button" onClick={onDone}>
           Cancel
         </GlassButton>
         <GlassButton variant="primary" size="sm" type="submit" disabled={!canSubmit}>

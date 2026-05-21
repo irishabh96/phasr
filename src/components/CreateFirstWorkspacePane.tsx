@@ -383,7 +383,7 @@ function Step2({
           <span />
         )}
         <div className="flex items-center gap-2">
-          <GlassButton variant="ghost" size="md" onClick={onBack}>
+          <GlassButton variant="outline" size="md" onClick={onBack}>
             ← Back
           </GlassButton>
           <GlassButton variant="primary" size="md" onClick={onStart} disabled={!canStart}>

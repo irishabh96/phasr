@@ -76,7 +76,7 @@ export function GitInitConfirmModal() {
               </div>
             </Dialog.Description>
             <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="ghost" size="sm" onClick={handleCancel}>
+              <GlassButton variant="outline" size="sm" onClick={handleCancel}>
                 Cancel
               </GlassButton>
               <GlassButton

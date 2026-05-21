@@ -168,7 +168,7 @@ export function NewTaskForm({
           <span className="mr-auto truncate text-[11px] text-(--color-danger)">{error}</span>
         )}
         {onCancel && (
-          <GlassButton variant="ghost" size="sm" type="button" onClick={onCancel}>
+          <GlassButton variant="outline" size="sm" type="button" onClick={onCancel}>
             Cancel
           </GlassButton>
         )}

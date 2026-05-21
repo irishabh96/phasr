@@ -244,7 +244,7 @@ function ConfirmDialog({ state, onCancel }: { state: ConfirmState; onCancel(): v
           {state.body}
         </div>
         <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-          <GlassButton variant="ghost" size="sm" onClick={onCancel}>
+          <GlassButton variant="outline" size="sm" onClick={onCancel}>
             Cancel
           </GlassButton>
           <GlassButton
