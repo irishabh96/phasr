@@ -6,7 +6,9 @@ use tauri::State;
 use crate::auth::{AuthError, SessionState};
 use crate::domain::Repository;
 use crate::git::{self, GitError};
-use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError};
+use crate::orchestrator::TaskOrchestrator;
+use crate::pty::TaskRuntime;
+use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError, WorkspaceRepo};
 
 #[derive(Debug)]
 pub enum RepositoryCmdError {
@@ -156,11 +158,96 @@ pub async fn update_repository(
 pub async fn delete_repository(
     id: String,
     repo: State<'_, RepositoryRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
+    orchestrator: State<'_, TaskOrchestrator>,
+    runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RepositoryCmdError> {
     session.require()?;
+
+    // Need the repo's localPath for `git worktree remove` later.
+    // Tolerate NotFound so a double-delete doesn't error.
+    let repository = repo.get(&id).await.ok();
+    let repo_local_path = repository.as_ref().and_then(|r| r.local_path.clone());
+
+    // 1. Stop running tasks on both runtimes (orchestrator + legacy).
+    //    Workspaces are listed BEFORE the soft-delete + child wipe so
+    //    we still have their ids + worktree paths.
+    let owned_workspaces = workspaces.list_by_repository(&id).await?;
+    for ws in &owned_workspaces {
+        // Orchestrator path — silently ignore NotRunning. The task may
+        // have been created via the legacy path, or already exited.
+        let _ = orchestrator.stop_task(&ws.id).await;
+        // Legacy runtime path — same idempotent behavior.
+        if let Some(handle) = runtime.get(&ws.id) {
+            let _ = handle.kill();
+        }
+    }
+
+    // 2. Remove worktree directories. `git::remove_worktree` runs
+    //    `git worktree remove --force` against the parent .git. If the
+    //    parent local_path is unknown OR the command fails (the user
+    //    deleted the parent repo out from under us, etc.), fall back
+    //    to plain `rm -rf` on the worktree path so the dir doesn't
+    //    linger on disk.
+    for ws in &owned_workspaces {
+        let Some(path) = ws.worktree_path.as_deref() else {
+            continue;
+        };
+        let worktree_path = std::path::Path::new(path);
+        if !worktree_path.exists() {
+            continue;
+        }
+        let cleaned = repo_local_path
+            .as_deref()
+            .map(|parent| git::remove_worktree(std::path::Path::new(parent), worktree_path).is_ok())
+            .unwrap_or(false);
+        if !cleaned {
+            let _ = std::fs::remove_dir_all(worktree_path);
+        }
+    }
+
+    // 3. Soft-delete the parent + hard-delete children in one tx
+    //    (handled inside RepositoryRepo::delete).
     repo.delete(&id).await?;
     Ok(())
+}
+
+/// IDs of repositories soft-deleted locally but not yet pushed to
+/// cloud. The bootstrap step in `useCloudSync` reads this before
+/// pulling so any pending deletions land remotely first.
+#[tauri::command]
+pub async fn list_soft_deleted_repositories(
+    repo: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, RepositoryCmdError> {
+    session.require()?;
+    Ok(repo.list_dirty_soft_deletes().await?)
+}
+
+/// Clear `dirty` on a repository row once its cloud-side delete has
+/// confirmed.
+#[tauri::command]
+pub async fn mark_repository_synced(
+    id: String,
+    repo: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), RepositoryCmdError> {
+    session.require()?;
+    repo.mark_synced(&id).await?;
+    Ok(())
+}
+
+/// `true` when this id is soft-deleted locally. The cloud-sync pull
+/// uses this to skip resurrection of locally-tombstoned repositories.
+#[tauri::command]
+pub async fn repository_is_soft_deleted(
+    id: String,
+    repo: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<bool, RepositoryCmdError> {
+    session.require()?;
+    Ok(repo.exists_soft_deleted(&id).await?)
 }
 
 /// Initialize the repository's local folder as a git repo (mockup 4

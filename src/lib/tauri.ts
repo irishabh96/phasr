@@ -74,6 +74,12 @@ export const tauri = {
   updateRepository: (id: string, input: UpdateRepositoryInput) =>
     invoke<Repository>("update_repository", { id, input }),
   deleteRepository: (id: string) => invoke<void>("delete_repository", { id }),
+  listSoftDeletedRepositories: () =>
+    invoke<string[]>("list_soft_deleted_repositories"),
+  markRepositorySynced: (id: string) =>
+    invoke<void>("mark_repository_synced", { id }),
+  repositoryIsSoftDeleted: (id: string) =>
+    invoke<boolean>("repository_is_soft_deleted", { id }),
   gitInitRepository: (id: string) =>
     invoke<Repository>("git_init_repository", { id }),
   gitCloneRepository: (url: string, destinationPath: string) =>
