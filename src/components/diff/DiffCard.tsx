@@ -13,6 +13,8 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  GitBranch,
+  GitMerge,
   Minus,
   Paperclip,
   Plus,
@@ -56,6 +58,12 @@ export interface DiffCardProps {
   onStage?: (path: string) => void;
   /** Unstage this file. Shown only when `file.staged !== "other"`. */
   onUnstage?: (path: string) => void;
+  /**
+   * Resolve a merge conflict by picking one side. Shown ONLY when
+   * the file is currently conflicted; replaces the stage/unstage trio.
+   */
+  onUseOurs?: (path: string) => void;
+  onUseTheirs?: (path: string) => void;
   className?: string;
 }
 
@@ -73,10 +81,16 @@ export function DiffCard({
   onOpen,
   onStage,
   onUnstage,
+  onUseOurs,
+  onUseTheirs,
   className,
 }: DiffCardProps) {
-  const canStage = onStage && file.unstaged !== undefined && file.unstaged !== "other";
-  const canUnstage = onUnstage && file.staged !== undefined && file.staged !== "other";
+  const isConflicted =
+    file.staged === "conflicted" || file.unstaged === "conflicted";
+  const canStage =
+    !isConflicted && onStage && file.unstaged !== undefined && file.unstaged !== "other";
+  const canUnstage =
+    !isConflicted && onUnstage && file.staged !== undefined && file.staged !== "other";
   const parsed = useMemo<ParsedDiff | null>(
     () => (file.raw === null ? null : parseUnifiedDiff(file.raw)),
     [file.raw],
@@ -149,6 +163,22 @@ export function DiffCard({
         <CountsBadge adds={adds} removes={removes} status={status} />
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {isConflicted && onUseOurs && (
+            <IconButton
+              label="Use ours (keep HEAD)"
+              onClick={() => onUseOurs(file.path)}
+            >
+              <GitBranch size={13} />
+            </IconButton>
+          )}
+          {isConflicted && onUseTheirs && (
+            <IconButton
+              label="Use theirs (take incoming)"
+              onClick={() => onUseTheirs(file.path)}
+            >
+              <GitMerge size={13} />
+            </IconButton>
+          )}
           {canStage && (
             <IconButton
               label="Stage file"
@@ -171,7 +201,7 @@ export function DiffCard({
               <Paperclip size={13} />
             </IconButton>
           )}
-          {onDiscard && (
+          {!isConflicted && onDiscard && (
             <IconButton
               label="Discard changes"
               tone="danger"

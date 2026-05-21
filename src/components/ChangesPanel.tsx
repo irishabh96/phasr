@@ -1,13 +1,17 @@
 import { useQueries } from "@tanstack/react-query";
-import { Check, GitBranch } from "lucide-react";
+import { AlertTriangle, Check, GitBranch } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DiffList } from "@/components/diff/DiffList";
 import type { DiffCardFile } from "@/components/diff/DiffCard";
 import {
+  useGitAbortMerge,
   useGitBranchStatus,
   useGitCommit,
+  useGitContinueMerge,
   useGitDiscard,
+  useGitMergeInProgress,
   useGitPush,
+  useGitResolveConflict,
   useGitStage,
   useGitStatus,
   useGitUnstage,
@@ -26,7 +30,7 @@ interface ChangesPanelProps {
   workspaceId: string;
 }
 
-type Bucket = "staged" | "unstaged" | "partial";
+type Bucket = "conflicts" | "staged" | "unstaged" | "partial";
 
 /**
  * Workspace changes pane. Files are grouped into STAGED / UNSTAGED /
@@ -40,11 +44,15 @@ type Bucket = "staged" | "unstaged" | "partial";
 export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const { data: changes } = useGitStatus(workspaceId);
   const { data: branchStatus } = useGitBranchStatus(workspaceId);
+  const { data: mergeInProgress } = useGitMergeInProgress(workspaceId);
   const stage = useGitStage(workspaceId);
   const unstage = useGitUnstage(workspaceId);
   const discard = useGitDiscard(workspaceId);
   const commit = useGitCommit(workspaceId);
   const push = useGitPush(workspaceId);
+  const resolveConflict = useGitResolveConflict(workspaceId);
+  const continueMerge = useGitContinueMerge(workspaceId);
+  const abortMerge = useGitAbortMerge(workspaceId);
 
   const [message, setMessage] = useState("");
   // Once the user has focused or typed anything, keep the textarea
@@ -58,8 +66,9 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
 
   const allFiles = useDiffFiles(workspaceId, changes ?? []);
 
-  const { staged, unstaged, partial } = useMemo(() => {
+  const { conflicts, staged, unstaged, partial } = useMemo(() => {
     const groups: Record<Bucket, DiffCardFile[]> = {
+      conflicts: [],
       staged: [],
       unstaged: [],
       partial: [],
@@ -69,6 +78,9 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   }, [allFiles]);
 
   const stagedCount = staged.length + partial.length;
+  const mergeKind = mergeInProgress?.kind ?? "none";
+  const inMerge = mergeKind !== "none";
+  const conflictCount = conflicts.length;
   const canPush =
     !!branchStatus &&
     branchStatus.hasRemote &&
@@ -96,6 +108,10 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const handleStage = (p: string) => stage.mutate([p]);
   const handleUnstage = (p: string) => unstage.mutate([p]);
   const handleDiscard = (p: string) => discard.mutate([p]);
+  const handleUseOurs = (p: string) =>
+    resolveConflict.mutate({ path: p, side: "ours" });
+  const handleUseTheirs = (p: string) =>
+    resolveConflict.mutate({ path: p, side: "theirs" });
 
   const handleCommit = async () => {
     if (!message.trim() || stagedCount === 0) return;
@@ -153,10 +169,25 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-auto p-2">
-        {(changes ?? []).length === 0 && (
+        {(changes ?? []).length === 0 && !inMerge && (
           <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
             No changes in this worktree yet.
           </div>
+        )}
+
+        {conflicts.length > 0 && (
+          <Section
+            title={mergeKind === "rebase" ? "Conflicts (rebase)" : "Conflicts"}
+            count={conflicts.length}
+          >
+            <DiffList
+              files={conflicts}
+              defaultExpanded={10}
+              onCopyPath={copyPath}
+              onUseOurs={handleUseOurs}
+              onUseTheirs={handleUseTheirs}
+            />
+          </Section>
         )}
 
         {staged.length > 0 && (
@@ -224,6 +255,29 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
       </div>
 
       <div className="shrink-0 border-t border-(--color-border-subtle) p-3">
+        {inMerge && (
+          <MergeBanner
+            kind={mergeKind === "rebase" ? "rebase" : "merge"}
+            conflictCount={conflictCount}
+            continuing={continueMerge.isPending}
+            aborting={abortMerge.isPending}
+            onContinue={() => {
+              void continueMerge.mutateAsync().catch(() => {});
+            }}
+            onAbort={() => {
+              void abortMerge.mutateAsync().catch(() => {});
+            }}
+            error={
+              continueMerge.error
+                ? extractMessage(continueMerge.error)
+                : abortMerge.error
+                  ? extractMessage(abortMerge.error)
+                  : null
+            }
+          />
+        )}
+        {!inMerge && (
+          <>
         <GlassTextarea
           value={message}
           onChange={(e) => {
@@ -293,7 +347,75 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         {showCommitSuccess && !showPushSuccess && (
           <p className="mt-2 text-[11px] text-(--color-success)">Committed.</p>
         )}
+          </>
+        )}
       </div>
+    </div>
+  );
+}
+
+function MergeBanner({
+  kind,
+  conflictCount,
+  continuing,
+  aborting,
+  onContinue,
+  onAbort,
+  error,
+}: {
+  kind: "merge" | "rebase";
+  conflictCount: number;
+  continuing: boolean;
+  aborting: boolean;
+  onContinue: () => void;
+  onAbort: () => void;
+  error: string | null;
+}) {
+  const resolved = conflictCount === 0;
+  const label = kind === "rebase" ? "Rebase" : "Merge";
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start gap-2 rounded-md border border-(--color-border-default) bg-(--color-bg-elevated) p-2.5">
+        <AlertTriangle
+          size={14}
+          className={
+            resolved ? "mt-0.5 text-(--color-success)" : "mt-0.5 text-(--color-warning)"
+          }
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] font-medium text-(--color-text-primary)">
+            {label} in progress
+          </p>
+          <p className="mt-0.5 text-[11px] text-(--color-text-muted)">
+            {resolved
+              ? "All conflicts resolved."
+              : `${conflictCount} conflict${conflictCount === 1 ? "" : "s"} remaining.`}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-1">
+        {resolved && (
+          <GlassButton
+            variant="primary"
+            size="sm"
+            onClick={onContinue}
+            disabled={continuing}
+          >
+            <Check size={12} />
+            {continuing ? "Finishing…" : `Continue ${kind}`}
+          </GlassButton>
+        )}
+        <GlassButton
+          variant="outline"
+          size="sm"
+          onClick={onAbort}
+          disabled={aborting}
+          className={resolved ? "" : "ml-auto"}
+        >
+          {aborting ? "Aborting…" : `Abort ${kind}`}
+        </GlassButton>
+      </div>
+      {error && <p className="text-[11px] text-(--color-danger)">{error}</p>}
     </div>
   );
 }
@@ -330,6 +452,7 @@ function Section({
 }
 
 function bucketFor(f: DiffCardFile): Bucket {
+  if (f.staged === "conflicted" || f.unstaged === "conflicted") return "conflicts";
   const hasStaged = f.staged !== undefined && f.staged !== "other";
   const hasUnstaged = f.unstaged !== undefined && f.unstaged !== "other";
   if (hasStaged && hasUnstaged) return "partial";
