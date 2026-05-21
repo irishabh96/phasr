@@ -6,6 +6,7 @@ import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal"
 import { AppSidebar } from "@/components/AppSidebar";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
 import { CommandPalette } from "@/components/CommandPalette";
+import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewProjectWizard } from "@/components/NewProjectWizard";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { OpenExistingProjectModal } from "@/components/OpenExistingProjectModal";
@@ -157,6 +158,7 @@ function AppShell() {
       <OpenExistingProjectModal />
       <AddRepositoryPickerModal />
       <RepoFileSearchModal />
+      <GitInitConfirmModal />
     </div>
   );
 }

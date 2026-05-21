@@ -121,6 +121,15 @@ interface UiState {
   openOpenExistingModal: () => void;
   closeOpenExistingModal: () => void;
 
+  /**
+   * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
+   * or New-project Empty flow lands on a non-git folder; cleared when the
+   * user clicks Initialize Git, Cancel, or Esc.
+   */
+  pendingGitInitRepoId: string | null;
+  requestGitInit: (repoId: string) => void;
+  clearPendingGitInit: () => void;
+
   /** Repo file-search modal — non-null target means open + scoped to that repo. */
   fileSearchTarget: { repositoryId: string; path: string } | null;
   openFileSearch: (repositoryId: string, path: string) => void;
@@ -235,6 +244,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   openExistingModalOpen: false,
   openOpenExistingModal: () => set({ openExistingModalOpen: true }),
   closeOpenExistingModal: () => set({ openExistingModalOpen: false }),
+
+  pendingGitInitRepoId: null,
+  requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),
+  clearPendingGitInit: () => set({ pendingGitInitRepoId: null }),
 
   fileSearchTarget: null,
   openFileSearch: (repositoryId, path) => set({ fileSearchTarget: { repositoryId, path } }),
