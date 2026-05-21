@@ -8,8 +8,11 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
-use crate::git::{self, BranchStatus, CommitOutput, DiffScope, FileChange, GitError};
-use crate::store::{StoreError, WorkspaceRepo};
+use crate::git::{
+    self, BranchStatus, CommitOutput, ConflictSide, DiffScope, FileChange, GitError, InProgress,
+    MergeOutcome, MergeStrategy,
+};
+use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 
 #[derive(Debug)]
 pub enum GitCmdError {
@@ -178,4 +181,131 @@ pub async fn git_branch_status(
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     Ok(git::branch_status(&cwd)?)
+}
+
+#[tauri::command]
+pub async fn git_fetch(
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    // `--prune` so stale tracking refs disappear; non-fatal if there's
+    // no remote (offline use).
+    let output = std::process::Command::new("git")
+        .args(["fetch", "--prune", "--quiet"])
+        .current_dir(&cwd)
+        .output()
+        .map_err(|e| GitCmdError::Git(GitError::Io(e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(GitCmdError::Git(GitError::CommandFailed(stderr)));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_sync_with_main(
+    workspace_id: String,
+    strategy: MergeStrategy,
+    workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<MergeOutcome, GitCmdError> {
+    session.require()?;
+    let workspace = workspaces.get(&workspace_id).await?;
+    let worktree = workspace
+        .worktree_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or(GitCmdError::NoWorktree)?;
+    let repository = repositories.get(&workspace.repository_id).await?;
+    // Use the local repo's tracking ref so offline users can still
+    // sync (no network round-trip needed when fetch fails). When a
+    // remote exists, the caller usually fetches first via git_fetch.
+    let has_remote = repository.remote_url.is_some();
+    let source_ref = if has_remote {
+        format!("origin/{}", repository.default_branch)
+    } else {
+        repository.default_branch.clone()
+    };
+    Ok(git::merge_into(&worktree, &source_ref, strategy)?)
+}
+
+#[tauri::command]
+pub async fn git_merge_to_main(
+    workspace_id: String,
+    strategy: MergeStrategy,
+    workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<MergeOutcome, GitCmdError> {
+    session.require()?;
+    let workspace = workspaces.get(&workspace_id).await?;
+    let branch = workspace.branch.clone().ok_or_else(|| {
+        GitCmdError::Git(GitError::CommandFailed("workspace has no branch".into()))
+    })?;
+    let repository = repositories.get(&workspace.repository_id).await?;
+    let main_repo = repository
+        .local_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            GitCmdError::Git(GitError::CommandFailed("repository has no local path".into()))
+        })?;
+    Ok(git::merge_to(
+        &main_repo,
+        &repository.default_branch,
+        &branch,
+        strategy,
+    )?)
+}
+
+#[tauri::command]
+pub async fn git_merge_in_progress(
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<InProgress, GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    Ok(git::merge_in_progress(&cwd)?)
+}
+
+#[tauri::command]
+pub async fn git_abort_merge(
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    git::merge_abort(&cwd)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_continue_merge(
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<MergeOutcome, GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    Ok(git::merge_continue(&cwd)?)
+}
+
+#[tauri::command]
+pub async fn git_resolve_conflict(
+    workspace_id: String,
+    path: String,
+    side: ConflictSide,
+    workspaces: State<'_, WorkspaceRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), GitCmdError> {
+    session.require()?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    git::merge_set_resolution(&cwd, &path, side)?;
+    Ok(())
 }

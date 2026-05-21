@@ -22,7 +22,12 @@ pub use diff::{diff, DiffScope};
 pub use error::GitError;
 pub use files::list_files;
 pub use init::init_repo;
-pub use merge::has_unpushed_commits;
+pub use merge::{
+    abort as merge_abort, continue_after_resolution as merge_continue,
+    has_unpushed_commits, in_progress as merge_in_progress, merge_into, merge_to,
+    set_resolution as merge_set_resolution, ConflictSide, InProgress, MergeOutcome,
+    MergeStrategy,
+};
 pub use pr::build_pull_request_target;
 pub use remote::{get_default_branch, get_remote_url, list_local_branches};
 pub use status::{status, FileChange};
