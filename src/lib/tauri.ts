@@ -2,12 +2,15 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   Agent,
   BranchStatus,
+  Commit,
+  CommitFileChange,
   CommitOutput,
   ConflictSide,
   DiffScope,
   FileChange,
   InProgress,
   Launcher,
+  LogOptions,
   MergeOutcome,
   MergeStrategy,
   OpenPullRequestOutcome,
@@ -175,6 +178,16 @@ export const tauri = {
     invoke<MergeOutcome>("git_continue_merge", { workspaceId }),
   gitResolveConflict: (workspaceId: string, path: string, side: ConflictSide) =>
     invoke<void>("git_resolve_conflict", { workspaceId, path, side }),
+  gitLog: (workspaceId: string, opts: LogOptions) =>
+    invoke<Commit[]>("git_log", { workspaceId, opts }),
+  gitCommitFiles: (workspaceId: string, sha: string) =>
+    invoke<CommitFileChange[]>("git_commit_files", { workspaceId, sha }),
+  gitCommitDiff: (workspaceId: string, sha: string, path?: string) =>
+    invoke<string>("git_commit_diff", {
+      workspaceId,
+      sha,
+      ...(path ? { path } : {}),
+    }),
 
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>

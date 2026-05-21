@@ -111,6 +111,15 @@ interface UiState {
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
 
+  /**
+   * Active tab inside the workspace right sidebar, keyed by workspace
+   * id. Defaults to "changes" when unset. Persists across ⌘J toggles
+   * but not across reloads — survives sessions via the same per-tab
+   * pattern as `innerTabs` (in-memory; we don't snapshot to disk).
+   */
+  rightPanelTab: Record<string, "changes" | "history">;
+  setRightPanelTab: (workspaceId: string, tab: "changes" | "history") => void;
+
 
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
@@ -226,6 +235,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     if (typeof window !== "undefined")
       window.localStorage.setItem(RIGHT_PANEL_KEY, collapsed ? "collapsed" : "expanded");
     set({ rightPanelCollapsed: collapsed });
+  },
+
+  rightPanelTab: {},
+  setRightPanelTab: (workspaceId, tab) => {
+    set({ rightPanelTab: { ...get().rightPanelTab, [workspaceId]: tab } });
   },
 
   pendingGitInitRepoId: null,

@@ -161,13 +161,6 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-(--color-border-subtle) px-3">
-        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
-          Changes{" "}
-          <span className="text-(--color-text-secondary)">{changes?.length ?? 0}</span>
-        </span>
-      </div>
-
       <div className="min-h-0 flex-1 space-y-4 overflow-auto p-2">
         {(changes ?? []).length === 0 && !inMerge && (
           <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">

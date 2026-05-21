@@ -1,8 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect } from "react";
 import { tauri } from "@/lib/tauri";
-import type { ConflictSide, DiffScope, MergeStrategy } from "@/lib/types";
+import type { ConflictSide, DiffScope, LogOptions, MergeStrategy } from "@/lib/types";
 
 const gitKeys = {
   status: (workspaceId: string) => ["git", "status", workspaceId] as const,
@@ -11,6 +16,12 @@ const gitKeys = {
     ["git", "mergeInProgress", workspaceId] as const,
   diff: (workspaceId: string, scope: DiffScope, path?: string) =>
     ["git", "diff", workspaceId, scope, path ?? null] as const,
+  log: (workspaceId: string, opts: { branchOnly: boolean; messageGrep?: string }) =>
+    ["git", "log", workspaceId, opts.branchOnly, opts.messageGrep ?? ""] as const,
+  commitFiles: (workspaceId: string, sha: string) =>
+    ["git", "commitFiles", workspaceId, sha] as const,
+  commitDiff: (workspaceId: string, sha: string, path: string) =>
+    ["git", "commitDiff", workspaceId, sha, path] as const,
 };
 
 function invalidateWorkspaceGit(
@@ -21,6 +32,7 @@ function invalidateWorkspaceGit(
   qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
   qc.invalidateQueries({ queryKey: gitKeys.mergeInProgress(workspaceId) });
   qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
+  qc.invalidateQueries({ queryKey: ["git", "log", workspaceId] });
 }
 
 interface WorktreeChangedPayload {
@@ -208,5 +220,51 @@ export function useGitBranches(repoPath: string | null | undefined) {
     queryFn: () => tauri.listLocalBranches(repoPath ?? ""),
     enabled: !!repoPath,
     staleTime: 10_000,
+  });
+}
+
+const LOG_PAGE_SIZE = 50;
+
+/**
+ * Paginated commit history for the History tab. Pages are 50 commits;
+ * `fetchNextPage` walks forward via `--skip`. Invalidated by the
+ * fs-watcher (commits land in .git/HEAD, which is inside the watched
+ * tree) and by our own commit/sync/merge mutations.
+ */
+export function useGitLog(
+  workspaceId: string | null | undefined,
+  filters: { branchOnly: boolean; messageGrep?: string },
+) {
+  return useInfiniteQuery({
+    queryKey: gitKeys.log(workspaceId ?? "", filters),
+    queryFn: ({ pageParam }) => {
+      const opts: LogOptions = {
+        branchOnly: filters.branchOnly,
+        limit: LOG_PAGE_SIZE,
+        skip: pageParam as number,
+      };
+      if (filters.messageGrep && filters.messageGrep.trim().length > 0) {
+        opts.messageGrep = filters.messageGrep.trim();
+      }
+      return tauri.gitLog(workspaceId ?? "", opts);
+    },
+    initialPageParam: 0,
+    getNextPageParam: (last, all) =>
+      last.length < LOG_PAGE_SIZE ? undefined : all.length * LOG_PAGE_SIZE,
+    enabled: !!workspaceId,
+  });
+}
+
+export function useGitCommitFiles(
+  workspaceId: string | null | undefined,
+  sha: string | null | undefined,
+) {
+  return useQuery({
+    queryKey: gitKeys.commitFiles(workspaceId ?? "", sha ?? ""),
+    queryFn: () => tauri.gitCommitFiles(workspaceId ?? "", sha ?? ""),
+    enabled: !!workspaceId && !!sha,
+    // Commits are immutable — once we have a file list it never
+    // changes. Keep it cached for the session.
+    staleTime: Infinity,
   });
 }

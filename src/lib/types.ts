@@ -180,6 +180,31 @@ export type InProgress =
 
 export type ConflictSide = "ours" | "theirs";
 
+export interface Commit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  body: string | null;
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;
+  parents: string[];
+}
+
+export interface LogOptions {
+  branchOnly: boolean;
+  limit?: number;
+  skip?: number;
+  messageGrep?: string;
+  defaultBranch?: string;
+}
+
+export interface CommitFileChange {
+  path: string;
+  oldPath: string | null;
+  status: FileStatus;
+}
+
 export interface OpenPullRequestOutcome {
   url: string;
   provider: string;

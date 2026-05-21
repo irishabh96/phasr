@@ -3,9 +3,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { BranchChip } from "@/components/BranchChip";
-import { ChangesPanel } from "@/components/ChangesPanel";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
+import { WorkspaceRightSidebar } from "@/components/WorkspaceRightSidebar";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
 import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
@@ -95,7 +95,7 @@ function WorkspaceDetail() {
             )}
           >
             <div className="flex h-full w-[360px] min-w-[360px] flex-col">
-              <ChangesPanel workspaceId={workspaceId} />
+              <WorkspaceRightSidebar workspaceId={workspaceId} />
             </div>
           </aside>
         )}
