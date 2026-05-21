@@ -105,6 +105,15 @@ export const SHORTCUTS = {
     display: ["⌘", "↵"],
     label: "Submit",
   },
+
+  // Git
+  commitAndPush: {
+    key: "enter",
+    meta: true,
+    shift: true,
+    display: ["⌘", "⇧", "↵"],
+    label: "Commit & push",
+  },
 } as const satisfies Record<string, Shortcut>;
 
 export type ShortcutId = keyof typeof SHORTCUTS;

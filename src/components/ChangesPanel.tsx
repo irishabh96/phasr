@@ -1,9 +1,10 @@
 import { useQueries } from "@tanstack/react-query";
 import { Check, GitBranch } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DiffList } from "@/components/diff/DiffList";
 import type { DiffCardFile } from "@/components/diff/DiffCard";
 import {
+  useGitBranchStatus,
   useGitCommit,
   useGitDiscard,
   useGitPush,
@@ -11,10 +12,15 @@ import {
   useGitStatus,
   useGitUnstage,
 } from "@/lib/hooks/useGit";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { tauri } from "@/lib/tauri";
 import type { DiffScope, FileChange } from "@/lib/types";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassTextarea } from "@/components/ui/GlassInput";
+
+const COMMIT_SHORTCUT = SHORTCUTS.submitForm;
+const COMMIT_AND_PUSH_SHORTCUT = SHORTCUTS.commitAndPush;
+const SUCCESS_FADE_MS = 4_000;
 
 interface ChangesPanelProps {
   workspaceId: string;
@@ -33,6 +39,7 @@ type Bucket = "staged" | "unstaged" | "partial";
  */
 export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const { data: changes } = useGitStatus(workspaceId);
+  const { data: branchStatus } = useGitBranchStatus(workspaceId);
   const stage = useGitStage(workspaceId);
   const unstage = useGitUnstage(workspaceId);
   const discard = useGitDiscard(workspaceId);
@@ -40,6 +47,14 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const push = useGitPush(workspaceId);
 
   const [message, setMessage] = useState("");
+  // Once the user has focused or typed anything, keep the textarea
+  // expanded — re-focusing after typing should not shrink it back.
+  const [expanded, setExpanded] = useState(false);
+  // Track the most recent push success so the confirmation auto-fades
+  // a few seconds after it lands (and disappears on the next commit).
+  const [lastPushAt, setLastPushAt] = useState<number | null>(null);
+  const [lastCommitAt, setLastCommitAt] = useState<number | null>(null);
+  const [tick, setTick] = useState(0);
 
   const allFiles = useDiffFiles(workspaceId, changes ?? []);
 
@@ -54,6 +69,26 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   }, [allFiles]);
 
   const stagedCount = staged.length + partial.length;
+  const canPush =
+    !!branchStatus &&
+    branchStatus.hasRemote &&
+    !branchStatus.detached &&
+    branchStatus.ahead > 0;
+
+  // Re-render once after a success message lands so we can hide it
+  // when SUCCESS_FADE_MS has elapsed. The tick state is intentionally
+  // unused other than to force a render.
+  void tick;
+  useEffect(() => {
+    if (lastPushAt === null && lastCommitAt === null) return;
+    const t = setTimeout(() => setTick((n) => n + 1), SUCCESS_FADE_MS + 50);
+    return () => clearTimeout(t);
+  }, [lastPushAt, lastCommitAt]);
+
+  const showPushSuccess =
+    lastPushAt !== null && Date.now() - lastPushAt < SUCCESS_FADE_MS;
+  const showCommitSuccess =
+    lastCommitAt !== null && Date.now() - lastCommitAt < SUCCESS_FADE_MS;
 
   const copyPath = (p: string) => {
     void navigator.clipboard?.writeText(p);
@@ -66,6 +101,46 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
     if (!message.trim() || stagedCount === 0) return;
     await commit.mutateAsync(message.trim());
     setMessage("");
+    setLastCommitAt(Date.now());
+    setLastPushAt(null);
+  };
+
+  const handleCommitAndPush = async () => {
+    if (commit.isPending || push.isPending) return;
+    const hasStagedCommit = !!message.trim() && stagedCount > 0;
+    // Staged changes with no message: bail so the user fills it in
+    // instead of silently pushing whatever's already on HEAD.
+    if (stagedCount > 0 && !message.trim()) return;
+    // Nothing to commit AND nothing to push: no-op.
+    if (!hasStagedCommit && !canPush) return;
+    if (hasStagedCommit) {
+      try {
+        await commit.mutateAsync(message.trim());
+        setMessage("");
+        setLastCommitAt(Date.now());
+      } catch {
+        return;
+      }
+    }
+    try {
+      await push.mutateAsync();
+      setLastPushAt(Date.now());
+    } catch {
+      /* push.error renders below */
+    }
+  };
+
+  const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const native = e.nativeEvent as KeyboardEvent;
+    if (matchShortcut(native, COMMIT_AND_PUSH_SHORTCUT)) {
+      e.preventDefault();
+      void handleCommitAndPush();
+      return;
+    }
+    if (matchShortcut(native, COMMIT_SHORTCUT)) {
+      e.preventDefault();
+      void handleCommit();
+    }
   };
 
   return (
@@ -151,8 +226,13 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
       <div className="shrink-0 border-t border-(--color-border-subtle) p-3">
         <GlassTextarea
           value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          rows={2}
+          onChange={(e) => {
+            setMessage(e.target.value);
+            if (e.target.value.length > 0) setExpanded(true);
+          }}
+          onFocus={() => setExpanded(true)}
+          onKeyDown={handleTextareaKeyDown}
+          rows={expanded ? 5 : 2}
           placeholder="Commit message"
         />
         <div className="mt-2 flex items-center gap-1">
@@ -161,30 +241,67 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
             size="sm"
             onClick={handleCommit}
             disabled={commit.isPending || !message.trim() || stagedCount === 0}
+            title={`Commit (${COMMIT_SHORTCUT.display.join(" ")})`}
           >
             <Check size={12} />
-            Commit {stagedCount > 0 && `(${stagedCount})`}
+            {commit.isPending ? "Committing…" : "Commit"}
+            {stagedCount > 0 && ` (${stagedCount})`}
           </GlassButton>
           <GlassButton
             variant="outline"
             size="sm"
-            onClick={() => push.mutate()}
-            disabled={push.isPending}
+            onClick={() => {
+              void (async () => {
+                try {
+                  await push.mutateAsync();
+                  setLastPushAt(Date.now());
+                } catch {
+                  /* surfaced below */
+                }
+              })();
+            }}
+            disabled={push.isPending || !canPush}
             className="ml-auto"
+            title={
+              !branchStatus?.hasRemote
+                ? "No remote configured"
+                : branchStatus.detached
+                  ? "Detached HEAD — checkout a branch to push"
+                  : branchStatus.ahead === 0
+                    ? "Nothing to push"
+                    : `Push ${branchStatus.ahead} commit${branchStatus.ahead === 1 ? "" : "s"} (${COMMIT_AND_PUSH_SHORTCUT.display.join(" ")} commits then pushes)`
+            }
           >
             <GitBranch size={12} />
             {push.isPending ? "Pushing…" : "Push"}
+            {branchStatus && branchStatus.ahead > 0 && ` (${branchStatus.ahead})`}
           </GlassButton>
         </div>
-        {push.error && (
-          <p className="mt-2 text-[11px] text-(--color-danger)">{String(push.error)}</p>
+        {commit.error && (
+          <p className="mt-2 text-[11px] text-(--color-danger)">
+            {extractMessage(commit.error)}
+          </p>
         )}
-        {push.isSuccess && (
+        {push.error && (
+          <p className="mt-2 text-[11px] text-(--color-danger)">
+            {extractMessage(push.error)}
+          </p>
+        )}
+        {showPushSuccess && (
           <p className="mt-2 text-[11px] text-(--color-success)">Pushed.</p>
+        )}
+        {showCommitSuccess && !showPushSuccess && (
+          <p className="mt-2 text-[11px] text-(--color-success)">Committed.</p>
         )}
       </div>
     </div>
   );
+}
+
+function extractMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return String(err);
 }
 
 function Section({
