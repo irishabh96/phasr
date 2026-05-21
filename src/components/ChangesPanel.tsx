@@ -1,23 +1,36 @@
-import { Check, GitBranch, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
+import { Check, GitBranch } from "lucide-react";
+import { useMemo, useState } from "react";
+import { DiffList } from "@/components/diff/DiffList";
+import type { DiffCardFile } from "@/components/diff/DiffCard";
 import {
   useGitCommit,
-  useGitDiff,
   useGitDiscard,
   useGitPush,
   useGitStage,
   useGitStatus,
   useGitUnstage,
 } from "@/lib/hooks/useGit";
-import type { FileChange, FileStatus } from "@/lib/types";
+import { tauri } from "@/lib/tauri";
+import type { DiffScope, FileChange } from "@/lib/types";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassTextarea } from "@/components/ui/GlassInput";
-import { cn } from "@/lib/utils";
 
 interface ChangesPanelProps {
   workspaceId: string;
 }
 
+type Bucket = "staged" | "unstaged" | "partial";
+
+/**
+ * Workspace changes pane. Files are grouped into STAGED / UNSTAGED /
+ * PARTIAL sections (cf. VSCode and GitHub Desktop). Each section has
+ * its own bulk action; cards still show per-file stage/unstage/discard
+ * icons that self-select based on the file's per-side status.
+ *
+ * Diffs are fetched in parallel via TanStack `useQueries` so the user
+ * sees results stream in instead of waiting for the whole set.
+ */
 export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const { data: changes } = useGitStatus(workspaceId);
   const stage = useGitStage(workspaceId);
@@ -26,72 +39,116 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const commit = useGitCommit(workspaceId);
   const push = useGitPush(workspaceId);
 
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [message, setMessage] = useState("");
 
-  const stagedFiles = (changes ?? []).filter((c) => c.staged !== "other");
+  const allFiles = useDiffFiles(workspaceId, changes ?? []);
 
-  const { data: diff, error: diffError } = useGitDiff(workspaceId, "Head", selectedPath);
+  const { staged, unstaged, partial } = useMemo(() => {
+    const groups: Record<Bucket, DiffCardFile[]> = {
+      staged: [],
+      unstaged: [],
+      partial: [],
+    };
+    for (const f of allFiles) groups[bucketFor(f)].push(f);
+    return groups;
+  }, [allFiles]);
 
-  useEffect(() => {
-    if (!selectedPath && changes?.length) {
-      setSelectedPath(changes[0]?.path ?? null);
-    }
-  }, [selectedPath, changes]);
+  const stagedCount = staged.length + partial.length;
+
+  const copyPath = (p: string) => {
+    void navigator.clipboard?.writeText(p);
+  };
+  const handleStage = (p: string) => stage.mutate([p]);
+  const handleUnstage = (p: string) => unstage.mutate([p]);
+  const handleDiscard = (p: string) => discard.mutate([p]);
 
   const handleCommit = async () => {
-    if (!message.trim() || stagedFiles.length === 0) return;
+    if (!message.trim() || stagedCount === 0) return;
     await commit.mutateAsync(message.trim());
     setMessage("");
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-(--color-border-subtle) px-3">
+      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-(--color-border-subtle) px-3">
         <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
-          Changes <span className="text-(--color-text-secondary)">{changes?.length ?? 0}</span>
+          Changes{" "}
+          <span className="text-(--color-text-secondary)">{changes?.length ?? 0}</span>
         </span>
-        {stagedFiles.length > 0 && (
-          <GlassButton variant="ghost" size="sm" onClick={() => unstage.mutate([])}>
-            Unstage all
-          </GlassButton>
-        )}
       </div>
 
-      <ul className="max-h-[36%] min-h-0 shrink-0 overflow-y-auto">
-        {!changes?.length && (
-          <li className="px-3 py-2.5 text-[12px] text-(--color-text-muted)">
+      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-2">
+        {(changes ?? []).length === 0 && (
+          <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
             No changes in this worktree yet.
-          </li>
+          </div>
         )}
-        {changes?.map((change) => (
-          <FileRow
-            key={change.path}
-            change={change}
-            selected={change.path === selectedPath}
-            onSelect={() => setSelectedPath(change.path)}
-            onStage={() => stage.mutate([change.path])}
-            onUnstage={() => unstage.mutate([change.path])}
-            onDiscard={() => discard.mutate([change.path])}
-          />
-        ))}
-      </ul>
 
-      <div className="min-h-0 flex-1 overflow-auto border-y border-(--color-border-subtle) px-3 py-2 font-mono text-[11.5px]">
-        {selectedPath ? (
-          diffError ? (
-            <p className="text-(--color-danger)">{String(diffError)}</p>
-          ) : diff && diff.length > 0 ? (
-            <pre className="whitespace-pre-wrap leading-relaxed">{renderDiff(diff)}</pre>
-          ) : (
-            <p className="text-(--color-text-muted)">No diff to show for {selectedPath}.</p>
-          )
-        ) : (
-          <p className="text-(--color-text-muted)">Select a file to see its diff.</p>
+        {staged.length > 0 && (
+          <Section
+            title="Staged"
+            count={staged.length}
+            action={
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                onClick={() => unstage.mutate([])}
+                disabled={unstage.isPending}
+              >
+                Unstage all
+              </GlassButton>
+            }
+          >
+            <DiffList
+              files={staged}
+              defaultExpanded={10}
+              onCopyPath={copyPath}
+              onUnstage={handleUnstage}
+              onDiscard={handleDiscard}
+            />
+          </Section>
+        )}
+
+        {unstaged.length > 0 && (
+          <Section
+            title="Unstaged"
+            count={unstaged.length}
+            action={
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                onClick={() => stage.mutate([])}
+                disabled={stage.isPending}
+              >
+                Stage all
+              </GlassButton>
+            }
+          >
+            <DiffList
+              files={unstaged}
+              defaultExpanded={10}
+              onCopyPath={copyPath}
+              onStage={handleStage}
+              onDiscard={handleDiscard}
+            />
+          </Section>
+        )}
+
+        {partial.length > 0 && (
+          <Section title="Partial" count={partial.length}>
+            <DiffList
+              files={partial}
+              defaultExpanded={10}
+              onCopyPath={copyPath}
+              onStage={handleStage}
+              onUnstage={handleUnstage}
+              onDiscard={handleDiscard}
+            />
+          </Section>
         )}
       </div>
 
-      <div className="shrink-0 p-3">
+      <div className="shrink-0 border-t border-(--color-border-subtle) p-3">
         <GlassTextarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -100,21 +157,13 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         />
         <div className="mt-2 flex items-center gap-1">
           <GlassButton
-            variant="ghost"
-            size="sm"
-            onClick={() => stage.mutate([])}
-            disabled={stage.isPending}
-          >
-            Stage all
-          </GlassButton>
-          <GlassButton
             variant="primary"
             size="sm"
             onClick={handleCommit}
-            disabled={commit.isPending || !message.trim() || stagedFiles.length === 0}
+            disabled={commit.isPending || !message.trim() || stagedCount === 0}
           >
             <Check size={12} />
-            Commit {stagedFiles.length > 0 && `(${stagedFiles.length})`}
+            Commit {stagedCount > 0 && `(${stagedCount})`}
           </GlassButton>
           <GlassButton
             variant="outline"
@@ -138,148 +187,75 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   );
 }
 
-interface FileRowProps {
-  change: FileChange;
-  selected: boolean;
-  onSelect(): void;
-  onStage(): void;
-  onUnstage(): void;
-  onDiscard(): void;
-}
-
-function FileRow({ change, selected, onSelect, onStage, onUnstage, onDiscard }: FileRowProps) {
-  const stagedMarker = statusMark(change.staged);
-  const unstagedMarker = statusMark(change.unstaged);
-  return (
-    <li
-      onClick={onSelect}
-      data-active={selected}
-      className={cn(
-        "group flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px]",
-        "transition-colors duration-150",
-        "hover:bg-(--color-bg-hover)",
-        "data-[active=true]:bg-[color-mix(in_oklab,var(--color-accent-500)_10%,transparent)]",
-        "data-[active=true]:text-(--color-text-primary)",
-      )}
-    >
-      <span className="w-7 shrink-0 font-mono text-[11px] text-(--color-text-muted)">
-        <span style={{ color: stagedMarker.color }}>{stagedMarker.glyph}</span>
-        <span style={{ color: unstagedMarker.color }}>{unstagedMarker.glyph}</span>
-      </span>
-      <span className="min-w-0 flex-1 truncate">{change.path}</span>
-      <div className="hidden shrink-0 gap-0.5 group-hover:flex">
-        {change.unstaged !== "other" && (
-          <RowIconButton
-            label="Stage"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStage();
-            }}
-          >
-            +
-          </RowIconButton>
-        )}
-        {change.staged !== "other" && (
-          <RowIconButton
-            label="Unstage"
-            onClick={(e) => {
-              e.stopPropagation();
-              onUnstage();
-            }}
-          >
-            −
-          </RowIconButton>
-        )}
-        {change.unstaged !== "other" && (
-          <RowIconButton
-            label="Discard"
-            danger
-            onClick={(e) => {
-              e.stopPropagation();
-              if (window.confirm(`Discard changes to ${change.path}?`)) {
-                onDiscard();
-              }
-            }}
-          >
-            <Trash2 size={11} />
-          </RowIconButton>
-        )}
-      </div>
-    </li>
-  );
-}
-
-function RowIconButton({
+function Section({
+  title,
+  count,
+  action,
   children,
-  label,
-  onClick,
-  danger,
 }: {
+  title: string;
+  count: number;
+  action?: React.ReactNode;
   children: React.ReactNode;
-  label: string;
-  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  danger?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      className={cn(
-        "flex h-5 w-5 items-center justify-center rounded-[5px] text-[11px]",
-        "transition-colors",
-        "hover:bg-(--color-bg-hover)",
-        danger && "text-(--color-danger)",
-      )}
-    >
+    <section className="flex flex-col gap-2">
+      <header className="flex items-center justify-between px-1">
+        <span className="text-[10.5px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
+          {title}{" "}
+          <span className="text-(--color-text-secondary)">{count}</span>
+        </span>
+        {action}
+      </header>
       {children}
-    </button>
+    </section>
   );
 }
 
-function renderDiff(diff: string) {
-  return diff.split("\n").map((line, i) => {
-    let style: React.CSSProperties = {};
-    if (
-      line.startsWith("+++") ||
-      line.startsWith("---") ||
-      line.startsWith("diff ") ||
-      line.startsWith("@@") ||
-      line.startsWith("new file") ||
-      line.startsWith("index ")
-    ) {
-      style = { color: "var(--color-text-muted)" };
-    } else if (line.startsWith("+")) {
-      style = { color: "var(--color-success)" };
-    } else if (line.startsWith("-")) {
-      style = { color: "var(--color-danger)" };
-    }
-    return (
-      <span key={i} style={style}>
-        {line}
-        {"\n"}
-      </span>
-    );
-  });
+function bucketFor(f: DiffCardFile): Bucket {
+  const hasStaged = f.staged !== undefined && f.staged !== "other";
+  const hasUnstaged = f.unstaged !== undefined && f.unstaged !== "other";
+  if (hasStaged && hasUnstaged) return "partial";
+  if (hasStaged) return "staged";
+  return "unstaged";
 }
 
-function statusMark(status: FileStatus): { glyph: string; color: string } {
-  switch (status) {
-    case "added":
-      return { glyph: "A", color: "var(--color-success)" };
-    case "modified":
-      return { glyph: "M", color: "var(--color-warning)" };
-    case "deleted":
-      return { glyph: "D", color: "var(--color-danger)" };
-    case "renamed":
-      return { glyph: "R", color: "var(--color-info)" };
-    case "untracked":
-      return { glyph: "?", color: "var(--color-text-muted)" };
-    case "conflicted":
-      return { glyph: "U", color: "var(--color-danger)" };
-    case "other":
-    default:
-      return { glyph: " ", color: "var(--color-text-muted)" };
-  }
+function useDiffFiles(workspaceId: string, changes: FileChange[]): DiffCardFile[] {
+  const scopePerFile = useMemo<DiffScope[]>(
+    () => changes.map((c) => pickScope(c)),
+    [changes],
+  );
+
+  const results = useQueries({
+    queries: changes.map((c, i) => ({
+      queryKey: ["git", "diff", workspaceId, scopePerFile[i], c.path],
+      queryFn: () => tauri.gitDiff(workspaceId, scopePerFile[i] as DiffScope, c.path),
+      enabled: !!workspaceId,
+    })),
+  });
+
+  return useMemo(
+    () =>
+      changes.map((c, i) => {
+        const r = results[i];
+        const file: DiffCardFile = {
+          path: c.path,
+          raw: r?.data ?? null,
+          loading: r?.isLoading ?? false,
+          staged: c.staged,
+          unstaged: c.unstaged,
+        };
+        if (r?.error) {
+          file.errorMessage = String((r.error as Error).message ?? r.error);
+        }
+        return file;
+      }),
+    [changes, results],
+  );
+}
+
+function pickScope(c: FileChange): DiffScope {
+  if (c.unstaged === "untracked") return "Unstaged";
+  if (c.unstaged === "other" && c.staged !== "other") return "Staged";
+  return "Head";
 }
