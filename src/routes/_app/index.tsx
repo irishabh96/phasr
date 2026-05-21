@@ -7,6 +7,7 @@ import { RepoTabContent } from "@/components/RepoTabContent";
 import { isClerkConfigured } from "@/lib/clerk";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore, REPO_HOME_TAB_ID } from "@/lib/store";
 import type { Repository } from "@/lib/types";
 
@@ -71,15 +72,12 @@ function RepoEmptyState({ repo }: { repo: Repository }) {
     ensureRepoInnerTabs(repo.id);
   }, [repo.id, ensureRepoInnerTabs]);
 
-  // ⌘W closes the active preview tab when one is focused. Home is not
-  // closable, so the shortcut is a no-op there. The global ⌘W handler
-  // in `_app.tsx` requires an active workspace context, so we bind our
-  // own here.
+  // ⌘W closes the active non-home tab. Home is not closable, so the
+  // shortcut is a no-op there. The global ⌘W in `_app.tsx` requires an
+  // active workspace context, so we bind our own here.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.shiftKey) return;
-      if (e.key.toLowerCase() !== "w") return;
+      if (!matchShortcut(e, SHORTCUTS.closeActiveTab)) return;
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (!activeTabId || activeTabId === REPO_HOME_TAB_ID) return;

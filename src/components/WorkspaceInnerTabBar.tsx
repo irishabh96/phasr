@@ -2,6 +2,7 @@ import { FileCode2, Plus, Terminal as TerminalIcon, X, Zap } from "lucide-react"
 import { disposeMainXterm } from "@/components/Terminal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
+import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -53,10 +54,13 @@ export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps)
           }}
         />
       ))}
-      <GlassTooltip content="New terminal" side="bottom">
+      <GlassTooltip
+        content={`${SHORTCUTS.newTerminal.label} (${SHORTCUTS.newTerminal.display.join("")})`}
+        side="bottom"
+      >
         <button
           type="button"
-          aria-label="New terminal"
+          aria-label={SHORTCUTS.newTerminal.label}
           onClick={() => openInnerTerminalTab(workspaceId)}
           className="ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
         >

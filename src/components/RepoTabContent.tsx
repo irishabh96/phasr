@@ -1,5 +1,6 @@
 import { FilePreviewTab } from "@/components/FilePreviewTab";
 import { RepoHomeContent } from "@/components/RepoHomeContent";
+import { SessionTerminalTab } from "@/components/SessionTerminalTab";
 import { useUiStore } from "@/lib/store";
 import type { Repository } from "@/lib/types";
 
@@ -39,6 +40,19 @@ export function RepoTabContent({ repo }: RepoTabContentProps) {
               <FilePreviewTab
                 repoPath={repo.localPath}
                 filePath={tab.filePath}
+                visible={active}
+              />
+            </div>
+          );
+        }
+        if (tab.kind === "terminal" && repo.localPath) {
+          return (
+            <div key={tab.id} className="absolute inset-0">
+              <SessionTerminalTab
+                repositoryId={repo.id}
+                tabId={tab.id}
+                cwd={repo.localPath}
+                ptySessionId={tab.ptySessionId}
                 visible={active}
               />
             </div>

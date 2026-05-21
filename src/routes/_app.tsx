@@ -19,6 +19,7 @@ import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
 import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { useRustSession } from "@/lib/use-rust-session";
 import { tauri } from "@/lib/tauri";
@@ -66,52 +67,45 @@ function AppShell() {
   useWorkspaceEvents();
   useTaskEvents();
 
-  // Global chrome shortcuts.
-  //   ⌘B  pin sidebar
-  //   ⌘⇧B hide sidebar
-  //   ⌘J  right panel
-  //   ⌘N  new task in the active task's repo (alias of ⌘T)
-  //   ⌘T  new task — opens the New Task modal
-  //   ⌘W  close active inner tab (if closable; no-op on "main")
-  //   ⌘P  open file search for the active task's repo
+  // Global chrome shortcuts. All bindings come from `@/lib/shortcuts` —
+  // edits to a binding live there, not here.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const key = e.key.toLowerCase();
-
-      if (key === "b") {
+      if (matchShortcut(e, SHORTCUTS.toggleSidebarHide)) {
         e.preventDefault();
-        if (e.shiftKey) toggleSidebarHidden();
-        else toggleSidebarPin();
+        toggleSidebarHidden();
         return;
       }
-      if (key === "j" && !e.shiftKey) {
+      if (matchShortcut(e, SHORTCUTS.toggleSidebarPin)) {
+        e.preventDefault();
+        toggleSidebarPin();
+        return;
+      }
+      if (matchShortcut(e, SHORTCUTS.toggleRightPanel)) {
         // Don't steal ⌘⇧J — that's "Reload window" in some browsers.
         e.preventDefault();
         toggleRightPanel();
         return;
       }
-      if (key === "n" && !e.shiftKey) {
+      if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
         const { activeWorkspaceContext, requestNewWorkspace } = useUiStore.getState();
         if (!activeWorkspaceContext) return;
         e.preventDefault();
         requestNewWorkspace(activeWorkspaceContext.repositoryId);
         return;
       }
-      if (key === "t" && !e.shiftKey) {
-        const { activeWorkspaceContext, requestNewWorkspace } = useUiStore.getState();
-        if (!activeWorkspaceContext) return;
+      if (matchShortcut(e, SHORTCUTS.newTerminal)) {
         // Capture-phase + stopImmediatePropagation defeats Chromium's
-        // built-in "new tab" reservation on ⌘T. Opens the New Task
-        // modal scoped to the active task's repo (workspace=task in
-        // user-facing vocabulary; the schema renamed `tasks` →
-        // `workspaces` in migration 0002).
+        // built-in "new tab" reservation on ⌘T. Opens a new terminal
+        // inner tab on the active workspace.
+        const { activeWorkspaceContext, openInnerTerminalTab } = useUiStore.getState();
+        if (!activeWorkspaceContext) return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        requestNewWorkspace(activeWorkspaceContext.repositoryId);
+        openInnerTerminalTab(activeWorkspaceContext.workspaceId);
         return;
       }
-      if (key === "p" && !e.shiftKey) {
+      if (matchShortcut(e, SHORTCUTS.searchFiles)) {
         const state = useUiStore.getState();
         const ctx = state.activeWorkspaceContext;
         if (!ctx) return;
@@ -122,7 +116,7 @@ function AppShell() {
         state.openFileSearch(ctx.repositoryId, repoPath);
         return;
       }
-      if (key === "w" && !e.shiftKey) {
+      if (matchShortcut(e, SHORTCUTS.closeActiveTab)) {
         const state = useUiStore.getState();
         const ctx = state.activeWorkspaceContext;
         if (!ctx) return;

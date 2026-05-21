@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/PaletteParts";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { Repository, Workspace } from "@/lib/types";
@@ -76,7 +77,7 @@ export function CommandPalette() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if (matchShortcut(e, SHORTCUTS.togglePalette)) {
         e.preventDefault();
         togglePalette();
       }
@@ -190,7 +191,7 @@ export function CommandPalette() {
                   <span className="flex-1 text-[15px]">
                     New workspace in <span className="font-medium">{repo.name}</span>
                   </span>
-                  <PaletteShortcut keys={["⌘", "N"]} />
+                  <PaletteShortcut keys={SHORTCUTS.newWorkspace.display} />
                 </Command.Item>
               ))}
             </PaletteGroup>

@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Columns2, Rows3 } from "lucide-react";
 import { useShiki } from "@/lib/hooks/useShiki";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import {
   languageFromPath,
   pairForSideBySide,
@@ -84,13 +85,13 @@ export function DiffView({
   const mode = controlled ? (controlledMode as DiffViewMode) : internalMode;
   const [visibleHunks, setVisibleHunks] = useState(HUNK_BATCH_SIZE);
 
-  // ⌘\ / Ctrl+\ toggles split↔inline. Skip when a text input is focused.
-  // When parent-controlled, the parent owns the shortcut.
+  // Toggle split↔inline via the registry shortcut. Skip when a text
+  // input is focused. When parent-controlled, the parent owns the
+  // shortcut.
   useEffect(() => {
     if (controlled) return;
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key !== "\\") return;
+      if (!matchShortcut(e, SHORTCUTS.toggleDiffMode)) return;
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (target?.isContentEditable) return;

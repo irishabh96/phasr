@@ -43,7 +43,7 @@ export interface InnerTabState {
 // tabs host `<FilePreviewTab>` and are added by the file-search modal
 // when the user opens a file outside of a workspace context.
 
-export type RepoInnerTabKind = "home" | "preview";
+export type RepoInnerTabKind = "home" | "preview" | "terminal";
 
 export interface RepoInnerTab {
   id: string;
@@ -52,6 +52,8 @@ export interface RepoInnerTab {
   closable: boolean;
   /** Preview — repo-relative file path. */
   filePath?: string;
+  /** Terminal — backend session uuid. Set after `start_session_terminal` returns. */
+  ptySessionId?: string;
 }
 
 export interface RepoInnerTabState {
@@ -132,6 +134,12 @@ interface UiState {
   repoInnerTabs: Record<string, RepoInnerTabState>;
   ensureRepoInnerTabs: (repositoryId: string) => void;
   openRepoInnerPreviewTab: (repositoryId: string, filePath: string) => RepoInnerTab;
+  openRepoInnerTerminalTab: (repositoryId: string) => RepoInnerTab;
+  setRepoInnerTabPtySession: (
+    repositoryId: string,
+    tabId: string,
+    ptySessionId: string,
+  ) => void;
   closeRepoInnerTab: (repositoryId: string, tabId: string) => RepoInnerTab | null;
   setActiveRepoInnerTab: (repositoryId: string, tabId: string) => void;
 
@@ -286,6 +294,45 @@ export const useUiStore = create<UiState>((set, get) => ({
       },
     });
     return tab;
+  },
+  openRepoInnerTerminalTab: (repositoryId) => {
+    let state = get().repoInnerTabs[repositoryId];
+    if (!state) {
+      const home: RepoInnerTab = {
+        id: REPO_HOME_TAB_ID,
+        kind: "home",
+        title: "Home",
+        closable: false,
+      };
+      state = { tabs: [home], activeTabId: home.id };
+    }
+    const existingTerminals = state.tabs.filter((t) => t.kind === "terminal").length;
+    const tab: RepoInnerTab = {
+      id: uuidv4(),
+      kind: "terminal",
+      title: existingTerminals > 0 ? `Terminal ${existingTerminals + 1}` : "Terminal",
+      closable: true,
+    };
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: { tabs: [...state.tabs, tab], activeTabId: tab.id },
+      },
+    });
+    return tab;
+  },
+  setRepoInnerTabPtySession: (repositoryId, tabId, ptySessionId) => {
+    const state = get().repoInnerTabs[repositoryId];
+    if (!state) return;
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: {
+          ...state,
+          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ptySessionId } : t)),
+        },
+      },
+    });
   },
   closeRepoInnerTab: (repositoryId, tabId) => {
     const state = get().repoInnerTabs[repositoryId];

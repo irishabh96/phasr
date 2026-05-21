@@ -9,8 +9,16 @@ import { tauri } from "@/lib/tauri";
 import type { PtyEvent } from "@/lib/types";
 
 interface SessionTerminalTabProps {
-  /** Workspace id — keys the tab back to the workspace's inner tab strip. */
-  workspaceId: string;
+  /**
+   * Workspace id — keys the tab back to the workspace's inner tab strip.
+   * Mutually exclusive with `repositoryId`.
+   */
+  workspaceId?: string;
+  /**
+   * Repository id — keys the tab back to the repo's inner tab strip
+   * (used by the empty-repo screen). Mutually exclusive with `workspaceId`.
+   */
+  repositoryId?: string;
   tabId: string;
   cwd: string;
   /** Persisted from the previous mount, if any. */
@@ -86,6 +94,7 @@ export function disposeSessionXterm(tabId: string) {
 
 export function SessionTerminalTab({
   workspaceId,
+  repositoryId,
   tabId,
   cwd,
   ptySessionId,
@@ -93,6 +102,11 @@ export function SessionTerminalTab({
 }: SessionTerminalTabProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const setInnerTabPtySession = useUiStore((s) => s.setInnerTabPtySession);
+  const setRepoInnerTabPtySession = useUiStore((s) => s.setRepoInnerTabPtySession);
+  const persistSession = (id: string) => {
+    if (workspaceId) setInnerTabPtySession(workspaceId, tabId, id);
+    else if (repositoryId) setRepoInnerTabPtySession(repositoryId, tabId, id);
+  };
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -172,7 +186,7 @@ export function SessionTerminalTab({
         try {
           const id = await tauri.startSessionTerminal(cwd, channel, term.rows, term.cols);
           entry!.sessionId = id;
-          setInnerTabPtySession(workspaceId, tabId, id);
+          persistSession(id);
           wireInteractive(id);
           // Catch any fit() that fired between start request and reply —
           // the onResize handler isn't wired during the await, so a
@@ -249,7 +263,7 @@ export function SessionTerminalTab({
       getHiddenHost().appendChild(entry!.container);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, tabId, cwd]);
+  }, [workspaceId, repositoryId, tabId, cwd]);
 
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + refresh synchronously here

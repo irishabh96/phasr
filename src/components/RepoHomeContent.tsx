@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useDeleteRepository } from "@/lib/hooks/useRepositories";
+import { matchShortcut, SHORTCUTS, type Shortcut } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { Repository } from "@/lib/types";
@@ -16,19 +17,28 @@ interface RepoHomeContentProps {
 }
 
 /**
- * "Home" tab body for the repo inner-tab bar: the quick-action list
- * (Open Terminal / Open in VS Code / Search Files) plus a Delete
- * repository control. Local keyboard bindings (⌘T / ⌘O / ⌘P) are wired
- * here since the global handlers in `_app.tsx` require an active
- * workspace context.
+ * "Home" tab body for the repo inner-tab bar: a compact action list
+ * plus a Delete repository control. Local keyboard bindings (⌘T / ⌘O /
+ * ⌘P / ⌘N) are wired here since the global handlers in `_app.tsx`
+ * require an active workspace context.
+ *
+ * ⌘T spawns a terminal tab on this same inner-tab bar (`openRepoInner-
+ * TerminalTab`). ⌘N opens the new-task modal — it's a bare shortcut,
+ * not surfaced as a row in the action list.
  */
 export function RepoHomeContent({ repo }: RepoHomeContentProps) {
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const openFileSearch = useUiStore((s) => s.openFileSearch);
+  const openRepoInnerTerminalTab = useUiStore((s) => s.openRepoInnerTerminalTab);
   const deleteRepo = useDeleteRepository();
   const [confirming, setConfirming] = useState(false);
 
-  const openTerminal = useCallback(() => {
+  const newTerminal = useCallback(() => {
+    if (!repo.localPath) return;
+    openRepoInnerTerminalTab(repo.id);
+  }, [repo.id, repo.localPath, openRepoInnerTerminalTab]);
+
+  const newWorkspace = useCallback(() => {
     requestNewWorkspace(repo.id);
   }, [repo.id, requestNewWorkspace]);
 
@@ -46,26 +56,27 @@ export function RepoHomeContent({ repo }: RepoHomeContentProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.shiftKey) return;
-      const key = e.key.toLowerCase();
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
-      if (key === "t") {
+      if (matchShortcut(e, SHORTCUTS.newTerminal)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        openTerminal();
-      } else if (key === "o") {
+        newTerminal();
+      } else if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        newWorkspace();
+      } else if (matchShortcut(e, SHORTCUTS.openInEditor)) {
         e.preventDefault();
         openInEditor();
-      } else if (key === "p") {
+      } else if (matchShortcut(e, SHORTCUTS.searchFiles)) {
         e.preventDefault();
         searchFiles();
       }
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [openTerminal, openInEditor, searchFiles]);
+  }, [newTerminal, newWorkspace, openInEditor, searchFiles]);
 
   const handleDelete = async () => {
     await deleteRepo.mutateAsync(repo.id);
@@ -79,20 +90,21 @@ export function RepoHomeContent({ repo }: RepoHomeContentProps) {
           <ActionRow
             icon={<SquareTerminal size={15} />}
             label="Open Terminal"
-            shortcut={["⌘", "T"]}
-            onClick={openTerminal}
+            shortcut={SHORTCUTS.newTerminal}
+            onClick={newTerminal}
+            disabled={!repo.localPath}
           />
           <ActionRow
             icon={<ExternalLink size={15} />}
             label="Open in VS Code"
-            shortcut={["⌘", "O"]}
+            shortcut={SHORTCUTS.openInEditor}
             onClick={openInEditor}
             disabled={!repo.localPath}
           />
           <ActionRow
             icon={<Search size={15} />}
             label="Search Files"
-            shortcut={["⌘", "P"]}
+            shortcut={SHORTCUTS.searchFiles}
             onClick={searchFiles}
             disabled={!repo.localPath}
           />
@@ -145,7 +157,7 @@ function ActionRow({
 }: {
   icon: ReactNode;
   label: string;
-  shortcut: string[];
+  shortcut: Shortcut;
   onClick: () => void;
   disabled?: boolean;
 }) {
@@ -168,7 +180,7 @@ function ActionRow({
           {label}
         </span>
         <span className="flex shrink-0 items-center gap-1 font-mono text-[11px]">
-          {shortcut.map((k, i) => (
+          {shortcut.display.map((k, i) => (
             <kbd
               key={i}
               className="inline-flex h-5 min-w-[20px] items-center justify-center rounded border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-1.5 text-(--color-text-muted)"
