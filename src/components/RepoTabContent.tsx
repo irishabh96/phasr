@@ -1,5 +1,5 @@
+import { CreateFirstWorkspacePane } from "@/components/CreateFirstWorkspacePane";
 import { FilePreviewTab } from "@/components/FilePreviewTab";
-import { RepoHomeContent } from "@/components/RepoHomeContent";
 import { SessionTerminalTab } from "@/components/SessionTerminalTab";
 import { useUiStore } from "@/lib/store";
 import type { Repository } from "@/lib/types";
@@ -30,7 +30,7 @@ export function RepoTabContent({ repo }: RepoTabContentProps) {
               style={{ display: active ? "block" : "none" }}
               className="absolute inset-0"
             >
-              <RepoHomeContent repo={repo} />
+              <CreateFirstWorkspacePane repo={repo} />
             </div>
           );
         }
