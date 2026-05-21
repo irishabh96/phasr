@@ -224,6 +224,23 @@ pub async fn git_init_from_template(
     Ok(destination_path)
 }
 
+/// `mkdir -p <destination_path>` + `git init` + seed an initial commit
+/// so the new repo has a HEAD. Used by the NewProjectPane "Empty" tile.
+/// The frontend follows up with `create_repository` to register the row.
+#[tauri::command]
+pub async fn git_init_empty_repository(
+    destination_path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, RepositoryCmdError> {
+    session.require()?;
+    let dest = std::path::Path::new(&destination_path);
+    std::fs::create_dir_all(dest).map_err(|e| {
+        RepositoryCmdError::Git(crate::git::GitError::Io(e))
+    })?;
+    git::init_repo(dest)?;
+    Ok(destination_path)
+}
+
 /// List files inside a repository for the file-search modal. Honors
 /// `.gitignore` when the path is a git repo; falls back to a manual
 /// walk that skips heavy folders otherwise.

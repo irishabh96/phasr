@@ -16,6 +16,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
 import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppNewProjectRouteImport } from './routes/_app/new-project'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app/settings/appearance'
 import { Route as AppSettingsAgentsRouteImport } from './routes/_app/settings/agents'
@@ -56,6 +57,11 @@ const SignInSplatRoute = SignInSplatRouteImport.update({
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppNewProjectRoute = AppNewProjectRouteImport.update({
+  id: '/new-project',
+  path: '/new-project',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
@@ -100,6 +106,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
+  '/new-project': typeof AppNewProjectRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
@@ -114,6 +121,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
+  '/new-project': typeof AppNewProjectRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/': typeof AppIndexRoute
@@ -130,6 +138,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
+  '/_app/new-project': typeof AppNewProjectRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
@@ -148,6 +157,7 @@ export interface FileRouteTypes {
     | '/'
     | '/sign-in'
     | '/sign-up'
+    | '/new-project'
     | '/settings'
     | '/sign-in/$'
     | '/sign-up/$'
@@ -162,6 +172,7 @@ export interface FileRouteTypes {
   to:
     | '/sign-in'
     | '/sign-up'
+    | '/new-project'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/'
@@ -177,6 +188,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/sign-in'
     | '/sign-up'
+    | '/_app/new-project'
     | '/_app/settings'
     | '/sign-in/$'
     | '/sign-up/$'
@@ -245,6 +257,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/new-project': {
+      id: '/_app/new-project'
+      path: '/new-project'
+      fullPath: '/new-project'
+      preLoaderRoute: typeof AppNewProjectRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/settings/': {
@@ -318,6 +337,7 @@ const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppNewProjectRoute: typeof AppNewProjectRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
   AppDevDiffPreviewRoute: typeof AppDevDiffPreviewRoute
@@ -326,6 +346,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppNewProjectRoute: AppNewProjectRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
   AppDevDiffPreviewRoute: AppDevDiffPreviewRoute,

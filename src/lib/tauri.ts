@@ -80,6 +80,8 @@ export const tauri = {
     invoke<string>("git_clone_repository", { url, destinationPath }),
   gitInitFromTemplate: (templateGitUrl: string, destinationPath: string) =>
     invoke<string>("git_init_from_template", { templateGitUrl, destinationPath }),
+  gitInitEmptyRepository: (destinationPath: string) =>
+    invoke<string>("git_init_empty_repository", { destinationPath }),
   listRepoFiles: (path: string) => invoke<string[]>("list_repo_files", { path }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
 

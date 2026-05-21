@@ -135,6 +135,7 @@ pub fn run() {
             commands::repositories::git_init_repository,
             commands::repositories::git_clone_repository,
             commands::repositories::git_init_from_template,
+            commands::repositories::git_init_empty_repository,
             commands::repositories::list_repo_files,
             commands::workspaces::create_workspace,
             commands::workspaces::list_workspaces,

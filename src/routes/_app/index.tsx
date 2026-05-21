@@ -1,5 +1,5 @@
 import { useUser } from "@clerk/react";
-import { Navigate, createFileRoute } from "@tanstack/react-router";
+import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FolderOpen, Sparkles } from "lucide-react";
 import { useEffect } from "react";
 import { RepoInnerTabBar } from "@/components/RepoInnerTabBar";
@@ -99,7 +99,7 @@ function RepoEmptyState({ repo }: { repo: Repository }) {
 }
 
 function WelcomeState({ firstName }: { firstName: string | null }) {
-  const openNewProject = useUiStore((s) => s.openNewProjectModal);
+  const navigate = useNavigate();
   const openExisting = useOpenExistingFlow();
 
   return (
@@ -115,7 +115,7 @@ function WelcomeState({ firstName }: { firstName: string | null }) {
         <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             type="button"
-            onClick={openNewProject}
+            onClick={() => void navigate({ to: "/new-project" })}
             className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
             <div className="flex items-center gap-2 text-(--color-accent-400)">

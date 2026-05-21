@@ -1,4 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { useNavigate } from "@tanstack/react-router";
 import { FolderOpen, Sparkles, X } from "lucide-react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
@@ -6,7 +7,7 @@ import { useUiStore } from "@/lib/store";
 
 /**
  * Two-choice picker that fans out the sidebar's single "Add repository"
- * footer button. "New project" → opens the NewProjectWizard.
+ * footer button. "New project" → navigates to /new-project (center pane).
  * "Open existing" → fires the native folder picker inline via
  * `useOpenExistingFlow`.
  *
@@ -15,12 +16,12 @@ import { useUiStore } from "@/lib/store";
 export function AddRepositoryPickerModal() {
   const open = useUiStore((s) => s.addRepositoryPickerOpen);
   const close = useUiStore((s) => s.closeAddRepositoryPicker);
-  const openNewProject = useUiStore((s) => s.openNewProjectModal);
+  const navigate = useNavigate();
   const openExistingFlow = useOpenExistingFlow();
 
   const onNewProject = () => {
     close();
-    openNewProject();
+    void navigate({ to: "/new-project" });
   };
   const onOpenExisting = () => {
     close();

@@ -7,7 +7,6 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
 import { CommandPalette } from "@/components/CommandPalette";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
-import { NewProjectWizard } from "@/components/NewProjectWizard";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { RenameWorkspaceModal } from "@/components/RenameWorkspaceModal";
 import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
@@ -151,7 +150,6 @@ function AppShell() {
         </main>
       </div>
       <CommandPalette />
-      <NewProjectWizard />
       <NewTaskModal />
       <RenameWorkspaceModal />
       <AddRepositoryPickerModal />

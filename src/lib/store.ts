@@ -111,10 +111,6 @@ interface UiState {
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
 
-  /** New-project wizard modal — single instance mounted at the app shell. */
-  newProjectModalOpen: boolean;
-  openNewProjectModal: () => void;
-  closeNewProjectModal: () => void;
 
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
@@ -231,10 +227,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       window.localStorage.setItem(RIGHT_PANEL_KEY, collapsed ? "collapsed" : "expanded");
     set({ rightPanelCollapsed: collapsed });
   },
-
-  newProjectModalOpen: false,
-  openNewProjectModal: () => set({ newProjectModalOpen: true }),
-  closeNewProjectModal: () => set({ newProjectModalOpen: false }),
 
   pendingGitInitRepoId: null,
   requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),
