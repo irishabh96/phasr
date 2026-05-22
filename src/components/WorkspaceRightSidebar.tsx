@@ -62,16 +62,22 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex h-7 items-center gap-1.5 rounded-[6px] px-2 text-[11px] font-medium uppercase tracking-[0.08em]",
+        "relative flex h-7 items-center gap-1.5 px-2 text-[12px]",
         "transition-colors duration-100",
         active
-          ? "bg-(--color-bg-active) text-(--color-text-primary)"
-          : "text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)",
+          ? "font-medium text-(--color-text-primary)"
+          : "text-(--color-text-muted) hover:text-(--color-text-secondary)",
       )}
     >
       <span>{label}</span>
       {typeof count === "number" && count > 0 && (
         <span className="text-(--color-text-secondary)">{count}</span>
+      )}
+      {active && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-accent-500)"
+        />
       )}
     </button>
   );

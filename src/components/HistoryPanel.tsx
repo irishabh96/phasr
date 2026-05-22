@@ -47,7 +47,7 @@ export function HistoryPanel({ workspaceId }: HistoryPanelProps) {
         </div>
         <div className="flex items-center gap-1">
           <ScopeToggle
-            label="Branch only"
+            label="Branch"
             active={branchOnly}
             onClick={() => setBranchOnly(true)}
           />
@@ -117,11 +117,11 @@ function ScopeToggle({
       type="button"
       onClick={onClick}
       className={cn(
-        "h-6 rounded-[6px] px-2 text-[10.5px] font-medium uppercase tracking-[0.08em]",
+        "h-6 rounded-[6px] border px-2 text-[11.5px]",
         "transition-colors duration-100",
         active
-          ? "bg-(--color-bg-active) text-(--color-text-primary)"
-          : "text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)",
+          ? "border-[color-mix(in_oklab,var(--color-accent-500)_45%,transparent)] bg-[color-mix(in_oklab,var(--color-accent-500)_18%,transparent)] font-medium text-(--color-accent-500)"
+          : "border-transparent text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)",
       )}
     >
       {label}
