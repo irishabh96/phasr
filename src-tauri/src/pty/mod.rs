@@ -18,6 +18,7 @@
 
 pub mod handle;
 mod runtime;
+mod shell;
 
 pub use handle::PtyEvent;
 pub use runtime::TaskRuntime;

@@ -104,6 +104,8 @@ export const tauri = {
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
   startSessionTerminal: (cwd: string, onEvent: Channel<PtyEvent>, rows?: number, cols?: number) =>
     invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
+  attachSessionTerminal: (sessionId: string, onEvent: Channel<PtyEvent>) =>
+    invoke<void>("attach_session_terminal", { sessionId, onEvent }),
   sendSessionInput: (sessionId: string, data: string) =>
     invoke<void>("send_session_input", { sessionId, data }),
   resizeSession: (sessionId: string, rows: number, cols: number) =>

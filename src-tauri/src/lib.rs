@@ -201,6 +201,7 @@ pub fn run() {
             commands::run_commands::send_run_command_input,
             commands::run_commands::resize_run_command,
             commands::session_terminal::start_session_terminal,
+            commands::session_terminal::attach_session_terminal,
             commands::session_terminal::send_session_input,
             commands::session_terminal::resize_session,
             commands::session_terminal::stop_session_terminal,

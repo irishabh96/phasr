@@ -181,7 +181,8 @@ pub async fn start_run_command(
 
     // Idempotent: re-attach to an already-running PTY.
     if let Some(handle) = runtime.get(&key) {
-        forward(handle.subscribe(), on_event, runtime.inner().clone(), key);
+        let (replay, rx) = handle.subscribe_with_replay();
+        forward(replay, rx, on_event, runtime.inner().clone(), key);
         return Ok(());
     }
 
@@ -200,7 +201,8 @@ pub async fn start_run_command(
         rows.unwrap_or(24),
         cols.unwrap_or(80),
     )?;
-    forward(handle.subscribe(), on_event, runtime.inner().clone(), key);
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event, runtime.inner().clone(), key);
     Ok(())
 }
 
@@ -251,12 +253,16 @@ pub async fn resize_run_command(
 }
 
 fn forward(
+    replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
     runtime: Arc<TaskRuntime>,
     key: String,
 ) {
     tauri::async_runtime::spawn(async move {
+        for event in replay {
+            let _ = channel.send(event);
+        }
         loop {
             match rx.recv().await {
                 Ok(event) => {

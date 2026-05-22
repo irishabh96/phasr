@@ -2841,6 +2841,7 @@ dependencies = [
  "bytes",
  "chrono",
  "jsonwebtoken",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "objc2",

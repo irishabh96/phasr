@@ -8,9 +8,17 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
+use super::shell;
+
+const REPLAY_BUFFER_BYTES: usize = 128 * 1024;
+
 /// Event emitted by a running PTY task.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PtyEvent {
     /// A chunk of stdout/stderr output (PTYs merge them).
     Output {
@@ -81,11 +89,16 @@ pub struct PtyHandle {
     /// through that mutex.
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     tx: broadcast::Sender<PtyEvent>,
+    replay: Arc<Mutex<ReplayBuffer>>,
 }
 
 impl PtyHandle {
-    /// Spawns an **interactive login shell** (`$SHELL -i -l`) inside the
-    /// PTY. If `initial_command` is set, it's typed into the shell after
+    /// Spawns an interactive shell inside the PTY. Known user shells are
+    /// launched as login shells so their normal terminal rc/history setup
+    /// matches Terminal.app, iTerm, and Warp. If login launch fails, spawn
+    /// retries with progressively more conservative fallbacks.
+    ///
+    /// If `initial_command` is set, it's typed into the shell after
     /// a brief delay (so the shell has time to print its prompt). The
     /// shell keeps running after the command finishes — the user can
     /// then run any other command (`ls`, `git status`, etc.) just like
@@ -112,28 +125,41 @@ impl PtyHandle {
             })
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        let mut cmd = CommandBuilder::new(&shell);
-        // No flags — shells (zsh, bash, fish) auto-detect a TTY on stdin
-        // and go interactive. Skipping `-l` avoids login-shell rc files
-        // that sometimes contain non-idempotent setup.
-        cmd.cwd(&cwd);
-
-        // Hint to prompts that this is a colour-capable TTY.
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-
-        // Keep the user's PATH and HOME — agents need them.
-        for (key, value) in std::env::vars_os() {
-            if key != "TERM" && key != "COLORTERM" {
+        let resolved_shell = shell::resolve_shell();
+        let mut spawn_errors = Vec::new();
+        let mut child = None;
+        for launch in shell::spawn_candidates(&resolved_shell) {
+            let mut cmd = CommandBuilder::new(&launch.shell);
+            for arg in &launch.args {
+                cmd.arg(arg);
+            }
+            cmd.cwd(&cwd);
+            for (key, value) in shell::terminal_env(&launch.shell) {
                 cmd.env(key, value);
+            }
+
+            match pty_pair.slave.spawn_command(cmd) {
+                Ok(spawned) => {
+                    child = Some(spawned);
+                    break;
+                }
+                Err(err) => {
+                    spawn_errors.push(format!(
+                        "{} {}: {}",
+                        launch.shell,
+                        launch.args.join(" "),
+                        err
+                    ));
+                }
             }
         }
 
-        let child = pty_pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| PtyError::Pty(e.to_string()))?;
+        let child = child.ok_or_else(|| {
+            PtyError::Pty(format!(
+                "failed to spawn shell; attempted {}",
+                spawn_errors.join("; ")
+            ))
+        })?;
         // Grab a kill handle BEFORE handing the child off to the
         // wait-thread mutex. The waiter parks on `wait()` while
         // holding the mutex; without this, `kill()` would deadlock.
@@ -160,6 +186,7 @@ impl PtyHandle {
             writer,
             killer: Mutex::new(killer),
             tx: tx.clone(),
+            replay: Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES))),
         });
 
         // Schedule the agent command + optional prompt as keystrokes
@@ -206,9 +233,18 @@ impl PtyHandle {
         // reader is sync and would block the async runtime.
         let task_id_for_thread = task_id.clone();
         let tx_for_thread = tx.clone();
+        let replay_for_thread = handle.replay.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-{task_id_for_thread}"))
-            .spawn(move || pump_pty_output(task_id_for_thread, reader, log_file, tx_for_thread))
+            .spawn(move || {
+                pump_pty_output(
+                    task_id_for_thread,
+                    reader,
+                    log_file,
+                    tx_for_thread,
+                    replay_for_thread,
+                )
+            })
             .map_err(PtyError::from)?;
 
         // Spawn a waiter thread that reports the exit code.
@@ -234,6 +270,12 @@ impl PtyHandle {
 
     pub fn subscribe(&self) -> broadcast::Receiver<PtyEvent> {
         self.tx.subscribe()
+    }
+
+    pub fn subscribe_with_replay(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
+        let rx = self.tx.subscribe();
+        let replay = self.replay.lock().snapshot();
+        (replay, rx)
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
@@ -276,6 +318,7 @@ fn pump_pty_output(
     mut reader: Box<dyn Read + Send>,
     mut log_file: std::fs::File,
     tx: broadcast::Sender<PtyEvent>,
+    replay: Arc<Mutex<ReplayBuffer>>,
 ) {
     let mut buf = [0u8; 4096];
     // Holds the trailing bytes of an incomplete UTF-8 codepoint from the
@@ -288,10 +331,12 @@ fn pump_pty_output(
             Ok(0) => {
                 if !pending.is_empty() {
                     let chunk = String::from_utf8_lossy(&pending).into_owned();
-                    let _ = tx.send(PtyEvent::Output {
+                    let event = PtyEvent::Output {
                         task_id: task_id.clone(),
                         chunk,
-                    });
+                    };
+                    replay.lock().push(event.clone());
+                    let _ = tx.send(event);
                     pending.clear();
                 }
                 break;
@@ -314,15 +359,57 @@ fn pump_pty_output(
                 if !chunk.is_empty() {
                     // If no subscribers, the send fails — that's fine, we still
                     // wrote to the log.
-                    let _ = tx.send(PtyEvent::Output {
+                    let event = PtyEvent::Output {
                         task_id: task_id.clone(),
                         chunk,
-                    });
+                    };
+                    replay.lock().push(event.clone());
+                    let _ = tx.send(event);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
+    }
+}
+
+#[derive(Debug)]
+struct ReplayBuffer {
+    cap_bytes: usize,
+    bytes: usize,
+    events: std::collections::VecDeque<PtyEvent>,
+}
+
+impl ReplayBuffer {
+    fn new(cap_bytes: usize) -> Self {
+        Self {
+            cap_bytes,
+            bytes: 0,
+            events: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn push(&mut self, event: PtyEvent) {
+        let event_bytes = match &event {
+            PtyEvent::Output { chunk, .. } => chunk.len(),
+            PtyEvent::Exit { .. } => 0,
+        };
+        self.bytes += event_bytes;
+        self.events.push_back(event);
+
+        while self.bytes > self.cap_bytes {
+            let Some(head) = self.events.pop_front() else {
+                self.bytes = 0;
+                break;
+            };
+            if let PtyEvent::Output { chunk, .. } = head {
+                self.bytes = self.bytes.saturating_sub(chunk.len());
+            }
+        }
+    }
+
+    fn snapshot(&self) -> Vec<PtyEvent> {
+        self.events.iter().cloned().collect()
     }
 }
 
