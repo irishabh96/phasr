@@ -1,5 +1,6 @@
 import { Search } from "lucide-react";
 import { useState } from "react";
+import { CommitCard } from "@/components/CommitCard";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { useGitLog } from "@/lib/hooks/useGit";
@@ -79,21 +80,8 @@ export function HistoryPanel({ workspaceId }: HistoryPanelProps) {
 
         <ul className="flex flex-col gap-1.5">
           {commits.map((c) => (
-            <li
-              key={c.sha}
-              className="rounded-md border border-(--color-border-default) bg-(--color-bg-surface) px-2.5 py-2"
-            >
-              <div className="flex items-baseline gap-2">
-                <code className="font-mono text-[10.5px] text-(--color-text-muted)">
-                  {c.shortSha}
-                </code>
-                <span className="min-w-0 flex-1 truncate text-[12px] text-(--color-text-primary)">
-                  {c.subject}
-                </span>
-              </div>
-              <p className="mt-0.5 text-[10.5px] text-(--color-text-muted)">
-                {c.authorName} • {formatRelative(c.authorDate)}
-              </p>
+            <li key={c.sha}>
+              <CommitCard workspaceId={workspaceId} commit={c} />
             </li>
           ))}
         </ul>
@@ -141,18 +129,3 @@ function ScopeToggle({
   );
 }
 
-function formatRelative(iso: string): string {
-  const date = Date.parse(iso);
-  if (Number.isNaN(date)) return iso;
-  const seconds = Math.floor((Date.now() - date) / 1000);
-  if (seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
-  if (seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)}d ago`;
-  const d = new Date(date);
-  return d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
-  });
-}
