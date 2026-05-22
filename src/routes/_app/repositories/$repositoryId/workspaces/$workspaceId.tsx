@@ -4,6 +4,7 @@ import { PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { BranchChip } from "@/components/BranchChip";
 import { OpenInMenu } from "@/components/OpenInMenu";
+import { PinnedRunCommandsToolbar } from "@/components/PinnedRunCommandsToolbar";
 import { SyncButton } from "@/components/SyncButton";
 import { WorkspaceRightSidebar } from "@/components/WorkspaceRightSidebar";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
@@ -65,6 +66,7 @@ function WorkspaceDetail() {
         </div>
         <WorkspaceInnerTabBar workspaceId={workspaceId} />
         <div className="flex shrink-0 items-center gap-1">
+          <PinnedRunCommandsToolbar repositoryId={repositoryId} />
           <RunCommandPicker repositoryId={repositoryId} />
           {workspace.worktreePath && <SyncButton workspaceId={workspaceId} />}
           {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
