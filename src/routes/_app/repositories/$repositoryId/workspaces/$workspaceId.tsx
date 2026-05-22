@@ -13,6 +13,7 @@ import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
 import { useGitStatus } from "@/lib/hooks/useGit";
+import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,8 @@ function WorkspaceDetail() {
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
   const setActiveWorkspaceContext = useUiStore((s) => s.setActiveWorkspaceContext);
   const ensureInnerTabs = useUiStore((s) => s.ensureInnerTabs);
+  const runPanel = useUiStore((s) => s.runPanel);
+  const { data: runCommands } = useRunCommands(repositoryId);
   const queryClient = useQueryClient();
 
   // Publish the active workspace context so global hotkeys (⌘T/⌘N/⌘W/⌘P)
@@ -40,6 +43,33 @@ function WorkspaceDetail() {
     if (!workspace) return;
     ensureInnerTabs(workspaceId, workspace.command || workspace.name || "Main");
   }, [workspace, workspaceId, ensureInnerTabs]);
+
+  // Global ⌘1..⌘9 dispatcher for pinned run commands. We bind here
+  // (per workspace route mount) so the keys only fire while a
+  // workspace is active. Keys land on the Nth pinned command in
+  // sort_order; the PinnedRunCommandsToolbar chips show the same
+  // mapping. Bails when focused inside a text input so ⌘1 in a
+  // textarea reaches the textarea instead of stealing.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      const digit = parsePositiveDigit(e.key);
+      if (digit === null) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+      if (target?.isContentEditable) return;
+      const pinned = [...(runCommands ?? [])]
+        .filter((c) => c.pinned)
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+      const target_rc = pinned[digit - 1];
+      if (!target_rc) return;
+      e.preventDefault();
+      runPanel.openTab(target_rc.id);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [runCommands, runPanel]);
 
   const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["workspaces", "detail", workspaceId] });
@@ -144,6 +174,12 @@ function ChangesToggle({
       )}
     </button>
   );
+}
+
+function parsePositiveDigit(key: string): number | null {
+  if (key.length !== 1) return null;
+  const n = key.charCodeAt(0) - "0".charCodeAt(0);
+  return n >= 1 && n <= 9 ? n : null;
 }
 
 export const Route = createFileRoute(

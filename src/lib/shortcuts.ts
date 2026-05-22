@@ -114,6 +114,11 @@ export const SHORTCUTS = {
     display: ["⌘", "⇧", "↵"],
     label: "Commit & push",
   },
+
+  // ⌘1..⌘9 — dynamic bindings to pinned run commands (in sort_order).
+  // Not in this registry because the target ID varies per repository;
+  // the dispatcher lives in the workspace route at
+  // `routes/_app/repositories/$repositoryId/workspaces/$workspaceId.tsx`.
 } as const satisfies Record<string, Shortcut>;
 
 export type ShortcutId = keyof typeof SHORTCUTS;
