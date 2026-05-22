@@ -75,8 +75,8 @@ pub async fn start_workspace(
     let workspace = workspaces.get(&workspace_id).await?;
 
     if let Some(handle) = runtime.get(&workspace_id) {
-        let rx = handle.subscribe();
-        spawn_event_forwarder(rx, on_event, workspace_id.clone(), None, None, None);
+        let (replay, rx) = handle.subscribe_with_replay();
+        spawn_event_forwarder(replay, rx, on_event, workspace_id.clone(), None, None, None);
         return Ok(RunningWorkspaceInfo {
             workspace_id,
             started_at: workspace.started_at.unwrap_or_else(Utc::now),
@@ -149,8 +149,9 @@ pub async fn start_workspace(
         cols.unwrap_or(80),
     )?;
 
-    let rx = handle.subscribe();
+    let (replay, rx) = handle.subscribe_with_replay();
     spawn_event_forwarder(
+        replay,
         rx,
         on_event,
         workspace_id.clone(),
@@ -166,6 +167,7 @@ pub async fn start_workspace(
 }
 
 fn spawn_event_forwarder(
+    replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
     workspace_id: String,
@@ -174,6 +176,9 @@ fn spawn_event_forwarder(
     app: Option<AppHandle>,
 ) {
     tauri::async_runtime::spawn(async move {
+        for event in replay {
+            let _ = channel.send(event);
+        }
         loop {
             match rx.recv().await {
                 Ok(event) => {

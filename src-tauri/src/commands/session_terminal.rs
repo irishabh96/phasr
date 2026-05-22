@@ -62,8 +62,26 @@ pub async fn start_session_terminal(
         cols.unwrap_or(80),
     )?;
 
-    forward(handle.subscribe(), on_event, runtime.inner().clone(), key);
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event, runtime.inner().clone(), key);
     Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn attach_session_terminal(
+    session_id: String,
+    on_event: Channel<PtyEvent>,
+    runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), SessionTerminalError> {
+    session.require()?;
+    let key = pty_id(&session_id);
+    let handle = runtime
+        .get(&key)
+        .ok_or_else(|| SessionTerminalError::NotRunning(session_id.clone()))?;
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event, runtime.inner().clone(), key);
+    Ok(())
 }
 
 #[tauri::command]
@@ -113,12 +131,16 @@ pub async fn stop_session_terminal(
 }
 
 fn forward(
+    replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
     runtime: Arc<TaskRuntime>,
     key: String,
 ) {
     tauri::async_runtime::spawn(async move {
+        for event in replay {
+            let _ = channel.send(event);
+        }
         loop {
             match rx.recv().await {
                 Ok(event) => {

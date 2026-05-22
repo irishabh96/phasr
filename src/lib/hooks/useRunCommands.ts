@@ -17,6 +17,7 @@ export function useRunCommands(repositoryId: string | null | undefined) {
 export function useCreateRunCommand(repositoryId: string) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["mirror", "createRunCommand"],
     mutationFn: (input: Omit<Parameters<typeof tauri.createRunCommand>[0], "repositoryId">) =>
       tauri.createRunCommand({ ...input, repositoryId }),
     onSuccess: () =>
@@ -27,6 +28,7 @@ export function useCreateRunCommand(repositoryId: string) {
 export function useUpdateRunCommand(repositoryId: string) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["mirror", "updateRunCommand"],
     mutationFn: ({
       id,
       input,
@@ -42,6 +44,7 @@ export function useUpdateRunCommand(repositoryId: string) {
 export function useDeleteRunCommand(repositoryId: string) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["mirror", "deleteRunCommand"],
     mutationFn: (id: string) => tauri.deleteRunCommand(id),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: runCommandKeys.byRepository(repositoryId) }),

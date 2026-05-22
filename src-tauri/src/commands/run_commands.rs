@@ -15,9 +15,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::auth::{AuthError, SessionState};
 use crate::domain::RunCommand;
 use crate::pty::{PtyEvent, TaskRuntime};
-use crate::store::{
-    RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError,
-};
+use crate::store::{RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError};
 
 /// Prefix every running PTY id with this so they never collide with
 /// workspace UUIDs in the `TaskRuntime` map.
@@ -65,6 +63,20 @@ pub struct UpdateRunCommandInput {
     pub shortcut: Option<String>,
     pub pinned: Option<bool>,
     pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudRunCommandInput {
+    pub id: String,
+    pub repository_id: String,
+    pub name: String,
+    pub command: String,
+    pub shortcut: Option<String>,
+    pub pinned: bool,
+    pub sort_order: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 // ── CRUD ─────────────────────────────────────────────────────────────
@@ -129,6 +141,27 @@ pub async fn delete_run_command(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn upsert_run_command_from_cloud(
+    input: CloudRunCommandInput,
+    repo: State<'_, RunCommandRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<RunCommand, RunCommandError> {
+    session.require()?;
+    let rc = RunCommand {
+        id: input.id,
+        repository_id: input.repository_id,
+        name: input.name,
+        command: input.command,
+        shortcut: input.shortcut,
+        pinned: input.pinned,
+        sort_order: input.sort_order,
+        created_at: input.created_at,
+        updated_at: input.updated_at,
+    };
+    Ok(repo.upsert_from_cloud(&rc).await?)
+}
+
 // ── Runtime ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -148,7 +181,8 @@ pub async fn start_run_command(
 
     // Idempotent: re-attach to an already-running PTY.
     if let Some(handle) = runtime.get(&key) {
-        forward(handle.subscribe(), on_event, runtime.inner().clone(), key);
+        let (replay, rx) = handle.subscribe_with_replay();
+        forward(replay, rx, on_event, runtime.inner().clone(), key);
         return Ok(());
     }
 
@@ -167,7 +201,8 @@ pub async fn start_run_command(
         rows.unwrap_or(24),
         cols.unwrap_or(80),
     )?;
-    forward(handle.subscribe(), on_event, runtime.inner().clone(), key);
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event, runtime.inner().clone(), key);
     Ok(())
 }
 
@@ -218,12 +253,16 @@ pub async fn resize_run_command(
 }
 
 fn forward(
+    replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
     runtime: Arc<TaskRuntime>,
     key: String,
 ) {
     tauri::async_runtime::spawn(async move {
+        for event in replay {
+            let _ = channel.send(event);
+        }
         loop {
             match rx.recv().await {
                 Ok(event) => {

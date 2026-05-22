@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
@@ -45,17 +44,9 @@ impl serde::Serialize for AgentCmdError {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAgentInput {
-    pub name: String,
-    pub command: String,
-}
-
-/// Returns the merged agent list:
-///   1. Seeded rows present in the local `agents` table (re-inserted
-///      on boot with deterministic UUIDs).
-///   2. The user's custom agents.
+/// Returns built-in agents from the local `agents` table. Rows are
+/// re-inserted on boot with deterministic UUIDs so command edits and
+/// default state can persist locally.
 /// `is_enabled` is overlaid from `user_settings.disabled_agent_ids`.
 #[tauri::command]
 pub async fn list_agents(
@@ -64,8 +55,7 @@ pub async fn list_agents(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<Agent>, AgentCmdError> {
     session.require()?;
-    // Seeds are read straight from the DB so command edits land
-    // immediately; custom agents come from the same table.
+    // Seeds are read straight from the DB so command edits land immediately.
     let mut all = agents.list_all().await?;
 
     let user_settings = settings.get_or_init().await?;
@@ -120,28 +110,5 @@ pub async fn set_agent_default(
 ) -> Result<(), AgentCmdError> {
     session.require()?;
     repo.set_default(&id).await?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn create_custom_agent(
-    input: CreateAgentInput,
-    repo: State<'_, AgentRepo>,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<Agent, AgentCmdError> {
-    session.require()?;
-    let agent = Agent::new_custom(input.name, input.command);
-    repo.insert(&agent).await?;
-    Ok(agent)
-}
-
-#[tauri::command]
-pub async fn delete_agent(
-    id: String,
-    repo: State<'_, AgentRepo>,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<(), AgentCmdError> {
-    session.require()?;
-    repo.delete(&id).await?;
     Ok(())
 }

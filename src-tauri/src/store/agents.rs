@@ -1,6 +1,5 @@
-//! Custom (user-defined) agents. Seeded agents are NOT in this table —
-//! they're hardcoded in `domain::agent`. Per-user enabled state lives
-//! in `user_settings.disabled_agent_ids`.
+//! Built-in agents with persisted local command/default overrides.
+//! Per-user enabled state lives in `user_settings.disabled_agent_ids`.
 
 use chrono::{DateTime, Utc};
 use sqlx::Row;
@@ -20,6 +19,7 @@ impl AgentRepo {
         Self { db }
     }
 
+    #[cfg(test)]
     pub async fn insert(&self, agent: &Agent) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO agents (
@@ -63,9 +63,8 @@ impl AgentRepo {
             .take(live_ids.len())
             .collect::<Vec<_>>()
             .join(",");
-        let delete_sql = format!(
-            "DELETE FROM agents WHERE is_seed = 1 AND id NOT IN ({placeholders})"
-        );
+        let delete_sql =
+            format!("DELETE FROM agents WHERE is_seed = 1 AND id NOT IN ({placeholders})");
         let mut q = sqlx::query(&delete_sql);
         for id in &live_ids {
             q = q.bind(id);
@@ -97,17 +96,16 @@ impl AgentRepo {
         Ok(())
     }
 
-    /// Set the command of a seed agent (creates a per-install override
-    /// row tied to the deterministic seed UUID) or a custom agent.
+    /// Set the command of a built-in agent row tied to its deterministic
+    /// seed UUID.
     pub async fn set_command(&self, id: &str, command: &str) -> Result<(), StoreError> {
-        let res = sqlx::query(
-            "UPDATE agents SET command = ?, updated_at = ?, dirty = 1 WHERE id = ?",
-        )
-        .bind(command)
-        .bind(Utc::now().to_rfc3339())
-        .bind(id)
-        .execute(&self.db)
-        .await?;
+        let res =
+            sqlx::query("UPDATE agents SET command = ?, updated_at = ?, dirty = 1 WHERE id = ?")
+                .bind(command)
+                .bind(Utc::now().to_rfc3339())
+                .bind(id)
+                .execute(&self.db)
+                .await?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound);
         }
@@ -123,13 +121,12 @@ impl AgentRepo {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
-        let res = sqlx::query(
-            "UPDATE agents SET is_default = 1, updated_at = ?, dirty = 1 WHERE id = ?",
-        )
-        .bind(&now)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+        let res =
+            sqlx::query("UPDATE agents SET is_default = 1, updated_at = ?, dirty = 1 WHERE id = ?")
+                .bind(&now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
         if res.rows_affected() == 0 {
             tx.rollback().await?;
             return Err(StoreError::NotFound);
@@ -138,23 +135,13 @@ impl AgentRepo {
         Ok(())
     }
 
-    pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        let res = sqlx::query("DELETE FROM agents WHERE id = ?")
-            .bind(id)
-            .execute(&self.db)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
-    }
-
-    /// Returns every agent row (seeds + customs) ordered for display.
+    /// Returns built-in agent rows ordered for display.
     pub async fn list_all(&self) -> Result<Vec<Agent>, StoreError> {
         let rows = sqlx::query(
             "SELECT id, name, command, icon, is_default, is_enabled, is_seed, sort_order,
                     created_at, updated_at
              FROM agents
+             WHERE is_seed = 1
              ORDER BY is_seed DESC, sort_order ASC, name ASC",
         )
         .fetch_all(&self.db)
@@ -210,10 +197,22 @@ mod tests {
     #[tokio::test]
     async fn insert_and_list_all() {
         let repo = fresh().await;
-        let agent = Agent::new_custom("My GPT-4", "chat-cli -m gpt-4");
+        let agent = Agent::seeded().remove(0);
         repo.insert(&agent).await.unwrap();
         let list = repo.list_all().await.unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].name, "My GPT-4");
+        assert_eq!(list[0].name, "Claude");
+    }
+
+    #[tokio::test]
+    async fn list_all_filters_non_seed_rows() {
+        let repo = fresh().await;
+        let mut custom = Agent::seeded().remove(0);
+        custom.id = "custom-agent".into();
+        custom.name = "Custom".into();
+        custom.is_seed = false;
+        repo.insert(&custom).await.unwrap();
+
+        assert!(repo.list_all().await.unwrap().is_empty());
     }
 }
