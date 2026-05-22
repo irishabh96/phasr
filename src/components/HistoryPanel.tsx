@@ -117,14 +117,20 @@ function ScopeToggle({
       type="button"
       onClick={onClick}
       className={cn(
-        "h-6 rounded-[6px] border px-2 text-[11.5px]",
+        "relative h-6 px-2 text-[11.5px]",
         "transition-colors duration-100",
         active
-          ? "border-[color-mix(in_oklab,var(--color-accent-500)_45%,transparent)] bg-[color-mix(in_oklab,var(--color-accent-500)_18%,transparent)] font-medium text-(--color-accent-500)"
-          : "border-transparent text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)",
+          ? "font-medium text-(--color-text-primary)"
+          : "text-(--color-text-muted) hover:text-(--color-text-secondary)",
       )}
     >
       {label}
+      {active && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-accent-500)"
+        />
+      )}
     </button>
   );
 }
