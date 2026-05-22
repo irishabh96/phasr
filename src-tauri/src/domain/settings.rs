@@ -15,8 +15,7 @@ pub struct UserSettings {
     pub default_editor: String,
     pub default_terminal: String,
     pub default_agent_id: Option<String>,
-    /// JSON-encoded array of agent IDs the user has turned off
-    /// (applies to both hardcoded seeds and custom agents).
+    /// JSON-encoded array of built-in agent IDs the user has turned off.
     pub disabled_agent_ids: String,
     /// Stored as a JSON-encoded string in the database. Frontend parses it.
     pub keyboard_shortcuts: String,

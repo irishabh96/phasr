@@ -4,23 +4,25 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { useEffect, useMemo, useRef } from "react";
 import {
   deleteRepositoryFromCloud,
+  deleteRunCommandFromCloud,
   deleteWorkspaceFromCloud,
-  pullCustomAgents,
   pullRepositories,
+  pullRunCommands,
   pullUserSettings,
   pullWorkspaces,
-  pushCustomAgents,
   pushMissingRepositories,
+  pushMissingRunCommands,
   pushMissingWorkspaces,
   pushPendingRepositoryDeletes,
   pushRepository,
+  pushRunCommand,
   pushUserSettings,
   pushWorkspace,
 } from "@/lib/cloud";
 import { isClerkConfigured } from "@/lib/clerk";
 import { createPhasrSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { tauri } from "@/lib/tauri";
-import type { Repository, UserSettings, Workspace } from "@/lib/types";
+import type { Repository, RunCommand, UserSettings, Workspace } from "@/lib/types";
 
 const DEBUG = true;
 const log = (...args: unknown[]) => {
@@ -76,14 +78,11 @@ function useCloudSyncInner() {
         log("bootstrap: pulling repositories");
         const cloudRepoIds = await pullRepositories(supabase);
         if (cancelled) return;
-        log("bootstrap: pulling custom agents");
-        await pullCustomAgents(supabase);
-        if (cancelled) return;
         log("bootstrap: pulling workspaces");
         await pullWorkspaces(supabase);
         if (cancelled) return;
-        log("bootstrap: pushing custom agents");
-        await pushCustomAgents(supabase, userId);
+        log("bootstrap: pulling run commands");
+        await pullRunCommands(supabase);
         if (cancelled) return;
         log("bootstrap: syncing user settings");
         await pullUserSettings(supabase);
@@ -94,8 +93,12 @@ function useCloudSyncInner() {
         log("bootstrap: pushing local-only workspaces");
         await pushMissingWorkspaces(supabase, userId);
         if (cancelled) return;
+        log("bootstrap: pushing local-only/newer run commands");
+        await pushMissingRunCommands(supabase, userId);
+        if (cancelled) return;
         queryClient.invalidateQueries({ queryKey: ["repositories"] });
         queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+        queryClient.invalidateQueries({ queryKey: ["runCommands"] });
         queryClient.invalidateQueries({ queryKey: ["agents"] });
         log("bootstrap complete");
       } catch (err) {
@@ -212,6 +215,22 @@ function useCloudSyncInner() {
       )
       .on(
         "postgres_changes",
+        { event: "*", schema: "public", table: "run_commands", filter: `user_id=eq.${userId}` },
+        async (payload) => {
+          log("realtime run command", payload.eventType);
+          if (payload.eventType === "DELETE") {
+            const id = (payload.old as { id?: string } | null)?.id;
+            if (id) {
+              await tauri.deleteRunCommand(id).catch(() => {});
+            }
+          } else {
+            await pullRunCommands(supabase).catch(() => {});
+          }
+          queryClient.invalidateQueries({ queryKey: ["runCommands"] });
+        },
+      )
+      .on(
+        "postgres_changes",
         { event: "*", schema: "public", table: "user_settings", filter: `user_id=eq.${userId}` },
         async () => {
           log("realtime user_settings");
@@ -265,6 +284,18 @@ const HANDLERS: Record<string, MirrorHandler> = {
     if (!variables || typeof variables !== "object" || !("id" in variables)) return;
     const id = (variables as { id: string }).id;
     await deleteWorkspaceFromCloud(sb, id);
+  },
+  createRunCommand: async (sb, userId, data) => {
+    if (!data) return;
+    await pushRunCommand(sb, userId, data as RunCommand);
+  },
+  updateRunCommand: async (sb, userId, data) => {
+    if (!data) return;
+    await pushRunCommand(sb, userId, data as RunCommand);
+  },
+  deleteRunCommand: async (sb, _userId, _data, variables) => {
+    if (typeof variables !== "string") return;
+    await deleteRunCommandFromCloud(sb, variables);
   },
   updateUserSettings: async (sb, userId, data) => {
     if (!data) return;

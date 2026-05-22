@@ -137,8 +137,11 @@ impl TaskOrchestrator {
         let agent_command = self.resolve_agent_command(&request.agent_id).await?;
         let interpolated = interpolate_for_task(&agent_command, request.prompt.as_deref());
 
-        let mut workspace =
-            Workspace::new(request.repository_id.clone(), request.name, interpolated.clone());
+        let mut workspace = Workspace::new(
+            request.repository_id.clone(),
+            request.name,
+            interpolated.clone(),
+        );
         workspace.prompt = request.prompt.clone();
         workspace.agent_id = Some(request.agent_id.clone());
 
@@ -226,7 +229,10 @@ impl TaskOrchestrator {
             tokio::time::sleep(SIGINT_GRACE).await;
             // If the runtime no longer tracks the task, the wait
             // thread already saw the child exit — nothing to do.
-            if runtime_for_escalation.get(&task_id_for_escalation).is_some() {
+            if runtime_for_escalation
+                .get(&task_id_for_escalation)
+                .is_some()
+            {
                 let _ = handle_for_escalation.kill();
             }
         });
@@ -262,18 +268,17 @@ impl TaskOrchestrator {
         Ok(())
     }
 
-    /// Resolve an agent id to its command template. Seeded agents are
-    /// hardcoded; custom agents come from `AgentRepo`.
+    /// Resolve a built-in agent id to its command template. Local rows
+    /// win so command overrides from Settings are honored.
     async fn resolve_agent_command(&self, agent_id: &str) -> Result<String, OrchestratorError> {
+        let all = self.agents.list_all().await?;
+        if let Some(agent) = all.into_iter().find(|a| a.id == agent_id) {
+            return Ok(agent.command);
+        }
         if let Some(agent) = Agent::seeded().into_iter().find(|a| a.id == agent_id) {
             return Ok(agent.command);
         }
-        // Custom agents live in the agents table.
-        let all = self.agents.list_all().await?;
-        all.into_iter()
-            .find(|a| a.id == agent_id)
-            .map(|a| a.command)
-            .ok_or_else(|| OrchestratorError::AgentNotFound(agent_id.to_string()))
+        Err(OrchestratorError::AgentNotFound(agent_id.to_string()))
     }
 
     fn broadcast_status(&self, event: TaskStatusEvent) {
@@ -287,12 +292,7 @@ impl TaskOrchestrator {
     /// exit on their own — they sit at a prompt waiting for input.
     /// This handler only fires on real process death: a crash, the
     /// user typing `exit`, or an explicit kill.
-    fn spawn_exit_watcher(
-        &self,
-        task_id: String,
-        repository_id: String,
-        handle: Arc<PtyHandle>,
-    ) {
+    fn spawn_exit_watcher(&self, task_id: String, repository_id: String, handle: Arc<PtyHandle>) {
         let mut rx = handle.subscribe();
         let workspaces = self.workspaces.clone();
         let runtime = self.runtime.clone();
@@ -503,8 +503,7 @@ mod tests {
         let agents = AgentRepo::new(pool);
         let log_dir = dir.path().join("logs");
         let runtime = Arc::new(TaskRuntime::new(log_dir));
-        let orchestrator =
-            TaskOrchestrator::new(workspaces, repositories.clone(), agents, runtime);
+        let orchestrator = TaskOrchestrator::new(workspaces, repositories.clone(), agents, runtime);
         (orchestrator, repositories, dir)
     }
 
@@ -554,12 +553,10 @@ mod tests {
         repo.default_branch = "main".into();
         repositories.insert(&repo).await.unwrap();
 
-        // Use a custom agent so we don't need the seed UUIDs. The
-        // command exits quickly so the exit watcher fires.
-        let agent = Agent::new_custom("echo-agent", "echo hello-phasr; exit");
+        // Override a built-in agent with a quick command so the exit watcher fires.
+        let mut agent = Agent::seeded().remove(0);
+        agent.command = "echo hello-phasr; exit".into();
         orchestrator.agents.insert(&agent).await.unwrap();
-        // ^ inside the same crate; `agents` is private but the test
-        //   module is a child of the file so direct field access is fine.
 
         let mut status_rx = orchestrator.subscribe_status();
 
@@ -640,10 +637,7 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            OrchestratorError::RepositoryHasNoLocalPath
-        ));
+        assert!(matches!(err, OrchestratorError::RepositoryHasNoLocalPath));
     }
 
     #[tokio::test]
@@ -671,4 +665,3 @@ mod tests {
         assert_eq!(out, r#"agent --p """#);
     }
 }
-

@@ -11,9 +11,9 @@ const AGENT_NAMESPACE: Uuid = Uuid::from_bytes([
 
 /// An AI tool/CLI that can be run as a workspace's command.
 ///
-/// Seeded agents (Claude, Codex, Copilot, …) live as hardcoded constants
-/// in the app with deterministic UUIDs — they are NOT stored in the
-/// `agents` table. The table only stores user-defined custom agents.
+/// Built-in agents (Claude, Codex, Copilot, …) have deterministic UUIDs
+/// and are mirrored into the local `agents` table so command overrides,
+/// default state, and sort order can persist.
 ///
 /// Per-user enabled state is in `user_settings.disabled_agent_ids`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,23 +32,6 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Creates a custom user agent (random UUID).
-    pub fn new_custom(name: impl Into<String>, command: impl Into<String>) -> Self {
-        let now = Utc::now();
-        Self {
-            id: Uuid::new_v4().to_string(),
-            name: name.into(),
-            command: command.into(),
-            icon: None,
-            is_default: false,
-            is_enabled: true,
-            is_seed: false,
-            sort_order: 0,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
     /// Hardcoded seed agents shipped with the app. UUIDs are stable
     /// (uuid_v5 of the agent name under AGENT_NAMESPACE), so the same
     /// "Claude" agent has the same id on every install.

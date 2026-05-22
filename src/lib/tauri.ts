@@ -139,9 +139,6 @@ export const tauri = {
   setAgentCommand: (id: string, command: string) =>
     invoke<void>("set_agent_command", { id, command }),
   setAgentDefault: (id: string) => invoke<void>("set_agent_default", { id }),
-  createCustomAgent: (input: { name: string; command: string }) =>
-    invoke<Agent>("create_custom_agent", { input }),
-  deleteAgent: (id: string) => invoke<void>("delete_agent", { id }),
 
   // ── settings ─────────────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),
@@ -219,6 +216,8 @@ export const tauri = {
     },
   ) => invoke<RunCommand>("update_run_command", { id, input }),
   deleteRunCommand: (id: string) => invoke<void>("delete_run_command", { id }),
+  upsertRunCommandFromCloud: (input: RunCommand) =>
+    invoke<RunCommand>("upsert_run_command_from_cloud", { input }),
   startRunCommand: (
     id: string,
     onEvent: Channel<PtyEvent>,

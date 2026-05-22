@@ -11,5 +11,10 @@ export {
   pushMissingWorkspaces,
   pushWorkspace,
 } from "./workspaces";
-export { pullCustomAgents, pushCustomAgents } from "./agents";
+export {
+  deleteRunCommandFromCloud,
+  pullRunCommands,
+  pushMissingRunCommands,
+  pushRunCommand,
+} from "./runCommands";
 export { pullUserSettings, pushUserSettings } from "./settings";

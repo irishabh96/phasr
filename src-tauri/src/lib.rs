@@ -81,9 +81,8 @@ pub fn run() {
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
             app.manage(task_runtime.clone());
 
-            let watch_registry = Arc::new(fswatch::WorktreeWatchRegistry::new(
-                app.handle().clone(),
-            ));
+            let watch_registry =
+                Arc::new(fswatch::WorktreeWatchRegistry::new(app.handle().clone()));
             app.manage(watch_registry.clone());
 
             let handle = app.handle().clone();
@@ -116,7 +115,10 @@ pub fn run() {
                         handle.manage(orchestrator);
                     }
                     Err(err) => {
-                        eprintln!("failed to initialize SQLite at {}: {err}", db_path.display());
+                        eprintln!(
+                            "failed to initialize SQLite at {}: {err}",
+                            db_path.display()
+                        );
                     }
                 }
             });
@@ -155,8 +157,6 @@ pub fn run() {
             commands::agents::set_agent_enabled,
             commands::agents::set_agent_command,
             commands::agents::set_agent_default,
-            commands::agents::create_custom_agent,
-            commands::agents::delete_agent,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
             commands::runtime::start_workspace,
@@ -195,6 +195,7 @@ pub fn run() {
             commands::run_commands::list_run_commands,
             commands::run_commands::update_run_command,
             commands::run_commands::delete_run_command,
+            commands::run_commands::upsert_run_command_from_cloud,
             commands::run_commands::start_run_command,
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,

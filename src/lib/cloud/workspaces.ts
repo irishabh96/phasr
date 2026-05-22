@@ -39,16 +39,9 @@ export async function pushWorkspace(
     console.warn("[cloud] pre-push repository failed (continuing)", err);
   }
 
-  // Resolve agent_id for cloud:
-  //   - Seeded agents have stable UUIDs that are identical on every
-  //     install (uuid_v5 of the agent name). They aren't stored in
-  //     the cloud `agents` table, so we drop the FK link and just
-  //     keep `agent_id` for display.
-  //   - Custom agents are user-created and DO live in the cloud
-  //     `agents` table — store their UUID and trust the FK.
-  // For now we send `null` since the FK doesn't allow seed UUIDs and
-  // we haven't yet wired the upsert path for custom-only customs.
-  // The workspace's `command` field already captures what to run.
+  // Seeded agents are local-only and are not stored in the cloud
+  // `agents` table, so cloud workspaces keep a null FK. The workspace's
+  // command snapshot still captures what to run.
   const cloudAgentIdForWorkspace: string | null = null;
 
   const { error } = await client.from("workspaces").upsert({
