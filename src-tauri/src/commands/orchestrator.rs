@@ -7,16 +7,18 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::SessionState;
 use crate::orchestrator::{
     OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
 };
+use crate::pty::PtyEvent;
 
 /// Tauri event name on which task status transitions are broadcast.
-/// Kept distinct from the legacy `phasr://workspace-status` name so
-/// the React side can migrate explicitly.
 pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
 
 #[derive(Debug, serde::Deserialize)]
@@ -33,6 +35,13 @@ pub struct StartTaskInput {
     pub rows: Option<u16>,
     #[serde(default)]
     pub cols: Option<u16>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningTaskInfo {
+    pub task_id: String,
+    pub started_at: DateTime<Utc>,
 }
 
 #[tauri::command]
@@ -65,6 +74,52 @@ pub async fn stop_task(
 }
 
 #[tauri::command]
+pub async fn open_task_terminal(
+    task_id: String,
+    on_event: Channel<PtyEvent>,
+    rows: Option<u16>,
+    cols: Option<u16>,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<RunningTaskInfo, OrchestratorError> {
+    session.require()?;
+    let sub = orchestrator
+        .open_terminal(&task_id, rows.unwrap_or(24), cols.unwrap_or(80))
+        .await?;
+    let info = RunningTaskInfo {
+        task_id: sub.task_id.clone(),
+        started_at: sub.started_at,
+    };
+    spawn_task_event_forwarder(sub.replay, sub.rx, on_event);
+    Ok(info)
+}
+
+fn spawn_task_event_forwarder(
+    replay: Vec<PtyEvent>,
+    mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
+    channel: Channel<PtyEvent>,
+) {
+    tauri::async_runtime::spawn(async move {
+        for event in replay {
+            let _ = channel.send(event);
+        }
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let is_exit = matches!(event, PtyEvent::Exit { .. });
+                    let _ = channel.send(event);
+                    if is_exit {
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+#[tauri::command]
 pub async fn send_input_to_task(
     task_id: String,
     data: String,
@@ -73,6 +128,38 @@ pub async fn send_input_to_task(
 ) -> Result<(), OrchestratorError> {
     session.require()?;
     orchestrator.send_input(&task_id, data.as_bytes())
+}
+
+#[tauri::command]
+pub async fn read_task_log(
+    task_id: String,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, OrchestratorError> {
+    session.require()?;
+    orchestrator.read_task_log(&task_id).await
+}
+
+#[tauri::command]
+pub async fn resize_task(
+    task_id: String,
+    rows: u16,
+    cols: u16,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), OrchestratorError> {
+    session.require()?;
+    orchestrator.resize_task(&task_id, rows, cols)
+}
+
+#[tauri::command]
+pub async fn interrupt_task(
+    task_id: String,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), OrchestratorError> {
+    session.require()?;
+    orchestrator.interrupt_task(&task_id)
 }
 
 /// Subscribe to the orchestrator's status broadcast and re-emit each

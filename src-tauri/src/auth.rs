@@ -431,7 +431,7 @@ pub fn current_user_id(state: State<'_, Arc<SessionState>>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{encode, EncodingKey, Header};
     use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::traits::PublicKeyParts;
@@ -625,7 +625,10 @@ mod tests {
         // For this test, assert that swapping iss in a claim after
         // signing breaks the signature (covers the "signature is tied to
         // claims" guarantee, which subsumes wrong-issuer tampering).
-        let tampered = tamper_iss(&keys.sign(&standard_claims("u", 60)), "https://evil.example.com");
+        let tampered = tamper_iss(
+            &keys.sign(&standard_claims("u", 60)),
+            "https://evil.example.com",
+        );
         let err = state.verify_jwt(&tampered).await.unwrap_err();
         assert!(matches!(err, AuthError::SignatureInvalid(_)), "got {err:?}");
     }
@@ -654,7 +657,10 @@ mod tests {
         // Verifying a token signed with kid-B should miss the cache and
         // trigger a refetch.
         let jwt_b = key_b.sign(&standard_claims("user_b", 60));
-        let claims = state.verify_jwt(&jwt_b).await.expect("verify B after refetch");
+        let claims = state
+            .verify_jwt(&jwt_b)
+            .await
+            .expect("verify B after refetch");
         assert_eq!(claims.sub, "user_b");
         assert_eq!(fetcher.call_count(), 2);
     }

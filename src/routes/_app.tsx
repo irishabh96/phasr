@@ -17,7 +17,6 @@ import { isClerkConfigured } from "@/lib/clerk";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
-import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { useRustSession } from "@/lib/use-rust-session";
@@ -63,7 +62,6 @@ function AppShell() {
 
   useRustSession();
   useCloudSync();
-  useWorkspaceEvents();
   useTaskEvents();
 
   // Global chrome shortcuts. All bindings come from `@/lib/shortcuts` —
@@ -87,7 +85,8 @@ function AppShell() {
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
-        const { activeWorkspaceContext, requestNewWorkspace } = useUiStore.getState();
+        const { activeWorkspaceContext, requestNewWorkspace } =
+          useUiStore.getState();
         if (!activeWorkspaceContext) return;
         e.preventDefault();
         requestNewWorkspace(activeWorkspaceContext.repositoryId);
@@ -97,7 +96,8 @@ function AppShell() {
         // Capture-phase + stopImmediatePropagation defeats Chromium's
         // built-in "new tab" reservation on ⌘T. Opens a new terminal
         // inner tab on the active workspace.
-        const { activeWorkspaceContext, openInnerTerminalTab } = useUiStore.getState();
+        const { activeWorkspaceContext, openInnerTerminalTab } =
+          useUiStore.getState();
         if (!activeWorkspaceContext) return;
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -108,8 +108,11 @@ function AppShell() {
         const state = useUiStore.getState();
         const ctx = state.activeWorkspaceContext;
         if (!ctx) return;
-        const repos = queryClient.getQueryData<Repository[]>(repositoryKeys.list());
-        const repoPath = repos?.find((r) => r.id === ctx.repositoryId)?.localPath ?? null;
+        const repos = queryClient.getQueryData<Repository[]>(
+          repositoryKeys.list(),
+        );
+        const repoPath =
+          repos?.find((r) => r.id === ctx.repositoryId)?.localPath ?? null;
         if (!repoPath) return;
         e.preventDefault();
         state.openFileSearch(ctx.repositoryId, repoPath);
@@ -136,7 +139,8 @@ function AppShell() {
       }
     };
     window.addEventListener("keydown", handler, { capture: true });
-    return () => window.removeEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
   }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient]);
 
   return (

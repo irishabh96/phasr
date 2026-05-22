@@ -18,7 +18,7 @@ import type {
   PtyEvent,
   Repository,
   RunCommand,
-  RunningWorkspaceInfo,
+  RunningTaskInfo,
   StartedTask,
   UserSettings,
   Workspace,
@@ -93,17 +93,25 @@ export const tauri = {
   gitCloneRepository: (url: string, destinationPath: string) =>
     invoke<string>("git_clone_repository", { url, destinationPath }),
   gitInitFromTemplate: (templateGitUrl: string, destinationPath: string) =>
-    invoke<string>("git_init_from_template", { templateGitUrl, destinationPath }),
+    invoke<string>("git_init_from_template", {
+      templateGitUrl,
+      destinationPath,
+    }),
   gitInitEmptyRepository: (destinationPath: string) =>
     invoke<string>("git_init_empty_repository", { destinationPath }),
-  listRepoFiles: (path: string) => invoke<string[]>("list_repo_files", { path }),
+  listRepoFiles: (path: string) =>
+    invoke<string[]>("list_repo_files", { path }),
   listLocalBranches: (path: string) =>
     invoke<string[]>("list_local_branches", { path }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
 
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
-  startSessionTerminal: (cwd: string, onEvent: Channel<PtyEvent>, rows?: number, cols?: number) =>
-    invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
+  startSessionTerminal: (
+    cwd: string,
+    onEvent: Channel<PtyEvent>,
+    rows?: number,
+    cols?: number,
+  ) => invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
   attachSessionTerminal: (sessionId: string, onEvent: Channel<PtyEvent>) =>
     invoke<void>("attach_session_terminal", { sessionId, onEvent }),
   sendSessionInput: (sessionId: string, data: string) =>
@@ -125,7 +133,8 @@ export const tauri = {
   getWorkspace: (id: string) => invoke<Workspace>("get_workspace", { id }),
   updateWorkspace: (id: string, input: UpdateWorkspaceInput) =>
     invoke<Workspace>("update_workspace", { id, input }),
-  archiveWorkspace: (id: string) => invoke<Workspace>("archive_workspace", { id }),
+  archiveWorkspace: (id: string) =>
+    invoke<Workspace>("archive_workspace", { id }),
   openPullRequest: (id: string) =>
     invoke<OpenPullRequestOutcome>("open_pull_request", { id }),
   checkWorkspaceDelete: (id: string) =>
@@ -148,7 +157,8 @@ export const tauri = {
     invoke<UserSettings>("update_user_settings", { settings }),
 
   // ── git ──────────────────────────────────────────────────────────────
-  gitStatus: (workspaceId: string) => invoke<FileChange[]>("git_status", { workspaceId }),
+  gitStatus: (workspaceId: string) =>
+    invoke<FileChange[]>("git_status", { workspaceId }),
   gitDiff: (workspaceId: string, scope: DiffScope, path?: string) =>
     invoke<string>("git_diff", {
       input: { workspaceId, scope, ...(path ? { path } : {}) },
@@ -232,33 +242,28 @@ export const tauri = {
   resizeRunCommand: (id: string, rows: number, cols: number) =>
     invoke<void>("resize_run_command", { id, rows, cols }),
 
-  // ── orchestrator (new task lifecycle) ────────────────────────────────
-  // The new path that creates a workspace row, sets up its worktree,
-  // and spawns the PTY in one shot. Use this for ⌘T / "New task" UX.
-  // (The legacy `createWorkspace` + `startWorkspace` two-step is still
-  // wired below for the project-creation wizard until task #25 retires
-  // it.)
-  startTask: (input: StartTaskInput) => invoke<StartedTask>("start_task", { input }),
+  // ── orchestrator (task lifecycle + terminal) ─────────────────────────
+  startTask: (input: StartTaskInput) =>
+    invoke<StartedTask>("start_task", { input }),
   stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
-  sendInputToTask: (taskId: string, data: string) =>
-    invoke<void>("send_input_to_task", { taskId, data }),
-
-  // ── runtime (PTY) ────────────────────────────────────────────────────
-  startWorkspace: (
-    workspaceId: string,
+  openTaskTerminal: (
+    taskId: string,
     onEvent: Channel<PtyEvent>,
     rows = 24,
     cols = 80,
-  ) => invoke<RunningWorkspaceInfo>("start_workspace", { workspaceId, onEvent, rows, cols }),
-  readWorkspaceLog: (workspaceId: string) =>
-    invoke<string>("read_workspace_log", { workspaceId }),
-  sendWorkspaceInput: (workspaceId: string, data: string) =>
-    invoke<void>("send_workspace_input", { workspaceId, data }),
-  resizeWorkspace: (workspaceId: string, rows: number, cols: number) =>
-    invoke<void>("resize_workspace", { workspaceId, rows, cols }),
-  interruptWorkspace: (workspaceId: string) =>
-    invoke<void>("interrupt_workspace", { workspaceId }),
-  stopWorkspace: (workspaceId: string) => invoke<void>("stop_workspace", { workspaceId }),
+  ) =>
+    invoke<RunningTaskInfo>("open_task_terminal", {
+      taskId,
+      onEvent,
+      rows,
+      cols,
+    }),
+  sendInputToTask: (taskId: string, data: string) =>
+    invoke<void>("send_input_to_task", { taskId, data }),
+  readTaskLog: (taskId: string) => invoke<string>("read_task_log", { taskId }),
+  resizeTask: (taskId: string, rows: number, cols: number) =>
+    invoke<void>("resize_task", { taskId, rows, cols }),
+  interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
 };
 
 export { Channel };

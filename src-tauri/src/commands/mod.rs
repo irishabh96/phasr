@@ -7,7 +7,6 @@ pub mod git;
 pub mod orchestrator;
 pub mod repositories;
 pub mod run_commands;
-pub mod runtime;
 pub mod session_terminal;
 pub mod settings;
 pub mod workspaces;
