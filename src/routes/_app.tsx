@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Outlet, Navigate, createFileRoute } from "@tanstack/react-router";
+import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -58,6 +58,7 @@ function AppShell() {
   const toggleSidebarHidden = useUiStore((s) => s.toggleSidebarHidden);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   useCloudSync();
   useTaskEvents();
@@ -134,12 +135,21 @@ function AppShell() {
         } else if (closed.kind === "main") {
           disposeMainXterm(ctx.workspaceId);
         }
+        const remainingTabs =
+          useUiStore.getState().innerTabs[ctx.workspaceId]?.tabs.length ?? 0;
+        if (remainingTabs === 0) {
+          void navigate({
+            to: "/repositories/$repositoryId",
+            params: { repositoryId: ctx.repositoryId },
+            replace: true,
+          });
+        }
       }
     };
     window.addEventListener("keydown", handler, { capture: true });
     return () =>
       window.removeEventListener("keydown", handler, { capture: true });
-  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient]);
+  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient, navigate]);
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">

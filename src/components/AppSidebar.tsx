@@ -151,7 +151,14 @@ function RepoWorkspaces({
   isExpanded: boolean;
 }) {
   const workspaces = useWorkspaces(repoId);
-  if (!workspaces.data?.length) return null;
+  const openWorkspaceTabs = useUiStore((s) => s.innerTabs);
+  const visibleWorkspaces = (workspaces.data ?? []).filter((ws) => {
+    const tabState = openWorkspaceTabs[ws.id];
+    return (tabState?.tabs.length ?? 0) > 0;
+  });
+
+  if (!visibleWorkspaces.length) return null;
+
   return (
     <div
       className={cn(
@@ -159,7 +166,7 @@ function RepoWorkspaces({
         isExpanded ? "ml-3.5 border-l border-(--glass-border-hairline) pl-2" : "items-center",
       )}
     >
-      {workspaces.data.map((ws) => (
+      {visibleWorkspaces.map((ws) => (
         <WorkspaceLink
           key={ws.id}
           ws={ws}
