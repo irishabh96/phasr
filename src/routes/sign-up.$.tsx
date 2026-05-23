@@ -12,6 +12,7 @@ function ClerkSignUpSplat() {
     <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-4">
       <SignUp
         appearance={clerkAppearance()}
+        oauthFlow="redirect"
         routing="path"
         path="/sign-up"
         signInUrl="/sign-in"

@@ -15,6 +15,7 @@ function ClerkSignUp() {
       <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] p-6">
         <SignUp
           appearance={clerkAppearance()}
+          oauthFlow="redirect"
           routing="path"
           path="/sign-up"
           signInUrl="/sign-in"
