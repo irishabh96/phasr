@@ -1,27 +1,21 @@
-import { SignUp, useAuth } from "@clerk/react";
-import { Navigate, createFileRoute } from "@tanstack/react-router";
-import { clerkAppearance } from "@/lib/clerk";
+import { AuthenticateWithRedirectCallback } from "@clerk/react";
+import { Navigate, createFileRoute, useLocation } from "@tanstack/react-router";
+import { clerkOAuthCallbackProps } from "@/lib/clerk";
 
-function ClerkSignUpSplat() {
-  const { isLoaded, isSignedIn } = useAuth();
-  if (isLoaded && isSignedIn) {
-    return <Navigate to="/" replace />;
+function ClerkSignUpCallback() {
+  const { pathname } = useLocation();
+
+  if (!pathname.includes("sso-callback")) {
+    return <Navigate to="/sign-up" replace />;
   }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-4">
-      <SignUp
-        appearance={clerkAppearance()}
-        oauthFlow="redirect"
-        routing="path"
-        path="/sign-up"
-        signInUrl="/sign-in"
-        forceRedirectUrl="/"
-      />
+      <AuthenticateWithRedirectCallback {...clerkOAuthCallbackProps()} />
     </div>
   );
 }
 
 export const Route = createFileRoute("/sign-up/$")({
-  component: ClerkSignUpSplat,
+  component: ClerkSignUpCallback,
 });

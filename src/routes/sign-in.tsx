@@ -1,10 +1,26 @@
 import { SignIn, useAuth } from "@clerk/react";
-import { Navigate, createFileRoute } from "@tanstack/react-router";
+import {
+  Navigate,
+  Outlet,
+  createFileRoute,
+  useLocation,
+} from "@tanstack/react-router";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
-import { clerkAppearance } from "@/lib/clerk";
+import {
+  CLERK_SIGN_IN_URL,
+  clerkAppearance,
+  clerkSignInProps,
+  isNestedAuthRoute,
+} from "@/lib/clerk";
 
 function ClerkSignIn() {
+  const { pathname } = useLocation();
   const { isLoaded, isSignedIn } = useAuth();
+
+  if (isNestedAuthRoute(pathname, CLERK_SIGN_IN_URL)) {
+    return <Outlet />;
+  }
+
   if (isLoaded && isSignedIn) {
     return <Navigate to="/" replace />;
   }
@@ -15,11 +31,7 @@ function ClerkSignIn() {
       <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] p-6">
         <SignIn
           appearance={clerkAppearance()}
-          oauthFlow="redirect"
-          routing="path"
-          path="/sign-in"
-          signUpUrl="/sign-up"
-          forceRedirectUrl="/"
+          {...clerkSignInProps()}
         />
       </div>
     </div>

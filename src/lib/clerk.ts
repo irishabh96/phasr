@@ -12,6 +12,41 @@ export const isClerkConfigured = Boolean(CLERK_PUBLISHABLE_KEY);
 export const CLERK_CONFIG_ERROR =
   "Missing VITE_CLERK_PUBLISHABLE_KEY. Phasr requires Clerk authentication.";
 
+export const CLERK_SIGN_IN_URL = "/sign-in";
+export const CLERK_SIGN_UP_URL = "/sign-up";
+export const CLERK_SIGNED_IN_URL = "/";
+
+export function isNestedAuthRoute(pathname: string, authRoute: string) {
+  return pathname !== authRoute && pathname !== `${authRoute}/`;
+}
+
+export function clerkSignInProps() {
+  return {
+    oauthFlow: "redirect" as const,
+    routing: "hash" as const,
+    signUpUrl: CLERK_SIGN_UP_URL,
+    forceRedirectUrl: CLERK_SIGNED_IN_URL,
+  };
+}
+
+export function clerkSignUpProps() {
+  return {
+    oauthFlow: "redirect" as const,
+    routing: "hash" as const,
+    signInUrl: CLERK_SIGN_IN_URL,
+    forceRedirectUrl: CLERK_SIGNED_IN_URL,
+  };
+}
+
+export function clerkOAuthCallbackProps() {
+  return {
+    signInUrl: CLERK_SIGN_IN_URL,
+    signUpUrl: CLERK_SIGN_UP_URL,
+    signInForceRedirectUrl: CLERK_SIGNED_IN_URL,
+    signUpForceRedirectUrl: CLERK_SIGNED_IN_URL,
+  };
+}
+
 /**
  * Clerk appearance tuned to match Phasr's design tokens. Re-reads CSS
  * variables at component-instantiation time so a theme toggle re-renders
