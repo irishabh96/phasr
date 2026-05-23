@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Outlet, Navigate, createFileRoute } from "@tanstack/react-router";
+import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -13,32 +13,22 @@ import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
-import { isClerkConfigured } from "@/lib/clerk";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
-import { useWorkspaceEvents } from "@/lib/hooks/useWorkspaceEvents";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { useRustSession } from "@/lib/use-rust-session";
 import { tauri } from "@/lib/tauri";
 import type { Repository } from "@/lib/types";
 
-/**
- * Top-level shell. In cloud mode (Clerk configured), AuthGate gets to
- * call `useAuth()` and gate on sign-in. In local-only mode (no Clerk),
- * we skip the gate entirely and render the shell directly — `useAuth`
- * would throw without a ClerkProvider parent in the tree.
- */
 function AppLayout() {
-  if (!isClerkConfigured) {
-    return <AppShell />;
-  }
   return <AuthGate />;
 }
 
 function AuthGate() {
   const { isLoaded, isSignedIn } = useAuth();
+  const rustSession = useRustSession();
 
   if (!isLoaded) {
     return (
@@ -52,6 +42,14 @@ function AuthGate() {
     return <Navigate to="/sign-in" replace />;
   }
 
+  if (rustSession.state !== "ready") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) text-sm text-(--color-text-muted)">
+        {rustSession.state === "error" ? rustSession.message : "Securing session…"}
+      </div>
+    );
+  }
+
   return <AppShell />;
 }
 
@@ -60,10 +58,9 @@ function AppShell() {
   const toggleSidebarHidden = useUiStore((s) => s.toggleSidebarHidden);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
-  useRustSession();
   useCloudSync();
-  useWorkspaceEvents();
   useTaskEvents();
 
   // Global chrome shortcuts. All bindings come from `@/lib/shortcuts` —
@@ -87,7 +84,8 @@ function AppShell() {
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
-        const { activeWorkspaceContext, requestNewWorkspace } = useUiStore.getState();
+        const { activeWorkspaceContext, requestNewWorkspace } =
+          useUiStore.getState();
         if (!activeWorkspaceContext) return;
         e.preventDefault();
         requestNewWorkspace(activeWorkspaceContext.repositoryId);
@@ -97,7 +95,8 @@ function AppShell() {
         // Capture-phase + stopImmediatePropagation defeats Chromium's
         // built-in "new tab" reservation on ⌘T. Opens a new terminal
         // inner tab on the active workspace.
-        const { activeWorkspaceContext, openInnerTerminalTab } = useUiStore.getState();
+        const { activeWorkspaceContext, openInnerTerminalTab } =
+          useUiStore.getState();
         if (!activeWorkspaceContext) return;
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -108,8 +107,11 @@ function AppShell() {
         const state = useUiStore.getState();
         const ctx = state.activeWorkspaceContext;
         if (!ctx) return;
-        const repos = queryClient.getQueryData<Repository[]>(repositoryKeys.list());
-        const repoPath = repos?.find((r) => r.id === ctx.repositoryId)?.localPath ?? null;
+        const repos = queryClient.getQueryData<Repository[]>(
+          repositoryKeys.list(),
+        );
+        const repoPath =
+          repos?.find((r) => r.id === ctx.repositoryId)?.localPath ?? null;
         if (!repoPath) return;
         e.preventDefault();
         state.openFileSearch(ctx.repositoryId, repoPath);
@@ -133,11 +135,21 @@ function AppShell() {
         } else if (closed.kind === "main") {
           disposeMainXterm(ctx.workspaceId);
         }
+        const remainingTabs =
+          useUiStore.getState().innerTabs[ctx.workspaceId]?.tabs.length ?? 0;
+        if (remainingTabs === 0) {
+          void navigate({
+            to: "/repositories/$repositoryId",
+            params: { repositoryId: ctx.repositoryId },
+            replace: true,
+          });
+        }
       }
     };
     window.addEventListener("keydown", handler, { capture: true });
-    return () => window.removeEventListener("keydown", handler, { capture: true });
-  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient]);
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient, navigate]);
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">

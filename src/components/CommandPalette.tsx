@@ -1,5 +1,4 @@
 import { useClerk } from "@clerk/react";
-import { isClerkConfigured } from "@/lib/clerk";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
@@ -258,7 +257,7 @@ export function CommandPalette() {
               </Command.Item>
             </PaletteGroup>
 
-            {isClerkConfigured && <SignOutGroup onPick={go} />}
+            <SignOutGroup onPick={go} />
           </Command.List>
 
           <PaletteFooter />
@@ -268,11 +267,6 @@ export function CommandPalette() {
   );
 }
 
-/**
- * Sign-out entry. Lives in its own component so `useClerk()` is only
- * called when Clerk is configured — without a ClerkProvider in the
- * tree the hook would throw.
- */
 function SignOutGroup({ onPick }: { onPick: (fn: () => void) => void }) {
   const { signOut } = useClerk();
   return (

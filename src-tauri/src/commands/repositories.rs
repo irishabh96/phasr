@@ -170,15 +170,13 @@ pub async fn delete_repository(
     let repository = repo.get(&id).await.ok();
     let repo_local_path = repository.as_ref().and_then(|r| r.local_path.clone());
 
-    // 1. Stop running tasks on both runtimes (orchestrator + legacy).
+    // 1. Stop running tasks and force-kill any still-live PTYs.
     //    Workspaces are listed BEFORE the soft-delete + child wipe so
     //    we still have their ids + worktree paths.
     let owned_workspaces = workspaces.list_by_repository(&id).await?;
     for ws in &owned_workspaces {
-        // Orchestrator path — silently ignore NotRunning. The task may
-        // have been created via the legacy path, or already exited.
+        // Silently ignore NotRunning. The task may already have exited.
         let _ = orchestrator.stop_task(&ws.id).await;
-        // Legacy runtime path — same idempotent behavior.
         if let Some(handle) = runtime.get(&ws.id) {
             let _ = handle.kill();
         }
@@ -321,9 +319,8 @@ pub async fn git_init_empty_repository(
 ) -> Result<String, RepositoryCmdError> {
     session.require()?;
     let dest = std::path::Path::new(&destination_path);
-    std::fs::create_dir_all(dest).map_err(|e| {
-        RepositoryCmdError::Git(crate::git::GitError::Io(e))
-    })?;
+    std::fs::create_dir_all(dest)
+        .map_err(|e| RepositoryCmdError::Git(crate::git::GitError::Io(e)))?;
     git::init_repo(dest)?;
     Ok(destination_path)
 }

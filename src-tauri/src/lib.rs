@@ -10,15 +10,17 @@ mod localfs;
 mod orchestrator;
 mod pty;
 mod store;
+mod sync;
 
 use std::sync::Arc;
 
 use auth::SessionState;
+use domain::WorkspaceStatus;
 use orchestrator::TaskOrchestrator;
 use pty::TaskRuntime;
 use store::{
     default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo,
-    WorkspaceRepo,
+    WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Manager;
@@ -26,11 +28,13 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let session_state = Arc::new(SessionState::default());
+    let cloud_sync_state = Arc::new(sync::CloudSyncState::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(session_state)
+        .manage(cloud_sync_state)
         .setup(|app| {
             #[cfg(target_os = "macos")]
             dock_icon::set_dock_icon();
@@ -96,6 +100,7 @@ pub fn run() {
                         }
                         let repository_repo = RepositoryRepo::new(pool.clone());
                         let workspace_repo = WorkspaceRepo::new(pool.clone());
+                        recover_startup_state(&workspace_repo, &repository_repo).await;
                         let orchestrator = TaskOrchestrator::new(
                             workspace_repo.clone(),
                             repository_repo.clone(),
@@ -111,7 +116,8 @@ pub fn run() {
                         handle.manage(workspace_repo);
                         handle.manage(RunCommandRepo::new(pool.clone()));
                         handle.manage(agent_repo);
-                        handle.manage(SettingsRepo::new(pool));
+                        handle.manage(SettingsRepo::new(pool.clone()));
+                        handle.manage(pool);
                         handle.manage(orchestrator);
                     }
                     Err(err) => {
@@ -129,6 +135,8 @@ pub fn run() {
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
+            sync::start_cloud_sync,
+            sync::stop_cloud_sync,
             commands::repositories::create_repository,
             commands::repositories::list_repositories,
             commands::repositories::get_repository,
@@ -159,15 +167,13 @@ pub fn run() {
             commands::agents::set_agent_default,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
-            commands::runtime::start_workspace,
-            commands::runtime::read_workspace_log,
-            commands::runtime::send_workspace_input,
-            commands::runtime::resize_workspace,
-            commands::runtime::interrupt_workspace,
-            commands::runtime::stop_workspace,
             commands::orchestrator::start_task,
             commands::orchestrator::stop_task,
+            commands::orchestrator::open_task_terminal,
             commands::orchestrator::send_input_to_task,
+            commands::orchestrator::read_task_log,
+            commands::orchestrator::resize_task,
+            commands::orchestrator::interrupt_task,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,
@@ -209,4 +215,56 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: &RepositoryRepo) {
+    match workspace_repo
+        .list_by_status(WorkspaceStatus::Running)
+        .await
+    {
+        Ok(running) => {
+            let now = chrono::Utc::now();
+            for workspace in running {
+                if let Err(err) = workspace_repo
+                    .update(
+                        &workspace.id,
+                        WorkspaceUpdate {
+                            status: Some(WorkspaceStatus::Stopped),
+                            exit_code: Some(None),
+                            finished_at: Some(Some(now)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "failed to recover orphaned running workspace {}: {err}",
+                        workspace.id
+                    );
+                }
+            }
+        }
+        Err(err) => eprintln!("failed to list running workspaces during startup recovery: {err}"),
+    }
+
+    match repository_repo.list().await {
+        Ok(repositories) => {
+            for repository in repositories {
+                let Some(path) = repository.local_path.as_deref() else {
+                    continue;
+                };
+                let path = std::path::Path::new(path);
+                if !path.exists() || !path.join(".git").exists() {
+                    continue;
+                }
+                if let Err(err) = crate::git::prune_worktrees(path) {
+                    eprintln!(
+                        "failed to prune git worktrees for repository {}: {err}",
+                        repository.id
+                    );
+                }
+            }
+        }
+        Err(err) => eprintln!("failed to list repositories during startup recovery: {err}"),
+    }
 }

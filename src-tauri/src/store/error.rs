@@ -12,7 +12,10 @@ pub enum StoreError {
     NotFound,
 
     #[error("invalid value for field `{field}`: {message}")]
-    InvalidValue { field: &'static str, message: String },
+    InvalidValue {
+        field: &'static str,
+        message: String,
+    },
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

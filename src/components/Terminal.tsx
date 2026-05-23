@@ -41,7 +41,7 @@ interface CachedMain {
   container: HTMLDivElement;
   /** Input/resize handlers — replaced on each remount. */
   inputDisposables: { dispose(): void }[];
-  /** True once startWorkspace / loadLog has resolved. */
+  /** True once openTaskTerminal / loadLog has resolved. */
   started: boolean;
   /** Latest onExit callback (kept fresh across remounts via ref). */
   onExit: ((exitCode: number | null) => void) | undefined;
@@ -151,10 +151,8 @@ export function Terminal({
         entry!.inputDisposables = [
           term.onData((data) => {
             // Routes user keystrokes through the orchestrator's
-            // `send_input_to_task` command. Writing through the new
-            // surface keeps the React side speaking the "task"
-            // vocabulary while the PTY runtime remains shared with
-            // the legacy `start_workspace` path.
+            // `send_input_to_task` command so the React side speaks
+            // task vocabulary end-to-end.
             void tauri.sendInputToTask(workspaceId, data).catch((err) => {
               term.write(
                 `\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`,
@@ -162,7 +160,7 @@ export function Terminal({
             });
           }),
           term.onResize(({ rows, cols }) => {
-            void tauri.resizeWorkspace(workspaceId, rows, cols).catch(() => {});
+            void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
           }),
         ];
         term.focus();
@@ -183,7 +181,7 @@ export function Terminal({
           }
         };
         try {
-          await tauri.startWorkspace(
+          await tauri.openTaskTerminal(
             workspaceId,
             channel,
             term.rows,
@@ -195,7 +193,7 @@ export function Terminal({
           // the onResize handler isn't wired during the await, so a
           // resize there is otherwise lost.
           void tauri
-            .resizeWorkspace(workspaceId, term.rows, term.cols)
+            .resizeTask(workspaceId, term.rows, term.cols)
             .catch(() => {});
         } catch (err) {
           term.write(
@@ -206,7 +204,7 @@ export function Terminal({
 
       const loadLog = async () => {
         try {
-          const log = await tauri.readWorkspaceLog(workspaceId);
+          const log = await tauri.readTaskLog(workspaceId);
           term.write(
             log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n",
           );
@@ -237,7 +235,7 @@ export function Terminal({
           });
         }),
         entry.term.onResize(({ rows, cols }) => {
-          void tauri.resizeWorkspace(workspaceId, rows, cols).catch(() => {});
+          void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
         }),
       ];
       entry.term.focus();

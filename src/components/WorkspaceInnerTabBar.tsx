@@ -1,3 +1,4 @@
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { FileCode2, Plus, Terminal as TerminalIcon, X, Zap } from "lucide-react";
 import { disposeMainXterm } from "@/components/Terminal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
@@ -28,6 +29,9 @@ export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps)
   const setActiveInnerTab = useUiStore((s) => s.setActiveInnerTab);
   const closeInnerTab = useUiStore((s) => s.closeInnerTab);
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
+  const navigate = useNavigate();
+  const params = useParams({ strict: false });
+  const repositoryId = (params as { repositoryId?: string }).repositoryId ?? null;
 
   if (!state) return null;
   const { tabs, activeTabId } = state;
@@ -50,6 +54,15 @@ export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps)
               disposeSessionXterm(closed.id);
             } else if (closed.kind === "main") {
               disposeMainXterm(workspaceId);
+            }
+            const remainingTabs =
+              useUiStore.getState().innerTabs[workspaceId]?.tabs.length ?? 0;
+            if (remainingTabs === 0 && repositoryId) {
+              void navigate({
+                to: "/repositories/$repositoryId",
+                params: { repositoryId },
+                replace: true,
+              });
             }
           }}
         />

@@ -2,21 +2,10 @@ import { useUser } from "@clerk/react";
 import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FolderOpen, Sparkles } from "lucide-react";
 import { RepoHomeShell } from "@/components/RepoHomeShell";
-import { isClerkConfigured } from "@/lib/clerk";
 import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import type { Repository } from "@/lib/types";
-
-/**
- * Cheap wrapper around useUser() — only invokes the Clerk hook when
- * Clerk is configured (without a ClerkProvider parent the hook throws).
- * Returns null in local-only mode.
- */
-function useFirstNameSafe(): string | null {
-  if (!isClerkConfigured) return null;
-  return useUserFirstName();
-}
 
 function useUserFirstName(): string | null {
   const { user } = useUser();
@@ -24,7 +13,7 @@ function useUserFirstName(): string | null {
 }
 
 function Home() {
-  const firstName = useFirstNameSafe();
+  const firstName = useUserFirstName();
   const { data: repositories, isLoading } = useRepositories();
   const mostRecentRepo = repositories?.[0];
   const { data: workspaces, isLoading: wsLoading } = useWorkspaces(mostRecentRepo?.id);

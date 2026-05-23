@@ -84,9 +84,7 @@ pub fn validate_workspace_path(
 /// `<home>/PhasrProjects`. Doesn't create the directory; that happens on
 /// first project creation via `ensure_dir`.
 #[tauri::command]
-pub fn default_projects_dir(
-    session: State<'_, Arc<SessionState>>,
-) -> Result<String, String> {
+pub fn default_projects_dir(session: State<'_, Arc<SessionState>>) -> Result<String, String> {
     // Auth errors collapse into the existing `String` envelope so the TS
     // signature stays unchanged.
     session.require().map_err(|e| e.to_string())?;
@@ -99,10 +97,7 @@ pub fn default_projects_dir(
 /// on success. Used by the new-project wizard before invoking `git init`
 /// / `git clone`.
 #[tauri::command]
-pub fn ensure_dir(
-    path: String,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<String, String> {
+pub fn ensure_dir(path: String, session: State<'_, Arc<SessionState>>) -> Result<String, String> {
     session.require().map_err(|e| e.to_string())?;
     let expanded = expand_tilde(&path);
     std::fs::create_dir_all(&expanded).map_err(|e| e.to_string())?;
@@ -132,7 +127,10 @@ mod tests {
         let result = validate(file.to_str().unwrap());
         assert!(result.exists);
         assert!(!result.is_dir);
-        assert_eq!(result.message.as_deref(), Some("Path is a file, not a directory"));
+        assert_eq!(
+            result.message.as_deref(),
+            Some("Path is a file, not a directory")
+        );
     }
 
     #[test]
@@ -142,7 +140,10 @@ mod tests {
         assert!(result.exists);
         assert!(result.is_dir);
         assert!(!result.is_git_repo);
-        assert_eq!(result.message.as_deref(), Some("Folder is not a git repository"));
+        assert_eq!(
+            result.message.as_deref(),
+            Some("Folder is not a git repository")
+        );
     }
 
     #[test]

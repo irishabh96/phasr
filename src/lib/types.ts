@@ -77,11 +77,6 @@ export type PtyEvent =
   | { type: "output"; taskId: string; chunk: string }
   | { type: "exit"; taskId: string; exitCode: number | null };
 
-export interface RunningWorkspaceInfo {
-  workspaceId: string;
-  startedAt: string;
-}
-
 /**
  * Result of `start_task` — orchestrator-side vocabulary uses "task" but
  * the persisted row is still in the `workspaces` table (renamed from
@@ -90,6 +85,11 @@ export interface RunningWorkspaceInfo {
 export interface StartedTask {
   taskId: string;
   workspace: Workspace;
+}
+
+export interface RunningTaskInfo {
+  taskId: string;
+  startedAt: string;
 }
 
 /**

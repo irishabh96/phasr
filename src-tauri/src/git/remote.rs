@@ -27,7 +27,10 @@ pub fn get_default_branch(repo_path: &Path) -> Option<String> {
             return Some(trimmed.into());
         }
     }
-    if let Ok(branch) = run_git(repo_path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Ok(branch) = run_git(
+        repo_path,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
         if let Some(stripped) = branch.trim().strip_prefix("origin/") {
             return Some(stripped.into());
         }

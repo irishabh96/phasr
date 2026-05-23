@@ -78,6 +78,24 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
+    pub async fn list_by_status(
+        &self,
+        status: WorkspaceStatus,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, name, prompt, agent_id, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE status = ?
+             ORDER BY updated_at DESC",
+        )
+        .bind(status.as_str())
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, name, prompt, agent_id, command, status,
@@ -185,10 +203,11 @@ impl WorkspaceRepo {
 
 fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreError> {
     let status_str: String = row.try_get("status")?;
-    let status = WorkspaceStatus::from_str(&status_str).ok_or_else(|| StoreError::InvalidValue {
-        field: "status",
-        message: format!("unknown status `{status_str}`"),
-    })?;
+    let status =
+        WorkspaceStatus::from_str(&status_str).ok_or_else(|| StoreError::InvalidValue {
+            field: "status",
+            message: format!("unknown status `{status_str}`"),
+        })?;
 
     Ok(Workspace {
         id: row.try_get("id")?,
@@ -269,7 +288,13 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, StoreError::InvalidValue { field: "status", .. }));
+        assert!(matches!(
+            err,
+            StoreError::InvalidValue {
+                field: "status",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

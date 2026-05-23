@@ -61,7 +61,10 @@ pub fn parse_remote_url(url: &str) -> Option<(String, String, String)> {
         let rest = rest.strip_prefix("git@").unwrap_or(rest);
         let (host_and_port, path) = rest.split_once('/')?;
         // host_and_port may include `:22`; we only want the host.
-        let host = host_and_port.split_once(':').map(|(h, _)| h).unwrap_or(host_and_port);
+        let host = host_and_port
+            .split_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(host_and_port);
         return split_owner_repo(path).map(|(o, r)| (host.to_string(), o, r));
     }
     // https://host/owner/repo(.git)?
@@ -105,8 +108,7 @@ mod tests {
 
     #[test]
     fn parses_ssh_shorthand() {
-        let (host, owner, repo) =
-            parse_remote_url("git@github.com:foo/bar.git").unwrap();
+        let (host, owner, repo) = parse_remote_url("git@github.com:foo/bar.git").unwrap();
         assert_eq!(host, "github.com");
         assert_eq!(owner, "foo");
         assert_eq!(repo, "bar");
@@ -114,8 +116,7 @@ mod tests {
 
     #[test]
     fn parses_https_with_dot_git() {
-        let (host, owner, repo) =
-            parse_remote_url("https://github.com/foo/bar.git").unwrap();
+        let (host, owner, repo) = parse_remote_url("https://github.com/foo/bar.git").unwrap();
         assert_eq!(host, "github.com");
         assert_eq!(owner, "foo");
         assert_eq!(repo, "bar");
@@ -123,8 +124,7 @@ mod tests {
 
     #[test]
     fn parses_https_without_dot_git() {
-        let (host, owner, repo) =
-            parse_remote_url("https://github.com/foo/bar/").unwrap();
+        let (host, owner, repo) = parse_remote_url("https://github.com/foo/bar/").unwrap();
         assert_eq!(host, "github.com");
         assert_eq!(owner, "foo");
         assert_eq!(repo, "bar");
@@ -133,8 +133,7 @@ mod tests {
     #[test]
     fn builds_github_url() {
         let target =
-            build_pull_request_target("git@github.com:foo/bar.git", "main", "phasr/abc")
-                .unwrap();
+            build_pull_request_target("git@github.com:foo/bar.git", "main", "phasr/abc").unwrap();
         assert_eq!(target.provider, "GitHub");
         assert_eq!(
             target.url,

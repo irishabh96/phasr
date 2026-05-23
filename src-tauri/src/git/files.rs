@@ -36,8 +36,11 @@ pub fn list_files(repo_path: &Path) -> Result<Vec<String>, GitError> {
             repo_path,
             &["ls-files", "--cached", "--others", "--exclude-standard"],
         )?;
-        let mut files: Vec<String> =
-            stdout.lines().map(|s| s.to_string()).filter(|s| !s.is_empty()).collect();
+        let mut files: Vec<String> = stdout
+            .lines()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         if files.len() > MAX_FILES {
             files.sort_by_key(|p| p.matches('/').count());
             files.truncate(MAX_FILES);

@@ -1,15 +1,7 @@
 import { SignIn, useAuth } from "@clerk/react";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
-import { clerkAppearance, isClerkConfigured } from "@/lib/clerk";
-
-function SignInRoute() {
-  if (!isClerkConfigured) {
-    // Keyless build — there's no sign-in flow. Just send the user home.
-    return <Navigate to="/" replace />;
-  }
-  return <ClerkSignIn />;
-}
+import { clerkAppearance } from "@/lib/clerk";
 
 function ClerkSignIn() {
   const { isLoaded, isSignedIn } = useAuth();
@@ -34,5 +26,5 @@ function ClerkSignIn() {
 }
 
 export const Route = createFileRoute("/sign-in")({
-  component: SignInRoute,
+  component: ClerkSignIn,
 });

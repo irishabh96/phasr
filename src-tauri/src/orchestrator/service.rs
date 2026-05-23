@@ -1,7 +1,7 @@
 //! Task orchestrator. Owns the lifecycle of an agent run:
 //!
 //!   1. Resolve the agent's command template + interpolate vars.
-//!   2. Create the per-task git worktree on `phasr/<short-id>`.
+//!   2. Create the per-task git worktree on a deterministic `phasr/*` branch.
 //!   3. Spawn the PTY in that worktree, transition to `running`.
 //!   4. Watch the PTY's exit event and flip the row to
 //!      `completed` / `failed` once it fires.
@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
@@ -74,6 +74,13 @@ pub struct StartTaskRequest {
 pub struct StartedTask {
     pub task_id: String,
     pub workspace: Workspace,
+}
+
+pub struct TaskTerminalSubscription {
+    pub task_id: String,
+    pub started_at: DateTime<Utc>,
+    pub replay: Vec<PtyEvent>,
+    pub rx: broadcast::Receiver<PtyEvent>,
 }
 
 /// The orchestrator itself. Hand it the dependencies it needs and call
@@ -146,12 +153,11 @@ impl TaskOrchestrator {
         workspace.agent_id = Some(request.agent_id.clone());
 
         let task_id = workspace.id.clone();
-        let branch = unique_branch_name(
-            &repository_path,
-            &slugify(&workspace.name),
-            short_id(&task_id),
-        );
-        let worktree_path = worktree_base_path().join(&task_id);
+        let slug = git::slugify(&workspace.name);
+        let branch_seed = git::default_branch_name(&slug, git::short_id(&task_id));
+        let branch =
+            git::unique_branch_name(&repository_path, &branch_seed, git::short_id(&task_id));
+        let worktree_path = git::default_worktree_base_path().join(&task_id);
         let base_ref = request
             .base_branch
             .clone()
@@ -257,6 +263,127 @@ impl TaskOrchestrator {
         Ok(())
     }
 
+    /// Open the task's terminal stream. If the PTY is still alive, this
+    /// attaches to it with replay. If the row is pending/stopped (or a
+    /// stale running row somehow has no process), this resumes the task
+    /// in the same worktree and starts a fresh exit watcher.
+    pub async fn open_terminal(
+        &self,
+        task_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<TaskTerminalSubscription, OrchestratorError> {
+        let workspace = self.workspaces.get(task_id).await?;
+
+        if let Some(handle) = self.runtime.get(task_id) {
+            let (replay, rx) = handle.subscribe_with_replay();
+            return Ok(TaskTerminalSubscription {
+                task_id: task_id.to_string(),
+                started_at: workspace.started_at.unwrap_or_else(Utc::now),
+                replay,
+                rx,
+            });
+        }
+
+        if matches!(
+            workspace.status,
+            WorkspaceStatus::Completed | WorkspaceStatus::Failed | WorkspaceStatus::Archived
+        ) {
+            return Err(OrchestratorError::AlreadyFinished(
+                workspace.status.as_str().into(),
+            ));
+        }
+
+        let cwd = self.cwd_for_task(&workspace).await?;
+        let initial_command = if workspace.command.trim().is_empty() {
+            None
+        } else {
+            Some(workspace.command.clone())
+        };
+        let initial_prompt = workspace.prompt.as_ref().and_then(|p| {
+            let trimmed = p.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let now = Utc::now();
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    started_at: Some(Some(now)),
+                    exit_code: Some(None),
+                    finished_at: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let handle = self.runtime.spawn(
+            task_id.to_string(),
+            initial_command,
+            initial_prompt,
+            cwd,
+            rows,
+            cols,
+        )?;
+
+        self.broadcast_status(TaskStatusEvent {
+            task_id: task_id.to_string(),
+            repository_id: updated.repository_id.clone(),
+            status: WorkspaceStatus::Running,
+            exit_code: None,
+        });
+
+        self.spawn_exit_watcher(task_id.to_string(), updated.repository_id, handle.clone());
+
+        let (replay, rx) = handle.subscribe_with_replay();
+        Ok(TaskTerminalSubscription {
+            task_id: task_id.to_string(),
+            started_at: now,
+            replay,
+            rx,
+        })
+    }
+
+    pub async fn read_task_log(&self, task_id: &str) -> Result<String, OrchestratorError> {
+        let path = self.runtime.log_dir.join(format!("{task_id}.log"));
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(err) => return Err(OrchestratorError::Pty(err.into())),
+        };
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    pub fn resize_task(
+        &self,
+        task_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(), OrchestratorError> {
+        let handle = self
+            .runtime
+            .get(task_id)
+            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        handle.resize(rows, cols)?;
+        Ok(())
+    }
+
+    pub fn interrupt_task(&self, task_id: &str) -> Result<(), OrchestratorError> {
+        let handle = self
+            .runtime
+            .get(task_id)
+            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        handle.interrupt()?;
+        Ok(())
+    }
+
     /// Write bytes to the task's PTY stdin — used by the React
     /// terminal for live agent input.
     pub fn send_input(&self, task_id: &str, bytes: &[u8]) -> Result<(), OrchestratorError> {
@@ -281,6 +408,31 @@ impl TaskOrchestrator {
         Err(OrchestratorError::AgentNotFound(agent_id.to_string()))
     }
 
+    async fn cwd_for_task(&self, workspace: &Workspace) -> Result<PathBuf, OrchestratorError> {
+        if let Some(path) = workspace.worktree_path.as_deref() {
+            let path = PathBuf::from(path);
+            if !path.exists() {
+                return Err(OrchestratorError::RepositoryPathMissing(
+                    path.to_string_lossy().into_owned(),
+                ));
+            }
+            return Ok(path);
+        }
+
+        let repository = self.repositories.get(&workspace.repository_id).await?;
+        let path = repository
+            .local_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or(OrchestratorError::RepositoryHasNoLocalPath)?;
+        if !path.exists() {
+            return Err(OrchestratorError::RepositoryPathMissing(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        Ok(path)
+    }
+
     fn broadcast_status(&self, event: TaskStatusEvent) {
         // No-op if there are no subscribers — that's fine.
         let _ = self.status_tx.send(event);
@@ -303,6 +455,14 @@ impl TaskOrchestrator {
                 match rx.recv().await {
                     Ok(PtyEvent::Output { .. }) => continue,
                     Ok(PtyEvent::Exit { exit_code, .. }) => {
+                        let current = workspaces.get(&task_id).await.ok();
+                        if !current
+                            .as_ref()
+                            .is_some_and(|w| w.status == WorkspaceStatus::Running)
+                        {
+                            runtime.drop_task(&task_id);
+                            break;
+                        }
                         let next = if exit_code == Some(0) {
                             WorkspaceStatus::Completed
                         } else {
@@ -311,9 +471,7 @@ impl TaskOrchestrator {
                         let update = WorkspaceUpdate {
                             // Only flip if we're still in `running` —
                             // if `stop_task` already moved us to
-                            // `stopped`, leave it alone (the
-                            // transition validator would reject the
-                            // change anyway).
+                            // `stopped`, leave it alone.
                             status: Some(next),
                             exit_code: Some(exit_code),
                             finished_at: Some(Some(Utc::now())),
@@ -350,83 +508,6 @@ fn interpolate_for_task(template: &str, prompt: Option<&str>) -> String {
     interpolate_command(template, &vars)
 }
 
-/// `~/.phasr/worktrees`, matching the plan's layout. Falls back to
-/// `/tmp` if `$HOME` is unset (CI sandboxes).
-fn worktree_base_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".phasr").join("worktrees")
-}
-
-/// First UUID segment — short enough to fit in a branch name without
-/// being so short that two concurrent tasks could collide. Used as the
-/// fallback slug when the task name produces an empty slug.
-fn short_id(id: &str) -> &str {
-    id.split('-').next().unwrap_or(id)
-}
-
-/// Lowercase, alphanumeric-or-dash slug derived from a task name.
-/// Collapses runs of non-alphanumerics to a single dash and trims
-/// leading/trailing dashes. Returns empty string when no usable
-/// characters remain.
-fn slugify(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut prev_dash = true;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
-}
-
-/// Build `phasr/<slug>` and bump with `-2`, `-3`, ... if a branch with
-/// that name already exists in `repo_path`. Falls back to `phasr/<id>`
-/// when the slug is empty (e.g. task name is whitespace-only).
-fn unique_branch_name(repo_path: &std::path::Path, slug: &str, id_fallback: &str) -> String {
-    let base = if slug.is_empty() {
-        id_fallback.to_string()
-    } else {
-        slug.to_string()
-    };
-    let candidate = format!("phasr/{base}");
-    if !branch_exists(repo_path, &candidate) {
-        return candidate;
-    }
-    for suffix in 2..1000 {
-        let next = format!("phasr/{base}-{suffix}");
-        if !branch_exists(repo_path, &next) {
-            return next;
-        }
-    }
-    // 1000 collisions is implausible; fall through to the id-based name
-    // which is functionally unique.
-    format!("phasr/{base}-{id_fallback}")
-}
-
-/// `true` when the local branch already exists. Errors (repo not found,
-/// permissions) collapse to `false` — the subsequent `git worktree add`
-/// will surface the real error if any.
-fn branch_exists(repo_path: &std::path::Path, name: &str) -> bool {
-    std::process::Command::new("git")
-        .arg("show-ref")
-        .arg("--verify")
-        .arg("--quiet")
-        .arg(format!("refs/heads/{name}"))
-        .current_dir(repo_path)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,64 +516,6 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use std::time::Duration;
-
-    #[test]
-    fn slugify_basics() {
-        assert_eq!(slugify("Add dark mode"), "add-dark-mode");
-        assert_eq!(slugify("Fix checkout bug!"), "fix-checkout-bug");
-        assert_eq!(slugify("  multiple   spaces  "), "multiple-spaces");
-        assert_eq!(slugify("UPPER → lower"), "upper-lower");
-        assert_eq!(slugify(""), "");
-        assert_eq!(slugify("???"), "");
-        assert_eq!(slugify("v1.2.3-rc"), "v1-2-3-rc");
-    }
-
-    #[test]
-    fn unique_branch_name_falls_back_when_slug_empty() {
-        // No repo on disk — branch_exists returns false for everything.
-        let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(
-            unique_branch_name(tmp.path(), "", "deadbeef"),
-            "phasr/deadbeef"
-        );
-        assert_eq!(
-            unique_branch_name(tmp.path(), "fix-typo", "deadbeef"),
-            "phasr/fix-typo"
-        );
-    }
-
-    #[test]
-    fn unique_branch_name_collides_when_branch_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path();
-        Command::new("git")
-            .args(["init", "--quiet", "--initial-branch=main"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "seed"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["branch", "phasr/fix"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        let next = unique_branch_name(repo, "fix", "deadbeef");
-        assert_eq!(next, "phasr/fix-2");
-    }
 
     async fn fresh_orchestrator() -> (TaskOrchestrator, RepositoryRepo, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();

@@ -480,9 +480,14 @@ export const useUiStore = create<UiState>((set, get) => ({
     const closed = state.tabs.find((t) => t.id === tabId) ?? null;
     if (!closed || !closed.closable) return null;
     const remaining = state.tabs.filter((t) => t.id !== tabId);
+    if (remaining.length === 0) {
+      const { [workspaceId]: _removed, ...nextInnerTabs } = get().innerTabs;
+      set({ innerTabs: nextInnerTabs });
+      return closed;
+    }
     const newActive =
       state.activeTabId === tabId
-        ? (remaining[remaining.length - 1]?.id ?? remaining[0]?.id ?? "")
+        ? (remaining[remaining.length - 1]?.id ?? remaining[0]!.id)
         : state.activeTabId;
     set({
       innerTabs: {

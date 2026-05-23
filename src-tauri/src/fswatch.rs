@@ -51,26 +51,23 @@ impl WorktreeWatchRegistry {
         let app = self.app.clone();
         let ws_id_for_cb = workspace_id.clone();
         let path_for_filter = path.clone();
-        let debouncer = new_debouncer(
-            DEBOUNCE,
-            move |res: DebounceEventResult| {
-                let Ok(events) = res else { return };
-                // Filter out events under `.git/` — git's internal
-                // bookkeeping (lockfiles, ref updates, object writes)
-                // doesn't change what `git status` reports.
-                let git_dir = path_for_filter.join(".git");
-                let any_relevant = events.iter().any(|e| !e.path.starts_with(&git_dir));
-                if !any_relevant {
-                    return;
-                }
-                let _ = app.emit(
-                    WORKTREE_CHANGED_EVENT,
-                    WorktreeChangedPayload {
-                        workspace_id: ws_id_for_cb.clone(),
-                    },
-                );
-            },
-        );
+        let debouncer = new_debouncer(DEBOUNCE, move |res: DebounceEventResult| {
+            let Ok(events) = res else { return };
+            // Filter out events under `.git/` — git's internal
+            // bookkeeping (lockfiles, ref updates, object writes)
+            // doesn't change what `git status` reports.
+            let git_dir = path_for_filter.join(".git");
+            let any_relevant = events.iter().any(|e| !e.path.starts_with(&git_dir));
+            if !any_relevant {
+                return;
+            }
+            let _ = app.emit(
+                WORKTREE_CHANGED_EVENT,
+                WorktreeChangedPayload {
+                    workspace_id: ws_id_for_cb.clone(),
+                },
+            );
+        });
 
         let mut debouncer = match debouncer {
             Ok(d) => d,
@@ -80,11 +77,11 @@ impl WorktreeWatchRegistry {
             }
         };
 
-        if let Err(e) = debouncer
-            .watcher()
-            .watch(&path, RecursiveMode::Recursive)
-        {
-            eprintln!("[fswatch] watch failed for {workspace_id} at {}: {e}", path.display());
+        if let Err(e) = debouncer.watcher().watch(&path, RecursiveMode::Recursive) {
+            eprintln!(
+                "[fswatch] watch failed for {workspace_id} at {}: {e}",
+                path.display()
+            );
             return;
         }
 
@@ -96,4 +93,3 @@ impl WorktreeWatchRegistry {
         self.watchers.lock().remove(workspace_id);
     }
 }
-

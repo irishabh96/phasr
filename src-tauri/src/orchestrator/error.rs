@@ -29,6 +29,8 @@ pub enum OrchestratorError {
     AgentNotFound(String),
     #[error("no running task for task id `{0}`")]
     TaskNotRunning(String),
+    #[error("task is already finished (status: {0}); create a new one to retry")]
+    AlreadyFinished(String),
 }
 
 impl serde::Serialize for OrchestratorError {
