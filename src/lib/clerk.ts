@@ -10,7 +10,7 @@ export const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY 
 export const isClerkConfigured = Boolean(CLERK_PUBLISHABLE_KEY);
 
 export const CLERK_CONFIG_ERROR =
-  "Missing VITE_CLERK_PUBLISHABLE_KEY. Phasr requires Clerk auth and will not run in a keyless local mode.";
+  "Missing VITE_CLERK_PUBLISHABLE_KEY. Phasr requires Clerk authentication.";
 
 /**
  * Clerk appearance tuned to match Phasr's design tokens. Re-reads CSS

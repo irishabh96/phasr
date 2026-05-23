@@ -1,14 +1,7 @@
 import { SignUp, useAuth } from "@clerk/react";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
-import { clerkAppearance, isClerkConfigured } from "@/lib/clerk";
-
-function SignUpRoute() {
-  if (!isClerkConfigured) {
-    return <Navigate to="/" replace />;
-  }
-  return <ClerkSignUp />;
-}
+import { clerkAppearance } from "@/lib/clerk";
 
 function ClerkSignUp() {
   const { isLoaded, isSignedIn } = useAuth();
@@ -33,5 +26,5 @@ function ClerkSignUp() {
 }
 
 export const Route = createFileRoute("/sign-up")({
-  component: SignUpRoute,
+  component: ClerkSignUp,
 });

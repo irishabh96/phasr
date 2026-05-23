@@ -5,7 +5,9 @@ name: Release
 # publishes. Intel Mac support isn't built pre-1.0 — adding it is a
 # second matrix entry when there's demand.
 #
-# Required repo secrets (Settings → Secrets and variables → Actions):
+# Required GitHub Environment: `release`
+# Add these as environment secrets or variables under:
+# Settings → Environments → release → Secrets and variables
 #   VITE_CLERK_PUBLISHABLE_KEY
 #   VITE_SUPABASE_URL
 #   VITE_SUPABASE_ANON_KEY
@@ -24,6 +26,11 @@ jobs:
   build:
     name: Build aarch64 DMG
     runs-on: macos-14
+    environment: release
+    env:
+      VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY || vars.VITE_CLERK_PUBLISHABLE_KEY }}
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout
@@ -52,13 +59,16 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
+      - name: Verify release environment
+        run: |
+          test -n "$VITE_CLERK_PUBLISHABLE_KEY" || (echo "Missing VITE_CLERK_PUBLISHABLE_KEY in the release environment" && exit 1)
+          test -n "$VITE_SUPABASE_URL" || (echo "Missing VITE_SUPABASE_URL in the release environment" && exit 1)
+          test -n "$VITE_SUPABASE_ANON_KEY" || (echo "Missing VITE_SUPABASE_ANON_KEY in the release environment" && exit 1)
+
       - name: Build + bundle + upload to draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Phasr ${{ github.ref_name }}'

@@ -47,7 +47,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Set `VITE_CLERK_PUBLISHABLE_KEY`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in `.env.local` before launching. Phasr requires sign-in and cloud metadata sync; it does not run in a keyless local mode.
+Set `VITE_CLERK_PUBLISHABLE_KEY`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in `.env.local` before launching. Phasr requires sign-in and cloud metadata sync.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, common commands, and PR flow.
 

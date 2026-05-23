@@ -6,13 +6,16 @@ This doc is maintainer-only — contributors do not need to do any of this to de
 
 ## One-time setup
 
-Add three secrets under **Settings → Secrets and variables → Actions**:
+Create a GitHub Environment named `release` under **Settings → Environments**.
+Add these values under **Settings → Environments → release → Secrets and variables**:
 
 - `VITE_CLERK_PUBLISHABLE_KEY` — production Clerk publishable key
 - `VITE_SUPABASE_URL` — production Supabase project URL
 - `VITE_SUPABASE_ANON_KEY` — production Supabase anon key
 
-These bake into the JS bundle at build time so the public DMGs have cloud sync working. The repo itself never sees them. `GITHUB_TOKEN` is provided automatically.
+Use environment **secrets** if you want GitHub to mask the values in logs. Environment **variables** also work for these public client-side values, and the workflow reads secrets first, then variables. The repo itself never stores them. `GITHUB_TOKEN` is provided automatically.
+
+The release workflow declares `environment: release`, so GitHub only exposes these values to tagged release builds. Add required reviewers or wait timers on the environment if releases should require approval before keys are made available to the runner.
 
 > **Note on key exposure.** Vite inlines `VITE_*` env vars into the JS bundle. Anyone with the DMG can recover the literal strings (`strings`, `grep`). The Clerk publishable key and Supabase anon key are both designed for client-side use — Clerk auth is enforced server-side; Supabase access is gated by RLS policies on the database. The build does not need any private keys.
 
