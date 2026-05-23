@@ -17,6 +17,11 @@ import {
   isSupabaseConfigured,
   SUPABASE_CONFIG_ERROR,
 } from "./lib/supabase";
+import {
+  initSentry,
+  isSentryConfigured,
+  sentryReactRootErrorHandler,
+} from "./lib/sentry";
 
 // Apply theme before React mounts to prevent FOUC.
 applyTheme(readStoredTheme());
@@ -26,6 +31,8 @@ const router = createRouter({
   defaultPreload: "intent",
   context: { queryClient },
 });
+
+initSentry(router);
 
 declare module "@tanstack/react-router" {
   interface Register {
@@ -64,7 +71,15 @@ const missingConfigMessages = [
   ...(isSupabaseConfigured ? [] : [SUPABASE_CONFIG_ERROR]),
 ];
 
-createRoot(rootElement).render(
+const reactRootOptions: Parameters<typeof createRoot>[1] = isSentryConfigured
+  ? {
+      onCaughtError: sentryReactRootErrorHandler,
+      onRecoverableError: sentryReactRootErrorHandler,
+      onUncaughtError: sentryReactRootErrorHandler,
+    }
+  : undefined;
+
+createRoot(rootElement, reactRootOptions).render(
   missingConfigMessages.length > 0 ? (
     <MissingRequiredConfig messages={missingConfigMessages} />
   ) : (

@@ -12,12 +12,16 @@ Add these values under **Settings → Environments → release → Secrets and v
 - `VITE_CLERK_PUBLISHABLE_KEY` — production Clerk publishable key
 - `VITE_SUPABASE_URL` — production Supabase project URL
 - `VITE_SUPABASE_ANON_KEY` — production Supabase anon key
+- `VITE_SENTRY_DSN` — optional production Sentry DSN for React error reporting
+- `VITE_SENTRY_TRACES_SAMPLE_RATE` — optional React performance sample rate between `0` and `1`
+- `VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE` — optional full-session replay sample rate between `0` and `1`
+- `VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE` — optional error-triggered replay sample rate between `0` and `1`
 
 Use environment **secrets** if you want GitHub to mask the values in logs. Environment **variables** also work for these public client-side values, and the workflow reads secrets first, then variables. The repo itself never stores them. `GITHUB_TOKEN` is provided automatically.
 
 The release workflow declares `environment: release`, so GitHub only exposes these values to tagged release builds. Add required reviewers or wait timers on the environment if releases should require approval before keys are made available to the runner.
 
-> **Note on key exposure.** Vite inlines `VITE_*` env vars into the JS bundle. Anyone with the DMG can recover the literal strings (`strings`, `grep`). The Clerk publishable key and Supabase anon key are both designed for client-side use — Clerk auth is enforced server-side; Supabase access is gated by RLS policies on the database. The build does not need any private keys.
+> **Note on key exposure.** Vite inlines `VITE_*` env vars into the JS bundle. Anyone with the DMG can recover the literal strings (`strings`, `grep`). The Clerk publishable key, Supabase anon key, and Sentry DSN are designed for client-side use — Clerk auth is enforced server-side; Supabase access is gated by RLS policies on the database. The build does not need any private keys.
 
 ## Cutting a release
 
