@@ -18,11 +18,7 @@ pub enum DiffScope {
 /// otherwise scoped to that one path). For merge commits, `-m
 /// --first-parent` produces a diff against the first parent rather
 /// than the default empty output.
-pub fn diff_for_commit(
-    cwd: &Path,
-    sha: &str,
-    path: Option<&str>,
-) -> Result<String, GitError> {
+pub fn diff_for_commit(cwd: &Path, sha: &str, path: Option<&str>) -> Result<String, GitError> {
     let mut args: Vec<&str> = vec!["show", "--no-color", "-m", "--first-parent", "--format="];
     args.push(sha);
     if let Some(p) = path {

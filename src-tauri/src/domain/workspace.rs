@@ -2,9 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// One agent run inside a repository. Owns an isolated git worktree on
-/// a `phasr/<short-id>` branch and a PTY session. Previously called
-/// `Task`; renamed in Phase 7 so the wording matches what users see
-/// in similar tools.
+/// a `phasr/*` branch and a PTY session. Previously called `Task`;
+/// renamed in Phase 7 so the wording matches what users see in similar tools.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceStatus {

@@ -1,7 +1,7 @@
 //! Task orchestrator. Owns the lifecycle of an agent run:
 //!
 //!   1. Resolve the agent's command template + interpolate vars.
-//!   2. Create the per-task git worktree on `phasr/<short-id>`.
+//!   2. Create the per-task git worktree on a deterministic `phasr/*` branch.
 //!   3. Spawn the PTY in that worktree, transition to `running`.
 //!   4. Watch the PTY's exit event and flip the row to
 //!      `completed` / `failed` once it fires.
@@ -153,12 +153,11 @@ impl TaskOrchestrator {
         workspace.agent_id = Some(request.agent_id.clone());
 
         let task_id = workspace.id.clone();
-        let branch = unique_branch_name(
-            &repository_path,
-            &slugify(&workspace.name),
-            short_id(&task_id),
-        );
-        let worktree_path = worktree_base_path().join(&task_id);
+        let slug = git::slugify(&workspace.name);
+        let branch_seed = git::default_branch_name(&slug, git::short_id(&task_id));
+        let branch =
+            git::unique_branch_name(&repository_path, &branch_seed, git::short_id(&task_id));
+        let worktree_path = git::default_worktree_base_path().join(&task_id);
         let base_ref = request
             .base_branch
             .clone()
@@ -509,83 +508,6 @@ fn interpolate_for_task(template: &str, prompt: Option<&str>) -> String {
     interpolate_command(template, &vars)
 }
 
-/// `~/.phasr/worktrees`, matching the plan's layout. Falls back to
-/// `/tmp` if `$HOME` is unset (CI sandboxes).
-fn worktree_base_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".phasr").join("worktrees")
-}
-
-/// First UUID segment — short enough to fit in a branch name without
-/// being so short that two concurrent tasks could collide. Used as the
-/// fallback slug when the task name produces an empty slug.
-fn short_id(id: &str) -> &str {
-    id.split('-').next().unwrap_or(id)
-}
-
-/// Lowercase, alphanumeric-or-dash slug derived from a task name.
-/// Collapses runs of non-alphanumerics to a single dash and trims
-/// leading/trailing dashes. Returns empty string when no usable
-/// characters remain.
-fn slugify(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut prev_dash = true;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
-}
-
-/// Build `phasr/<slug>` and bump with `-2`, `-3`, ... if a branch with
-/// that name already exists in `repo_path`. Falls back to `phasr/<id>`
-/// when the slug is empty (e.g. task name is whitespace-only).
-fn unique_branch_name(repo_path: &std::path::Path, slug: &str, id_fallback: &str) -> String {
-    let base = if slug.is_empty() {
-        id_fallback.to_string()
-    } else {
-        slug.to_string()
-    };
-    let candidate = format!("phasr/{base}");
-    if !branch_exists(repo_path, &candidate) {
-        return candidate;
-    }
-    for suffix in 2..1000 {
-        let next = format!("phasr/{base}-{suffix}");
-        if !branch_exists(repo_path, &next) {
-            return next;
-        }
-    }
-    // 1000 collisions is implausible; fall through to the id-based name
-    // which is functionally unique.
-    format!("phasr/{base}-{id_fallback}")
-}
-
-/// `true` when the local branch already exists. Errors (repo not found,
-/// permissions) collapse to `false` — the subsequent `git worktree add`
-/// will surface the real error if any.
-fn branch_exists(repo_path: &std::path::Path, name: &str) -> bool {
-    std::process::Command::new("git")
-        .arg("show-ref")
-        .arg("--verify")
-        .arg("--quiet")
-        .arg(format!("refs/heads/{name}"))
-        .current_dir(repo_path)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,64 +516,6 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use std::time::Duration;
-
-    #[test]
-    fn slugify_basics() {
-        assert_eq!(slugify("Add dark mode"), "add-dark-mode");
-        assert_eq!(slugify("Fix checkout bug!"), "fix-checkout-bug");
-        assert_eq!(slugify("  multiple   spaces  "), "multiple-spaces");
-        assert_eq!(slugify("UPPER → lower"), "upper-lower");
-        assert_eq!(slugify(""), "");
-        assert_eq!(slugify("???"), "");
-        assert_eq!(slugify("v1.2.3-rc"), "v1-2-3-rc");
-    }
-
-    #[test]
-    fn unique_branch_name_falls_back_when_slug_empty() {
-        // No repo on disk — branch_exists returns false for everything.
-        let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(
-            unique_branch_name(tmp.path(), "", "deadbeef"),
-            "phasr/deadbeef"
-        );
-        assert_eq!(
-            unique_branch_name(tmp.path(), "fix-typo", "deadbeef"),
-            "phasr/fix-typo"
-        );
-    }
-
-    #[test]
-    fn unique_branch_name_collides_when_branch_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path();
-        Command::new("git")
-            .args(["init", "--quiet", "--initial-branch=main"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "seed"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["branch", "phasr/fix"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
-        let next = unique_branch_name(repo, "fix", "deadbeef");
-        assert_eq!(next, "phasr/fix-2");
-    }
 
     async fn fresh_orchestrator() -> (TaskOrchestrator, RepositoryRepo, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();

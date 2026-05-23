@@ -10,6 +10,7 @@ mod files;
 mod init;
 mod log;
 mod merge;
+mod naming;
 mod pr;
 mod remote;
 mod status;
@@ -28,6 +29,9 @@ pub use merge::{
     abort as merge_abort, continue_after_resolution as merge_continue, has_unpushed_commits,
     in_progress as merge_in_progress, merge_into, merge_to, set_resolution as merge_set_resolution,
     ConflictSide, InProgress, MergeOutcome, MergeStrategy,
+};
+pub use naming::{
+    default_branch_name, default_worktree_base_path, short_id, slugify, unique_branch_name,
 };
 pub use pr::build_pull_request_target;
 pub use remote::{get_default_branch, get_remote_url, list_local_branches};

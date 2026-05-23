@@ -26,10 +26,10 @@ interface NewTaskFormProps {
  *   - Base branch — defaults to the repo's default branch
  *
  * On submit, calls the orchestrator's `start_task` Tauri command.
- * That command creates the workspace row, the worktree on
- * `phasr/<short-id>`, spawns the PTY, and flips status to running —
- * one round-trip. The caller usually navigates to the resulting task
- * via `onCreated` so the user lands directly on the live terminal.
+ * That command creates the workspace row, the worktree on a `phasr/*`
+ * branch, spawns the PTY, and flips status to running — one round-trip.
+ * The caller usually navigates to the resulting task via `onCreated`
+ * so the user lands directly on the live terminal.
  */
 export function NewTaskForm({
   repositoryId,
@@ -159,7 +159,7 @@ export function NewTaskForm({
           placeholder={repository?.defaultBranch ?? "main"}
         />
         <span className="text-[11px] text-(--color-text-muted)">
-          Worktree will branch off this ref onto a new <code>phasr/…</code> branch.
+          Worktree will branch off this ref onto a new <code>phasr/...</code> branch.
         </span>
       </div>
 

@@ -113,19 +113,13 @@ mod tests {
 
     #[test]
     fn tolerates_whitespace_inside_braces() {
-        let out = interpolate_command(
-            "echo {{ prompt }}",
-            &vars(&[("prompt", "ok")]),
-        );
+        let out = interpolate_command("echo {{ prompt }}", &vars(&[("prompt", "ok")]));
         assert_eq!(out, "echo ok");
     }
 
     #[test]
     fn leaves_unknown_placeholders_intact() {
-        let out = interpolate_command(
-            "run {{prompt}} {{missing}}",
-            &vars(&[("prompt", "x")]),
-        );
+        let out = interpolate_command("run {{prompt}} {{missing}}", &vars(&[("prompt", "x")]));
         assert_eq!(out, "run x {{missing}}");
     }
 
@@ -137,10 +131,7 @@ mod tests {
 
     #[test]
     fn multiple_placeholders_substituted_in_order() {
-        let out = interpolate_command(
-            "{{a}}-{{b}}-{{a}}",
-            &vars(&[("a", "1"), ("b", "2")]),
-        );
+        let out = interpolate_command("{{a}}-{{b}}-{{a}}", &vars(&[("a", "1"), ("b", "2")]));
         assert_eq!(out, "1-2-1");
     }
 
@@ -157,10 +148,7 @@ mod tests {
 
     #[test]
     fn escapes_backslashes() {
-        let out = interpolate_command(
-            r#"echo "{{p}}""#,
-            &vars(&[("p", r"a\b")]),
-        );
+        let out = interpolate_command(r#"echo "{{p}}""#, &vars(&[("p", r"a\b")]));
         assert_eq!(out, r#"echo "a\\b""#);
     }
 

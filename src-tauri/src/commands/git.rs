@@ -57,10 +57,7 @@ impl serde::Serialize for GitCmdError {
     }
 }
 
-async fn workspace_cwd(
-    repo: &WorkspaceRepo,
-    workspace_id: &str,
-) -> Result<PathBuf, GitCmdError> {
+async fn workspace_cwd(repo: &WorkspaceRepo, workspace_id: &str) -> Result<PathBuf, GitCmdError> {
     let workspace = repo.get(workspace_id).await?;
     workspace
         .worktree_path
@@ -267,7 +264,9 @@ pub async fn git_merge_to_main(
         .as_ref()
         .map(PathBuf::from)
         .ok_or_else(|| {
-            GitCmdError::Git(GitError::CommandFailed("repository has no local path".into()))
+            GitCmdError::Git(GitError::CommandFailed(
+                "repository has no local path".into(),
+            ))
         })?;
     Ok(git::merge_to(
         &main_repo,

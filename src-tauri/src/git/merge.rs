@@ -322,19 +322,51 @@ mod tests {
     use std::process::Command;
 
     fn init_repo(path: &Path) {
-        Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "user.email", "t@example.com"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "user.name", "tester"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "commit.gpgsign", "false"]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@example.com"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "tester"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(path)
+            .status()
+            .unwrap();
         std::fs::write(path.join("README.md"), "hi\n").unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["commit", "-qm", "init"]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(path)
+            .status()
+            .unwrap();
     }
 
     fn add_commit(path: &Path, file: &str, contents: &str, msg: &str) {
         std::fs::write(path.join(file), contents).unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["commit", "-qm", msg]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", msg])
+            .current_dir(path)
+            .status()
+            .unwrap();
     }
 
     fn checkout(path: &Path, branch: &str, create: bool) {
@@ -343,7 +375,11 @@ mod tests {
             args.push("-b");
         }
         args.push(branch);
-        Command::new("git").args(&args).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(&args)
+            .current_dir(path)
+            .status()
+            .unwrap();
     }
 
     #[test]
@@ -411,7 +447,10 @@ mod tests {
         checkout(dir.path(), "main", false);
         add_commit(dir.path(), "README.md", "main\n", "main edit");
         let _ = merge_into(dir.path(), "feature", MergeStrategy::Merge).unwrap();
-        assert!(matches!(in_progress(dir.path()).unwrap(), InProgress::Merge { .. }));
+        assert!(matches!(
+            in_progress(dir.path()).unwrap(),
+            InProgress::Merge { .. }
+        ));
 
         abort(dir.path()).unwrap();
         assert_eq!(in_progress(dir.path()).unwrap(), InProgress::None);
@@ -448,8 +487,7 @@ mod tests {
         checkout(dir.path(), "feature", true);
         add_commit(dir.path(), "feat.txt", "feat\n", "feature work");
         checkout(dir.path(), "main", false);
-        let outcome =
-            merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward).unwrap();
+        let outcome = merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward).unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         assert!(dir.path().join("feat.txt").exists());
     }

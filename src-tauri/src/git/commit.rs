@@ -44,7 +44,10 @@ pub fn unstage(cwd: &Path, paths: &[&str]) -> Result<(), GitError> {
 pub fn discard(cwd: &Path, paths: &[&str]) -> Result<(), GitError> {
     if paths.is_empty() {
         // Discarding everything: reset index + working tree, then sweep untracked.
-        run_git(cwd, &["restore", "--staged", "--worktree", "--source=HEAD", ":/"])?;
+        run_git(
+            cwd,
+            &["restore", "--staged", "--worktree", "--source=HEAD", ":/"],
+        )?;
         run_git(cwd, &["clean", "-fd"])?;
         return Ok(());
     }
@@ -67,11 +70,7 @@ pub fn discard(cwd: &Path, paths: &[&str]) -> Result<(), GitError> {
 pub fn commit(cwd: &Path, message: &str) -> Result<CommitOutput, GitError> {
     // Use `-F -` so we never have to escape multi-line messages on
     // shell. `--cleanup=verbatim` keeps the message exactly as given.
-    let stdout = run_git_with_stdin(
-        cwd,
-        &["commit", "--cleanup=verbatim", "-F", "-"],
-        message,
-    )?;
+    let stdout = run_git_with_stdin(cwd, &["commit", "--cleanup=verbatim", "-F", "-"], message)?;
 
     // Parse `[branch sha] message` from stdout.
     let sha = stdout

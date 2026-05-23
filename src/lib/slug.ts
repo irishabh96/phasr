@@ -1,5 +1,5 @@
 /**
- * Mirror of the Rust `slugify` in src-tauri/src/orchestrator/service.rs.
+ * Mirror of the Rust `slugify` in src-tauri/src/git/naming.rs.
  * Used by the UI to preview the branch name the orchestrator will create.
  *
  * Keep these two in sync — if you change one, change the other plus the

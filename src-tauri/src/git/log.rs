@@ -271,16 +271,40 @@ mod tests {
     use std::process::Command;
 
     fn init_repo(path: &Path) {
-        Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "user.email", "t@example.com"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "user.name", "tester"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "commit.gpgsign", "false"]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@example.com"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "tester"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(path)
+            .status()
+            .unwrap();
     }
 
     fn add_commit(path: &Path, file: &str, msg: &str) {
         std::fs::write(path.join(file), msg).unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["commit", "-qm", msg]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", msg])
+            .current_dir(path)
+            .status()
+            .unwrap();
     }
 
     #[test]
@@ -330,7 +354,9 @@ mod tests {
         .unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.iter().any(|c| c.subject.contains("feat: add login")));
-        assert!(result.iter().any(|c| c.subject.contains("fix: login redirect")));
+        assert!(result
+            .iter()
+            .any(|c| c.subject.contains("fix: login redirect")));
     }
 
     #[test]
@@ -361,7 +387,11 @@ mod tests {
         init_repo(dir.path());
         add_commit(dir.path(), "main-1.txt", "main: 1");
         add_commit(dir.path(), "main-2.txt", "main: 2");
-        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
         add_commit(dir.path(), "feat-1.txt", "feat: 1");
         add_commit(dir.path(), "feat-2.txt", "feat: 2");
 
@@ -405,11 +435,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
         add_commit(dir.path(), "root.txt", "root");
-        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
         add_commit(dir.path(), "f.txt", "feature work");
-        Command::new("git").args(["checkout", "-q", "main"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["checkout", "-q", "main"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
         add_commit(dir.path(), "m.txt", "main work");
-        Command::new("git").args(["merge", "--no-ff", "feature", "-m", "merge feature"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["merge", "--no-ff", "feature", "-m", "merge feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
 
         let result = log(dir.path(), &LogOptions::default()).unwrap();
         // Newest is the merge commit.
@@ -423,10 +465,21 @@ mod tests {
         init_repo(dir.path());
         std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "b\n").unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(dir.path()).status().unwrap();
-        Command::new("git").args(["commit", "-qm", "two files"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "two files"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
 
-        let sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let sha = run_git(dir.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         let files = commit_files(dir.path(), &sha).unwrap();
         assert_eq!(files.len(), 2);
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
@@ -441,10 +494,21 @@ mod tests {
         init_repo(dir.path());
         add_commit(dir.path(), "old.txt", "old content here\n");
         std::fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(dir.path()).status().unwrap();
-        Command::new("git").args(["commit", "-qm", "rename"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "rename"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
 
-        let sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let sha = run_git(dir.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         let files = commit_files(dir.path(), &sha).unwrap();
         // Git may detect this as either a rename (R) or as add+delete
         // depending on similarity. Tolerate both — but the row count

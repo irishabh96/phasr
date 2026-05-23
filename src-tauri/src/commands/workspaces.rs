@@ -75,17 +75,6 @@ impl serde::Serialize for WorkspaceCmdError {
     }
 }
 
-fn worktree_base_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".phasr").join("worktrees")
-}
-
-fn short_id(id: &str) -> &str {
-    id.split('-').next().unwrap_or(id)
-}
-
 /// Start watching the active workspace's worktree for fs changes.
 /// The frontend calls this when a user opens the workspace view and
 /// pairs it with `unwatch_workspace` on unmount, so we only ever
@@ -133,8 +122,8 @@ pub async fn create_workspace(
     if let Some(repo_path_str) = repository.local_path.as_deref() {
         let repo_path = PathBuf::from(repo_path_str);
         if repo_path.exists() && repo_path.join(".git").exists() {
-            let branch = format!("phasr/{}", short_id(&workspace.id));
-            let worktree_path = worktree_base_path().join(&workspace.id);
+            let branch = format!("phasr/{}", git::short_id(&workspace.id));
+            let worktree_path = git::default_worktree_base_path().join(&workspace.id);
             git::create_worktree(
                 &repo_path,
                 &worktree_path,
@@ -329,8 +318,8 @@ pub async fn check_workspace_delete(
             has_unpushed_commits: false,
         });
     };
-    let has = crate::git::has_unpushed_commits(std::path::Path::new(repo_path), branch)
-        .unwrap_or(false);
+    let has =
+        crate::git::has_unpushed_commits(std::path::Path::new(repo_path), branch).unwrap_or(false);
     Ok(WorkspaceDeleteCheck {
         has_unpushed_commits: has,
     })
