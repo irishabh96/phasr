@@ -68,11 +68,20 @@ interface StartTaskInput {
   cols?: number;
 }
 
+interface StartCloudSyncInput {
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  machineId: string;
+}
+
 export const tauri = {
   // ── auth ─────────────────────────────────────────────────────────────
   setSession: (jwt: string) => invoke<string>("set_session", { jwt }),
   clearSession: () => invoke<void>("clear_session"),
   currentUserId: () => invoke<string | null>("current_user_id"),
+  startCloudSync: (input: StartCloudSyncInput) =>
+    invoke<void>("start_cloud_sync", { input }),
+  stopCloudSync: () => invoke<void>("stop_cloud_sync"),
 
   // ── repositories ─────────────────────────────────────────────────────
   createRepository: (input: CreateRepositoryInput) =>

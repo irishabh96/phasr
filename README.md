@@ -47,7 +47,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-That's enough to run a fully local build — no cloud credentials required. Sign-in and cross-device sync are skipped, your data lives in SQLite at `~/Library/Application Support/sh.phasr.desktop`.
+Set `VITE_CLERK_PUBLISHABLE_KEY`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in `.env.local` before launching. Phasr requires sign-in and cloud metadata sync; it does not run in a keyless local mode.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, common commands, and PR flow.
 
@@ -58,7 +58,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, common commands, and 
 - **Router / data**: TanStack Router + Query, Zustand
 - **Local DB**: SQLite via `sqlx`
 - **Terminals**: xterm.js + WebGL renderer, backed by a per-workspace PTY in Rust
-- *(Optional)* Cloud sync via Clerk + Supabase — disabled in keyless builds
+- **Auth + cloud sync**: Clerk + Supabase, required at runtime
 
 ## Releases
 

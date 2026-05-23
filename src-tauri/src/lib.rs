@@ -10,6 +10,7 @@ mod localfs;
 mod orchestrator;
 mod pty;
 mod store;
+mod sync;
 
 use std::sync::Arc;
 
@@ -27,11 +28,13 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let session_state = Arc::new(SessionState::default());
+    let cloud_sync_state = Arc::new(sync::CloudSyncState::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(session_state)
+        .manage(cloud_sync_state)
         .setup(|app| {
             #[cfg(target_os = "macos")]
             dock_icon::set_dock_icon();
@@ -113,7 +116,8 @@ pub fn run() {
                         handle.manage(workspace_repo);
                         handle.manage(RunCommandRepo::new(pool.clone()));
                         handle.manage(agent_repo);
-                        handle.manage(SettingsRepo::new(pool));
+                        handle.manage(SettingsRepo::new(pool.clone()));
+                        handle.manage(pool);
                         handle.manage(orchestrator);
                     }
                     Err(err) => {
@@ -131,6 +135,8 @@ pub fn run() {
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
+            sync::start_cloud_sync,
+            sync::stop_cloud_sync,
             commands::repositories::create_repository,
             commands::repositories::list_repositories,
             commands::repositories::get_repository,

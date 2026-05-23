@@ -18,18 +18,6 @@
 //!    Tauri commands call `require()` which returns the session or an
 //!    `AuthError::NotSignedIn` typed error.
 //!
-//! ## Local-only mode
-//!
-//! If Phasr was built/launched without a Clerk publishable key, the React
-//! side never calls `set_session` or `clear_session` at all (see
-//! `src/lib/use-rust-session.ts`). The Rust session stays in
-//! `Mode::Unconfigured`, and `require()` allows commands through. This
-//! preserves dev ergonomics (no need to spin up Clerk locally) without
-//! letting a signed-in-then-signed-out flow accidentally fall back to
-//! "open access": once `set_session` has been called even once, we leave
-//! `Unconfigured` and a later `clear_session` lands us in `SignedOut`
-//! (which `require()` blocks).
-//!
 //! ## What we don't do
 //!
 //! - We don't validate `aud` — Clerk doesn't always set one and the
@@ -92,12 +80,9 @@ pub struct Session {
 /// What the auth gate currently allows.
 #[derive(Debug, Clone)]
 enum Mode {
-    /// Nothing has ever been set on the Rust side. Treated as local-only
-    /// mode — commands are allowed through. We only stay here until the
-    /// first `set_session`/`clear_session` call lands.
-    Unconfigured,
     /// A Clerk JWT was previously verified, but the user has since signed
-    /// out (frontend called `clear_session`). Commands are blocked.
+    /// out (frontend called `clear_session`), or no JWT has ever been
+    /// verified. Commands are blocked.
     SignedOut,
     /// A Clerk JWT was successfully verified against JWKS and the user is
     /// considered signed in. Commands are allowed.
@@ -188,7 +173,7 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
-            mode: RwLock::new(Mode::Unconfigured),
+            mode: RwLock::new(Mode::SignedOut),
             jwks: RwLock::new(None),
             fetcher: Arc::new(ReqwestJwksFetcher),
         }
@@ -201,7 +186,7 @@ impl SessionState {
     #[cfg(test)]
     pub fn with_fetcher(fetcher: Arc<dyn JwksFetcher>) -> Self {
         Self {
-            mode: RwLock::new(Mode::Unconfigured),
+            mode: RwLock::new(Mode::SignedOut),
             jwks: RwLock::new(None),
             fetcher,
         }
@@ -214,25 +199,21 @@ impl SessionState {
         }
     }
 
-    /// `true` while the Rust side has never been told about a Clerk
-    /// session. Phasr accepts commands in this mode so dev/local-only
-    /// flows keep working without Clerk credentials. Exposed for
-    /// observability (e.g. a future health endpoint or log line);
-    /// `require()` is the actual enforcement path.
+    /// `true` when a Clerk JWT has been verified and protected commands
+    /// may proceed.
     #[allow(dead_code)]
-    pub fn local_only_mode_enabled(&self) -> bool {
-        matches!(*self.mode.read(), Mode::Unconfigured)
+    pub fn is_authenticated(&self) -> bool {
+        matches!(*self.mode.read(), Mode::Authenticated(_))
     }
 
-    /// Returns the current session, or `Ok(None)` in local-only mode,
-    /// or `Err(NotSignedIn)` when the user is signed out.
+    /// Returns the current session, or `Err(NotSignedIn)` when the user
+    /// is signed out or the renderer has not provided a verified JWT yet.
     ///
     /// Every Tauri command except `set_session` / `clear_session` should
     /// call this at the top before doing anything else.
     pub fn require(&self) -> Result<Option<Session>, AuthError> {
         match &*self.mode.read() {
             Mode::Authenticated(s) => Ok(Some(s.clone())),
-            Mode::Unconfigured => Ok(None),
             Mode::SignedOut => Err(AuthError::NotSignedIn),
         }
     }
@@ -420,9 +401,9 @@ pub fn clear_session(state: State<'_, Arc<SessionState>>) {
 }
 
 /// Read-only accessor used by the frontend to confirm the Rust side
-/// agrees on who's signed in. Always safe to call: returns `None` in
-/// local-only or signed-out states (instead of erroring) so the UI can
-/// render a fallback without juggling another error path.
+/// agrees on who's signed in. Always safe to call: returns `None` when
+/// signed out instead of erroring, so the UI can render a fallback
+/// without juggling another error path.
 #[tauri::command]
 pub fn current_user_id(state: State<'_, Arc<SessionState>>) -> Option<String> {
     state.current().map(|s| s.user_id)
@@ -547,14 +528,12 @@ mod tests {
         assert_eq!(claims.sub, "user_abc");
         assert_eq!(claims.iss, TEST_ISSUER);
 
-        // local-only flag flips off once a verification succeeds and the
-        // session is set. (Local-only is *only* the never-touched state.)
-        assert!(state.local_only_mode_enabled());
+        assert!(!state.is_authenticated());
         state.set_authenticated(Session {
             user_id: "user_abc".into(),
             jwt: jwt.clone(),
         });
-        assert!(!state.local_only_mode_enabled());
+        assert!(state.is_authenticated());
     }
 
     #[tokio::test]
@@ -678,13 +657,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn require_local_only_when_unconfigured() {
+    async fn require_blocks_before_authentication() {
         let keys = TestKeys::generate("kid-1");
         let fetcher = Arc::new(MockFetcher::new(jwks_doc(&[&keys])));
         let state = SessionState::with_fetcher(fetcher);
-        // Default state: never touched.
-        assert!(state.local_only_mode_enabled());
-        assert!(matches!(state.require(), Ok(None)));
+        assert!(!state.is_authenticated());
+        assert!(matches!(state.require(), Err(AuthError::NotSignedIn)));
     }
 
     #[tokio::test]
@@ -693,7 +671,7 @@ mod tests {
         let fetcher = Arc::new(MockFetcher::new(jwks_doc(&[&keys])));
         let state = SessionState::with_fetcher(fetcher);
         state.set_signed_out();
-        assert!(!state.local_only_mode_enabled());
+        assert!(!state.is_authenticated());
         assert!(matches!(state.require(), Err(AuthError::NotSignedIn)));
     }
 

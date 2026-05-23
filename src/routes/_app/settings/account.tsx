@@ -3,37 +3,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { LogOut } from "lucide-react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { isClerkConfigured } from "@/lib/clerk";
 
 function AccountPage() {
-  if (!isClerkConfigured) {
-    return <KeylessAccountPlaceholder />;
-  }
   return <ClerkAccountPage />;
-}
-
-function KeylessAccountPlaceholder() {
-  return (
-    <div className="space-y-6">
-      <header>
-        <h2 className="text-[15px] font-semibold tracking-tight leading-none">Account</h2>
-        <p className="mt-1.5 text-[12px] text-(--color-text-muted)">
-          Cloud sync is not configured in this build.
-        </p>
-      </header>
-      <GlassPanel className="p-5 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
-        <p>
-          Phasr is running in local-only mode. Your repositories and workspaces live on this
-          machine in SQLite. To enable sign-in and cross-device sync, add your own Clerk and
-          Supabase keys to <code className="text-(--color-text-primary)">.env.local</code> and
-          rebuild from source.
-        </p>
-        <p className="mt-2">
-          See <code className="text-(--color-text-primary)">CONTRIBUTING.md</code> for setup.
-        </p>
-      </GlassPanel>
-    </div>
-  );
 }
 
 function ClerkAccountPage() {

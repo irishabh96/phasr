@@ -3,13 +3,14 @@ export const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY 
   | undefined;
 
 /**
- * Cloud auth is optional. When no publishable key is configured (e.g.
- * contributor build with no .env.local), the app runs in local-only
- * mode: no Clerk provider, no sign-in flow, no cloud sync. Consumers
- * must check this before invoking any Clerk hook — they require a
- * ClerkProvider parent in the tree.
+ * Auth is required for every build. If this is missing, the app renders
+ * a configuration error instead of mounting routes or Tauri-backed data
+ * hooks.
  */
 export const isClerkConfigured = Boolean(CLERK_PUBLISHABLE_KEY);
+
+export const CLERK_CONFIG_ERROR =
+  "Missing VITE_CLERK_PUBLISHABLE_KEY. Phasr requires Clerk auth and will not run in a keyless local mode.";
 
 /**
  * Clerk appearance tuned to match Phasr's design tokens. Re-reads CSS
