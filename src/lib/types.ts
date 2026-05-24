@@ -22,6 +22,7 @@ export interface Repository {
 export interface Workspace {
   id: string;
   repositoryId: string;
+  workspaceKind: "agent" | "local";
   name: string;
   prompt: string | null;
   agentId: string | null;
@@ -222,4 +223,5 @@ export interface Launcher {
   id: string;
   name: string;
   kind: LauncherKind;
+  available: boolean;
 }

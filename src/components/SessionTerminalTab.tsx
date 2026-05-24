@@ -23,6 +23,7 @@ interface SessionTerminalTabProps {
   repositoryId?: string;
   tabId: string;
   cwd: string;
+  initialCommand?: string;
   /** Persisted from the previous mount, if any. */
   ptySessionId: string | undefined;
   visible: boolean;
@@ -99,6 +100,7 @@ export function SessionTerminalTab({
   repositoryId,
   tabId,
   cwd,
+  initialCommand,
   ptySessionId,
   visible,
 }: SessionTerminalTabProps) {
@@ -194,6 +196,7 @@ export function SessionTerminalTab({
             channel,
             term.rows,
             term.cols,
+            initialCommand,
           );
           entry!.sessionId = id;
           persistSession(id);
@@ -289,7 +292,7 @@ export function SessionTerminalTab({
       getHiddenHost().appendChild(entry!.container);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, repositoryId, tabId, cwd]);
+  }, [workspaceId, repositoryId, tabId, cwd, initialCommand]);
 
   useEffect(() => {
     const entry = sessionXtermCache.get(tabId);

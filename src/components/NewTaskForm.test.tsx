@@ -49,6 +49,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     id: "task-1",
     repositoryId: "repo-1",
+    workspaceKind: "agent",
     name: "fix login bug",
     prompt: null,
     agentId: "agent-claude",
@@ -70,7 +71,9 @@ function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -109,7 +112,10 @@ describe("NewTaskForm", () => {
   it("calls start_task with the form values and fires onCreated", async () => {
     const created: StartedTask = {
       taskId: "task-1",
-      workspace: makeWorkspace({ name: "fix login bug", prompt: "make it work" }),
+      workspace: makeWorkspace({
+        name: "fix login bug",
+        prompt: "make it work",
+      }),
     };
     startTask.mockResolvedValue(created);
     const onCreated = vi.fn();
@@ -137,7 +143,9 @@ describe("NewTaskForm", () => {
       prompt: "make it work",
       baseBranch: "main",
     });
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created.workspace));
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith(created.workspace),
+    );
   });
 
   it("surfaces backend errors inline without throwing", async () => {
@@ -151,7 +159,9 @@ describe("NewTaskForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start task" }));
 
     await waitFor(() =>
-      expect(screen.getByText(/repository has no local path/)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/repository has no local path/),
+      ).toBeInTheDocument(),
     );
   });
 });

@@ -122,7 +122,15 @@ export const tauri = {
     onEvent: Channel<PtyEvent>,
     rows?: number,
     cols?: number,
-  ) => invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
+    initialCommand?: string,
+  ) =>
+    invoke<string>("start_session_terminal", {
+      cwd,
+      onEvent,
+      rows,
+      cols,
+      initialCommand,
+    }),
   attachSessionTerminal: (sessionId: string, onEvent: Channel<PtyEvent>) =>
     invoke<void>("attach_session_terminal", { sessionId, onEvent }),
   sendSessionInput: (sessionId: string, data: string) =>

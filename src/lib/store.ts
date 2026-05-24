@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
-import { applyTheme, readStoredTheme, writeStoredTheme, type Theme } from "./theme";
+import {
+  applyTheme,
+  readStoredTheme,
+  writeStoredTheme,
+  type Theme,
+} from "./theme";
 
 // ---------- Active workspace context ----------
 
@@ -25,6 +30,8 @@ export interface InnerTab {
   closable: boolean;
   /** Terminal — backend session uuid. Set after `start_session_terminal` returns. */
   ptySessionId?: string;
+  /** Terminal — optional command typed into the shell after it opens. */
+  initialCommand?: string;
   /** Preview — repo-relative file path. */
   filePath?: string;
 }
@@ -54,6 +61,8 @@ export interface RepoInnerTab {
   filePath?: string;
   /** Terminal — backend session uuid. Set after `start_session_terminal` returns. */
   ptySessionId?: string;
+  /** Terminal — optional command typed into the shell after it opens. */
+  initialCommand?: string;
 }
 
 export interface RepoInnerTabState {
@@ -88,9 +97,9 @@ const SIDEBAR_KEY = "phasr.sidebar";
 const RIGHT_PANEL_KEY = "phasr.rightPanel";
 
 function readSidebar(): SidebarMode {
-  if (typeof window === "undefined") return "collapsed";
+  if (typeof window === "undefined") return "pinned";
   const v = window.localStorage.getItem(SIDEBAR_KEY);
-  return v === "pinned" || v === "hidden" ? v : "collapsed";
+  return v === "collapsed" || v === "hidden" ? v : "pinned";
 }
 
 function readRightPanel(): boolean {
@@ -106,6 +115,8 @@ interface UiState {
   setSidebarMode: (mode: SidebarMode) => void;
   toggleSidebarPin: () => void;
   toggleSidebarHidden: () => void;
+  repoWorkspaceExpanded: Record<string, boolean>;
+  toggleRepoWorkspaceExpanded: (repositoryId: string) => void;
 
   rightPanelCollapsed: boolean;
   toggleRightPanel: () => void;
@@ -119,7 +130,6 @@ interface UiState {
    */
   rightPanelTab: Record<string, "changes" | "history">;
   setRightPanelTab: (workspaceId: string, tab: "changes" | "history") => void;
-
 
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
@@ -142,14 +152,20 @@ interface UiState {
    */
   repoInnerTabs: Record<string, RepoInnerTabState>;
   ensureRepoInnerTabs: (repositoryId: string) => void;
-  openRepoInnerPreviewTab: (repositoryId: string, filePath: string) => RepoInnerTab;
+  openRepoInnerPreviewTab: (
+    repositoryId: string,
+    filePath: string,
+  ) => RepoInnerTab;
   openRepoInnerTerminalTab: (repositoryId: string) => RepoInnerTab;
   setRepoInnerTabPtySession: (
     repositoryId: string,
     tabId: string,
     ptySessionId: string,
   ) => void;
-  closeRepoInnerTab: (repositoryId: string, tabId: string) => RepoInnerTab | null;
+  closeRepoInnerTab: (
+    repositoryId: string,
+    tabId: string,
+  ) => RepoInnerTab | null;
   setActiveRepoInnerTab: (repositoryId: string, tabId: string) => void;
 
   /**
@@ -190,12 +206,19 @@ interface UiState {
   ensureInnerTabs: (workspaceId: string, mainTitle: string) => void;
   /** Focus existing "main" tab or create one (used by "+ Open agent" + empty state). */
   openInnerAgentTab: (workspaceId: string, title: string) => InnerTab;
-  openInnerTerminalTab: (workspaceId: string) => InnerTab;
+  openInnerTerminalTab: (
+    workspaceId: string,
+    options?: { title?: string; initialCommand?: string },
+  ) => InnerTab;
   openInnerPreviewTab: (workspaceId: string, filePath: string) => InnerTab;
   /** Refuses to close the non-closable "main" tab. */
   closeInnerTab: (workspaceId: string, tabId: string) => InnerTab | null;
   setActiveInnerTab: (workspaceId: string, tabId: string) => void;
-  setInnerTabPtySession: (workspaceId: string, tabId: string, ptySessionId: string) => void;
+  setInnerTabPtySession: (
+    workspaceId: string,
+    tabId: string,
+    ptySessionId: string,
+  ) => void;
 
   runPanel: RunPanelState;
 }
@@ -210,30 +233,51 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   sidebarMode: readSidebar(),
   setSidebarMode: (mode) => {
-    if (typeof window !== "undefined") window.localStorage.setItem(SIDEBAR_KEY, mode);
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(SIDEBAR_KEY, mode);
     set({ sidebarMode: mode });
   },
   toggleSidebarPin: () => {
-    const next: SidebarMode = get().sidebarMode === "pinned" ? "collapsed" : "pinned";
-    if (typeof window !== "undefined") window.localStorage.setItem(SIDEBAR_KEY, next);
+    const next: SidebarMode =
+      get().sidebarMode === "pinned" ? "collapsed" : "pinned";
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(SIDEBAR_KEY, next);
     set({ sidebarMode: next });
   },
   toggleSidebarHidden: () => {
-    const next: SidebarMode = get().sidebarMode === "hidden" ? "collapsed" : "hidden";
-    if (typeof window !== "undefined") window.localStorage.setItem(SIDEBAR_KEY, next);
+    const next: SidebarMode =
+      get().sidebarMode === "hidden" ? "collapsed" : "hidden";
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(SIDEBAR_KEY, next);
     set({ sidebarMode: next });
+  },
+  repoWorkspaceExpanded: {},
+  toggleRepoWorkspaceExpanded: (repositoryId) => {
+    const current = get().repoWorkspaceExpanded[repositoryId] ?? true;
+    set({
+      repoWorkspaceExpanded: {
+        ...get().repoWorkspaceExpanded,
+        [repositoryId]: !current,
+      },
+    });
   },
 
   rightPanelCollapsed: readRightPanel(),
   toggleRightPanel: () => {
     const next = !get().rightPanelCollapsed;
     if (typeof window !== "undefined")
-      window.localStorage.setItem(RIGHT_PANEL_KEY, next ? "collapsed" : "expanded");
+      window.localStorage.setItem(
+        RIGHT_PANEL_KEY,
+        next ? "collapsed" : "expanded",
+      );
     set({ rightPanelCollapsed: next });
   },
   setRightPanelCollapsed: (collapsed) => {
     if (typeof window !== "undefined")
-      window.localStorage.setItem(RIGHT_PANEL_KEY, collapsed ? "collapsed" : "expanded");
+      window.localStorage.setItem(
+        RIGHT_PANEL_KEY,
+        collapsed ? "collapsed" : "expanded",
+      );
     set({ rightPanelCollapsed: collapsed });
   },
 
@@ -247,7 +291,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   clearPendingGitInit: () => set({ pendingGitInitRepoId: null }),
 
   fileSearchTarget: null,
-  openFileSearch: (repositoryId, path) => set({ fileSearchTarget: { repositoryId, path } }),
+  openFileSearch: (repositoryId, path) =>
+    set({ fileSearchTarget: { repositoryId, path } }),
   closeFileSearch: () => set({ fileSearchTarget: null }),
 
   repoInnerTabs: {},
@@ -316,11 +361,16 @@ export const useUiStore = create<UiState>((set, get) => ({
       };
       state = { tabs: [home], activeTabId: home.id };
     }
-    const existingTerminals = state.tabs.filter((t) => t.kind === "terminal").length;
+    const existingTerminals = state.tabs.filter(
+      (t) => t.kind === "terminal",
+    ).length;
     const tab: RepoInnerTab = {
       id: uuidv4(),
       kind: "terminal",
-      title: existingTerminals > 0 ? `Terminal ${existingTerminals + 1}` : "Terminal",
+      title:
+        existingTerminals > 0
+          ? `Terminal ${existingTerminals + 1}`
+          : "Terminal",
       closable: true,
     };
     set({
@@ -339,7 +389,9 @@ export const useUiStore = create<UiState>((set, get) => ({
         ...get().repoInnerTabs,
         [repositoryId]: {
           ...state,
-          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ptySessionId } : t)),
+          tabs: state.tabs.map((t) =>
+            t.id === tabId ? { ...t, ptySessionId } : t,
+          ),
         },
       },
     });
@@ -379,7 +431,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   clearPendingNewWorkspace: () => set({ pendingNewWorkspaceRepoId: null }),
 
   pendingRenameWorkspaceId: null,
-  requestRenameWorkspace: (workspaceId) => set({ pendingRenameWorkspaceId: workspaceId }),
+  requestRenameWorkspace: (workspaceId) =>
+    set({ pendingRenameWorkspaceId: workspaceId }),
   clearPendingRenameWorkspace: () => set({ pendingRenameWorkspaceId: null }),
 
   addRepositoryPickerOpen: false,
@@ -389,7 +442,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   commandPaletteOpen: false,
   openCommandPalette: () => set({ commandPaletteOpen: true }),
   closeCommandPalette: () => set({ commandPaletteOpen: false }),
-  toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
+  toggleCommandPalette: () =>
+    set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
 
   activeWorkspaceContext: null,
   setActiveWorkspaceContext: (ctx) => set({ activeWorkspaceContext: ctx }),
@@ -436,14 +490,23 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ innerTabs: { ...get().innerTabs, [workspaceId]: next } });
     return tab;
   },
-  openInnerTerminalTab: (workspaceId) => {
+  openInnerTerminalTab: (workspaceId, options) => {
     const state = get().innerTabs[workspaceId];
-    const existingTerminals = (state?.tabs ?? []).filter((t) => t.kind === "terminal").length;
+    const existingTerminals = (state?.tabs ?? []).filter(
+      (t) => t.kind === "terminal",
+    ).length;
     const tab: InnerTab = {
       id: uuidv4(),
       kind: "terminal",
-      title: existingTerminals > 0 ? `Terminal ${existingTerminals + 1}` : "Terminal",
+      title:
+        options?.title ??
+        (existingTerminals > 0
+          ? `Terminal ${existingTerminals + 1}`
+          : "Terminal"),
       closable: true,
+      ...(options?.initialCommand
+        ? { initialCommand: options.initialCommand }
+        : {}),
     };
     const next: InnerTabState = state
       ? { tabs: [...state.tabs, tab], activeTabId: tab.id }
@@ -453,10 +516,15 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   openInnerPreviewTab: (workspaceId, filePath) => {
     const state = get().innerTabs[workspaceId];
-    const existing = state?.tabs.find((t) => t.kind === "preview" && t.filePath === filePath);
+    const existing = state?.tabs.find(
+      (t) => t.kind === "preview" && t.filePath === filePath,
+    );
     if (existing && state) {
       set({
-        innerTabs: { ...get().innerTabs, [workspaceId]: { ...state, activeTabId: existing.id } },
+        innerTabs: {
+          ...get().innerTabs,
+          [workspaceId]: { ...state, activeTabId: existing.id },
+        },
       });
       return existing;
     }
@@ -501,7 +569,10 @@ export const useUiStore = create<UiState>((set, get) => ({
     const state = get().innerTabs[workspaceId];
     if (!state) return;
     set({
-      innerTabs: { ...get().innerTabs, [workspaceId]: { ...state, activeTabId: tabId } },
+      innerTabs: {
+        ...get().innerTabs,
+        [workspaceId]: { ...state, activeTabId: tabId },
+      },
     });
   },
   setInnerTabPtySession: (workspaceId, tabId, ptySessionId) => {
@@ -512,7 +583,9 @@ export const useUiStore = create<UiState>((set, get) => ({
         ...get().innerTabs,
         [workspaceId]: {
           ...state,
-          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ptySessionId } : t)),
+          tabs: state.tabs.map((t) =>
+            t.id === tabId ? { ...t, ptySessionId } : t,
+          ),
         },
       },
     });

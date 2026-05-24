@@ -20,4 +20,4 @@ pub use repository::Repository;
 pub use run_command::RunCommand;
 pub use settings::UserSettings;
 pub use user::User;
-pub use workspace::{Workspace, WorkspaceStatus};
+pub use workspace::{Workspace, WorkspaceKind, WorkspaceStatus};
