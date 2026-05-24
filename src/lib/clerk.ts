@@ -24,7 +24,7 @@ export const CLERK_SIGN_UP_URL = "/sign-up";
 export const CLERK_SIGNED_IN_URL = "/";
 export const CLERK_DESKTOP_CALLBACK_URL = optionalEnv(
   import.meta.env.VITE_CLERK_DESKTOP_CALLBACK_URL,
-  "https://phasr-auth-bridge.vercel.app/callback",
+  "https://auth.phasr.sh/callback",
 );
 export const CLERK_SESSION_JWT_TEMPLATE = optionalEnv(
   import.meta.env.VITE_CLERK_SESSION_JWT_TEMPLATE,

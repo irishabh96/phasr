@@ -30,20 +30,20 @@ describe("Clerk handshake helpers", () => {
         handshakeJwt({
           handshake: [
             "__session=jwt; Path=/; Secure; SameSite=None",
-            "__client_uat=123; Path=/; Domain=phasr-auth-bridge.vercel.app; Max-Age=315360000; Secure; SameSite=None",
+            "__client_uat=123; Path=/; Domain=auth.phasr.sh; Max-Age=315360000; Secure; SameSite=None",
           ],
         }),
       ),
     ).toEqual([
       "__session=jwt; Path=/; Secure; SameSite=None",
-      "__client_uat=123; Path=/; Domain=phasr-auth-bridge.vercel.app; Max-Age=315360000; Secure; SameSite=None",
+      "__client_uat=123; Path=/; Domain=auth.phasr.sh; Max-Age=315360000; Secure; SameSite=None",
     ]);
   });
 
   it("strips cookie attributes that cannot be applied to the app origin", () => {
     expect(
       normalizeHandshakeCookieDirective(
-        "__refresh=token; Path=/; Domain=phasr-auth-bridge.vercel.app; Expires=Sun, 23 May 2027 21:31:42 GMT; HttpOnly; Secure; SameSite=None",
+        "__refresh=token; Path=/; Domain=auth.phasr.sh; Expires=Sun, 23 May 2027 21:31:42 GMT; HttpOnly; Secure; SameSite=None",
       ),
     ).toEqual({
       name: "__refresh",

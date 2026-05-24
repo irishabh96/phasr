@@ -17,7 +17,7 @@ import {
 describe("Clerk routing configuration", () => {
   it("uses the HTTPS bridge callback for external browser OAuth", () => {
     expect(CLERK_DESKTOP_CALLBACK_URL).toBe(
-      "https://phasr-auth-bridge.vercel.app/callback",
+      "https://auth.phasr.sh/callback",
     );
     expect(CLERK_AUTH_CALLBACK_EVENT).toBe("phasr://auth-callback");
     expect(CLERK_SESSION_JWT_TEMPLATE).toBe("phasr_desktop");
@@ -34,7 +34,7 @@ describe("Clerk routing configuration", () => {
 
   it("adds the Phasr OAuth state to the desktop callback URL", () => {
     expect(clerkDesktopCallbackUrl("state-123")).toBe(
-      "https://phasr-auth-bridge.vercel.app/callback?phasr_state=state-123",
+      "https://auth.phasr.sh/callback?phasr_state=state-123",
     );
   });
 
