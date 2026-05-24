@@ -4,13 +4,23 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
+import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent } from "@/lib/types";
 
 interface SessionTerminalTabProps {
-  /** Workspace id — keys the tab back to the workspace's inner tab strip. */
-  workspaceId: string;
+  /**
+   * Workspace id — keys the tab back to the workspace's inner tab strip.
+   * Mutually exclusive with `repositoryId`.
+   */
+  workspaceId?: string;
+  /**
+   * Repository id — keys the tab back to the repo's inner tab strip
+   * (used by the empty-repo screen). Mutually exclusive with `workspaceId`.
+   */
+  repositoryId?: string;
   tabId: string;
   cwd: string;
   /** Persisted from the previous mount, if any. */
@@ -86,13 +96,22 @@ export function disposeSessionXterm(tabId: string) {
 
 export function SessionTerminalTab({
   workspaceId,
+  repositoryId,
   tabId,
   cwd,
   ptySessionId,
   visible,
 }: SessionTerminalTabProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const { data: settings } = useUserSettings();
   const setInnerTabPtySession = useUiStore((s) => s.setInnerTabPtySession);
+  const setRepoInnerTabPtySession = useUiStore(
+    (s) => s.setRepoInnerTabPtySession,
+  );
+  const persistSession = (id: string) => {
+    if (workspaceId) setInnerTabPtySession(workspaceId, tabId, id);
+    else if (repositoryId) setRepoInnerTabPtySession(repositoryId, tabId, id);
+  };
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -105,7 +124,7 @@ export function SessionTerminalTab({
       const container = document.createElement("div");
       container.className = "h-full w-full";
 
-      const term = createTerminal();
+      const term = createXtermTerminal();
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(container);
@@ -170,21 +189,42 @@ export function SessionTerminalTab({
 
       const start = async () => {
         try {
-          const id = await tauri.startSessionTerminal(cwd, channel, term.rows, term.cols);
+          const id = await tauri.startSessionTerminal(
+            cwd,
+            channel,
+            term.rows,
+            term.cols,
+          );
           entry!.sessionId = id;
-          setInnerTabPtySession(workspaceId, tabId, id);
+          persistSession(id);
           wireInteractive(id);
           // Catch any fit() that fired between start request and reply —
           // the onResize handler isn't wired during the await, so a
           // resize there is otherwise lost.
           void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
         } catch (err) {
-          term.write(`\r\n\x1b[31m✗ Failed to start shell: ${String(err)}\x1b[0m\r\n`);
+          term.write(
+            `\r\n\x1b[31m✗ Failed to start shell: ${String(err)}\x1b[0m\r\n`,
+          );
+        }
+      };
+
+      const attach = async (id: string) => {
+        try {
+          await tauri.attachSessionTerminal(id, channel);
+          wireInteractive(id);
+          void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
+        } catch {
+          entry!.sessionId = null;
+          term.write(
+            "\r\n\x1b[2m── previous shell is no longer running; starting a new one ──\x1b[0m\r\n",
+          );
+          void start();
         }
       };
 
       if (entry.sessionId) {
-        wireInteractive(entry.sessionId);
+        void attach(entry.sessionId);
       } else {
         void start();
       }
@@ -249,7 +289,19 @@ export function SessionTerminalTab({
       getHiddenHost().appendChild(entry!.container);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, tabId, cwd]);
+  }, [workspaceId, repositoryId, tabId, cwd]);
+
+  useEffect(() => {
+    const entry = sessionXtermCache.get(tabId);
+    if (!entry) return;
+    applyXtermSettings(entry.term, settings);
+    try {
+      entry.fit.fit();
+      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
+    } catch {
+      /* layout settling */
+    }
+  }, [settings, tabId]);
 
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + refresh synchronously here
@@ -289,41 +341,4 @@ export function SessionTerminalTab({
       <div ref={mountRef} className="h-full w-full" />
     </div>
   );
-}
-
-function createTerminal() {
-  const computed = getComputedStyle(document.documentElement);
-  const css = (name: string, fallback: string) =>
-    computed.getPropertyValue(name).trim() || fallback;
-  return new XtermTerminal({
-    fontFamily: css("--font-mono", "ui-monospace, Menlo, monospace"),
-    fontSize: 13,
-    lineHeight: 1.0,
-    cursorBlink: true,
-    convertEol: true,
-    allowProposedApi: true,
-    scrollback: 10000,
-    theme: {
-      background: css("--color-bg-terminal", "#000000"),
-      foreground: css("--color-text-primary", "#e6edf3"),
-      cursor: css("--color-accent-500", "#f78166"),
-      selectionBackground: "rgba(247,129,102,0.28)",
-      black: css("--ansi-black", "#484f58"),
-      red: css("--ansi-red", "#ff7b72"),
-      green: css("--ansi-green", "#3fb950"),
-      yellow: css("--ansi-yellow", "#d29922"),
-      blue: css("--ansi-blue", "#58a6ff"),
-      magenta: css("--ansi-magenta", "#bc8cff"),
-      cyan: css("--ansi-cyan", "#39c5cf"),
-      white: css("--ansi-white", "#b1bac4"),
-      brightBlack: css("--ansi-bright-black", "#6e7681"),
-      brightRed: css("--ansi-bright-red", "#ffa198"),
-      brightGreen: css("--ansi-bright-green", "#56d364"),
-      brightYellow: css("--ansi-bright-yellow", "#e3b341"),
-      brightBlue: css("--ansi-bright-blue", "#79c0ff"),
-      brightMagenta: css("--ansi-bright-magenta", "#d2a8ff"),
-      brightCyan: css("--ansi-bright-cyan", "#56d4dd"),
-      brightWhite: css("--ansi-bright-white", "#ffffff"),
-    },
-  });
 }

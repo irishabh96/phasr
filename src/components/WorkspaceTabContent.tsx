@@ -34,8 +34,8 @@ export function WorkspaceTabContent({
   const openInnerAgentTab = useUiStore((s) => s.openInnerAgentTab);
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
 
-  if (!state) return null;
-  const { tabs, activeTabId } = state;
+  const tabs = state?.tabs ?? [];
+  const activeTabId = state?.activeTabId ?? null;
   const worktreePath = workspace.worktreePath ?? "";
 
   if (tabs.length === 0) {

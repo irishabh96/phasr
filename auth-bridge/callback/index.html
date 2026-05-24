@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Opening Phasr</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      body {
+        align-items: center;
+        background: #08090b;
+        color: #f4f4f5;
+        display: flex;
+        justify-content: center;
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      main {
+        max-width: 420px;
+        padding: 32px;
+        text-align: center;
+      }
+
+      .mark {
+        align-items: center;
+        background: #f1785f;
+        border-radius: 12px;
+        color: #111114;
+        display: inline-flex;
+        font-size: 20px;
+        font-weight: 700;
+        height: 48px;
+        justify-content: center;
+        margin-bottom: 20px;
+        width: 48px;
+      }
+
+      h1 {
+        font-size: 22px;
+        line-height: 1.2;
+        margin: 0 0 10px;
+      }
+
+      p {
+        color: #a1a1aa;
+        font-size: 14px;
+        line-height: 1.6;
+        margin: 0 0 18px;
+      }
+
+      .help {
+        display: none;
+        margin-top: 18px;
+      }
+
+      .help[data-visible="true"] {
+        display: block;
+      }
+
+      a {
+        background: #f4f4f5;
+        border-radius: 8px;
+        color: #111114;
+        display: inline-block;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 10px 14px;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">P</div>
+      <h1>Opening Phasr</h1>
+      <p>Your browser may ask for permission to open the Phasr desktop app.</p>
+      <a id="open-phasr" href="phasr://auth/callback">Open Phasr</a>
+      <p id="fallback-help" class="help">
+        If nothing opened, install the latest Phasr app, then click Open Phasr
+        again.
+      </p>
+    </main>
+
+    <script>
+      const appUrl = `phasr://auth/callback${window.location.search}${window.location.hash}`;
+      const openLink = document.getElementById("open-phasr");
+      const fallbackHelp = document.getElementById("fallback-help");
+      openLink.href = appUrl;
+
+      const openPhasr = () => {
+        window.location.href = appUrl;
+      };
+
+      openLink.addEventListener("click", (event) => {
+        event.preventDefault();
+        openPhasr();
+      });
+
+      window.setTimeout(() => {
+        openPhasr();
+      }, 150);
+
+      window.setTimeout(() => {
+        fallbackHelp.dataset.visible = "true";
+      }, 1200);
+    </script>
+  </body>
+</html>

@@ -160,7 +160,7 @@ function RemoveConfirm({
               The project will be removed from Phasr. Your local clone on disk stays untouched.
             </div>
             <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="ghost" size="sm" onClick={onCancel} disabled={pending}>
+              <GlassButton variant="outline" size="sm" onClick={onCancel} disabled={pending}>
                 Cancel
               </GlassButton>
               <GlassButton variant="danger" size="sm" onClick={onConfirm} disabled={pending}>

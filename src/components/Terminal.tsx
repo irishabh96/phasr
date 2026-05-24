@@ -4,7 +4,9 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { tauri } from "@/lib/tauri";
+import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
 export interface TerminalProps {
@@ -16,7 +18,11 @@ export interface TerminalProps {
   onExit?: (exitCode: number | null) => void;
 }
 
-const FINISHED_STATUSES: WorkspaceStatus[] = ["completed", "failed", "archived"];
+const FINISHED_STATUSES: WorkspaceStatus[] = [
+  "completed",
+  "failed",
+  "archived",
+];
 
 /**
  * Workspace agent terminal. Each instance owns a persistent container
@@ -35,7 +41,7 @@ interface CachedMain {
   container: HTMLDivElement;
   /** Input/resize handlers — replaced on each remount. */
   inputDisposables: { dispose(): void }[];
-  /** True once startWorkspace / loadLog has resolved. */
+  /** True once openTaskTerminal / loadLog has resolved. */
   started: boolean;
   /** Latest onExit callback (kept fresh across remounts via ref). */
   onExit: ((exitCode: number | null) => void) | undefined;
@@ -82,9 +88,15 @@ export function disposeMainXterm(workspaceId: string) {
   mainXtermCache.delete(workspaceId);
 }
 
-export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps) {
+export function Terminal({
+  workspaceId,
+  status,
+  visible,
+  onExit,
+}: TerminalProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const initialStatusRef = useRef(status);
+  const { data: settings } = useUserSettings();
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -97,7 +109,7 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
       const container = document.createElement("div");
       container.className = "h-full w-full";
 
-      const term = createTerminal();
+      const term = createXtermTerminal();
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(container);
@@ -138,12 +150,17 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
       const wireInteractive = () => {
         entry!.inputDisposables = [
           term.onData((data) => {
-            void tauri.sendWorkspaceInput(workspaceId, data).catch((err) => {
-              term.write(`\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`);
+            // Routes user keystrokes through the orchestrator's
+            // `send_input_to_task` command so the React side speaks
+            // task vocabulary end-to-end.
+            void tauri.sendInputToTask(workspaceId, data).catch((err) => {
+              term.write(
+                `\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`,
+              );
             });
           }),
           term.onResize(({ rows, cols }) => {
-            void tauri.resizeWorkspace(workspaceId, rows, cols).catch(() => {});
+            void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
           }),
         ];
         term.focus();
@@ -164,25 +181,38 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
           }
         };
         try {
-          await tauri.startWorkspace(workspaceId, channel, term.rows, term.cols);
+          await tauri.openTaskTerminal(
+            workspaceId,
+            channel,
+            term.rows,
+            term.cols,
+          );
           entry!.started = true;
           wireInteractive();
           // Catch any fit() that fired between start request and reply —
           // the onResize handler isn't wired during the await, so a
           // resize there is otherwise lost.
-          void tauri.resizeWorkspace(workspaceId, term.rows, term.cols).catch(() => {});
+          void tauri
+            .resizeTask(workspaceId, term.rows, term.cols)
+            .catch(() => {});
         } catch (err) {
-          term.write(`\r\n\x1b[31m✗ Failed to start: ${String(err)}\x1b[0m\r\n`);
+          term.write(
+            `\r\n\x1b[31m✗ Failed to start: ${String(err)}\x1b[0m\r\n`,
+          );
         }
       };
 
       const loadLog = async () => {
         try {
-          const log = await tauri.readWorkspaceLog(workspaceId);
-          term.write(log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n");
+          const log = await tauri.readTaskLog(workspaceId);
+          term.write(
+            log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n",
+          );
           entry!.started = true;
         } catch (err) {
-          term.write(`\r\n\x1b[31mFailed to load log: ${String(err)}\x1b[0m\r\n`);
+          term.write(
+            `\r\n\x1b[31mFailed to load log: ${String(err)}\x1b[0m\r\n`,
+          );
         }
       };
 
@@ -198,12 +228,14 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
 
       entry.inputDisposables = [
         entry.term.onData((data) => {
-          void tauri.sendWorkspaceInput(workspaceId, data).catch((err) => {
-            entry!.term.write(`\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`);
+          void tauri.sendInputToTask(workspaceId, data).catch((err) => {
+            entry!.term.write(
+              `\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`,
+            );
           });
         }),
         entry.term.onResize(({ rows, cols }) => {
-          void tauri.resizeWorkspace(workspaceId, rows, cols).catch(() => {});
+          void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
         }),
       ];
       entry.term.focus();
@@ -255,6 +287,18 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
+  useEffect(() => {
+    const entry = mainXtermCache.get(workspaceId);
+    if (!entry) return;
+    applyXtermSettings(entry.term, settings);
+    try {
+      entry.fit.fit();
+      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
+    } catch {
+      /* layout settling */
+    }
+  }, [settings, workspaceId]);
+
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + refresh synchronously here
   // so the first frame after the visibility flip uses correct
@@ -293,41 +337,4 @@ export function Terminal({ workspaceId, status, visible, onExit }: TerminalProps
       <div ref={mountRef} className="h-full w-full" />
     </div>
   );
-}
-
-function createTerminal() {
-  const computed = getComputedStyle(document.documentElement);
-  const css = (name: string, fallback: string) =>
-    computed.getPropertyValue(name).trim() || fallback;
-  return new XtermTerminal({
-    fontFamily: css("--font-mono", "ui-monospace, Menlo, monospace"),
-    fontSize: 13,
-    lineHeight: 1.0,
-    cursorBlink: true,
-    convertEol: true,
-    allowProposedApi: true,
-    scrollback: 10000,
-    theme: {
-      background: css("--color-bg-terminal", "#000000"),
-      foreground: css("--color-text-primary", "#e6edf3"),
-      cursor: css("--color-accent-500", "#f78166"),
-      selectionBackground: "rgba(247,129,102,0.28)",
-      black: css("--ansi-black", "#484f58"),
-      red: css("--ansi-red", "#ff7b72"),
-      green: css("--ansi-green", "#3fb950"),
-      yellow: css("--ansi-yellow", "#d29922"),
-      blue: css("--ansi-blue", "#58a6ff"),
-      magenta: css("--ansi-magenta", "#bc8cff"),
-      cyan: css("--ansi-cyan", "#39c5cf"),
-      white: css("--ansi-white", "#b1bac4"),
-      brightBlack: css("--ansi-bright-black", "#6e7681"),
-      brightRed: css("--ansi-bright-red", "#ffa198"),
-      brightGreen: css("--ansi-bright-green", "#56d364"),
-      brightYellow: css("--ansi-bright-yellow", "#e3b341"),
-      brightBlue: css("--ansi-bright-blue", "#79c0ff"),
-      brightMagenta: css("--ansi-bright-magenta", "#d2a8ff"),
-      brightCyan: css("--ansi-bright-cyan", "#56d4dd"),
-      brightWhite: css("--ansi-bright-white", "#ffffff"),
-    },
-  });
 }

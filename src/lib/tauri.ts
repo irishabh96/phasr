@@ -1,16 +1,25 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   Agent,
+  BranchStatus,
+  Commit,
+  CommitFileChange,
   CommitOutput,
+  ConflictSide,
   DiffScope,
   FileChange,
+  InProgress,
   Launcher,
+  LogOptions,
+  MergeOutcome,
+  MergeStrategy,
   OpenPullRequestOutcome,
   PathValidation,
   PtyEvent,
   Repository,
   RunCommand,
-  RunningWorkspaceInfo,
+  RunningTaskInfo,
+  StartedTask,
   UserSettings,
   Workspace,
   WorkspaceDeleteCheck,
@@ -49,11 +58,32 @@ interface UpdateWorkspaceInput {
   exitCode?: number;
 }
 
+interface StartTaskInput {
+  repositoryId: string;
+  agentId: string;
+  name: string;
+  prompt?: string;
+  baseBranch?: string;
+  rows?: number;
+  cols?: number;
+}
+
+interface StartCloudSyncInput {
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  machineId: string;
+}
+
 export const tauri = {
   // ── auth ─────────────────────────────────────────────────────────────
   setSession: (jwt: string) => invoke<string>("set_session", { jwt }),
   clearSession: () => invoke<void>("clear_session"),
   currentUserId: () => invoke<string | null>("current_user_id"),
+  consumePendingAuthCallback: () =>
+    invoke<string | null>("consume_pending_auth_callback"),
+  startCloudSync: (input: StartCloudSyncInput) =>
+    invoke<void>("start_cloud_sync", { input }),
+  stopCloudSync: () => invoke<void>("stop_cloud_sync"),
 
   // ── repositories ─────────────────────────────────────────────────────
   createRepository: (input: CreateRepositoryInput) =>
@@ -63,18 +93,38 @@ export const tauri = {
   updateRepository: (id: string, input: UpdateRepositoryInput) =>
     invoke<Repository>("update_repository", { id, input }),
   deleteRepository: (id: string) => invoke<void>("delete_repository", { id }),
+  listSoftDeletedRepositories: () =>
+    invoke<string[]>("list_soft_deleted_repositories"),
+  markRepositorySynced: (id: string) =>
+    invoke<void>("mark_repository_synced", { id }),
+  repositoryIsSoftDeleted: (id: string) =>
+    invoke<boolean>("repository_is_soft_deleted", { id }),
   gitInitRepository: (id: string) =>
     invoke<Repository>("git_init_repository", { id }),
   gitCloneRepository: (url: string, destinationPath: string) =>
     invoke<string>("git_clone_repository", { url, destinationPath }),
   gitInitFromTemplate: (templateGitUrl: string, destinationPath: string) =>
-    invoke<string>("git_init_from_template", { templateGitUrl, destinationPath }),
-  listRepoFiles: (path: string) => invoke<string[]>("list_repo_files", { path }),
+    invoke<string>("git_init_from_template", {
+      templateGitUrl,
+      destinationPath,
+    }),
+  gitInitEmptyRepository: (destinationPath: string) =>
+    invoke<string>("git_init_empty_repository", { destinationPath }),
+  listRepoFiles: (path: string) =>
+    invoke<string[]>("list_repo_files", { path }),
+  listLocalBranches: (path: string) =>
+    invoke<string[]>("list_local_branches", { path }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
 
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
-  startSessionTerminal: (cwd: string, onEvent: Channel<PtyEvent>, rows?: number, cols?: number) =>
-    invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
+  startSessionTerminal: (
+    cwd: string,
+    onEvent: Channel<PtyEvent>,
+    rows?: number,
+    cols?: number,
+  ) => invoke<string>("start_session_terminal", { cwd, onEvent, rows, cols }),
+  attachSessionTerminal: (sessionId: string, onEvent: Channel<PtyEvent>) =>
+    invoke<void>("attach_session_terminal", { sessionId, onEvent }),
   sendSessionInput: (sessionId: string, data: string) =>
     invoke<void>("send_session_input", { sessionId, data }),
   resizeSession: (sessionId: string, rows: number, cols: number) =>
@@ -94,7 +144,8 @@ export const tauri = {
   getWorkspace: (id: string) => invoke<Workspace>("get_workspace", { id }),
   updateWorkspace: (id: string, input: UpdateWorkspaceInput) =>
     invoke<Workspace>("update_workspace", { id, input }),
-  archiveWorkspace: (id: string) => invoke<Workspace>("archive_workspace", { id }),
+  archiveWorkspace: (id: string) =>
+    invoke<Workspace>("archive_workspace", { id }),
   openPullRequest: (id: string) =>
     invoke<OpenPullRequestOutcome>("open_pull_request", { id }),
   checkWorkspaceDelete: (id: string) =>
@@ -110,9 +161,6 @@ export const tauri = {
   setAgentCommand: (id: string, command: string) =>
     invoke<void>("set_agent_command", { id, command }),
   setAgentDefault: (id: string) => invoke<void>("set_agent_default", { id }),
-  createCustomAgent: (input: { name: string; command: string }) =>
-    invoke<Agent>("create_custom_agent", { input }),
-  deleteAgent: (id: string) => invoke<void>("delete_agent", { id }),
 
   // ── settings ─────────────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),
@@ -120,7 +168,8 @@ export const tauri = {
     invoke<UserSettings>("update_user_settings", { settings }),
 
   // ── git ──────────────────────────────────────────────────────────────
-  gitStatus: (workspaceId: string) => invoke<FileChange[]>("git_status", { workspaceId }),
+  gitStatus: (workspaceId: string) =>
+    invoke<FileChange[]>("git_status", { workspaceId }),
   gitDiff: (workspaceId: string, scope: DiffScope, path?: string) =>
     invoke<string>("git_diff", {
       input: { workspaceId, scope, ...(path ? { path } : {}) },
@@ -134,6 +183,31 @@ export const tauri = {
   gitCommit: (workspaceId: string, message: string) =>
     invoke<CommitOutput>("git_commit", { workspaceId, message }),
   gitPush: (workspaceId: string) => invoke<void>("git_push", { workspaceId }),
+  gitBranchStatus: (workspaceId: string) =>
+    invoke<BranchStatus>("git_branch_status", { workspaceId }),
+  gitFetch: (workspaceId: string) => invoke<void>("git_fetch", { workspaceId }),
+  gitSyncWithMain: (workspaceId: string, strategy: MergeStrategy) =>
+    invoke<MergeOutcome>("git_sync_with_main", { workspaceId, strategy }),
+  gitMergeToMain: (workspaceId: string, strategy: MergeStrategy) =>
+    invoke<MergeOutcome>("git_merge_to_main", { workspaceId, strategy }),
+  gitMergeInProgress: (workspaceId: string) =>
+    invoke<InProgress>("git_merge_in_progress", { workspaceId }),
+  gitAbortMerge: (workspaceId: string) =>
+    invoke<void>("git_abort_merge", { workspaceId }),
+  gitContinueMerge: (workspaceId: string) =>
+    invoke<MergeOutcome>("git_continue_merge", { workspaceId }),
+  gitResolveConflict: (workspaceId: string, path: string, side: ConflictSide) =>
+    invoke<void>("git_resolve_conflict", { workspaceId, path, side }),
+  gitLog: (workspaceId: string, opts: LogOptions) =>
+    invoke<Commit[]>("git_log", { workspaceId, opts }),
+  gitCommitFiles: (workspaceId: string, sha: string) =>
+    invoke<CommitFileChange[]>("git_commit_files", { workspaceId, sha }),
+  gitCommitDiff: (workspaceId: string, sha: string, path?: string) =>
+    invoke<string>("git_commit_diff", {
+      workspaceId,
+      sha,
+      ...(path ? { path } : {}),
+    }),
 
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>
@@ -165,6 +239,8 @@ export const tauri = {
     },
   ) => invoke<RunCommand>("update_run_command", { id, input }),
   deleteRunCommand: (id: string) => invoke<void>("delete_run_command", { id }),
+  upsertRunCommandFromCloud: (input: RunCommand) =>
+    invoke<RunCommand>("upsert_run_command_from_cloud", { input }),
   startRunCommand: (
     id: string,
     onEvent: Channel<PtyEvent>,
@@ -177,22 +253,28 @@ export const tauri = {
   resizeRunCommand: (id: string, rows: number, cols: number) =>
     invoke<void>("resize_run_command", { id, rows, cols }),
 
-  // ── runtime (PTY) ────────────────────────────────────────────────────
-  startWorkspace: (
-    workspaceId: string,
+  // ── orchestrator (task lifecycle + terminal) ─────────────────────────
+  startTask: (input: StartTaskInput) =>
+    invoke<StartedTask>("start_task", { input }),
+  stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
+  openTaskTerminal: (
+    taskId: string,
     onEvent: Channel<PtyEvent>,
     rows = 24,
     cols = 80,
-  ) => invoke<RunningWorkspaceInfo>("start_workspace", { workspaceId, onEvent, rows, cols }),
-  readWorkspaceLog: (workspaceId: string) =>
-    invoke<string>("read_workspace_log", { workspaceId }),
-  sendWorkspaceInput: (workspaceId: string, data: string) =>
-    invoke<void>("send_workspace_input", { workspaceId, data }),
-  resizeWorkspace: (workspaceId: string, rows: number, cols: number) =>
-    invoke<void>("resize_workspace", { workspaceId, rows, cols }),
-  interruptWorkspace: (workspaceId: string) =>
-    invoke<void>("interrupt_workspace", { workspaceId }),
-  stopWorkspace: (workspaceId: string) => invoke<void>("stop_workspace", { workspaceId }),
+  ) =>
+    invoke<RunningTaskInfo>("open_task_terminal", {
+      taskId,
+      onEvent,
+      rows,
+      cols,
+    }),
+  sendInputToTask: (taskId: string, data: string) =>
+    invoke<void>("send_input_to_task", { taskId, data }),
+  readTaskLog: (taskId: string) => invoke<string>("read_task_log", { taskId }),
+  resizeTask: (taskId: string, rows: number, cols: number) =>
+    invoke<void>("resize_task", { taskId, rows, cols }),
+  interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
 };
 
 export { Channel };

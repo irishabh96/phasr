@@ -3,12 +3,15 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   Archive,
   ChevronDown,
+  GitMerge,
   GitPullRequest,
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { useGitBranchStatus } from "@/lib/hooks/useGit";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import {
   useArchiveWorkspace,
@@ -33,6 +36,7 @@ interface ConfirmState {
 
 export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const { data: repository } = useRepository(workspace.repositoryId);
+  const { data: branchStatus } = useGitBranchStatus(workspace.id);
   const navigate = useNavigate();
   const archive = useArchiveWorkspace();
   const openPr = useOpenPullRequest();
@@ -49,6 +53,7 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const [errorTitle, setErrorTitle] = useState("Action failed");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -69,6 +74,15 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
 
   const canOpenPr = !!workspace.branch && !!repository?.remoteUrl;
   const canArchive = workspace.status !== "archived";
+  const canMergeToMain = !!workspace.branch && !!repository?.localPath;
+  const mergeBlocked =
+    !branchStatus
+      ? null
+      : branchStatus.aheadOfTarget === 0
+        ? "Nothing to merge"
+        : branchStatus.behindOfTarget > 0
+          ? `Branch is behind ${repository?.defaultBranch ?? "main"} — sync first`
+          : null;
 
   const showError = (title: string, message: string) => {
     setErrorTitle(title);
@@ -141,6 +155,18 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         {open && (
           <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
             <ul className="p-1 text-[12.5px]">
+              {canMergeToMain && (
+                <MenuItem
+                  icon={<GitMerge size={12} />}
+                  label={`Merge to ${repository?.defaultBranch ?? "main"}`}
+                  onClick={() => {
+                    setOpen(false);
+                    setMergeOpen(true);
+                  }}
+                  disabled={!!mergeBlocked}
+                  {...(mergeBlocked ? { title: mergeBlocked } : {})}
+                />
+              )}
               {canOpenPr && (
                 <MenuItem
                   icon={<GitPullRequest size={12} />}
@@ -179,6 +205,19 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
           onClose={() => setErrorMessage(null)}
         />
       )}
+
+      <MergeToMainDialog
+        workspace={workspace}
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+        onSyncRequested={() => {
+          // The SyncButton next to the BranchChip in the header is the
+          // canonical place to start a sync. We can't programmatically
+          // open its popover from here (different component tree), so
+          // we just close the dialog — the SyncButton is visible while
+          // behind > 0 and the user clicks it themselves.
+        }}
+      />
     </>
   );
 }
@@ -189,12 +228,14 @@ function MenuItem({
   onClick,
   disabled,
   danger,
+  title,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
+  title?: string;
 }) {
   return (
     <li>
@@ -202,6 +243,7 @@ function MenuItem({
         type="button"
         onClick={onClick}
         disabled={disabled}
+        title={title}
         className={cn(
           "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left",
           "transition-colors duration-100",
@@ -244,7 +286,7 @@ function ConfirmDialog({ state, onCancel }: { state: ConfirmState; onCancel(): v
           {state.body}
         </div>
         <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-          <GlassButton variant="ghost" size="sm" onClick={onCancel}>
+          <GlassButton variant="outline" size="sm" onClick={onCancel}>
             Cancel
           </GlassButton>
           <GlassButton

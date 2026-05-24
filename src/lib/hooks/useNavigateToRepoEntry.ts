@@ -1,24 +1,23 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useUiStore } from "@/lib/store";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { tauri } from "@/lib/tauri";
 import type { Workspace } from "@/lib/types";
 
 /**
- * "Enter" a repository in the new workspace-centric flow. Resolves to:
- *  - navigate to the repo's first workspace, if any
- *  - else open NewWorkspaceModal for that repo
+ * "Enter" a repository. Resolves to:
+ *  - navigate to the repo's first workspace, if any,
+ *  - else navigate to `/repositories/$repositoryId` — the repo home,
+ *    which renders the inner-tab bar + CreateFirstWorkspacePane.
  *
- * Replaces all navigations to the deleted `/repositories/$repositoryId`
- * route. Reads workspaces via the query cache (with a `fetchQuery`
- * fallback) so callsites can stay synchronous-ish without each pulling
- * `useWorkspaces` themselves.
+ * Used by the sidebar's repo rows, the GitInitConfirmModal's Cancel /
+ * Initialize Git handlers, and the command palette's repo items. No
+ * longer pops the legacy NewWorkspaceModal — the workspace-less path
+ * lands on a real route now.
  */
 export function useNavigateToRepoEntry() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
 
   return async (repositoryId: string) => {
     let workspaces = queryClient.getQueryData<Workspace[]>(
@@ -41,7 +40,10 @@ export function useNavigateToRepoEntry() {
         params: { repositoryId, workspaceId: first.id },
       });
     } else {
-      requestNewWorkspace(repositoryId);
+      await navigate({
+        to: "/repositories/$repositoryId",
+        params: { repositoryId },
+      });
     }
   };
 }

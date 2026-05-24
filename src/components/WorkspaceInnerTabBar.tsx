@@ -1,7 +1,9 @@
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { FileCode2, Plus, Terminal as TerminalIcon, X, Zap } from "lucide-react";
 import { disposeMainXterm } from "@/components/Terminal";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
+import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -19,7 +21,7 @@ interface WorkspaceInnerTabBarProps {
  *  - "main" / agent — the workspace's primary process; closable. The agent
  *    PTY keeps running on the backend even when the tab is closed.
  *    Re-open via the empty-state CTA when no tabs remain.
- *  - "terminal" — ad-hoc shells (⌘T or "+").
+ *  - "terminal" — ad-hoc shells (the "+" button to the right of the strip).
  *  - "preview" — file viewer (no UI to open today; ⌘P search opens one).
  */
 export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps) {
@@ -27,6 +29,9 @@ export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps)
   const setActiveInnerTab = useUiStore((s) => s.setActiveInnerTab);
   const closeInnerTab = useUiStore((s) => s.closeInnerTab);
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
+  const navigate = useNavigate();
+  const params = useParams({ strict: false });
+  const repositoryId = (params as { repositoryId?: string }).repositoryId ?? null;
 
   if (!state) return null;
   const { tabs, activeTabId } = state;
@@ -50,13 +55,25 @@ export function WorkspaceInnerTabBar({ workspaceId }: WorkspaceInnerTabBarProps)
             } else if (closed.kind === "main") {
               disposeMainXterm(workspaceId);
             }
+            const remainingTabs =
+              useUiStore.getState().innerTabs[workspaceId]?.tabs.length ?? 0;
+            if (remainingTabs === 0 && repositoryId) {
+              void navigate({
+                to: "/repositories/$repositoryId",
+                params: { repositoryId },
+                replace: true,
+              });
+            }
           }}
         />
       ))}
-      <GlassTooltip content="New terminal (⌘T)" side="bottom">
+      <GlassTooltip
+        content={`${SHORTCUTS.newTerminal.label} (${SHORTCUTS.newTerminal.display.join("")})`}
+        side="bottom"
+      >
         <button
           type="button"
-          aria-label="New terminal"
+          aria-label={SHORTCUTS.newTerminal.label}
           onClick={() => openInnerTerminalTab(workspaceId)}
           className="ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
         >

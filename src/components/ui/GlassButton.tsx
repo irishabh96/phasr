@@ -15,10 +15,13 @@ const button = cva(
     variants: {
       variant: {
         // Filled accent. The "primary call to action" — flat coral that
-        // lifts on hover and depresses on active.
+        // lifts on hover and depresses on active. The border is the
+        // same strong-hairline used by the outline variant so the button
+        // has a clear edge even when the accent fill renders dim on a
+        // particular theme — the affordance is unambiguous.
         primary: [
           "bg-[var(--color-accent-500)] text-[var(--color-text-inverse)]",
-          "border border-[color-mix(in_oklab,var(--color-text-primary)_18%,transparent)]",
+          "border border-[var(--glass-border-strong)]",
           "hover:bg-[var(--color-accent-400)] hover:-translate-y-px",
           "active:bg-[var(--color-accent-600)] active:translate-y-0 active:scale-[0.98]",
           "focus-visible:shadow-[0_0_0_2px_var(--color-accent-300)]",

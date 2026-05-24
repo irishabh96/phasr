@@ -16,10 +16,13 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
 import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppNewProjectRouteImport } from './routes/_app/new-project'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app/settings/appearance'
 import { Route as AppSettingsAgentsRouteImport } from './routes/_app/settings/agents'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app/settings/account'
+import { Route as AppDevDiffPreviewRouteImport } from './routes/_app/dev.diff-preview'
+import { Route as AppRepositoriesRepositoryIdIndexRouteImport } from './routes/_app/repositories/$repositoryId/index'
 import { Route as AppRepositoriesRepositoryIdSettingsRouteImport } from './routes/_app/repositories/$repositoryId/settings'
 import { Route as AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRouteImport } from './routes/_app/repositories/$repositoryId/workspaces/$workspaceId'
 
@@ -57,6 +60,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppNewProjectRoute = AppNewProjectRouteImport.update({
+  id: '/new-project',
+  path: '/new-project',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -77,6 +85,17 @@ const AppSettingsAccountRoute = AppSettingsAccountRouteImport.update({
   path: '/account',
   getParentRoute: () => AppSettingsRoute,
 } as any)
+const AppDevDiffPreviewRoute = AppDevDiffPreviewRouteImport.update({
+  id: '/dev/diff-preview',
+  path: '/dev/diff-preview',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRepositoriesRepositoryIdIndexRoute =
+  AppRepositoriesRepositoryIdIndexRouteImport.update({
+    id: '/repositories/$repositoryId/',
+    path: '/repositories/$repositoryId/',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppRepositoriesRepositoryIdSettingsRoute =
   AppRepositoriesRepositoryIdSettingsRouteImport.update({
     id: '/repositories/$repositoryId/settings',
@@ -94,27 +113,33 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
+  '/new-project': typeof AppNewProjectRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
+  '/dev/diff-preview': typeof AppDevDiffPreviewRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/': typeof AppSettingsIndexRoute
   '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
+  '/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
+  '/new-project': typeof AppNewProjectRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/': typeof AppIndexRoute
+  '/dev/diff-preview': typeof AppDevDiffPreviewRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings': typeof AppSettingsIndexRoute
   '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
+  '/repositories/$repositoryId': typeof AppRepositoriesRepositoryIdIndexRoute
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesById {
@@ -122,15 +147,18 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
+  '/_app/new-project': typeof AppNewProjectRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/dev/diff-preview': typeof AppDevDiffPreviewRoute
   '/_app/settings/account': typeof AppSettingsAccountRoute
   '/_app/settings/agents': typeof AppSettingsAgentsRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
+  '/_app/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
   '/_app/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRouteTypes {
@@ -139,42 +167,51 @@ export interface FileRouteTypes {
     | '/'
     | '/sign-in'
     | '/sign-up'
+    | '/new-project'
     | '/settings'
     | '/sign-in/$'
     | '/sign-up/$'
+    | '/dev/diff-preview'
     | '/settings/account'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/'
     | '/repositories/$repositoryId/settings'
+    | '/repositories/$repositoryId/'
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
     | '/sign-up'
+    | '/new-project'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/'
+    | '/dev/diff-preview'
     | '/settings/account'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings'
     | '/repositories/$repositoryId/settings'
+    | '/repositories/$repositoryId'
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   id:
     | '__root__'
     | '/_app'
     | '/sign-in'
     | '/sign-up'
+    | '/_app/new-project'
     | '/_app/settings'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/_app/'
+    | '/_app/dev/diff-preview'
     | '/_app/settings/account'
     | '/_app/settings/agents'
     | '/_app/settings/appearance'
     | '/_app/settings/'
     | '/_app/repositories/$repositoryId/settings'
+    | '/_app/repositories/$repositoryId/'
     | '/_app/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesById: FileRoutesById
 }
@@ -235,6 +272,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/new-project': {
+      id: '/_app/new-project'
+      path: '/new-project'
+      fullPath: '/new-project'
+      preLoaderRoute: typeof AppNewProjectRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/settings/': {
       id: '/_app/settings/'
       path: '/'
@@ -262,6 +306,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/settings/account'
       preLoaderRoute: typeof AppSettingsAccountRouteImport
       parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/dev/diff-preview': {
+      id: '/_app/dev/diff-preview'
+      path: '/dev/diff-preview'
+      fullPath: '/dev/diff-preview'
+      preLoaderRoute: typeof AppDevDiffPreviewRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/repositories/$repositoryId/': {
+      id: '/_app/repositories/$repositoryId/'
+      path: '/repositories/$repositoryId'
+      fullPath: '/repositories/$repositoryId/'
+      preLoaderRoute: typeof AppRepositoriesRepositoryIdIndexRouteImport
+      parentRoute: typeof AppRoute
     }
     '/_app/repositories/$repositoryId/settings': {
       id: '/_app/repositories/$repositoryId/settings'
@@ -299,17 +357,23 @@ const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppNewProjectRoute: typeof AppNewProjectRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
+  AppDevDiffPreviewRoute: typeof AppDevDiffPreviewRoute
   AppRepositoriesRepositoryIdSettingsRoute: typeof AppRepositoriesRepositoryIdSettingsRoute
+  AppRepositoriesRepositoryIdIndexRoute: typeof AppRepositoriesRepositoryIdIndexRoute
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute: typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppNewProjectRoute: AppNewProjectRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
+  AppDevDiffPreviewRoute: AppDevDiffPreviewRoute,
   AppRepositoriesRepositoryIdSettingsRoute:
     AppRepositoriesRepositoryIdSettingsRoute,
+  AppRepositoriesRepositoryIdIndexRoute: AppRepositoriesRepositoryIdIndexRoute,
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute:
     AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute,
 }

@@ -1,4 +1,5 @@
 mod auth;
+mod auth_deeplink;
 mod commands;
 #[cfg(target_os = "macos")]
 mod dock_icon;
@@ -7,16 +8,21 @@ mod fswatch;
 mod git;
 mod launcher;
 mod localfs;
+mod orchestrator;
 mod pty;
 mod store;
+mod sync;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use auth::SessionState;
+use domain::WorkspaceStatus;
+use orchestrator::TaskOrchestrator;
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo,
-    WorkspaceRepo,
+    default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
+    WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Manager;
@@ -24,12 +30,18 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let session_state = Arc::new(SessionState::default());
+    let cloud_sync_state = Arc::new(sync::CloudSyncState::default());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(auth_deeplink::AuthDeepLinkState::default())
         .manage(session_state)
+        .manage(cloud_sync_state)
         .setup(|app| {
+            auth_deeplink::configure_auth_deeplink(app)?;
+
             #[cfg(target_os = "macos")]
             dock_icon::set_dock_icon();
 
@@ -77,32 +89,17 @@ pub fn run() {
             let log_dir = app_data_dir.join("logs");
 
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
-            app.manage(task_runtime);
+            app.manage(task_runtime.clone());
 
-            let watch_registry = Arc::new(fswatch::WorktreeWatchRegistry::new(
-                app.handle().clone(),
-            ));
+            let watch_registry =
+                Arc::new(fswatch::WorktreeWatchRegistry::new(app.handle().clone()));
             app.manage(watch_registry.clone());
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match init_pool(&db_path).await {
-                    Ok(pool) => {
-                        let agent_repo = AgentRepo::new(pool.clone());
-                        if let Err(err) = agent_repo.ensure_seeded().await {
-                            eprintln!("agent seeding failed: {err}");
-                        }
-                        handle.manage(RepositoryRepo::new(pool.clone()));
-                        handle.manage(WorkspaceRepo::new(pool.clone()));
-                        handle.manage(RunCommandRepo::new(pool.clone()));
-                        handle.manage(agent_repo);
-                        handle.manage(SettingsRepo::new(pool));
-                    }
-                    Err(err) => {
-                        eprintln!("failed to initialize SQLite at {}: {err}", db_path.display());
-                    }
-                }
-            });
+            tauri::async_runtime::block_on(initialize_database_state(
+                app.handle(),
+                &db_path,
+                task_runtime,
+            ))?;
 
             Ok(())
         })
@@ -110,15 +107,23 @@ pub fn run() {
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
+            auth_deeplink::consume_pending_auth_callback,
+            sync::start_cloud_sync,
+            sync::stop_cloud_sync,
             commands::repositories::create_repository,
             commands::repositories::list_repositories,
             commands::repositories::get_repository,
             commands::repositories::update_repository,
             commands::repositories::delete_repository,
+            commands::repositories::list_soft_deleted_repositories,
+            commands::repositories::mark_repository_synced,
+            commands::repositories::repository_is_soft_deleted,
             commands::repositories::git_init_repository,
             commands::repositories::git_clone_repository,
             commands::repositories::git_init_from_template,
+            commands::repositories::git_init_empty_repository,
             commands::repositories::list_repo_files,
+            commands::repositories::list_local_branches,
             commands::workspaces::create_workspace,
             commands::workspaces::list_workspaces,
             commands::workspaces::get_workspace,
@@ -133,16 +138,15 @@ pub fn run() {
             commands::agents::set_agent_enabled,
             commands::agents::set_agent_command,
             commands::agents::set_agent_default,
-            commands::agents::create_custom_agent,
-            commands::agents::delete_agent,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
-            commands::runtime::start_workspace,
-            commands::runtime::read_workspace_log,
-            commands::runtime::send_workspace_input,
-            commands::runtime::resize_workspace,
-            commands::runtime::interrupt_workspace,
-            commands::runtime::stop_workspace,
+            commands::orchestrator::start_task,
+            commands::orchestrator::stop_task,
+            commands::orchestrator::open_task_terminal,
+            commands::orchestrator::send_input_to_task,
+            commands::orchestrator::read_task_log,
+            commands::orchestrator::resize_task,
+            commands::orchestrator::interrupt_task,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,
@@ -150,6 +154,17 @@ pub fn run() {
             commands::git::git_discard,
             commands::git::git_commit,
             commands::git::git_push,
+            commands::git::git_branch_status,
+            commands::git::git_fetch,
+            commands::git::git_sync_with_main,
+            commands::git::git_merge_to_main,
+            commands::git::git_merge_in_progress,
+            commands::git::git_abort_merge,
+            commands::git::git_continue_merge,
+            commands::git::git_resolve_conflict,
+            commands::git::git_log,
+            commands::git::git_commit_files,
+            commands::git::git_commit_diff,
             localfs::validate_workspace_path,
             localfs::default_projects_dir,
             localfs::ensure_dir,
@@ -159,11 +174,13 @@ pub fn run() {
             commands::run_commands::list_run_commands,
             commands::run_commands::update_run_command,
             commands::run_commands::delete_run_command,
+            commands::run_commands::upsert_run_command_from_cloud,
             commands::run_commands::start_run_command,
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,
             commands::run_commands::resize_run_command,
             commands::session_terminal::start_session_terminal,
+            commands::session_terminal::attach_session_terminal,
             commands::session_terminal::send_session_input,
             commands::session_terminal::resize_session,
             commands::session_terminal::stop_session_terminal,
@@ -171,4 +188,89 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn initialize_database_state(
+    handle: &tauri::AppHandle,
+    db_path: &Path,
+    task_runtime: Arc<TaskRuntime>,
+) -> Result<(), store::StoreError> {
+    let pool = init_pool(db_path).await?;
+    let agent_repo = AgentRepo::new(pool.clone());
+    agent_repo.ensure_seeded().await?;
+
+    let repository_repo = RepositoryRepo::new(pool.clone());
+    let workspace_repo = WorkspaceRepo::new(pool.clone());
+    recover_startup_state(&workspace_repo, &repository_repo).await;
+
+    let orchestrator = TaskOrchestrator::new(
+        workspace_repo.clone(),
+        repository_repo.clone(),
+        agent_repo.clone(),
+        task_runtime,
+    );
+    commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+
+    handle.manage(repository_repo);
+    handle.manage(workspace_repo);
+    handle.manage(RunCommandRepo::new(pool.clone()));
+    handle.manage(agent_repo);
+    handle.manage(SettingsRepo::new(pool.clone()));
+    handle.manage(UserRepo::new(pool.clone()));
+    handle.manage(pool);
+    handle.manage(orchestrator);
+
+    Ok(())
+}
+
+async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: &RepositoryRepo) {
+    match workspace_repo
+        .list_by_status(WorkspaceStatus::Running)
+        .await
+    {
+        Ok(running) => {
+            let now = chrono::Utc::now();
+            for workspace in running {
+                if let Err(err) = workspace_repo
+                    .update(
+                        &workspace.id,
+                        WorkspaceUpdate {
+                            status: Some(WorkspaceStatus::Stopped),
+                            exit_code: Some(None),
+                            finished_at: Some(Some(now)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "failed to recover orphaned running workspace {}: {err}",
+                        workspace.id
+                    );
+                }
+            }
+        }
+        Err(err) => eprintln!("failed to list running workspaces during startup recovery: {err}"),
+    }
+
+    match repository_repo.list().await {
+        Ok(repositories) => {
+            for repository in repositories {
+                let Some(path) = repository.local_path.as_deref() else {
+                    continue;
+                };
+                let path = std::path::Path::new(path);
+                if !path.exists() || !path.join(".git").exists() {
+                    continue;
+                }
+                if let Err(err) = crate::git::prune_worktrees(path) {
+                    eprintln!(
+                        "failed to prune git worktrees for repository {}: {err}",
+                        repository.id
+                    );
+                }
+            }
+        }
+        Err(err) => eprintln!("failed to list repositories during startup recovery: {err}"),
+    }
 }

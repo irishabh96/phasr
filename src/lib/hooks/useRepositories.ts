@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useRouter } from "@tanstack/react-router";
+import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { tauri } from "@/lib/tauri";
 import type { Repository } from "@/lib/types";
 
@@ -56,12 +58,23 @@ export function useUpdateRepository(id: string) {
 
 export function useDeleteRepository() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const router = useRouter();
   return useMutation({
     mutationKey: repositoryMutationKeys.delete,
     mutationFn: (id: string) => tauri.deleteRepository(id),
     onSuccess: (_v, id) => {
       queryClient.invalidateQueries({ queryKey: repositoryKeys.list() });
       queryClient.removeQueries({ queryKey: repositoryKeys.detail(id) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.byRepository(id) });
+      // If the user is currently on the just-deleted repo's home or
+      // any of its workspace routes, bounce them to the welcome screen.
+      // Otherwise the Terminal component stays mounted and the orphaned
+      // route shows a "Repository not found" placeholder.
+      const currentPath = router.state.location.pathname;
+      if (currentPath.startsWith(`/repositories/${id}`)) {
+        void navigate({ to: "/" });
+      }
     },
   });
 }

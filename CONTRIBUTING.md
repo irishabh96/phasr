@@ -36,6 +36,9 @@ cp .env.example .env.local
 #   VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
 #   VITE_SUPABASE_URL=https://<project>.supabase.co
 #   VITE_SUPABASE_ANON_KEY=eyJ...
+#   VITE_SENTRY_DSN=https://...@sentry.io/... # optional
+#   VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=0.1 # optional
+#   VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE=1.0 # optional
 ```
 
 The Supabase project needs the Phasr schema installed (`supabase/migrations/`) and Clerk JWT integration configured.

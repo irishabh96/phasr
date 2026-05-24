@@ -5,17 +5,25 @@ name: Release
 # publishes. Intel Mac support isn't built pre-1.0 — adding it is a
 # second matrix entry when there's demand.
 #
-# Required repo secrets (Settings → Secrets and variables → Actions):
+# Required GitHub Environment: `release`
+# Add these as environment secrets or variables under:
+# Settings → Environments → release → Secrets and variables
 #   VITE_CLERK_PUBLISHABLE_KEY
 #   VITE_SUPABASE_URL
 #   VITE_SUPABASE_ANON_KEY
+# Optional:
+#   VITE_CLERK_DESKTOP_CALLBACK_URL
+#   VITE_SENTRY_DSN
+#   VITE_SENTRY_TRACES_SAMPLE_RATE
+#   VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE
+#   VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE
 # These bake into the JS bundle so public DMGs ship with cloud sync
 # working. The repo itself never sees the values.
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -24,6 +32,17 @@ jobs:
   build:
     name: Build aarch64 DMG
     runs-on: macos-14
+    environment: release
+    env:
+      VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY || vars.VITE_CLERK_PUBLISHABLE_KEY }}
+      VITE_CLERK_DESKTOP_CALLBACK_URL: ${{ secrets.VITE_CLERK_DESKTOP_CALLBACK_URL || vars.VITE_CLERK_DESKTOP_CALLBACK_URL }}
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN || vars.VITE_SENTRY_DSN }}
+      VITE_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE }}
+      VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE: ${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE }}
+      VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE: ${{ vars.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE }}
+      VITE_SENTRY_RELEASE: ${{ github.ref_name }}
 
     steps:
       - name: Checkout
@@ -32,7 +51,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       # pnpm version sourced from package.json "packageManager" —
       # passing `with: version:` here too trips ERR_PNPM_BAD_PM_VERSION.
@@ -52,16 +71,19 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
+      - name: Verify release environment
+        run: |
+          test -n "$VITE_CLERK_PUBLISHABLE_KEY" || (echo "Missing VITE_CLERK_PUBLISHABLE_KEY in the release environment" && exit 1)
+          test -n "$VITE_SUPABASE_URL" || (echo "Missing VITE_SUPABASE_URL in the release environment" && exit 1)
+          test -n "$VITE_SUPABASE_ANON_KEY" || (echo "Missing VITE_SUPABASE_ANON_KEY in the release environment" && exit 1)
+
       - name: Build + bundle + upload to draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Phasr ${{ github.ref_name }}'
+          releaseName: "Phasr ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
           args: --target aarch64-apple-darwin

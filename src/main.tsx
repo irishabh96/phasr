@@ -7,7 +7,21 @@ import "./index.css";
 import { routeTree } from "./routeTree.gen";
 import { queryClient } from "./lib/query";
 import { applyTheme, readStoredTheme } from "./lib/theme";
-import { CLERK_PUBLISHABLE_KEY, clerkAppearance, isClerkConfigured } from "./lib/clerk";
+import {
+  CLERK_CONFIG_ERROR,
+  CLERK_PUBLISHABLE_KEY,
+  clerkAppearance,
+  isClerkConfigured,
+} from "./lib/clerk";
+import {
+  isSupabaseConfigured,
+  SUPABASE_CONFIG_ERROR,
+} from "./lib/supabase";
+import {
+  initSentry,
+  isSentryConfigured,
+  sentryReactRootErrorHandler,
+} from "./lib/sentry";
 
 // Apply theme before React mounts to prevent FOUC.
 applyTheme(readStoredTheme());
@@ -17,6 +31,8 @@ const router = createRouter({
   defaultPreload: "intent",
   context: { queryClient },
 });
+
+initSentry(router);
 
 declare module "@tanstack/react-router" {
   interface Register {
@@ -35,12 +51,40 @@ const appTree = (
   </QueryClientProvider>
 );
 
-createRoot(rootElement).render(
-  isClerkConfigured ? (
+function MissingRequiredConfig({ messages }: { messages: string[] }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-6 text-(--color-text-primary)">
+      <div className="w-full max-w-xl rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6 shadow-xl">
+        <h1 className="text-lg font-semibold">Phasr requires cloud configuration</h1>
+        <div className="mt-3 space-y-2 text-sm text-(--color-text-secondary)">
+          {messages.map((message) => (
+            <p key={message}>{message}</p>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const missingConfigMessages = [
+  ...(isClerkConfigured ? [] : [CLERK_CONFIG_ERROR]),
+  ...(isSupabaseConfigured ? [] : [SUPABASE_CONFIG_ERROR]),
+];
+
+const reactRootOptions: Parameters<typeof createRoot>[1] = isSentryConfigured
+  ? {
+      onCaughtError: sentryReactRootErrorHandler,
+      onRecoverableError: sentryReactRootErrorHandler,
+      onUncaughtError: sentryReactRootErrorHandler,
+    }
+  : undefined;
+
+createRoot(rootElement, reactRootOptions).render(
+  missingConfigMessages.length > 0 ? (
+    <MissingRequiredConfig messages={missingConfigMessages} />
+  ) : (
     <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY!} appearance={clerkAppearance()}>
       {appTree}
     </ClerkProvider>
-  ) : (
-    appTree
   ),
 );

@@ -3,7 +3,12 @@
 //! so the frontend can render a clean "not text" message.
 
 use std::path::Path;
+use std::sync::Arc;
+
+use tauri::State;
 use thiserror::Error;
+
+use crate::auth::{AuthError, SessionState};
 
 const MAX_PREVIEW_BYTES: u64 = 1_048_576; // 1 MB
 
@@ -19,6 +24,8 @@ pub enum FilePreviewError {
     NotText,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
 }
 
 impl serde::Serialize for FilePreviewError {
@@ -28,7 +35,11 @@ impl serde::Serialize for FilePreviewError {
 }
 
 #[tauri::command]
-pub async fn read_text_file(path: String) -> Result<String, FilePreviewError> {
+pub async fn read_text_file(
+    path: String,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, FilePreviewError> {
+    session.require()?;
     let path_buf = Path::new(&path);
     if !path_buf.exists() {
         return Err(FilePreviewError::Missing);

@@ -1,10 +1,11 @@
 import { Channel } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
+import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { tauri } from "@/lib/tauri";
+import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent } from "@/lib/types";
 
 interface RunCommandTerminalProps {
@@ -30,14 +31,19 @@ export function RunCommandTerminal({
 }: RunCommandTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onExitRef = useRef(onExit);
+  const termRef = useRef<ReturnType<typeof createXtermTerminal> | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const { data: settings } = useUserSettings();
   onExitRef.current = onExit;
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     let cancelled = false;
-    const term = createTerminal();
+    const term = createXtermTerminal();
+    termRef.current = term;
     const fit = new FitAddon();
+    fitRef.current = fit;
     term.loadAddon(fit);
     term.open(container);
     try {
@@ -81,7 +87,12 @@ export function RunCommandTerminal({
     const start = async () => {
       term.write("\x1b[2m── starting ──\x1b[0m\r\n");
       try {
-        await tauri.startRunCommand(runCommandId, channel, term.rows, term.cols);
+        await tauri.startRunCommand(
+          runCommandId,
+          channel,
+          term.rows,
+          term.cols,
+        );
         if (cancelled) return;
         disposables.push(
           term.onData((data) => {
@@ -90,7 +101,9 @@ export function RunCommandTerminal({
           }),
           term.onResize(({ rows, cols }) => {
             if (cancelled) return;
-            void tauri.resizeRunCommand(runCommandId, rows, cols).catch(() => {});
+            void tauri
+              .resizeRunCommand(runCommandId, rows, cols)
+              .catch(() => {});
           }),
         );
         term.focus();
@@ -107,8 +120,23 @@ export function RunCommandTerminal({
       resizeObserver.disconnect();
       for (const d of disposables) d.dispose();
       term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
     };
   }, [runCommandId]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    const fit = fitRef.current;
+    if (!term || !fit) return;
+    applyXtermSettings(term, settings);
+    try {
+      fit.fit();
+      if (term.rows > 0) term.refresh(0, term.rows - 1);
+    } catch {
+      /* layout settling */
+    }
+  }, [settings]);
 
   return (
     <div
@@ -128,41 +156,4 @@ export function RunCommandTerminal({
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );
-}
-
-function createTerminal() {
-  const computed = getComputedStyle(document.documentElement);
-  const css = (name: string, fallback: string) =>
-    computed.getPropertyValue(name).trim() || fallback;
-  return new XtermTerminal({
-    fontFamily: css("--font-mono", "ui-monospace, Menlo, monospace"),
-    fontSize: 13,
-    lineHeight: 1.0,
-    cursorBlink: true,
-    convertEol: true,
-    allowProposedApi: true,
-    scrollback: 10000,
-    theme: {
-      background: css("--color-bg-terminal", "#000000"),
-      foreground: css("--color-text-primary", "#e6edf3"),
-      cursor: css("--color-accent-500", "#f78166"),
-      selectionBackground: "rgba(247,129,102,0.28)",
-      black: css("--ansi-black", "#484f58"),
-      red: css("--ansi-red", "#ff7b72"),
-      green: css("--ansi-green", "#3fb950"),
-      yellow: css("--ansi-yellow", "#d29922"),
-      blue: css("--ansi-blue", "#58a6ff"),
-      magenta: css("--ansi-magenta", "#bc8cff"),
-      cyan: css("--ansi-cyan", "#39c5cf"),
-      white: css("--ansi-white", "#b1bac4"),
-      brightBlack: css("--ansi-bright-black", "#6e7681"),
-      brightRed: css("--ansi-bright-red", "#ffa198"),
-      brightGreen: css("--ansi-bright-green", "#56d364"),
-      brightYellow: css("--ansi-bright-yellow", "#e3b341"),
-      brightBlue: css("--ansi-bright-blue", "#79c0ff"),
-      brightMagenta: css("--ansi-bright-magenta", "#d2a8ff"),
-      brightCyan: css("--ansi-bright-cyan", "#56d4dd"),
-      brightWhite: css("--ansi-bright-white", "#ffffff"),
-    },
-  });
 }

@@ -35,6 +35,34 @@ export interface InnerTabState {
   activeTabId: string;
 }
 
+// ---------- Per-repository inner tab strip ----------
+//
+// Mirrors the per-workspace `innerTabs` system above. Lives on the
+// repository view (the empty-repo screen today; potentially every
+// repo-scoped surface later). Home is pinned + not closable; preview
+// tabs host `<FilePreviewTab>` and are added by the file-search modal
+// when the user opens a file outside of a workspace context.
+
+export type RepoInnerTabKind = "home" | "preview" | "terminal";
+
+export interface RepoInnerTab {
+  id: string;
+  kind: RepoInnerTabKind;
+  title: string;
+  closable: boolean;
+  /** Preview — repo-relative file path. */
+  filePath?: string;
+  /** Terminal — backend session uuid. Set after `start_session_terminal` returns. */
+  ptySessionId?: string;
+}
+
+export interface RepoInnerTabState {
+  tabs: RepoInnerTab[];
+  activeTabId: string;
+}
+
+export const REPO_HOME_TAB_ID = "home";
+
 // ---------- Run-command bottom pane ----------
 
 interface RunPanelState {
@@ -83,20 +111,46 @@ interface UiState {
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
 
-  /** New-project wizard modal — single instance mounted at the app shell. */
-  newProjectModalOpen: boolean;
-  openNewProjectModal: () => void;
-  closeNewProjectModal: () => void;
+  /**
+   * Active tab inside the workspace right sidebar, keyed by workspace
+   * id. Defaults to "changes" when unset. Persists across ⌘J toggles
+   * but not across reloads — survives sessions via the same per-tab
+   * pattern as `innerTabs` (in-memory; we don't snapshot to disk).
+   */
+  rightPanelTab: Record<string, "changes" | "history">;
+  setRightPanelTab: (workspaceId: string, tab: "changes" | "history") => void;
 
-  /** Existing-project ("Open existing") modal — same shell-mounted pattern. */
-  openExistingModalOpen: boolean;
-  openOpenExistingModal: () => void;
-  closeOpenExistingModal: () => void;
+
+  /**
+   * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
+   * or New-project Empty flow lands on a non-git folder; cleared when the
+   * user clicks Initialize Git, Cancel, or Esc.
+   */
+  pendingGitInitRepoId: string | null;
+  requestGitInit: (repoId: string) => void;
+  clearPendingGitInit: () => void;
 
   /** Repo file-search modal — non-null target means open + scoped to that repo. */
   fileSearchTarget: { repositoryId: string; path: string } | null;
   openFileSearch: (repositoryId: string, path: string) => void;
   closeFileSearch: () => void;
+
+  /**
+   * Per-repository inner tab strip. Home is the pinned default tab; file
+   * previews dock here when opened from the file-search modal outside of
+   * a workspace context.
+   */
+  repoInnerTabs: Record<string, RepoInnerTabState>;
+  ensureRepoInnerTabs: (repositoryId: string) => void;
+  openRepoInnerPreviewTab: (repositoryId: string, filePath: string) => RepoInnerTab;
+  openRepoInnerTerminalTab: (repositoryId: string) => RepoInnerTab;
+  setRepoInnerTabPtySession: (
+    repositoryId: string,
+    tabId: string,
+    ptySessionId: string,
+  ) => void;
+  closeRepoInnerTab: (repositoryId: string, tabId: string) => RepoInnerTab | null;
+  setActiveRepoInnerTab: (repositoryId: string, tabId: string) => void;
 
   /**
    * Drives the NewWorkspaceModal mounted in the app shell. Set by:
@@ -183,17 +237,142 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ rightPanelCollapsed: collapsed });
   },
 
-  newProjectModalOpen: false,
-  openNewProjectModal: () => set({ newProjectModalOpen: true }),
-  closeNewProjectModal: () => set({ newProjectModalOpen: false }),
+  rightPanelTab: {},
+  setRightPanelTab: (workspaceId, tab) => {
+    set({ rightPanelTab: { ...get().rightPanelTab, [workspaceId]: tab } });
+  },
 
-  openExistingModalOpen: false,
-  openOpenExistingModal: () => set({ openExistingModalOpen: true }),
-  closeOpenExistingModal: () => set({ openExistingModalOpen: false }),
+  pendingGitInitRepoId: null,
+  requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),
+  clearPendingGitInit: () => set({ pendingGitInitRepoId: null }),
 
   fileSearchTarget: null,
   openFileSearch: (repositoryId, path) => set({ fileSearchTarget: { repositoryId, path } }),
   closeFileSearch: () => set({ fileSearchTarget: null }),
+
+  repoInnerTabs: {},
+  ensureRepoInnerTabs: (repositoryId) => {
+    if (get().repoInnerTabs[repositoryId]) return;
+    const home: RepoInnerTab = {
+      id: REPO_HOME_TAB_ID,
+      kind: "home",
+      title: "Home",
+      closable: false,
+    };
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: { tabs: [home], activeTabId: home.id },
+      },
+    });
+  },
+  openRepoInnerPreviewTab: (repositoryId, filePath) => {
+    let state = get().repoInnerTabs[repositoryId];
+    if (!state) {
+      const home: RepoInnerTab = {
+        id: REPO_HOME_TAB_ID,
+        kind: "home",
+        title: "Home",
+        closable: false,
+      };
+      state = { tabs: [home], activeTabId: home.id };
+    }
+    const existing = state.tabs.find(
+      (t) => t.kind === "preview" && t.filePath === filePath,
+    );
+    if (existing) {
+      set({
+        repoInnerTabs: {
+          ...get().repoInnerTabs,
+          [repositoryId]: { ...state, activeTabId: existing.id },
+        },
+      });
+      return existing;
+    }
+    const filename = filePath.split(/[/\\]/).pop() ?? filePath;
+    const tab: RepoInnerTab = {
+      id: uuidv4(),
+      kind: "preview",
+      title: filename,
+      closable: true,
+      filePath,
+    };
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: { tabs: [...state.tabs, tab], activeTabId: tab.id },
+      },
+    });
+    return tab;
+  },
+  openRepoInnerTerminalTab: (repositoryId) => {
+    let state = get().repoInnerTabs[repositoryId];
+    if (!state) {
+      const home: RepoInnerTab = {
+        id: REPO_HOME_TAB_ID,
+        kind: "home",
+        title: "Home",
+        closable: false,
+      };
+      state = { tabs: [home], activeTabId: home.id };
+    }
+    const existingTerminals = state.tabs.filter((t) => t.kind === "terminal").length;
+    const tab: RepoInnerTab = {
+      id: uuidv4(),
+      kind: "terminal",
+      title: existingTerminals > 0 ? `Terminal ${existingTerminals + 1}` : "Terminal",
+      closable: true,
+    };
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: { tabs: [...state.tabs, tab], activeTabId: tab.id },
+      },
+    });
+    return tab;
+  },
+  setRepoInnerTabPtySession: (repositoryId, tabId, ptySessionId) => {
+    const state = get().repoInnerTabs[repositoryId];
+    if (!state) return;
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: {
+          ...state,
+          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ptySessionId } : t)),
+        },
+      },
+    });
+  },
+  closeRepoInnerTab: (repositoryId, tabId) => {
+    const state = get().repoInnerTabs[repositoryId];
+    if (!state) return null;
+    const closed = state.tabs.find((t) => t.id === tabId) ?? null;
+    if (!closed || !closed.closable) return null;
+    const remaining = state.tabs.filter((t) => t.id !== tabId);
+    const newActive =
+      state.activeTabId === tabId
+        ? (remaining[remaining.length - 1]?.id ?? REPO_HOME_TAB_ID)
+        : state.activeTabId;
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: { tabs: remaining, activeTabId: newActive },
+      },
+    });
+    return closed;
+  },
+  setActiveRepoInnerTab: (repositoryId, tabId) => {
+    const state = get().repoInnerTabs[repositoryId];
+    if (!state) return;
+    if (!state.tabs.some((t) => t.id === tabId)) return;
+    set({
+      repoInnerTabs: {
+        ...get().repoInnerTabs,
+        [repositoryId]: { ...state, activeTabId: tabId },
+      },
+    });
+  },
 
   pendingNewWorkspaceRepoId: null,
   requestNewWorkspace: (repoId) => set({ pendingNewWorkspaceRepoId: repoId }),
@@ -301,9 +480,14 @@ export const useUiStore = create<UiState>((set, get) => ({
     const closed = state.tabs.find((t) => t.id === tabId) ?? null;
     if (!closed || !closed.closable) return null;
     const remaining = state.tabs.filter((t) => t.id !== tabId);
+    if (remaining.length === 0) {
+      const { [workspaceId]: _removed, ...nextInnerTabs } = get().innerTabs;
+      set({ innerTabs: nextInnerTabs });
+      return closed;
+    }
     const newActive =
       state.activeTabId === tabId
-        ? (remaining[remaining.length - 1]?.id ?? remaining[0]?.id ?? "")
+        ? (remaining[remaining.length - 1]?.id ?? remaining[0]!.id)
         : state.activeTabId;
     set({
       innerTabs: {

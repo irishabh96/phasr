@@ -77,9 +77,30 @@ export type PtyEvent =
   | { type: "output"; taskId: string; chunk: string }
   | { type: "exit"; taskId: string; exitCode: number | null };
 
-export interface RunningWorkspaceInfo {
-  workspaceId: string;
+/**
+ * Result of `start_task` — orchestrator-side vocabulary uses "task" but
+ * the persisted row is still in the `workspaces` table (renamed from
+ * `tasks` in migration 0002).
+ */
+export interface StartedTask {
+  taskId: string;
+  workspace: Workspace;
+}
+
+export interface RunningTaskInfo {
+  taskId: string;
   startedAt: string;
+}
+
+/**
+ * Payload broadcast on `phasr://task-status` whenever the orchestrator
+ * transitions a task between lifecycle states.
+ */
+export interface TaskStatusPayload {
+  taskId: string;
+  repositoryId: string;
+  status: WorkspaceStatus;
+  exitCode: number | null;
 }
 
 export interface PathValidation {
@@ -124,6 +145,64 @@ export interface RunCommand {
 export interface CommitOutput {
   sha: string;
   message: string;
+}
+
+export interface BranchStatus {
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  hasRemote: boolean;
+  detached: boolean;
+  /**
+   * The resolved ref the workspace branch is compared against for
+   * merge-target purposes. Prefers `origin/<defaultBranch>` when a
+   * remote exists, otherwise the local default branch. `null` when
+   * the workspace is on the default branch itself.
+   */
+  targetRef: string | null;
+  /** Commits on this branch not reachable from `targetRef`. */
+  aheadOfTarget: number;
+  /** Commits on `targetRef` not reachable from this branch. */
+  behindOfTarget: number;
+}
+
+export type MergeStrategy = "merge" | "squash" | "fastForward" | "rebase";
+
+export type MergeOutcome =
+  | { kind: "clean"; message: string }
+  | { kind: "conflicts"; files: string[] };
+
+export type InProgress =
+  | { kind: "none" }
+  | { kind: "merge"; conflicts: string[] }
+  | { kind: "rebase"; conflicts: string[] };
+
+export type ConflictSide = "ours" | "theirs";
+
+export interface Commit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  body: string | null;
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;
+  parents: string[];
+}
+
+export interface LogOptions {
+  branchOnly: boolean;
+  limit?: number;
+  skip?: number;
+  messageGrep?: string;
+  defaultBranch?: string;
+}
+
+export interface CommitFileChange {
+  path: string;
+  oldPath: string | null;
+  status: FileStatus;
 }
 
 export interface OpenPullRequestOutcome {
