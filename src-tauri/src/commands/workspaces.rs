@@ -112,7 +112,7 @@ pub async fn create_workspace(
     repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
-    session.require()?;
+    let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let repository = repositories.get(&input.repository_id).await?;
 
     let mut workspace = Workspace::new(input.repository_id.clone(), input.name, input.command);
@@ -135,7 +135,9 @@ pub async fn create_workspace(
         }
     }
 
-    workspaces.insert(&workspace).await?;
+    workspaces
+        .insert_for_user(&workspace, &current_session.user_id)
+        .await?;
     Ok(workspace)
 }
 

@@ -32,15 +32,32 @@ impl WorkspaceRepo {
     }
 
     pub async fn insert(&self, workspace: &Workspace) -> Result<(), StoreError> {
+        self.insert_with_user(workspace, None).await
+    }
+
+    pub async fn insert_for_user(
+        &self,
+        workspace: &Workspace,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        self.insert_with_user(workspace, Some(user_id)).await
+    }
+
+    async fn insert_with_user(
+        &self,
+        workspace: &Workspace,
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO workspaces (
-                id, repository_id, name, prompt, agent_id, command, status,
+                id, user_id, repository_id, name, prompt, agent_id, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&workspace.id)
+        .bind(user_id)
         .bind(&workspace.repository_id)
         .bind(&workspace.name)
         .bind(&workspace.prompt)

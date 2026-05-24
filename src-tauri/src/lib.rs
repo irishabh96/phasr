@@ -13,6 +13,7 @@ mod pty;
 mod store;
 mod sync;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use auth::SessionState;
@@ -94,46 +95,11 @@ pub fn run() {
                 Arc::new(fswatch::WorktreeWatchRegistry::new(app.handle().clone()));
             app.manage(watch_registry.clone());
 
-            let handle = app.handle().clone();
-            let runtime_for_async = task_runtime;
-            tauri::async_runtime::spawn(async move {
-                match init_pool(&db_path).await {
-                    Ok(pool) => {
-                        let agent_repo = AgentRepo::new(pool.clone());
-                        if let Err(err) = agent_repo.ensure_seeded().await {
-                            eprintln!("agent seeding failed: {err}");
-                        }
-                        let repository_repo = RepositoryRepo::new(pool.clone());
-                        let workspace_repo = WorkspaceRepo::new(pool.clone());
-                        recover_startup_state(&workspace_repo, &repository_repo).await;
-                        let orchestrator = TaskOrchestrator::new(
-                            workspace_repo.clone(),
-                            repository_repo.clone(),
-                            agent_repo.clone(),
-                            runtime_for_async,
-                        );
-                        commands::orchestrator::spawn_status_bridge(
-                            Arc::new(orchestrator.clone()),
-                            handle.clone(),
-                        );
-
-                        handle.manage(repository_repo);
-                        handle.manage(workspace_repo);
-                        handle.manage(RunCommandRepo::new(pool.clone()));
-                        handle.manage(agent_repo);
-                        handle.manage(SettingsRepo::new(pool.clone()));
-                        handle.manage(UserRepo::new(pool.clone()));
-                        handle.manage(pool);
-                        handle.manage(orchestrator);
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "failed to initialize SQLite at {}: {err}",
-                            db_path.display()
-                        );
-                    }
-                }
-            });
+            tauri::async_runtime::block_on(initialize_database_state(
+                app.handle(),
+                &db_path,
+                task_runtime,
+            ))?;
 
             Ok(())
         })
@@ -222,6 +188,39 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn initialize_database_state(
+    handle: &tauri::AppHandle,
+    db_path: &Path,
+    task_runtime: Arc<TaskRuntime>,
+) -> Result<(), store::StoreError> {
+    let pool = init_pool(db_path).await?;
+    let agent_repo = AgentRepo::new(pool.clone());
+    agent_repo.ensure_seeded().await?;
+
+    let repository_repo = RepositoryRepo::new(pool.clone());
+    let workspace_repo = WorkspaceRepo::new(pool.clone());
+    recover_startup_state(&workspace_repo, &repository_repo).await;
+
+    let orchestrator = TaskOrchestrator::new(
+        workspace_repo.clone(),
+        repository_repo.clone(),
+        agent_repo.clone(),
+        task_runtime,
+    );
+    commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+
+    handle.manage(repository_repo);
+    handle.manage(workspace_repo);
+    handle.manage(RunCommandRepo::new(pool.clone()));
+    handle.manage(agent_repo);
+    handle.manage(SettingsRepo::new(pool.clone()));
+    handle.manage(UserRepo::new(pool.clone()));
+    handle.manage(pool);
+    handle.manage(orchestrator);
+
+    Ok(())
 }
 
 async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: &RepositoryRepo) {

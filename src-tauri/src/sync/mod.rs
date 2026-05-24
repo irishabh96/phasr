@@ -346,8 +346,9 @@ async fn push_dirty_users(client: &SupabaseRestClient, db: &Db) -> Result<(), Sy
     let rows = sqlx::query(
         "SELECT id, clerk_user_id, name, email, image_url, created_at, updated_at
          FROM users
-         WHERE dirty = 1",
+         WHERE dirty = 1 AND id = ?",
     )
+    .bind(&client.user_id)
     .fetch_all(db)
     .await?;
 
@@ -376,10 +377,13 @@ async fn push_dirty_users(client: &SupabaseRestClient, db: &Db) -> Result<(), Sy
 }
 
 async fn push_repository_deletes(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
-    let rows =
-        sqlx::query("SELECT id FROM repositories WHERE deleted_at IS NOT NULL AND dirty = 1")
-            .fetch_all(db)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT id FROM repositories
+             WHERE deleted_at IS NOT NULL AND dirty = 1 AND user_id = ?",
+    )
+    .bind(&client.user_id)
+    .fetch_all(db)
+    .await?;
     for row in rows {
         let id: String = row.try_get("id")?;
         client.delete_by_id("repositories", &id).await?;
@@ -403,11 +407,11 @@ async fn upsert_repository_from_cloud(
     db: &Db,
     row: &CloudRepositoryRow,
 ) -> Result<(), SyncError> {
-    if repository_is_soft_deleted(db, &row.id).await? {
+    if repository_is_soft_deleted(db, &row.id, &client.user_id).await? {
         return Ok(());
     }
 
-    let current = get_repository_row(db, &row.id).await?;
+    let current = get_repository_row(db, &row.id, &client.user_id).await?;
     let local_path = row
         .local_paths
         .get(&client.config.machine_id)
@@ -420,10 +424,11 @@ async fn upsert_repository_from_cloud(
         }
         sqlx::query(
             "UPDATE repositories SET
-                name = ?, remote_url = ?, local_path = ?, default_branch = ?,
+                user_id = ?, name = ?, remote_url = ?, local_path = ?, default_branch = ?,
                 created_at = ?, updated_at = ?, synced_at = ?, dirty = 0
              WHERE id = ?",
         )
+        .bind(&client.user_id)
         .bind(&row.name)
         .bind(&row.remote_url)
         .bind(&local_path)
@@ -437,11 +442,12 @@ async fn upsert_repository_from_cloud(
     } else {
         sqlx::query(
             "INSERT INTO repositories (
-                id, name, remote_url, local_path, default_branch,
+                id, user_id, name, remote_url, local_path, default_branch,
                 created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         )
         .bind(&row.id)
+        .bind(&client.user_id)
         .bind(&row.name)
         .bind(&row.remote_url)
         .bind(&local_path)
@@ -456,13 +462,7 @@ async fn upsert_repository_from_cloud(
 }
 
 async fn push_dirty_repositories(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
-    let rows = sqlx::query(
-        "SELECT id, name, remote_url, local_path, default_branch, created_at, updated_at
-         FROM repositories
-         WHERE dirty = 1 AND deleted_at IS NULL",
-    )
-    .fetch_all(db)
-    .await?;
+    let rows = dirty_repository_rows(db, &client.user_id).await?;
 
     for row in rows {
         let repo = repository_from_row(&row)?;
@@ -491,6 +491,20 @@ async fn push_dirty_repositories(client: &SupabaseRestClient, db: &Db) -> Result
     Ok(())
 }
 
+async fn dirty_repository_rows(
+    db: &Db,
+    user_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, SyncError> {
+    Ok(sqlx::query(
+        "SELECT id, name, remote_url, local_path, default_branch, created_at, updated_at
+         FROM repositories
+         WHERE dirty = 1 AND deleted_at IS NULL AND user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?)
+}
+
 async fn cloud_local_paths(
     client: &SupabaseRestClient,
     repository_id: &str,
@@ -515,29 +529,34 @@ async fn cloud_local_paths(
 
 async fn pull_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
     let rows: Vec<CloudWorkspaceRow> = client.get_json("/rest/v1/workspaces?select=*").await?;
-    let repository_ids = local_repository_ids(db).await?;
+    let repository_ids = local_repository_ids(db, &client.user_id).await?;
     for row in rows {
         if repository_ids.contains(&row.repository_id) {
-            upsert_workspace_from_cloud(db, &row).await?;
+            upsert_workspace_from_cloud(client, db, &row).await?;
         }
     }
     Ok(())
 }
 
-async fn upsert_workspace_from_cloud(db: &Db, row: &CloudWorkspaceRow) -> Result<(), SyncError> {
-    let current = get_updated_at(db, "workspaces", &row.id).await?;
+async fn upsert_workspace_from_cloud(
+    client: &SupabaseRestClient,
+    db: &Db,
+    row: &CloudWorkspaceRow,
+) -> Result<(), SyncError> {
+    let current = get_updated_at(db, "workspaces", &row.id, &client.user_id).await?;
     if let Some(current) = current {
         if current >= row.updated_at {
             return Ok(());
         }
         sqlx::query(
             "UPDATE workspaces SET
-                repository_id = ?, name = ?, prompt = ?, agent_id = ?, command = ?, status = ?,
+                user_id = ?, repository_id = ?, name = ?, prompt = ?, agent_id = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 created_at = ?, started_at = ?, finished_at = ?, archived_at = ?,
                 updated_at = ?, synced_at = ?, dirty = 0
              WHERE id = ?",
         )
+        .bind(&client.user_id)
         .bind(&row.repository_id)
         .bind(&row.name)
         .bind(&row.prompt)
@@ -559,13 +578,14 @@ async fn upsert_workspace_from_cloud(db: &Db, row: &CloudWorkspaceRow) -> Result
     } else {
         sqlx::query(
             "INSERT INTO workspaces (
-                id, repository_id, name, prompt, agent_id, command, status,
+                id, user_id, repository_id, name, prompt, agent_id, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         )
         .bind(&row.id)
+        .bind(&client.user_id)
         .bind(&row.repository_id)
         .bind(&row.name)
         .bind(&row.prompt)
@@ -588,14 +608,7 @@ async fn upsert_workspace_from_cloud(db: &Db, row: &CloudWorkspaceRow) -> Result
 }
 
 async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
-    let rows = sqlx::query(
-        "SELECT id, repository_id, name, prompt, command, status, branch, worktree_path,
-                exit_code, created_at, started_at, finished_at, archived_at, updated_at
-         FROM workspaces
-         WHERE dirty = 1",
-    )
-    .fetch_all(db)
-    .await?;
+    let rows = dirty_workspace_rows(db, &client.user_id).await?;
 
     for row in rows {
         let id: String = row.try_get("id")?;
@@ -628,29 +641,49 @@ async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(
     Ok(())
 }
 
+async fn dirty_workspace_rows(
+    db: &Db,
+    user_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, SyncError> {
+    Ok(sqlx::query(
+        "SELECT id, repository_id, name, prompt, command, status, branch, worktree_path,
+                exit_code, created_at, started_at, finished_at, archived_at, updated_at
+         FROM workspaces
+         WHERE dirty = 1 AND user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?)
+}
+
 async fn pull_run_commands(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
     let rows: Vec<CloudRunCommandRow> = client.get_json("/rest/v1/run_commands?select=*").await?;
-    let repository_ids = local_repository_ids(db).await?;
+    let repository_ids = local_repository_ids(db, &client.user_id).await?;
     for row in rows {
         if repository_ids.contains(&row.repository_id) {
-            upsert_run_command_from_cloud(db, &row).await?;
+            upsert_run_command_from_cloud(client, db, &row).await?;
         }
     }
     Ok(())
 }
 
-async fn upsert_run_command_from_cloud(db: &Db, row: &CloudRunCommandRow) -> Result<(), SyncError> {
-    let current = get_updated_at(db, "run_commands", &row.id).await?;
+async fn upsert_run_command_from_cloud(
+    client: &SupabaseRestClient,
+    db: &Db,
+    row: &CloudRunCommandRow,
+) -> Result<(), SyncError> {
+    let current = get_updated_at(db, "run_commands", &row.id, &client.user_id).await?;
     if let Some(current) = current {
         if current >= row.updated_at {
             return Ok(());
         }
         sqlx::query(
             "UPDATE run_commands SET
-                repository_id = ?, name = ?, command = ?, shortcut = ?, pinned = ?,
+                user_id = ?, repository_id = ?, name = ?, command = ?, shortcut = ?, pinned = ?,
                 sort_order = ?, created_at = ?, updated_at = ?, synced_at = ?, dirty = 0
              WHERE id = ?",
         )
+        .bind(&client.user_id)
         .bind(&row.repository_id)
         .bind(&row.name)
         .bind(&row.command)
@@ -666,11 +699,12 @@ async fn upsert_run_command_from_cloud(db: &Db, row: &CloudRunCommandRow) -> Res
     } else {
         sqlx::query(
             "INSERT INTO run_commands (
-                id, repository_id, name, command, shortcut, pinned, sort_order,
+                id, user_id, repository_id, name, command, shortcut, pinned, sort_order,
                 created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         )
         .bind(&row.id)
+        .bind(&client.user_id)
         .bind(&row.repository_id)
         .bind(&row.name)
         .bind(&row.command)
@@ -687,14 +721,7 @@ async fn upsert_run_command_from_cloud(db: &Db, row: &CloudRunCommandRow) -> Res
 }
 
 async fn push_dirty_run_commands(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
-    let rows = sqlx::query(
-        "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
-                created_at, updated_at
-         FROM run_commands
-         WHERE dirty = 1",
-    )
-    .fetch_all(db)
-    .await?;
+    let rows = dirty_run_command_rows(db, &client.user_id).await?;
 
     for row in rows {
         let id: String = row.try_get("id")?;
@@ -721,6 +748,21 @@ async fn push_dirty_run_commands(client: &SupabaseRestClient, db: &Db) -> Result
     Ok(())
 }
 
+async fn dirty_run_command_rows(
+    db: &Db,
+    user_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, SyncError> {
+    Ok(sqlx::query(
+        "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
+                created_at, updated_at
+         FROM run_commands
+         WHERE dirty = 1 AND user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?)
+}
+
 async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
     let rows: Vec<CloudUserSettingsRow> = client
         .get_json("/rest/v1/user_settings?select=*&limit=1")
@@ -728,7 +770,9 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
     let Some(row) = rows.into_iter().next() else {
         return Ok(());
     };
-    let local = get_or_init_user_settings(db).await?;
+    let Some(local) = get_or_init_user_settings(db, &client.user_id).await? else {
+        return Ok(());
+    };
     if local.updated_at >= row.updated_at {
         return Ok(());
     }
@@ -741,8 +785,8 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
             branch_prefix_template = ?, worktree_base_path = ?,
             default_merge_strategy = ?, auto_fetch_seconds = ?,
             honor_gpg_sign = ?, auto_push_on_commit = ?,
-            updated_at = ?, synced_at = ?, dirty = 0
-         WHERE id = 1",
+            updated_at = ?, synced_at = ?, dirty = 0, user_id = ?
+         WHERE id = 1 AND (user_id IS NULL OR user_id = ?)",
     )
     .bind(&row.theme)
     .bind(&row.accent_color)
@@ -765,6 +809,8 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
     .bind(row.auto_push_on_commit as i64)
     .bind(row.updated_at.to_rfc3339())
     .bind(Utc::now().to_rfc3339())
+    .bind(&client.user_id)
+    .bind(&client.user_id)
     .execute(db)
     .await?;
     Ok(())
@@ -779,8 +825,9 @@ async fn push_dirty_user_settings(client: &SupabaseRestClient, db: &Db) -> Resul
                 default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
                 auto_push_on_commit, updated_at
          FROM user_settings
-         WHERE id = 1 AND dirty = 1",
+         WHERE id = 1 AND dirty = 1 AND user_id = ?",
     )
+    .bind(&client.user_id)
     .fetch_optional(db)
     .await?;
 
@@ -824,9 +871,12 @@ async fn push_dirty_user_settings(client: &SupabaseRestClient, db: &Db) -> Resul
     Ok(())
 }
 
-async fn get_or_init_user_settings(db: &Db) -> Result<UserSettings, SyncError> {
+async fn get_or_init_user_settings(
+    db: &Db,
+    user_id: &str,
+) -> Result<Option<UserSettings>, SyncError> {
     let existing = sqlx::query(
-        "SELECT theme, accent_color, sans_font, mono_font, base_font_size,
+        "SELECT user_id, theme, accent_color, sans_font, mono_font, base_font_size,
                 cursor_style, cursor_blink, terminal_scrollback, default_editor,
                 default_terminal, default_agent_id, disabled_agent_ids,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
@@ -838,7 +888,17 @@ async fn get_or_init_user_settings(db: &Db) -> Result<UserSettings, SyncError> {
     .fetch_optional(db)
     .await?;
     if let Some(row) = existing {
-        return Ok(UserSettings {
+        let owner = row.try_get::<Option<String>, _>("user_id")?;
+        if owner.as_deref().is_some_and(|owner| owner != user_id) {
+            return Ok(None);
+        }
+        if owner.is_none() {
+            sqlx::query("UPDATE user_settings SET user_id = ? WHERE id = 1 AND user_id IS NULL")
+                .bind(user_id)
+                .execute(db)
+                .await?;
+        }
+        return Ok(Some(UserSettings {
             theme: row.try_get("theme")?,
             accent_color: row.try_get("accent_color")?,
             sans_font: row.try_get("sans_font")?,
@@ -859,20 +919,21 @@ async fn get_or_init_user_settings(db: &Db) -> Result<UserSettings, SyncError> {
             honor_gpg_sign: row.try_get::<i64, _>("honor_gpg_sign")? != 0,
             auto_push_on_commit: row.try_get::<i64, _>("auto_push_on_commit")? != 0,
             updated_at: parse_timestamp(row.try_get("updated_at")?, "updated_at")?,
-        });
+        }));
     }
 
     let defaults = UserSettings::default();
     sqlx::query(
         "INSERT INTO user_settings (
-            id, theme, accent_color, sans_font, mono_font, base_font_size,
+            id, user_id, theme, accent_color, sans_font, mono_font, base_font_size,
             cursor_style, cursor_blink, terminal_scrollback, default_editor,
             default_terminal, default_agent_id, disabled_agent_ids,
             keyboard_shortcuts, branch_prefix_template, worktree_base_path,
             default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
             auto_push_on_commit, updated_at, synced_at, dirty
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
     )
+    .bind(user_id)
     .bind(&defaults.theme)
     .bind(&defaults.accent_color)
     .bind(&defaults.sans_font)
@@ -895,11 +956,12 @@ async fn get_or_init_user_settings(db: &Db) -> Result<UserSettings, SyncError> {
     .bind(defaults.updated_at.to_rfc3339())
     .execute(db)
     .await?;
-    Ok(defaults)
+    Ok(Some(defaults))
 }
 
-async fn local_repository_ids(db: &Db) -> Result<HashSet<String>, SyncError> {
-    let rows = sqlx::query("SELECT id FROM repositories WHERE deleted_at IS NULL")
+async fn local_repository_ids(db: &Db, user_id: &str) -> Result<HashSet<String>, SyncError> {
+    let rows = sqlx::query("SELECT id FROM repositories WHERE deleted_at IS NULL AND user_id = ?")
+        .bind(user_id)
         .fetch_all(db)
         .await?;
     rows.iter()
@@ -907,13 +969,18 @@ async fn local_repository_ids(db: &Db) -> Result<HashSet<String>, SyncError> {
         .collect()
 }
 
-async fn get_repository_row(db: &Db, id: &str) -> Result<Option<Repository>, SyncError> {
+async fn get_repository_row(
+    db: &Db,
+    id: &str,
+    user_id: &str,
+) -> Result<Option<Repository>, SyncError> {
     let row = sqlx::query(
         "SELECT id, name, remote_url, local_path, default_branch, created_at, updated_at
          FROM repositories
-         WHERE id = ? AND deleted_at IS NULL",
+         WHERE id = ? AND deleted_at IS NULL AND user_id = ?",
     )
     .bind(id)
+    .bind(user_id)
     .fetch_optional(db)
     .await?;
     row.as_ref().map(repository_from_row).transpose()
@@ -931,11 +998,13 @@ fn repository_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Repository, Sync
     })
 }
 
-async fn repository_is_soft_deleted(db: &Db, id: &str) -> Result<bool, SyncError> {
+async fn repository_is_soft_deleted(db: &Db, id: &str, user_id: &str) -> Result<bool, SyncError> {
     let row = sqlx::query(
-        "SELECT 1 AS sentinel FROM repositories WHERE id = ? AND deleted_at IS NOT NULL",
+        "SELECT 1 AS sentinel FROM repositories
+         WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
     )
     .bind(id)
+    .bind(user_id)
     .fetch_optional(db)
     .await?;
     Ok(row.is_some())
@@ -945,10 +1014,11 @@ async fn get_updated_at(
     db: &Db,
     table: &'static str,
     id: &str,
+    user_id: &str,
 ) -> Result<Option<DateTime<Utc>>, SyncError> {
     let sql = match table {
-        "workspaces" => "SELECT updated_at FROM workspaces WHERE id = ?",
-        "run_commands" => "SELECT updated_at FROM run_commands WHERE id = ?",
+        "workspaces" => "SELECT updated_at FROM workspaces WHERE id = ? AND user_id = ?",
+        "run_commands" => "SELECT updated_at FROM run_commands WHERE id = ? AND user_id = ?",
         _ => {
             return Err(SyncError::InvalidValue {
                 field: "table",
@@ -956,7 +1026,11 @@ async fn get_updated_at(
             })
         }
     };
-    let row = sqlx::query(sql).bind(id).fetch_optional(db).await?;
+    let row = sqlx::query(sql)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
     row.map(|row| parse_timestamp(row.try_get("updated_at")?, "updated_at"))
         .transpose()
 }
@@ -1008,4 +1082,254 @@ fn parse_json_column(value: String) -> Result<Value, SyncError> {
         field: "json",
         message: err.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::init_pool;
+    use std::path::PathBuf;
+
+    async fn fresh_db() -> Db {
+        let dir = tempfile::tempdir().unwrap();
+        let path: PathBuf = dir.path().join("test.sqlite");
+        let pool = init_pool(&path).await.unwrap();
+        std::mem::forget(dir);
+        pool
+    }
+
+    fn test_client(user_id: &str) -> SupabaseRestClient {
+        SupabaseRestClient::new(
+            SyncConfig {
+                supabase_url: "http://127.0.0.1:1".into(),
+                supabase_anon_key: "anon".into(),
+                machine_id: "machine-a".into(),
+            },
+            user_id.into(),
+            "jwt".into(),
+        )
+        .unwrap()
+    }
+
+    async fn insert_user(db: &Db, id: &str) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, created_at, updated_at, dirty)
+             VALUES (?, ?, ?, ?, 0)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(&now)
+        .bind(&now)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_owned_graph(db: &Db, user_id: &str, suffix: &str) {
+        let now = Utc::now().to_rfc3339();
+        let repo_id = format!("repo-{suffix}");
+        let workspace_id = format!("workspace-{suffix}");
+        let run_command_id = format!("run-{suffix}");
+
+        sqlx::query(
+            "INSERT INTO repositories (
+                id, user_id, name, default_branch, created_at, updated_at, dirty
+             ) VALUES (?, ?, ?, 'main', ?, ?, 1)",
+        )
+        .bind(&repo_id)
+        .bind(user_id)
+        .bind(format!("Repo {suffix}"))
+        .bind(&now)
+        .bind(&now)
+        .execute(db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO workspaces (
+                id, user_id, repository_id, name, command, status, created_at, updated_at, dirty
+             ) VALUES (?, ?, ?, ?, 'echo test', 'stopped', ?, ?, 1)",
+        )
+        .bind(&workspace_id)
+        .bind(user_id)
+        .bind(&repo_id)
+        .bind(format!("Workspace {suffix}"))
+        .bind(&now)
+        .bind(&now)
+        .execute(db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO run_commands (
+                id, user_id, repository_id, name, command, created_at, updated_at, dirty
+             ) VALUES (?, ?, ?, ?, 'pnpm test', ?, ?, 1)",
+        )
+        .bind(&run_command_id)
+        .bind(user_id)
+        .bind(&repo_id)
+        .bind(format!("Run {suffix}"))
+        .bind(&now)
+        .bind(&now)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    fn ids(rows: &[sqlx::sqlite::SqliteRow]) -> Vec<String> {
+        rows.iter()
+            .map(|row| row.try_get::<String, _>("id").unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn dirty_row_queries_only_return_active_user_rows() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_user(&db, "user-b").await;
+        seed_owned_graph(&db, "user-a", "a").await;
+        seed_owned_graph(&db, "user-b", "b").await;
+
+        assert_eq!(
+            ids(&dirty_repository_rows(&db, "user-b").await.unwrap()),
+            vec!["repo-b"]
+        );
+        assert_eq!(
+            ids(&dirty_workspace_rows(&db, "user-b").await.unwrap()),
+            vec!["workspace-b"]
+        );
+        assert_eq!(
+            ids(&dirty_run_command_rows(&db, "user-b").await.unwrap()),
+            vec!["run-b"]
+        );
+
+        let repo_ids = local_repository_ids(&db, "user-b").await.unwrap();
+        assert!(repo_ids.contains("repo-b"));
+        assert!(!repo_ids.contains("repo-a"));
+    }
+
+    #[tokio::test]
+    async fn cloud_pulls_stamp_rows_with_active_user() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-b").await;
+        let client = test_client("user-b");
+        let now = Utc::now();
+
+        upsert_repository_from_cloud(
+            &client,
+            &db,
+            &CloudRepositoryRow {
+                id: "repo-cloud".into(),
+                name: "Cloud Repo".into(),
+                remote_url: None,
+                local_paths: HashMap::new(),
+                default_branch: "main".into(),
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &CloudWorkspaceRow {
+                id: "workspace-cloud".into(),
+                repository_id: "repo-cloud".into(),
+                name: "Cloud Workspace".into(),
+                prompt: None,
+                agent_id: None,
+                command: "echo hi".into(),
+                status: "stopped".into(),
+                branch: None,
+                worktree_path: None,
+                exit_code: None,
+                created_at: now,
+                started_at: None,
+                finished_at: None,
+                archived_at: None,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
+        upsert_run_command_from_cloud(
+            &client,
+            &db,
+            &CloudRunCommandRow {
+                id: "run-cloud".into(),
+                repository_id: "repo-cloud".into(),
+                name: "Test".into(),
+                command: "pnpm test".into(),
+                shortcut: None,
+                pinned: false,
+                sort_order: 0,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
+        for (table, id) in [
+            ("repositories", "repo-cloud"),
+            ("workspaces", "workspace-cloud"),
+            ("run_commands", "run-cloud"),
+        ] {
+            let row = sqlx::query(&format!("SELECT user_id FROM {table} WHERE id = ?"))
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+            assert_eq!(row.try_get::<String, _>("user_id").unwrap(), "user-b");
+        }
+    }
+
+    #[tokio::test]
+    async fn user_settings_sync_does_not_claim_another_users_singleton() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_user(&db, "user-b").await;
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO user_settings (
+                id, user_id, updated_at, synced_at, dirty
+             ) VALUES (1, ?, ?, NULL, 1)",
+        )
+        .bind("user-a")
+        .bind(&now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        assert!(get_or_init_user_settings(&db, "user-b")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_or_init_user_settings(&db, "user-a")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn user_settings_sync_initializes_owned_singleton() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-b").await;
+
+        assert!(get_or_init_user_settings(&db, "user-b")
+            .await
+            .unwrap()
+            .is_some());
+
+        let row = sqlx::query("SELECT user_id FROM user_settings WHERE id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<String, _>("user_id").unwrap(), "user-b");
+    }
 }

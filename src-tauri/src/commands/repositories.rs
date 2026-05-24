@@ -76,7 +76,7 @@ pub async fn create_repository(
     repo: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
-    session.require()?;
+    let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     // Idempotent: same canonical path returns the existing row.
     if let Some(input_path) = input.local_path.as_deref() {
         let candidate = std::fs::canonicalize(input_path)
@@ -114,7 +114,8 @@ pub async fn create_repository(
         }
     }
 
-    repo.insert(&repository).await?;
+    repo.insert_for_user(&repository, &current_session.user_id)
+        .await?;
     Ok(repository)
 }
 

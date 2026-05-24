@@ -25,14 +25,28 @@ impl RunCommandRepo {
         Self { db }
     }
 
+    #[allow(dead_code)]
     pub async fn insert(&self, rc: &RunCommand) -> Result<(), StoreError> {
+        self.insert_with_user(rc, None).await
+    }
+
+    pub async fn insert_for_user(&self, rc: &RunCommand, user_id: &str) -> Result<(), StoreError> {
+        self.insert_with_user(rc, Some(user_id)).await
+    }
+
+    async fn insert_with_user(
+        &self,
+        rc: &RunCommand,
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO run_commands (
-                id, repository_id, name, command, shortcut, pinned, sort_order,
+                id, user_id, repository_id, name, command, shortcut, pinned, sort_order,
                 created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&rc.id)
+        .bind(user_id)
         .bind(&rc.repository_id)
         .bind(&rc.name)
         .bind(&rc.command)

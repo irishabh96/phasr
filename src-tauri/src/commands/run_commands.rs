@@ -87,11 +87,11 @@ pub async fn create_run_command(
     repo: State<'_, RunCommandRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<RunCommand, RunCommandError> {
-    session.require()?;
+    let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let mut rc = RunCommand::new(input.repository_id, input.name, input.command);
     rc.shortcut = input.shortcut;
     rc.pinned = input.pinned.unwrap_or(false);
-    repo.insert(&rc).await?;
+    repo.insert_for_user(&rc, &current_session.user_id).await?;
     Ok(rc)
 }
 

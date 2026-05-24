@@ -24,14 +24,32 @@ impl RepositoryRepo {
         Self { db }
     }
 
+    #[allow(dead_code)]
     pub async fn insert(&self, repository: &Repository) -> Result<(), StoreError> {
+        self.insert_with_user(repository, None).await
+    }
+
+    pub async fn insert_for_user(
+        &self,
+        repository: &Repository,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        self.insert_with_user(repository, Some(user_id)).await
+    }
+
+    async fn insert_with_user(
+        &self,
+        repository: &Repository,
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO repositories (
-                id, name, remote_url, local_path, default_branch,
+                id, user_id, name, remote_url, local_path, default_branch,
                 created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&repository.id)
+        .bind(user_id)
         .bind(&repository.name)
         .bind(&repository.remote_url)
         .bind(&repository.local_path)

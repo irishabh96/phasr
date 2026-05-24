@@ -11,10 +11,11 @@
 //!    JWT. The `phasr_desktop` Clerk JWT template is configured with a
 //!    1-year lifetime, and the renderer refreshes near expiry.
 //! 2. `set_session` decodes the JWT header to read `kid` + `alg`, decodes
-//!    the unverified payload to read `iss`, derives the JWKS URL from
-//!    `<iss>/.well-known/jwks.json`, fetches+caches the JWKS, picks the
-//!    matching JWK by `kid`, then verifies the signature with the JWK plus
-//!    the standard claims (`exp`, `nbf`, `iss`).
+//!    the unverified payload to read `iss`, rejects it unless it matches the
+//!    configured Clerk issuer, derives the JWKS URL from that pinned issuer,
+//!    fetches+caches the JWKS, picks the matching JWK by `kid`, then verifies
+//!    the signature with the JWK plus the standard claims (`exp`, `nbf`,
+//!    `iss`).
 //! 3. On success the session moves to `Mode::Authenticated`; subsequent
 //!    Tauri commands call `require()` which returns the session or an
 //!    `AuthError::NotSignedIn` typed error.
@@ -45,6 +46,9 @@ use crate::store::{StoreError, UserRepo};
 /// safety net.
 const JWKS_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
+#[cfg(test)]
+const TEST_ISSUER_FOR_TESTS: &str = "https://test-instance.clerk.accounts.dev";
+
 #[derive(Debug, Error)]
 pub enum AuthError {
     #[error("not signed in")]
@@ -59,6 +63,10 @@ pub enum AuthError {
     NoMatchingKey(String),
     #[error("unsupported algorithm `{0}`")]
     UnsupportedAlgorithm(String),
+    #[error("invalid auth configuration: {0}")]
+    InvalidConfig(String),
+    #[error("jwt issuer `{actual}` does not match configured Clerk issuer `{expected}`")]
+    IssuerMismatch { actual: String, expected: String },
     #[error("jwt is missing required profile claim `{0}`")]
     MissingProfileClaim(&'static str),
     #[error("failed to persist user profile: {0}")]
@@ -188,6 +196,7 @@ pub struct SessionState {
     mode: RwLock<Mode>,
     jwks: RwLock<Option<CachedJwks>>,
     fetcher: Arc<dyn JwksFetcher>,
+    expected_issuer: Option<String>,
 }
 
 impl Default for SessionState {
@@ -196,6 +205,7 @@ impl Default for SessionState {
             mode: RwLock::new(Mode::SignedOut),
             jwks: RwLock::new(None),
             fetcher: Arc::new(ReqwestJwksFetcher),
+            expected_issuer: configured_clerk_issuer(),
         }
     }
 }
@@ -205,10 +215,16 @@ impl SessionState {
     /// JWKS source; not called in production.
     #[cfg(test)]
     pub fn with_fetcher(fetcher: Arc<dyn JwksFetcher>) -> Self {
+        Self::with_fetcher_and_issuer(fetcher, TEST_ISSUER_FOR_TESTS)
+    }
+
+    #[cfg(test)]
+    pub fn with_fetcher_and_issuer(fetcher: Arc<dyn JwksFetcher>, issuer: &str) -> Self {
         Self {
             mode: RwLock::new(Mode::SignedOut),
             jwks: RwLock::new(None),
             fetcher,
+            expected_issuer: Some(normalize_issuer(issuer)),
         }
     }
 
@@ -258,6 +274,17 @@ impl SessionState {
         *self.jwks.write() = Some(cache);
     }
 
+    fn expected_issuer(&self) -> Result<String, AuthError> {
+        self.expected_issuer
+            .clone()
+            .filter(|issuer| !issuer.trim().is_empty())
+            .ok_or_else(|| {
+                AuthError::InvalidConfig(
+                    "missing Clerk issuer derived from VITE_CLERK_PUBLISHABLE_KEY".into(),
+                )
+            })
+    }
+
     /// Fetch JWKS for `issuer`, parse, and cache. Always hits the
     /// fetcher (no TTL check) so callers can use this to handle a
     /// kid miss.
@@ -302,18 +329,24 @@ impl SessionState {
             .kid
             .ok_or_else(|| AuthError::MalformedJwt("missing kid in header".into()))?;
 
-        // 2) Decode the unverified payload to learn the issuer. We don't
-        //    trust it yet — we only use it to *find* the right JWKS to
-        //    verify against. `iss` is then re-validated by jsonwebtoken
-        //    against the same string below.
+        // 2) Decode the unverified payload to learn the issuer. We only use
+        //    it after comparing it to the build-time Clerk issuer pin, so a
+        //    token from another Clerk instance cannot select its own JWKS.
         let unverified = decode_unverified_payload(jwt)?;
-        let issuer = unverified.iss.clone();
+        let issuer = normalize_issuer(&unverified.iss);
+        let expected_issuer = self.expected_issuer()?;
+        if issuer != expected_issuer {
+            return Err(AuthError::IssuerMismatch {
+                actual: issuer,
+                expected: expected_issuer,
+            });
+        }
 
         // 3) Get a JWKS for that issuer. Use the cache if it's still
         //    fresh, otherwise fetch.
-        let mut cache = match self.cached_jwks_for(&issuer) {
+        let mut cache = match self.cached_jwks_for(&expected_issuer) {
             Some(c) => c,
-            None => self.refresh_jwks(&issuer).await?,
+            None => self.refresh_jwks(&expected_issuer).await?,
         };
 
         // 4) Look up the kid. If not found, refetch once (handles key
@@ -321,7 +354,7 @@ impl SessionState {
         let entry = if let Some(e) = cache.keys.iter().find(|e| e.kid == kid).cloned() {
             e
         } else {
-            cache = self.refresh_jwks(&issuer).await?;
+            cache = self.refresh_jwks(&expected_issuer).await?;
             cache
                 .keys
                 .iter()
@@ -334,7 +367,7 @@ impl SessionState {
         //    issuer so a token from instance A can't be replayed against
         //    instance B; exp/nbf are validated automatically.
         let mut validation = Validation::new(entry.alg);
-        validation.set_issuer(&[issuer.as_str()]);
+        validation.set_issuer(&[expected_issuer.as_str()]);
         // Clerk doesn't always set `aud`; turning off forces us to ignore
         // it. The issuer pin is sufficient for our threat model.
         validation.validate_aud = false;
@@ -456,6 +489,16 @@ fn parse_alg(alg: &str) -> Result<Algorithm, AuthError> {
     }
 }
 
+fn configured_clerk_issuer() -> Option<String> {
+    option_env!("PHASR_CLERK_ISSUER")
+        .map(normalize_issuer)
+        .filter(|issuer| !issuer.is_empty())
+}
+
+fn normalize_issuer(issuer: &str) -> String {
+    issuer.trim().trim_end_matches('/').to_string()
+}
+
 fn decode_unverified_payload(jwt: &str) -> Result<UnverifiedPayload, AuthError> {
     let mut parts = jwt.split('.');
     let _header = parts
@@ -528,7 +571,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
 
-    const TEST_ISSUER: &str = "https://test-instance.clerk.accounts.dev";
+    const TEST_ISSUER: &str = TEST_ISSUER_FOR_TESTS;
 
     /// A tiny in-memory JWKS fetcher. Tracks the URLs it was asked for
     /// so tests can assert refetch behavior.
@@ -551,6 +594,10 @@ mod tests {
 
         fn call_count(&self) -> usize {
             self.calls.lock().unwrap().len()
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
         }
     }
 
@@ -703,65 +750,21 @@ mod tests {
     async fn rejects_wrong_issuer() {
         let keys = TestKeys::generate("kid-1");
         let fetcher = Arc::new(MockFetcher::new(jwks_doc(&[&keys])));
-        let state = SessionState::with_fetcher(fetcher);
-        // Build claims with a different `iss`. The JWKS we serve still
-        // says it's for TEST_ISSUER, but we're going to derive the JWKS
-        // URL from the *token's* iss — so the cached entry will be keyed
-        // by the wrong issuer string and validation will fail.
-        //
-        // We test this by signing claims with the canonical issuer but
-        // passing them to a state whose JWKS body is keyed under
-        // `TEST_ISSUER`, then deliberately tampering: easiest is to sign
-        // claims with a different iss and let the validator reject.
+        let state = SessionState::with_fetcher(fetcher.clone());
         let bad_claims = json!({
             "sub": "user_abc",
             "iss": "https://attacker.example.com",
             "iat": chrono::Utc::now().timestamp(),
+            "nbf": chrono::Utc::now().timestamp(),
             "exp": chrono::Utc::now().timestamp() + 60,
         });
         let jwt = keys.sign(&bad_claims);
-        // refresh_jwks will fetch from attacker's URL — the MockFetcher
-        // returns *our* JWKS body regardless. Validation will then
-        // reject because Validation::set_issuer was called with the
-        // attacker URL but the validator looks at iss claim... actually
-        // jsonwebtoken sets issuer from token's iss matched against
-        // allowed list. So we need a token whose iss doesn't match what
-        // we *pinned* — which happens when the verifier pins issuer from
-        // the token but then the JWKS was served by someone else. To
-        // make this test meaningful we cross-pin: sign with TEST_ISSUER,
-        // serve JWKS that says we're a different issuer pinned during
-        // verify. Simpler: assert that signing claims with attacker iss
-        // can still verify if and only if we trust the attacker's JWKS
-        // — and our mock blindly returns the same body. That's the
-        // *correct* outcome for a real fetch (the attacker controls
-        // their own JWKS). So instead, the real "wrong issuer" attack
-        // is: token claims iss=A, attacker forwards us to JWKS of B.
-        // Our code pins issuer = token's iss before validation, so this
-        // path still verifies. The threat we care about is: token signed
-        // with key K1, but `iss` rewritten — jsonwebtoken catches that
-        // via the signature check.
-        //
-        // To narrowly test "Validation rejects when iss claim doesn't
-        // match the pinned value" we tamper post-hoc.
-        let _ = jwt; // unused in the corrected flow
-
-        // The actual case: a token whose claim `iss` differs from what
-        // we pin. We pin by passing a custom Validation. Easiest way is
-        // to drive verify_jwt with claims that lie about iss vs the
-        // header we sign with, but our verify_jwt derives the issuer
-        // from the token itself. So the structural test is: sign with
-        // one iss, but our mock JWKS returns a payload that doesn't
-        // contain the key — handled by the no-matching-key test below.
-        //
-        // For this test, assert that swapping iss in a claim after
-        // signing breaks the signature (covers the "signature is tied to
-        // claims" guarantee, which subsumes wrong-issuer tampering).
-        let tampered = tamper_iss(
-            &keys.sign(&standard_claims("u", 60)),
-            "https://evil.example.com",
+        let err = state.verify_jwt(&jwt).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::IssuerMismatch { .. }),
+            "got {err:?}"
         );
-        let err = state.verify_jwt(&tampered).await.unwrap_err();
-        assert!(matches!(err, AuthError::SignatureInvalid(_)), "got {err:?}");
+        assert!(fetcher.calls().is_empty(), "unexpected JWKS fetch");
     }
 
     #[tokio::test]
@@ -869,21 +872,5 @@ mod tests {
         let err = state.verify_jwt("not.a.jwt").await.unwrap_err();
         // header decode fails first.
         assert!(matches!(err, AuthError::MalformedJwt(_)), "got {err:?}");
-    }
-
-    /// Replace the `iss` claim in an already-signed JWT without
-    /// re-signing — used to assert that signature verification catches
-    /// claim tampering.
-    fn tamper_iss(jwt: &str, new_iss: &str) -> String {
-        let mut parts = jwt.split('.');
-        let header = parts.next().unwrap();
-        let payload_b64 = parts.next().unwrap();
-        let sig = parts.next().unwrap();
-        let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).unwrap();
-        let mut payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
-        payload["iss"] = json!(new_iss);
-        let new_payload =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        format!("{header}.{new_payload}.{sig}")
     }
 }
