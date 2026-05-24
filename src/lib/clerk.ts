@@ -1,5 +1,13 @@
-export const CLERK_PUBLISHABLE_KEY = import.meta.env
-  .VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
+export function optionalEnv(value: string | undefined): string | undefined;
+export function optionalEnv(value: string | undefined, fallback: string): string;
+export function optionalEnv(value: string | undefined, fallback?: string) {
+  const trimmed = value?.trim();
+  return trimmed || fallback;
+}
+
+export const CLERK_PUBLISHABLE_KEY = optionalEnv(
+  import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
+);
 
 /**
  * Auth is required for every build. If this is missing, the app renders
@@ -14,11 +22,14 @@ export const CLERK_CONFIG_ERROR =
 export const CLERK_SIGN_IN_URL = "/sign-in";
 export const CLERK_SIGN_UP_URL = "/sign-up";
 export const CLERK_SIGNED_IN_URL = "/";
-export const CLERK_DESKTOP_CALLBACK_URL =
-  import.meta.env.VITE_CLERK_DESKTOP_CALLBACK_URL ??
-  "https://phasr-auth-bridge.vercel.app/callback";
-export const CLERK_SESSION_JWT_TEMPLATE =
-  import.meta.env.VITE_CLERK_SESSION_JWT_TEMPLATE ?? "phasr_desktop";
+export const CLERK_DESKTOP_CALLBACK_URL = optionalEnv(
+  import.meta.env.VITE_CLERK_DESKTOP_CALLBACK_URL,
+  "https://phasr-auth-bridge.vercel.app/callback",
+);
+export const CLERK_SESSION_JWT_TEMPLATE = optionalEnv(
+  import.meta.env.VITE_CLERK_SESSION_JWT_TEMPLATE,
+  "phasr_desktop",
+);
 export const CLERK_AUTH_CALLBACK_EVENT = "phasr://auth-callback";
 
 export const CLERK_OAUTH_STRATEGIES = {

@@ -11,6 +11,7 @@ import {
   clerkOAuthCallbackProps,
   clerkOAuthStrategy,
   isNestedAuthRoute,
+  optionalEnv,
 } from "@/lib/clerk";
 
 describe("Clerk routing configuration", () => {
@@ -22,6 +23,13 @@ describe("Clerk routing configuration", () => {
     expect(CLERK_SESSION_JWT_TEMPLATE).toBe("phasr_desktop");
     expect(clerkOAuthStrategy("google")).toBe("oauth_google");
     expect(clerkOAuthStrategy("github")).toBe("oauth_github");
+  });
+
+  it("falls back when optional release env values are blank", () => {
+    expect(optionalEnv("", "fallback")).toBe("fallback");
+    expect(optionalEnv("   ", "fallback")).toBe("fallback");
+    expect(optionalEnv(" configured ", "fallback")).toBe("configured");
+    expect(optionalEnv(undefined, "fallback")).toBe("fallback");
   });
 
   it("adds the Phasr OAuth state to the desktop callback URL", () => {
