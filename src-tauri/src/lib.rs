@@ -1,4 +1,5 @@
 mod auth;
+mod auth_deeplink;
 mod commands;
 #[cfg(target_os = "macos")]
 mod dock_icon;
@@ -19,7 +20,7 @@ use domain::WorkspaceStatus;
 use orchestrator::TaskOrchestrator;
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo,
+    default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
     WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
@@ -31,11 +32,15 @@ pub fn run() {
     let cloud_sync_state = Arc::new(sync::CloudSyncState::default());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(auth_deeplink::AuthDeepLinkState::default())
         .manage(session_state)
         .manage(cloud_sync_state)
         .setup(|app| {
+            auth_deeplink::configure_auth_deeplink(app)?;
+
             #[cfg(target_os = "macos")]
             dock_icon::set_dock_icon();
 
@@ -117,6 +122,7 @@ pub fn run() {
                         handle.manage(RunCommandRepo::new(pool.clone()));
                         handle.manage(agent_repo);
                         handle.manage(SettingsRepo::new(pool.clone()));
+                        handle.manage(UserRepo::new(pool.clone()));
                         handle.manage(pool);
                         handle.manage(orchestrator);
                     }
@@ -135,6 +141,7 @@ pub fn run() {
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
+            auth_deeplink::consume_pending_auth_callback,
             sync::start_cloud_sync,
             sync::stop_cloud_sync,
             commands::repositories::create_repository,

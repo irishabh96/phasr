@@ -12,10 +12,12 @@ pub mod agent;
 pub mod repository;
 pub mod run_command;
 pub mod settings;
+pub mod user;
 pub mod workspace;
 
 pub use agent::Agent;
 pub use repository::Repository;
 pub use run_command::RunCommand;
 pub use settings::UserSettings;
+pub use user::User;
 pub use workspace::{Workspace, WorkspaceStatus};

@@ -1,5 +1,7 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { AppToaster } from "@/components/AppToaster";
+import { AuthCallbackHandler } from "@/components/AuthCallbackHandler";
 import { useUiStore } from "@/lib/store";
 import { applyTheme } from "@/lib/theme";
 
@@ -18,7 +20,13 @@ function RootLayout() {
     return () => media.removeEventListener("change", listener);
   }, [theme]);
 
-  return <Outlet />;
+  return (
+    <>
+      <AuthCallbackHandler />
+      <Outlet />
+      <AppToaster />
+    </>
+  );
 }
 
 function NotFound() {

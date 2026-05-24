@@ -12,6 +12,7 @@ name: Release
 #   VITE_SUPABASE_URL
 #   VITE_SUPABASE_ANON_KEY
 # Optional:
+#   VITE_CLERK_DESKTOP_CALLBACK_URL
 #   VITE_SENTRY_DSN
 #   VITE_SENTRY_TRACES_SAMPLE_RATE
 #   VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE
@@ -22,7 +23,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -34,6 +35,7 @@ jobs:
     environment: release
     env:
       VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY || vars.VITE_CLERK_PUBLISHABLE_KEY }}
+      VITE_CLERK_DESKTOP_CALLBACK_URL: ${{ secrets.VITE_CLERK_DESKTOP_CALLBACK_URL || vars.VITE_CLERK_DESKTOP_CALLBACK_URL }}
       VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
       VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
       VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN || vars.VITE_SENTRY_DSN }}
@@ -49,7 +51,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       # pnpm version sourced from package.json "packageManager" —
       # passing `with: version:` here too trips ERR_PNPM_BAD_PM_VERSION.
@@ -81,7 +83,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Phasr ${{ github.ref_name }}'
+          releaseName: "Phasr ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
           args: --target aarch64-apple-darwin

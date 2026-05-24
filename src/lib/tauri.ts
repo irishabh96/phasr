@@ -79,6 +79,8 @@ export const tauri = {
   setSession: (jwt: string) => invoke<string>("set_session", { jwt }),
   clearSession: () => invoke<void>("clear_session"),
   currentUserId: () => invoke<string | null>("current_user_id"),
+  consumePendingAuthCallback: () =>
+    invoke<string | null>("consume_pending_auth_callback"),
   startCloudSync: (input: StartCloudSyncInput) =>
     invoke<void>("start_cloud_sync", { input }),
   stopCloudSync: () => invoke<void>("stop_cloud_sync"),

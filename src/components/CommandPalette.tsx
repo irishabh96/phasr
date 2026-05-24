@@ -1,4 +1,3 @@
-import { useClerk } from "@clerk/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
@@ -28,7 +27,9 @@ import {
 } from "@/components/ui/PaletteParts";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
+import { signOutDesktopSession } from "@/lib/desktopAuth";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
+import { reportP0Warning } from "@/lib/sentry";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { Repository, Workspace } from "@/lib/types";
@@ -66,7 +67,12 @@ export function CommandPalette() {
         }
         if (!cancelled) setWorkspaces(all);
       } catch (err) {
-        console.warn("palette: failed to load workspaces", err);
+        reportP0Warning("Command palette failed to load workspaces", {
+          area: "workspace",
+          operation: "palette_load_workspaces",
+          repositoryCount: repositories.length,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     })();
     return () => {
@@ -268,12 +274,17 @@ export function CommandPalette() {
 }
 
 function SignOutGroup({ onPick }: { onPick: (fn: () => void) => void }) {
-  const { signOut } = useClerk();
   return (
     <PaletteGroup heading="Session">
       <Command.Item
         value="sign out logout"
-        onSelect={() => onPick(() => void signOut())}
+        onSelect={() =>
+          onPick(() => {
+            void signOutDesktopSession().then(() => {
+              window.location.href = "/sign-in";
+            });
+          })
+        }
         className={ITEM_CLS}
       >
         <LogOut size={15} className="shrink-0 text-(--color-danger)" />

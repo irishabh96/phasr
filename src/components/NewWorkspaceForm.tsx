@@ -3,6 +3,7 @@ import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { useCreateWorkspace } from "@/lib/hooks/useWorkspaces";
+import { reportP0Error } from "@/lib/sentry";
 import type { Workspace } from "@/lib/types";
 
 interface NewWorkspaceFormProps {
@@ -56,7 +57,12 @@ export function NewWorkspaceForm({
       setPrompt("");
       onCreated?.(workspace);
     } catch (err) {
-      console.error("create workspace failed", err);
+      reportP0Error("Create workspace failed", err, {
+        area: "workspace",
+        operation: "create_workspace",
+        repositoryId,
+        agentId: activeAgentId,
+      });
     }
   };
 

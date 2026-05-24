@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ExternalLink, FolderOpen, TerminalSquare } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { reportP0Error } from "@/lib/sentry";
 import { tauri } from "@/lib/tauri";
 import type { Launcher, LauncherKind } from "@/lib/types";
 
@@ -58,7 +59,11 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
     try {
       await tauri.launchApp(id, path);
     } catch (err) {
-      console.error(`Failed to open via ${id}`, err);
+      reportP0Error(`Failed to open via ${id}`, err, {
+        area: "launcher",
+        operation: "open_external_tool",
+        launcherId: id,
+      });
     }
   };
 

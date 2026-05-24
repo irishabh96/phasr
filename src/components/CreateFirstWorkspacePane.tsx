@@ -6,6 +6,7 @@ import { useAgents } from "@/lib/hooks/useAgents";
 import { useGitBranches } from "@/lib/hooks/useGit";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
+import { reportP0Error } from "@/lib/sentry";
 import { slugify } from "@/lib/slug";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -90,7 +91,12 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
         params: { repositoryId: repo.id, workspaceId: started.workspace.id },
       });
     } catch (err) {
-      console.error("start_task failed", err);
+      reportP0Error("Start first workspace task failed", err, {
+        area: "task",
+        operation: "start_first_workspace_task",
+        repositoryId: repo.id,
+        agentId: activeAgent.id,
+      });
       setError(String(err));
     } finally {
       setSubmitting(false);

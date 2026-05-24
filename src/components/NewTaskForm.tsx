@@ -5,6 +5,7 @@ import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { reportP0Error } from "@/lib/sentry";
 import { tauri } from "@/lib/tauri";
 import type { Workspace } from "@/lib/types";
 
@@ -94,7 +95,12 @@ export function NewTaskForm({
       setPrompt("");
       onCreated?.(started.workspace);
     } catch (err) {
-      console.error("start_task failed", err);
+      reportP0Error("Start task failed", err, {
+        area: "task",
+        operation: "start_task",
+        repositoryId,
+        agentId: activeAgent.id,
+      });
       setError(String(err));
     } finally {
       setSubmitting(false);

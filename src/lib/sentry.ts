@@ -68,3 +68,97 @@ export function sentryReactRootErrorHandler(error: unknown, errorInfo: ReactRoot
 
   handleReactRootError(error, normalizedErrorInfo);
 }
+
+type AuthTelemetryContext = {
+  callbackKind: string;
+  errorCode?: string;
+  origin?: string;
+  protocol?: string;
+  expectedCookieNames?: string[];
+  hasPhasrState?: boolean;
+  reason?: string;
+  storedCookieNames?: string[];
+};
+
+type P0TelemetryContext = {
+  area: string;
+  operation: string;
+  [key: string]: unknown;
+};
+
+function normalizeError(error: unknown, fallbackMessage: string) {
+  return error instanceof Error ? error : new Error(fallbackMessage);
+}
+
+function addP0Context(scope: Sentry.Scope, context: P0TelemetryContext) {
+  scope.setLevel('error');
+  scope.setTag('priority', 'p0');
+  scope.setTag('area', context.area);
+  scope.setTag('operation', context.operation);
+  if (typeof context.errorCode === 'string') {
+    scope.setTag('error_code', context.errorCode);
+  }
+  scope.setContext('p0', context);
+}
+
+export function reportP0Error(
+  message: string,
+  error: unknown,
+  context: P0TelemetryContext,
+) {
+  console.error(message, error);
+
+  if (!isSentryConfigured) {
+    return;
+  }
+
+  Sentry.withScope((scope) => {
+    addP0Context(scope, context);
+    Sentry.captureException(normalizeError(error, message));
+  });
+}
+
+export function reportP0Warning(
+  message: string,
+  context: P0TelemetryContext,
+) {
+  console.warn(message, context);
+
+  if (!isSentryConfigured) {
+    return;
+  }
+
+  Sentry.withScope((scope) => {
+    scope.setLevel('warning');
+    scope.setTag('priority', 'p0');
+    scope.setTag('area', context.area);
+    scope.setTag('operation', context.operation);
+    if (typeof context.errorCode === 'string') {
+      scope.setTag('error_code', context.errorCode);
+    }
+    scope.setContext('p0', context);
+    Sentry.captureMessage(message);
+  });
+}
+
+export function captureAuthException(
+  error: unknown,
+  context: AuthTelemetryContext,
+) {
+  reportP0Error(`Phasr auth callback failed: ${context.callbackKind}`, error, {
+    area: 'auth',
+    operation: context.callbackKind,
+    ...context,
+  });
+}
+
+export function captureAuthWarning(
+  message: string,
+  context: AuthTelemetryContext,
+) {
+  reportP0Warning(message, {
+    area: 'auth',
+    operation: context.callbackKind,
+    ...context,
+  });
+}

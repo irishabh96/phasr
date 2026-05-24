@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
-import { FolderOpen, FolderPlus, GitBranch, LayoutGrid } from "lucide-react";
+import { ArrowLeft, FolderOpen, FolderPlus, GitBranch, LayoutGrid } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import {
@@ -139,9 +139,19 @@ export function NewProjectPane() {
   return (
     <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-10">
       <div className="my-auto w-full max-w-3xl space-y-6">
-        <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
-          New Project
-        </h1>
+        <header>
+          <button
+            type="button"
+            onClick={() => void navigate({ to: "/" })}
+            className="mb-5 inline-flex items-center gap-1.5 text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary)"
+          >
+            <ArrowLeft size={11} />
+            Back
+          </button>
+          <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
+            New Project
+          </h1>
+        </header>
 
         <div className="space-y-2">
           <label className="block text-[12px] font-medium text-(--color-text-primary)">
@@ -415,4 +425,3 @@ function deriveNameFromUrl(url: string): string {
   const tail = lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
   return tail.length > 0 ? tail : "project";
 }
-

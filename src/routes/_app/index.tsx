@@ -1,19 +1,16 @@
-import { useUser } from "@clerk/react";
 import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FolderOpen, Sparkles } from "lucide-react";
 import { RepoHomeShell } from "@/components/RepoHomeShell";
+import {
+  desktopSessionGreetingName,
+  readDesktopSession,
+} from "@/lib/desktopAuth";
 import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import type { Repository } from "@/lib/types";
 
-function useUserFirstName(): string | null {
-  const { user } = useUser();
-  return user?.firstName ?? null;
-}
-
 function Home() {
-  const firstName = useUserFirstName();
   const { data: repositories, isLoading } = useRepositories();
   const mostRecentRepo = repositories?.[0];
   const { data: workspaces, isLoading: wsLoading } = useWorkspaces(mostRecentRepo?.id);
@@ -27,7 +24,7 @@ function Home() {
   }
 
   if (!repositories || repositories.length === 0) {
-    return <WelcomeState firstName={firstName} />;
+    return <WelcomeState />;
   }
 
   const repo = mostRecentRepo!;
@@ -50,25 +47,27 @@ function RepoEmptyState({ repo }: { repo: Repository }) {
   return <RepoHomeShell repo={repo} />;
 }
 
-function WelcomeState({ firstName }: { firstName: string | null }) {
+function WelcomeState() {
   const navigate = useNavigate();
   const openExisting = useOpenExistingFlow();
 
-  const greeting = greetingForHour(new Date().getHours());
+  const greeting = greetingForHour(
+    new Date().getHours(),
+    desktopSessionGreetingName(readDesktopSession()),
+  );
 
   return (
     <div className="flex h-full items-center justify-center px-8">
       <div className="w-full max-w-2xl text-center">
         <h1 className="text-[24px] font-semibold tracking-tight leading-none">
           {greeting}
-          {firstName ? `, ${firstName}` : ""}
         </h1>
 
-        <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mx-auto mt-10 grid w-full max-w-[720px] grid-cols-1 justify-items-center gap-6 sm:grid-cols-2">
           <button
             type="button"
             onClick={() => void navigate({ to: "/new-project" })}
-            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
+            className="glass-panel group flex h-full w-full max-w-[320px] flex-col items-start p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
             <div className="flex items-center gap-2 text-(--color-accent-400)">
               <Sparkles size={15} />
@@ -85,7 +84,7 @@ function WelcomeState({ firstName }: { firstName: string | null }) {
           <button
             type="button"
             onClick={() => void openExisting()}
-            className="glass-panel group p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
+            className="glass-panel group flex h-full w-full max-w-[320px] flex-col items-start p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
             <div className="flex items-center gap-2 text-(--color-text-secondary)">
               <FolderOpen size={15} />
@@ -109,10 +108,15 @@ function WelcomeState({ firstName }: { firstName: string | null }) {
  * — Phasr is a productivity tool and the late-hours bucket stays as
  * "Good evening" to avoid suggesting the user should sign off.
  */
-function greetingForHour(hour: number): string {
-  if (hour >= 5 && hour < 12) return "Good morning";
-  if (hour >= 12 && hour < 17) return "Good afternoon";
-  return "Good evening";
+function greetingForHour(hour: number, name: string | null): string {
+  const greeting =
+    hour >= 5 && hour < 12
+      ? "Good morning"
+      : hour >= 12 && hour < 17
+        ? "Good afternoon"
+        : "Good evening";
+
+  return name ? `${greeting}, ${name}` : greeting;
 }
 
 export const Route = createFileRoute("/_app/")({

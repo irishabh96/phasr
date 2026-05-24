@@ -1,6 +1,5 @@
-import { UserButton } from "@clerk/react";
 import { useNavigate } from "@tanstack/react-router";
-import { Search, Settings as SettingsIcon } from "lucide-react";
+import { Search, Settings as SettingsIcon, UserRound } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { useUiStore } from "@/lib/store";
@@ -59,15 +58,14 @@ export function TitleBar({ breadcrumb }: TitleBarProps) {
         >
           <SettingsIcon size={13} />
         </GlassButton>
-        <div className="ml-1 flex items-center">
-          <UserButton
-            appearance={{
-              elements: {
-                avatarBox: { width: 24, height: 24 },
-              },
-            }}
-          />
-        </div>
+        <GlassButton
+          variant="ghost"
+          size="icon"
+          onClick={() => navigate({ to: "/settings/account" })}
+          title="Account"
+        >
+          <UserRound size={13} />
+        </GlassButton>
       </div>
     </div>
   );

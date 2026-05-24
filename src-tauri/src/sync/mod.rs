@@ -153,6 +153,7 @@ pub fn stop_cloud_sync(sync_state: State<'_, Arc<CloudSyncState>>) {
 }
 
 async fn sync_once(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
+    push_dirty_users(client, db).await?;
     push_repository_deletes(client, db).await?;
     pull_repositories(client, db).await?;
     push_dirty_repositories(client, db).await?;
@@ -339,6 +340,39 @@ struct CloudUserSettingsRow {
     honor_gpg_sign: bool,
     auto_push_on_commit: bool,
     updated_at: DateTime<Utc>,
+}
+
+async fn push_dirty_users(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
+    let rows = sqlx::query(
+        "SELECT id, clerk_user_id, name, email, image_url, created_at, updated_at
+         FROM users
+         WHERE dirty = 1",
+    )
+    .fetch_all(db)
+    .await?;
+
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        let name = required_optional_string(&row, "name")?;
+        let email = required_optional_string(&row, "email")?;
+        client
+            .upsert(
+                "users",
+                "id",
+                json!({
+                    "id": &id,
+                    "clerk_user_id": row.try_get::<String, _>("clerk_user_id")?,
+                    "name": name,
+                    "email": email,
+                    "image_url": row.try_get::<Option<String>, _>("image_url")?,
+                    "created_at": row.try_get::<String, _>("created_at")?,
+                    "updated_at": row.try_get::<String, _>("updated_at")?,
+                }),
+            )
+            .await?;
+        mark_synced(db, "users", &id).await?;
+    }
+    Ok(())
 }
 
 async fn push_repository_deletes(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
@@ -929,6 +963,7 @@ async fn get_updated_at(
 
 async fn mark_synced(db: &Db, table: &'static str, id: &str) -> Result<(), SyncError> {
     let sql = match table {
+        "users" => "UPDATE users SET synced_at = ?, dirty = 0 WHERE id = ?",
         "repositories" => "UPDATE repositories SET synced_at = ?, dirty = 0 WHERE id = ?",
         "workspaces" => "UPDATE workspaces SET synced_at = ?, dirty = 0 WHERE id = ?",
         "run_commands" => "UPDATE run_commands SET synced_at = ?, dirty = 0 WHERE id = ?",
@@ -945,6 +980,18 @@ async fn mark_synced(db: &Db, table: &'static str, id: &str) -> Result<(), SyncE
         .execute(db)
         .await?;
     Ok(())
+}
+
+fn required_optional_string(
+    row: &sqlx::sqlite::SqliteRow,
+    field: &'static str,
+) -> Result<String, SyncError> {
+    row.try_get::<Option<String>, _>(field)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| SyncError::InvalidValue {
+            field,
+            message: "missing required user profile value".into(),
+        })
 }
 
 fn parse_timestamp(value: String, field: &'static str) -> Result<DateTime<Utc>, SyncError> {

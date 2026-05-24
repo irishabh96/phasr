@@ -1,4 +1,3 @@
-import { useAuth } from "@clerk/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
@@ -27,10 +26,9 @@ function AppLayout() {
 }
 
 function AuthGate() {
-  const { isLoaded, isSignedIn } = useAuth();
   const rustSession = useRustSession();
 
-  if (!isLoaded) {
+  if (rustSession.state === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) text-sm text-(--color-text-muted)">
         Loading…
@@ -38,14 +36,14 @@ function AuthGate() {
     );
   }
 
-  if (!isSignedIn) {
+  if (rustSession.state === "signedOut") {
     return <Navigate to="/sign-in" replace />;
   }
 
-  if (rustSession.state !== "ready") {
+  if (rustSession.state === "error") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) text-sm text-(--color-text-muted)">
-        {rustSession.state === "error" ? rustSession.message : "Securing session…"}
+        {rustSession.message}
       </div>
     );
   }

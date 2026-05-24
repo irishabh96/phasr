@@ -1,5 +1,9 @@
 import { AuthenticateWithRedirectCallback } from "@clerk/react";
-import { Navigate, createFileRoute, useLocation } from "@tanstack/react-router";
+import {
+  Navigate,
+  createFileRoute,
+  useLocation,
+} from "@tanstack/react-router";
 import { clerkOAuthCallbackProps } from "@/lib/clerk";
 
 function ClerkSignInCallback() {
@@ -10,8 +14,9 @@ function ClerkSignInCallback() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-4">
+    <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-4 text-sm text-(--color-text-secondary)">
       <AuthenticateWithRedirectCallback {...clerkOAuthCallbackProps()} />
+      Completing login...
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { useUpdateWorkspace, useWorkspace } from "@/lib/hooks/useWorkspaces";
+import { reportP0Error } from "@/lib/sentry";
 import { useUiStore } from "@/lib/store";
 
 /**
@@ -67,7 +68,11 @@ function RenameBody({ workspaceId, onDone }: { workspaceId: string; onDone: () =
       await update.mutateAsync({ name: trimmed });
       onDone();
     } catch (err) {
-      console.error("rename workspace failed", err);
+      reportP0Error("Rename workspace failed", err, {
+        area: "workspace",
+        operation: "rename_workspace",
+        workspaceId,
+      });
     }
   };
 

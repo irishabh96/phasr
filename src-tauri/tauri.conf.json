@@ -28,6 +28,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["phasr"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["dmg", "app"],

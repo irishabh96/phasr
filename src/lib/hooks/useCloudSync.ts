@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { reportP0Warning } from "@/lib/sentry";
 
 /**
  * React no longer owns cloud sync. Rust runs the Supabase REST worker;
@@ -20,7 +21,11 @@ export function useCloudSync() {
 
     const unlistenUpdated = listen("cloud-sync-updated", refresh);
     const unlistenError = listen("cloud-sync-error", (event) => {
-      console.warn("[cloud sync]", event.payload);
+      reportP0Warning("Cloud sync worker reported an error", {
+        area: "sync",
+        operation: "cloud_sync_worker",
+        payload: event.payload,
+      });
     });
 
     return () => {

@@ -8,7 +8,8 @@
 //! ## Verification flow
 //!
 //! 1. The React side calls `set_session(jwt)` whenever it has a fresh Clerk
-//!    JWT (on sign-in and every 45s after, matching Clerk's 60s token TTL).
+//!    JWT. The `phasr_desktop` Clerk JWT template is configured with a
+//!    1-year lifetime, and the renderer refreshes near expiry.
 //! 2. `set_session` decodes the JWT header to read `kid` + `alg`, decodes
 //!    the unverified payload to read `iss`, derives the JWKS URL from
 //!    `<iss>/.well-known/jwks.json`, fetches+caches the JWKS, picks the
@@ -35,6 +36,9 @@ use std::time::{Duration, Instant};
 use tauri::State;
 use thiserror::Error;
 
+use crate::domain::User;
+use crate::store::{StoreError, UserRepo};
+
 /// How long a fetched JWKS stays trusted before we refetch on next use.
 /// Clerk rotates signing keys infrequently; we refetch eagerly on a kid
 /// miss (which catches rotation) and use this TTL as a long-running-app
@@ -55,6 +59,16 @@ pub enum AuthError {
     NoMatchingKey(String),
     #[error("unsupported algorithm `{0}`")]
     UnsupportedAlgorithm(String),
+    #[error("jwt is missing required profile claim `{0}`")]
+    MissingProfileClaim(&'static str),
+    #[error("failed to persist user profile: {0}")]
+    ProfileStore(String),
+}
+
+impl From<StoreError> for AuthError {
+    fn from(value: StoreError) -> Self {
+        Self::ProfileStore(value.to_string())
+    }
 }
 
 impl serde::Serialize for AuthError {
@@ -73,6 +87,12 @@ struct UnverifiedPayload {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub user_id: String,
+    #[allow(dead_code)] // persisted in the next user-profile mapping pass
+    pub name: String,
+    #[allow(dead_code)] // persisted in the next user-profile mapping pass
+    pub email: String,
+    #[allow(dead_code)] // persisted in the next user-profile mapping pass
+    pub image_url: Option<String>,
     #[allow(dead_code)] // held for the planned backend-call path
     pub jwt: String,
 }
@@ -322,9 +342,8 @@ impl SessionState {
         // an "alg=none" downgrade).
         validation.algorithms = vec![entry.alg];
         // jsonwebtoken's default leeway (60s) is fine for clock skew but
-        // means a token that's *just* expired still verifies. Phasr's
-        // frontend refreshes every 45s, so a 10-second leeway gives us
-        // plenty of skew margin without keeping dead tokens alive.
+        // means a token that's *just* expired still verifies. Keep a small
+        // explicit leeway so dead tokens are not accepted for long.
         validation.leeway = 10;
 
         let token_data = decode::<VerifiedClaims>(jwt, &entry.key, &validation)
@@ -336,6 +355,30 @@ impl SessionState {
 #[derive(Debug, Clone, Deserialize)]
 struct VerifiedClaims {
     sub: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    email_address: Option<String>,
+    #[serde(default)]
+    primary_email_address: Option<String>,
+    #[serde(default)]
+    family_name: Option<String>,
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    full_name: Option<String>,
+    #[serde(default)]
+    given_name: Option<String>,
+    #[serde(default)]
+    image_url: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    picture: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
     #[allow(dead_code)] // validated by jsonwebtoken; we keep it for symmetry
     iss: String,
     #[allow(dead_code)]
@@ -344,6 +387,59 @@ struct VerifiedClaims {
     #[allow(dead_code)]
     #[serde(default)]
     nbf: Option<i64>,
+}
+
+struct VerifiedProfile {
+    name: String,
+    email: String,
+    image_url: Option<String>,
+}
+
+fn non_empty(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn first_non_empty(values: &[Option<&String>]) -> Option<String> {
+    values.iter().find_map(|value| non_empty(*value))
+}
+
+fn verified_profile(claims: &VerifiedClaims) -> Result<VerifiedProfile, AuthError> {
+    let first_name = first_non_empty(&[claims.first_name.as_ref(), claims.given_name.as_ref()]);
+    let last_name = first_non_empty(&[claims.last_name.as_ref(), claims.family_name.as_ref()]);
+    let composed_name = [first_name.as_deref(), last_name.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let composed_name = if composed_name.trim().is_empty() {
+        None
+    } else {
+        Some(composed_name)
+    };
+
+    let name = first_non_empty(&[
+        claims.name.as_ref(),
+        claims.full_name.as_ref(),
+        composed_name.as_ref(),
+        claims.username.as_ref(),
+    ])
+    .ok_or(AuthError::MissingProfileClaim("name"))?;
+    let email = first_non_empty(&[
+        claims.email.as_ref(),
+        claims.email_address.as_ref(),
+        claims.primary_email_address.as_ref(),
+    ])
+    .ok_or(AuthError::MissingProfileClaim("email"))?;
+    let image_url = first_non_empty(&[claims.picture.as_ref(), claims.image_url.as_ref()]);
+
+    Ok(VerifiedProfile {
+        name,
+        email,
+        image_url,
+    })
 }
 
 fn jwks_url(issuer: &str) -> String {
@@ -385,11 +481,23 @@ fn decode_unverified_payload(jwt: &str) -> Result<UnverifiedPayload, AuthError> 
 pub async fn set_session(
     jwt: String,
     state: State<'_, Arc<SessionState>>,
+    users: State<'_, UserRepo>,
 ) -> Result<String, AuthError> {
     let claims = state.verify_jwt(&jwt).await?;
+    let profile = verified_profile(&claims)?;
     let user_id = claims.sub.clone();
+    let user = User::from_clerk_profile(
+        user_id.clone(),
+        Some(profile.name.clone()),
+        Some(profile.email.clone()),
+        profile.image_url.clone(),
+    );
+    users.upsert_from_clerk_profile(&user).await?;
     state.set_authenticated(Session {
         user_id: claims.sub,
+        name: profile.name,
+        email: profile.email,
+        image_url: profile.image_url,
         jwt,
     });
     Ok(user_id)
@@ -517,6 +625,27 @@ mod tests {
         })
     }
 
+    fn verified_claims_with_profile(name: Option<&str>, email: Option<&str>) -> VerifiedClaims {
+        VerifiedClaims {
+            sub: "user_abc".into(),
+            email: email.map(String::from),
+            email_address: None,
+            primary_email_address: None,
+            family_name: None,
+            first_name: None,
+            full_name: None,
+            given_name: None,
+            image_url: None,
+            last_name: None,
+            name: name.map(String::from),
+            picture: None,
+            username: None,
+            iss: TEST_ISSUER.into(),
+            exp: None,
+            nbf: None,
+        }
+    }
+
     #[tokio::test]
     async fn verifies_valid_token_and_authenticates() {
         let keys = TestKeys::generate("kid-1");
@@ -531,9 +660,32 @@ mod tests {
         assert!(!state.is_authenticated());
         state.set_authenticated(Session {
             user_id: "user_abc".into(),
+            name: "Rishabh".into(),
+            email: "rishabh@example.com".into(),
+            image_url: None,
             jwt: jwt.clone(),
         });
         assert!(state.is_authenticated());
+    }
+
+    #[test]
+    fn profile_claims_require_name_and_email() {
+        let profile = verified_profile(&verified_claims_with_profile(
+            Some("Rishabh"),
+            Some("r@x.test"),
+        ))
+        .expect("profile");
+        assert_eq!(profile.name, "Rishabh");
+        assert_eq!(profile.email, "r@x.test");
+
+        assert!(matches!(
+            verified_profile(&verified_claims_with_profile(None, Some("r@x.test"))),
+            Err(AuthError::MissingProfileClaim("name"))
+        ));
+        assert!(matches!(
+            verified_profile(&verified_claims_with_profile(Some("Rishabh"), None)),
+            Err(AuthError::MissingProfileClaim("email"))
+        ));
     }
 
     #[tokio::test]
@@ -682,6 +834,9 @@ mod tests {
         let state = SessionState::with_fetcher(fetcher);
         state.set_authenticated(Session {
             user_id: "u".into(),
+            name: "Rishabh".into(),
+            email: "rishabh@example.com".into(),
+            image_url: None,
             jwt: "j".into(),
         });
         let got = state.require().unwrap().unwrap();
