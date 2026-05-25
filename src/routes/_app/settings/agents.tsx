@@ -1,13 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Pencil, Plus, Star, Trash2, X } from "lucide-react";
+import { Check, Pencil, Star, X } from "lucide-react";
 import { useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import {
   useAgents,
-  useCreateCustomAgent,
-  useDeleteAgent,
   useSetAgentCommand,
   useSetAgentDefault,
   useSetAgentEnabled,
@@ -20,18 +18,11 @@ function AgentsPage() {
   const setEnabled = useSetAgentEnabled();
   const setCommand = useSetAgentCommand();
   const setDefault = useSetAgentDefault();
-  const deleteAgent = useDeleteAgent();
-  const createCustom = useCreateCustomAgent();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedCommand, setEditedCommand] = useState("");
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newCommand, setNewCommand] = useState("");
-
   const seeds = (agents ?? []).filter((a) => a.isSeed);
-  const customs = (agents ?? []).filter((a) => !a.isSeed);
 
   const startEdit = (agent: Agent) => {
     setEditingId(agent.id);
@@ -47,25 +38,13 @@ function AgentsPage() {
     cancelEdit();
   };
 
-  const handleAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newName.trim() || !newCommand.trim()) return;
-    await createCustom.mutateAsync({
-      name: newName.trim(),
-      command: newCommand.trim(),
-    });
-    setNewName("");
-    setNewCommand("");
-    setShowAdd(false);
-  };
-
   return (
     <div className="space-y-6">
       <header>
         <h2 className="text-[15px] font-semibold tracking-tight leading-none">Agents</h2>
         <p className="mt-1.5 text-[12px] text-(--color-text-muted)">
           Toggle which AI tools appear in the "New workspace" form. Edit the launch command, set
-          a default, or add a custom agent.
+          a default, or disable built-in agents you do not use.
         </p>
       </header>
 
@@ -90,85 +69,6 @@ function AgentsPage() {
           ))}
         </GlassPanel>
       </section>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
-            Custom <span className="text-(--color-text-secondary)">{customs.length}</span>
-          </div>
-          <GlassButton variant="outline" size="sm" onClick={() => setShowAdd((v) => !v)}>
-            <Plus size={11} />
-            Add agent
-          </GlassButton>
-        </div>
-
-        {showAdd && (
-          <GlassPanel className="p-4">
-            <form onSubmit={handleAdd} className="space-y-2.5">
-              <GlassInput
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="Display name (e.g. My GPT-4)"
-                autoFocus
-              />
-              <GlassInput
-                value={newCommand}
-                onChange={(e) => setNewCommand(e.target.value)}
-                placeholder="Command (e.g. chat-cli -m gpt-4)"
-                className="font-mono"
-              />
-              <div className="flex justify-end gap-2">
-                <GlassButton
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  onClick={() => {
-                    setShowAdd(false);
-                    setNewName("");
-                    setNewCommand("");
-                  }}
-                >
-                  Cancel
-                </GlassButton>
-                <GlassButton
-                  variant="primary"
-                  size="sm"
-                  type="submit"
-                  disabled={createCustom.isPending || !newName.trim() || !newCommand.trim()}
-                >
-                  {createCustom.isPending ? "Adding…" : "Add"}
-                </GlassButton>
-              </div>
-            </form>
-          </GlassPanel>
-        )}
-
-        {customs.length === 0 && !showAdd ? (
-          <p className="text-[12px] text-(--color-text-muted)">No custom agents yet.</p>
-        ) : customs.length > 0 ? (
-          <GlassPanel className="divide-y divide-(--glass-border-hairline) overflow-hidden">
-            {customs.map((agent) => (
-              <AgentRow
-                key={agent.id}
-                agent={agent}
-                isEditing={editingId === agent.id}
-                editedCommand={editedCommand}
-                onEditedCommandChange={setEditedCommand}
-                onStartEdit={() => startEdit(agent)}
-                onCancelEdit={cancelEdit}
-                onSaveEdit={() => saveEdit(agent.id)}
-                onToggle={(enabled) => setEnabled.mutate({ id: agent.id, enabled })}
-                onSetDefault={() => setDefault.mutate(agent.id)}
-                onDelete={() => {
-                  if (window.confirm(`Delete agent "${agent.name}"?`)) {
-                    deleteAgent.mutate(agent.id);
-                  }
-                }}
-              />
-            ))}
-          </GlassPanel>
-        ) : null}
-      </section>
     </div>
   );
 }
@@ -183,7 +83,6 @@ interface AgentRowProps {
   onSaveEdit(): void;
   onToggle(enabled: boolean): void;
   onSetDefault(): void;
-  onDelete?: () => void;
 }
 
 function AgentRow({
@@ -196,7 +95,6 @@ function AgentRow({
   onSaveEdit,
   onToggle,
   onSetDefault,
-  onDelete,
 }: AgentRowProps) {
   return (
     <div className="group/agent flex items-center gap-3 px-4 py-3">
@@ -248,17 +146,6 @@ function AgentRow({
             <GlassButton variant="ghost" size="icon" onClick={onStartEdit} title="Edit command">
               <Pencil size={12} />
             </GlassButton>
-            {onDelete && (
-              <GlassButton
-                variant="ghost"
-                size="icon"
-                onClick={onDelete}
-                title="Delete agent"
-                className="text-(--color-text-muted) hover:text-(--color-danger)"
-              >
-                <Trash2 size={12} />
-              </GlassButton>
-            )}
             <Toggle checked={agent.isEnabled} onChange={onToggle} />
           </>
         )}

@@ -1,6 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ArrowLeft, Pencil, Pin, PinOff, Play, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronUp,
+  Pencil,
+  Pin,
+  PinOff,
+  Play,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import { useMemo, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
@@ -63,6 +73,32 @@ function RepositorySettingsPage() {
       input: { name: editName.trim(), command: editCommand.trim() },
     });
     cancelEdit();
+  };
+
+  // Sorted by sortOrder ASC so the array index matches the visible
+  // row order. swap(i, j) exchanges the sortOrder values of the two
+  // rows; the row at the smaller sortOrder ends up below.
+  const sorted = useMemo(
+    () => [...(runCommands ?? [])].sort((a, b) => a.sortOrder - b.sortOrder),
+    [runCommands],
+  );
+  const pinnedShortcuts = useMemo(() => {
+    const map = new Map<string, string>();
+    sorted
+      .filter((c) => c.pinned)
+      .slice(0, 9)
+      .forEach((c, i) => map.set(c.id, `⌘${i + 1}`));
+    return map;
+  }, [sorted]);
+
+  const swap = async (aIndex: number, bIndex: number) => {
+    const a = sorted[aIndex];
+    const b = sorted[bIndex];
+    if (!a || !b) return;
+    await Promise.all([
+      updateRC.mutateAsync({ id: a.id, input: { sortOrder: b.sortOrder } }),
+      updateRC.mutateAsync({ id: b.id, input: { sortOrder: a.sortOrder } }),
+    ]);
   };
 
   return (
@@ -144,10 +180,13 @@ function RepositorySettingsPage() {
           <p className="text-[12px] text-(--color-text-muted)">No run commands yet.</p>
         )}
 
-        {runCommands && runCommands.length > 0 && (
+        {sorted.length > 0 && (
           <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-[14px] border border-(--color-border-subtle) bg-(--color-bg-surface)">
-            {runCommands.map((rc) => {
+            {sorted.map((rc, i) => {
               const isEditing = editingId === rc.id;
+              const shortcut = pinnedShortcuts.get(rc.id);
+              const canUp = i > 0;
+              const canDown = i < sorted.length - 1;
               return (
                 <li key={rc.id} className="px-4 py-3">
                   <div className="flex items-center gap-3">
@@ -167,7 +206,14 @@ function RepositorySettingsPage() {
                         </div>
                       ) : (
                         <>
-                          <div className="text-sm font-medium">{rc.name}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">{rc.name}</span>
+                            {shortcut && (
+                              <kbd className="rounded border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-1.5 py-0.5 font-mono text-[10px] text-(--color-text-secondary)">
+                                {shortcut}
+                              </kbd>
+                            )}
+                          </div>
                           <code className="block truncate text-[12px] text-(--color-text-muted)">
                             {rc.command}
                           </code>
@@ -187,6 +233,24 @@ function RepositorySettingsPage() {
                         </>
                       ) : (
                         <>
+                          <GlassButton
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => void swap(i, i - 1)}
+                            disabled={!canUp || updateRC.isPending}
+                            title="Move up"
+                          >
+                            <ChevronUp size={12} />
+                          </GlassButton>
+                          <GlassButton
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => void swap(i, i + 1)}
+                            disabled={!canDown || updateRC.isPending}
+                            title="Move down"
+                          >
+                            <ChevronDown size={12} />
+                          </GlassButton>
                           <GlassButton
                             variant="primary"
                             size="sm"

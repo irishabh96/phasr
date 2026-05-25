@@ -43,16 +43,23 @@ pub fn unstage(cwd: &Path, paths: &[&str]) -> Result<(), GitError> {
 /// the UI without a confirm.
 pub fn discard(cwd: &Path, paths: &[&str]) -> Result<(), GitError> {
     if paths.is_empty() {
-        // Discarding everything: restore working tree + remove untracked.
-        run_git(cwd, &["restore", "--worktree", "--source=HEAD", ":/"])?;
+        // Discarding everything: reset index + working tree, then sweep untracked.
+        run_git(
+            cwd,
+            &["restore", "--staged", "--worktree", "--source=HEAD", ":/"],
+        )?;
         run_git(cwd, &["clean", "-fd"])?;
         return Ok(());
     }
-    let mut args: Vec<&str> = vec!["restore", "--worktree", "--source=HEAD"];
+    // `--staged --worktree` resets both the index and the working tree
+    // to HEAD. Without `--staged`, a fully-staged file would end up in
+    // a "still-staged + worktree-now-differs" partial state.
+    let mut args: Vec<&str> = vec!["restore", "--staged", "--worktree", "--source=HEAD"];
     args.push("--");
     args.extend_from_slice(paths);
-    run_git(cwd, &args)?;
-    // Also remove untracked files matching the paths.
+    // Tolerated: `restore` errors for paths not in HEAD (untracked
+    // files). The `clean` below handles those.
+    let _ = run_git(cwd, &args);
     let mut clean_args: Vec<&str> = vec!["clean", "-fd"];
     clean_args.push("--");
     clean_args.extend_from_slice(paths);
@@ -63,11 +70,7 @@ pub fn discard(cwd: &Path, paths: &[&str]) -> Result<(), GitError> {
 pub fn commit(cwd: &Path, message: &str) -> Result<CommitOutput, GitError> {
     // Use `-F -` so we never have to escape multi-line messages on
     // shell. `--cleanup=verbatim` keeps the message exactly as given.
-    let stdout = run_git_with_stdin(
-        cwd,
-        &["commit", "--cleanup=verbatim", "-F", "-"],
-        message,
-    )?;
+    let stdout = run_git_with_stdin(cwd, &["commit", "--cleanup=verbatim", "-F", "-"], message)?;
 
     // Parse `[branch sha] message` from stdout.
     let sha = stdout

@@ -3,12 +3,15 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   Archive,
   ChevronDown,
+  GitMerge,
   GitPullRequest,
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { useGitBranchStatus } from "@/lib/hooks/useGit";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import {
   useArchiveWorkspace,
@@ -33,6 +36,7 @@ interface ConfirmState {
 
 export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const { data: repository } = useRepository(workspace.repositoryId);
+  const { data: branchStatus } = useGitBranchStatus(workspace.id);
   const navigate = useNavigate();
   const archive = useArchiveWorkspace();
   const openPr = useOpenPullRequest();
@@ -49,6 +53,7 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const [errorTitle, setErrorTitle] = useState("Action failed");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,8 +72,19 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
     };
   }, [open]);
 
-  const canOpenPr = !!workspace.branch && !!repository?.remoteUrl;
-  const canArchive = workspace.status !== "archived";
+  const isLocalWorkspace = workspace.workspaceKind === "local";
+  const canOpenPr =
+    !isLocalWorkspace && !!workspace.branch && !!repository?.remoteUrl;
+  const canArchive = !isLocalWorkspace && workspace.status !== "archived";
+  const canMergeToMain =
+    !isLocalWorkspace && !!workspace.branch && !!repository?.localPath;
+  const mergeBlocked = !branchStatus
+    ? null
+    : branchStatus.aheadOfTarget === 0
+      ? "Nothing to merge"
+      : branchStatus.behindOfTarget > 0
+        ? `Branch is behind ${repository?.defaultBranch ?? "main"} — sync first`
+        : null;
 
   const showError = (title: string, message: string) => {
     setErrorTitle(title);
@@ -99,17 +115,19 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
     try {
       const check = await checkDelete.mutateAsync(workspace.id);
       if (check.hasUnpushedCommits) {
-        warning = "\n\nThis branch has commits that haven't been pushed to origin.";
+        warning =
+          "\n\nThis branch has commits that haven't been pushed to origin.";
       }
     } catch {
       /* non-blocking */
     }
     setConfirmState({
-      title: `Delete workspace "${workspace.name}"?`,
-      body:
-        `This stops the agent, removes the worktree, and deletes the branch ` +
-        `${workspace.branch ?? ""}. The agent's commits on this branch will be gone.${warning}`,
-      confirmLabel: "Delete workspace",
+      title: `${isLocalWorkspace ? "Remove" : "Delete"} workspace "${workspace.name}"?`,
+      body: isLocalWorkspace
+        ? "This removes the local workspace from Phasr. The repository folder and files stay on disk."
+        : `This stops the agent, removes the worktree, and deletes the branch ` +
+          `${workspace.branch ?? ""}. The agent's commits on this branch will be gone.${warning}`,
+      confirmLabel: isLocalWorkspace ? "Remove from Phasr" : "Delete workspace",
       destructive: true,
       onConfirm: () => {
         setConfirmState(null);
@@ -117,7 +135,8 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
           { id: workspace.id, repositoryId: workspace.repositoryId },
           {
             onSuccess: leaveWorkspace,
-            onError: (err) => showError("Couldn't delete workspace", String(err)),
+            onError: (err) =>
+              showError("Couldn't delete workspace", String(err)),
           },
         );
       },
@@ -141,10 +160,26 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         {open && (
           <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
             <ul className="p-1 text-[12.5px]">
+              {canMergeToMain && (
+                <MenuItem
+                  icon={<GitMerge size={12} />}
+                  label={`Merge to ${repository?.defaultBranch ?? "main"}`}
+                  onClick={() => {
+                    setOpen(false);
+                    setMergeOpen(true);
+                  }}
+                  disabled={!!mergeBlocked}
+                  {...(mergeBlocked ? { title: mergeBlocked } : {})}
+                />
+              )}
               {canOpenPr && (
                 <MenuItem
                   icon={<GitPullRequest size={12} />}
-                  label={openPr.isPending ? "Pushing & opening…" : "Open pull request"}
+                  label={
+                    openPr.isPending
+                      ? "Pushing & opening…"
+                      : "Open pull request"
+                  }
                   onClick={handleOpenPr}
                   disabled={openPr.isPending}
                 />
@@ -157,10 +192,15 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
                   disabled={archive.isPending}
                 />
               )}
-              <li className="my-1 h-px bg-(--glass-border-hairline)" aria-hidden />
+              <li
+                className="my-1 h-px bg-(--glass-border-hairline)"
+                aria-hidden
+              />
               <MenuItem
                 icon={<Trash2 size={12} />}
-                label="Delete workspace"
+                label={
+                  isLocalWorkspace ? "Remove from Phasr" : "Delete workspace"
+                }
                 onClick={handleDelete}
                 disabled={deleteWorkspace.isPending}
                 danger
@@ -170,7 +210,12 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         )}
       </div>
 
-      {confirmState && <ConfirmDialog state={confirmState} onCancel={() => setConfirmState(null)} />}
+      {confirmState && (
+        <ConfirmDialog
+          state={confirmState}
+          onCancel={() => setConfirmState(null)}
+        />
+      )}
 
       {errorMessage && (
         <ErrorDialog
@@ -179,6 +224,19 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
           onClose={() => setErrorMessage(null)}
         />
       )}
+
+      <MergeToMainDialog
+        workspace={workspace}
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+        onSyncRequested={() => {
+          // The SyncButton next to the BranchChip in the header is the
+          // canonical place to start a sync. We can't programmatically
+          // open its popover from here (different component tree), so
+          // we just close the dialog — the SyncButton is visible while
+          // behind > 0 and the user clicks it themselves.
+        }}
+      />
     </>
   );
 }
@@ -189,12 +247,14 @@ function MenuItem({
   onClick,
   disabled,
   danger,
+  title,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
+  title?: string;
 }) {
   return (
     <li>
@@ -202,6 +262,7 @@ function MenuItem({
         type="button"
         onClick={onClick}
         disabled={disabled}
+        title={title}
         className={cn(
           "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left",
           "transition-colors duration-100",
@@ -219,7 +280,13 @@ function MenuItem({
   );
 }
 
-function ConfirmDialog({ state, onCancel }: { state: ConfirmState; onCancel(): void }) {
+function ConfirmDialog({
+  state,
+  onCancel,
+}: {
+  state: ConfirmState;
+  onCancel(): void;
+}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -238,13 +305,15 @@ function ConfirmDialog({ state, onCancel }: { state: ConfirmState; onCancel(): v
         onClick={(e) => e.stopPropagation()}
       >
         <header className="border-b border-(--glass-border-hairline) px-5 py-3.5">
-          <h3 className="text-[13.5px] font-semibold leading-none">{state.title}</h3>
+          <h3 className="text-[13.5px] font-semibold leading-none">
+            {state.title}
+          </h3>
         </header>
         <div className="whitespace-pre-line px-5 py-4 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
           {state.body}
         </div>
         <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-          <GlassButton variant="ghost" size="sm" onClick={onCancel}>
+          <GlassButton variant="outline" size="sm" onClick={onCancel}>
             Cancel
           </GlassButton>
           <GlassButton

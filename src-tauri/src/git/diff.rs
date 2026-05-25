@@ -14,6 +14,20 @@ pub enum DiffScope {
     Head,
 }
 
+/// Unified diff for a single commit (whole-commit when `path` is None,
+/// otherwise scoped to that one path). For merge commits, `-m
+/// --first-parent` produces a diff against the first parent rather
+/// than the default empty output.
+pub fn diff_for_commit(cwd: &Path, sha: &str, path: Option<&str>) -> Result<String, GitError> {
+    let mut args: Vec<&str> = vec!["show", "--no-color", "-m", "--first-parent", "--format="];
+    args.push(sha);
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    run_git(cwd, &args)
+}
+
 pub fn diff(cwd: &Path, scope: DiffScope, path: Option<&str>) -> Result<String, GitError> {
     // Untracked files don't show up in `git diff` at all — the diff
     // tools only know about indexed paths. Detect them and synthesise
@@ -42,19 +56,26 @@ pub fn diff(cwd: &Path, scope: DiffScope, path: Option<&str>) -> Result<String, 
 fn synthesise_new_file_diff(cwd: &Path, rel_path: &str) -> Result<String, GitError> {
     let full = cwd.join(rel_path);
     let content = std::fs::read_to_string(&full).map_err(GitError::Io)?;
-    // Format roughly like a unified diff so the UI's monospace render
-    // does the right thing without needing a separate code path.
+    let lines: Vec<&str> = content.lines().collect();
+    let line_count = lines.len();
+
     let mut out = String::new();
     out.push_str(&format!("diff --git a/{rel_path} b/{rel_path}\n"));
-    out.push_str("new file\n");
+    out.push_str("new file mode 100644\n");
     out.push_str(&format!("--- /dev/null\n+++ b/{rel_path}\n"));
-    for line in content.lines() {
-        out.push('+');
-        out.push_str(line);
-        out.push('\n');
-    }
-    if !content.ends_with('\n') && !content.is_empty() {
-        out.push_str("\\ No newline at end of file\n");
+
+    if line_count > 0 {
+        // Real `git diff` emits `@@ -0,0 +1,N @@` for a fully new file
+        // with N lines. Parsers (including ours) expect that exact form.
+        out.push_str(&format!("@@ -0,0 +1,{line_count} @@\n"));
+        for line in &lines {
+            out.push('+');
+            out.push_str(line);
+            out.push('\n');
+        }
+        if !content.ends_with('\n') {
+            out.push_str("\\ No newline at end of file\n");
+        }
     }
     Ok(out)
 }

@@ -34,8 +34,8 @@ export function WorkspaceTabContent({
   const openInnerAgentTab = useUiStore((s) => s.openInnerAgentTab);
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
 
-  if (!state) return null;
-  const { tabs, activeTabId } = state;
+  const tabs = state?.tabs ?? [];
+  const activeTabId = state?.activeTabId ?? null;
   const worktreePath = workspace.worktreePath ?? "";
 
   if (tabs.length === 0) {
@@ -50,7 +50,10 @@ export function WorkspaceTabContent({
               variant="primary"
               size="md"
               onClick={() =>
-                openInnerAgentTab(workspaceId, workspace.command || workspace.name || "Agent")
+                openInnerAgentTab(
+                  workspaceId,
+                  workspace.command || workspace.name || "Agent",
+                )
               }
             >
               <Zap size={13} />
@@ -95,6 +98,9 @@ export function WorkspaceTabContent({
                 cwd={worktreePath}
                 ptySessionId={tab.ptySessionId}
                 visible={active}
+                {...(tab.initialCommand
+                  ? { initialCommand: tab.initialCommand }
+                  : {})}
               />
             </div>
           );

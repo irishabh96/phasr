@@ -1,10 +1,7 @@
-import { useClerk } from "@clerk/react";
-import { isClerkConfigured } from "@/lib/clerk";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
   Bot,
-  CornerDownLeft,
   FolderGit2,
   LogOut,
   Palette,
@@ -13,10 +10,26 @@ import {
   Settings,
   UserCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StatusDot } from "@/components/ui/StatusDot";
+import {
+  ITEM_CLS,
+  PALETTE_DIALOG_CLS,
+  PALETTE_INPUT_CLS,
+  PALETTE_INPUT_ROW_CLS,
+  PALETTE_LIST_CLS,
+  PALETTE_SHELL_CLS,
+} from "@/components/ui/palette";
+import {
+  PaletteFooter,
+  PaletteGroup,
+  PaletteShortcut,
+} from "@/components/ui/PaletteParts";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
+import { signOutDesktopSession } from "@/lib/desktopAuth";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
+import { reportP0Warning } from "@/lib/sentry";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { Repository, Workspace } from "@/lib/types";
@@ -54,7 +67,12 @@ export function CommandPalette() {
         }
         if (!cancelled) setWorkspaces(all);
       } catch (err) {
-        console.warn("palette: failed to load workspaces", err);
+        reportP0Warning("Command palette failed to load workspaces", {
+          area: "workspace",
+          operation: "palette_load_workspaces",
+          repositoryCount: repositories.length,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     })();
     return () => {
@@ -64,7 +82,7 @@ export function CommandPalette() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if (matchShortcut(e, SHORTCUTS.togglePalette)) {
         e.preventDefault();
         togglePalette();
       }
@@ -94,23 +112,23 @@ export function CommandPalette() {
       open={open}
       onOpenChange={(o) => (o ? openPalette() : close())}
       label="Command palette"
-      className="fixed inset-0 z-[200] flex items-start justify-center bg-(--color-bg-overlay) p-0 pt-[14vh] backdrop-blur-md"
+      className={PALETTE_DIALOG_CLS}
       shouldFilter
     >
       <div className="relative w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
-        <div className="overflow-hidden rounded-[var(--radius-modal)] bg-(--glass-modal) backdrop-blur-xl animate-[modal-in_200ms_var(--ease-glass)]">
-          <div className="flex items-center gap-3 px-5 pt-5 pb-2">
+        <div className={PALETTE_SHELL_CLS}>
+          <div className={PALETTE_INPUT_ROW_CLS}>
             <Search size={18} className="shrink-0 text-(--color-text-muted)" />
             <Command.Input
               autoFocus
               placeholder="Type a command…"
               value={query}
               onValueChange={setQuery}
-              className="h-10 w-full border-0 bg-transparent text-[17px] placeholder:text-(--color-text-muted) shadow-none! outline-none focus:border-transparent! focus:shadow-none! focus:outline-none"
+              className={PALETTE_INPUT_CLS}
             />
           </div>
 
-          <Command.List className="max-h-[60vh] overflow-y-auto px-3 pb-2">
+          <Command.List className={PALETTE_LIST_CLS}>
             <Command.Empty className="px-3 py-6 text-center text-[13px] text-(--color-text-muted)">
               No matches.
             </Command.Empty>
@@ -178,7 +196,7 @@ export function CommandPalette() {
                   <span className="flex-1 text-[15px]">
                     New workspace in <span className="font-medium">{repo.name}</span>
                   </span>
-                  <Shortcut keys={["⌘", "N"]} />
+                  <PaletteShortcut keys={SHORTCUTS.newWorkspace.display} />
                 </Command.Item>
               ))}
             </PaletteGroup>
@@ -245,57 +263,28 @@ export function CommandPalette() {
               </Command.Item>
             </PaletteGroup>
 
-            {isClerkConfigured && <SignOutGroup onPick={go} />}
+            <SignOutGroup onPick={go} />
           </Command.List>
 
-          <div className="flex items-center gap-4 border-t border-(--glass-border-hairline) px-4 py-2.5 text-[11.5px] text-(--color-text-muted)">
-            <FooterHint icon={<span className="text-[12px] leading-none">↕</span>} label="Navigate" />
-            <FooterHint icon={<CornerDownLeft size={11} />} label="Select" />
-            <FooterHint icon={<span className="text-[10px]">esc</span>} label="Close" boxed />
-          </div>
+          <PaletteFooter />
         </div>
       </div>
     </Command.Dialog>
   );
 }
 
-/**
- * cmdk's internal `scrollIntoView` calls `scrollIntoView({ block: "nearest" })`
- * on the group HEADING — but only when the selected item is the very first
- * child of its group's items container. That heading-scroll drags the new
- * item up toward the top of the viewport, producing the "jump back to top"
- * flicker when arrow-keying across group boundaries.
- *
- * `<PaletteGroup>` wraps `<Command.Group>` and prepends a hidden dummy
- * element as the first child of the items container. Because cmdk's check
- * (`e.parentElement?.firstChild === e`) sees the dummy as the firstChild
- * instead of the actual first item, the heading-scroll branch is always
- * skipped. cmdk falls through to plain `item.scrollIntoView({ block: "nearest" })`,
- * which keeps the highlight at the edge as the list scrolls.
- *
- * The dummy has no `cmdk-item` attribute, so cmdk's item queries ignore it.
- */
-function PaletteGroup({ heading, children }: { heading: string; children: ReactNode }) {
-  return (
-    <Command.Group heading={heading} className={GROUP_CLS}>
-      <span hidden aria-hidden="true" />
-      {children}
-    </Command.Group>
-  );
-}
-
-/**
- * Sign-out entry. Lives in its own component so `useClerk()` is only
- * called when Clerk is configured — without a ClerkProvider in the
- * tree the hook would throw.
- */
 function SignOutGroup({ onPick }: { onPick: (fn: () => void) => void }) {
-  const { signOut } = useClerk();
   return (
     <PaletteGroup heading="Session">
       <Command.Item
         value="sign out logout"
-        onSelect={() => onPick(() => void signOut())}
+        onSelect={() =>
+          onPick(() => {
+            void signOutDesktopSession().then(() => {
+              window.location.href = "/sign-in";
+            });
+          })
+        }
         className={ITEM_CLS}
       >
         <LogOut size={15} className="shrink-0 text-(--color-danger)" />
@@ -304,54 +293,3 @@ function SignOutGroup({ onPick }: { onPick: (fn: () => void) => void }) {
     </PaletteGroup>
   );
 }
-
-function Shortcut({ keys }: { keys: string[] }) {
-  return (
-    <span className="flex shrink-0 items-center gap-1">
-      {keys.map((k) => (
-        <kbd key={k} className={KBD_CLS}>
-          {k}
-        </kbd>
-      ))}
-    </span>
-  );
-}
-
-function FooterHint({
-  icon,
-  label,
-  boxed = false,
-}: {
-  icon: ReactNode;
-  label: string;
-  boxed?: boolean;
-}) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span
-        className={
-          boxed
-            ? "inline-flex h-5 items-center rounded-[5px] bg-(--color-bg-hover) px-1.5 text-(--color-text-secondary)"
-            : "inline-flex h-5 w-5 items-center justify-center rounded-[5px] bg-(--color-bg-hover) text-(--color-text-secondary)"
-        }
-      >
-        {icon}
-      </span>
-      {label}
-    </span>
-  );
-}
-
-const GROUP_CLS =
-  "[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[12px] [&_[cmdk-group-heading]]:font-normal [&_[cmdk-group-heading]]:text-(--color-text-muted)";
-
-const ITEM_CLS = [
-  "flex cursor-pointer items-center gap-3 rounded-[8px] px-3 py-2.5",
-  "scroll-my-2",
-  "text-(--color-text-primary)",
-  "transition-colors duration-100",
-  "aria-selected:bg-(--color-bg-hover)",
-].join(" ");
-
-const KBD_CLS =
-  "inline-flex h-5 min-w-[20px] items-center justify-center rounded-[5px] bg-(--color-bg-hover) px-1 text-[10.5px] font-medium text-(--color-text-secondary)";

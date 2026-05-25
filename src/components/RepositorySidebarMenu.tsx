@@ -1,9 +1,15 @@
-import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as Dialog from "@radix-ui/react-dialog";
+import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useNavigate } from "@tanstack/react-router";
-import { Plus, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import {
+  FolderOpen,
+  Plus,
+  Settings as SettingsIcon,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useDeleteRepository } from "@/lib/hooks/useRepositories";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -15,20 +21,29 @@ interface RepositorySidebarMenuProps {
 }
 
 /**
- * Wraps a sidebar repo row in a Radix context menu. Right-clicking the
- * row opens a glass dropdown with three actions:
+ * Wraps a sidebar repo row in a Radix dropdown. Clicking anywhere on
+ * the row opens a glass menu with repository actions:
  *
- *   1. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
+ *   1. Open project — navigates to the repository entry route.
+ *   2. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
  *      NewWorkspaceModal picks it up and opens.
- *   2. Settings — navigate to /repositories/<id>/settings.
- *   3. Remove project — opens a glass confirm dialog; on confirm,
+ *   3. Settings — navigate to /repositories/<id>/settings.
+ *   4. Remove project — opens a glass confirm dialog; on confirm,
  *      deletes only the DB row (local clone untouched).
  */
-export function RepositorySidebarMenu({ repository, children }: RepositorySidebarMenuProps) {
+export function RepositorySidebarMenu({
+  repository,
+  children,
+}: RepositorySidebarMenuProps) {
   const navigate = useNavigate();
+  const navigateToRepoEntry = useNavigateToRepoEntry();
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const deleteRepo = useDeleteRepository();
   const [confirming, setConfirming] = useState(false);
+
+  const onOpenProject = () => {
+    void navigateToRepoEntry(repository.id);
+  };
 
   const onNewWorkspace = () => {
     requestNewWorkspace(repository.id);
@@ -61,6 +76,9 @@ export function RepositorySidebarMenu({ repository, children }: RepositorySideba
               "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
             )}
           >
+            <Item icon={<FolderOpen size={12} />} onSelect={onOpenProject}>
+              Open project
+            </Item>
             <Item icon={<Plus size={12} />} onSelect={onNewWorkspace}>
               New workspace
             </Item>
@@ -68,7 +86,11 @@ export function RepositorySidebarMenu({ repository, children }: RepositorySideba
               Settings
             </Item>
             <Separator />
-            <Item icon={<Trash2 size={12} />} onSelect={() => setConfirming(true)} danger>
+            <Item
+              icon={<Trash2 size={12} />}
+              onSelect={() => setConfirming(true)}
+              danger
+            >
               Remove project
             </Item>
           </ContextMenu.Content>
@@ -118,7 +140,9 @@ function Item({
 }
 
 function Separator() {
-  return <ContextMenu.Separator className="my-1 h-px bg-(--glass-border-hairline)" />;
+  return (
+    <ContextMenu.Separator className="my-1 h-px bg-(--glass-border-hairline)" />
+  );
 }
 
 function RemoveConfirm({
@@ -157,13 +181,24 @@ function RemoveConfirm({
               </Dialog.Title>
             </header>
             <div className="px-5 py-4 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
-              The project will be removed from Phasr. Your local clone on disk stays untouched.
+              The project will be removed from Phasr. Your local clone on disk
+              stays untouched.
             </div>
             <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="ghost" size="sm" onClick={onCancel} disabled={pending}>
+              <GlassButton
+                variant="outline"
+                size="sm"
+                onClick={onCancel}
+                disabled={pending}
+              >
                 Cancel
               </GlassButton>
-              <GlassButton variant="danger" size="sm" onClick={onConfirm} disabled={pending}>
+              <GlassButton
+                variant="danger"
+                size="sm"
+                onClick={onConfirm}
+                disabled={pending}
+              >
                 {pending ? "Removing…" : "Remove project"}
               </GlassButton>
             </footer>

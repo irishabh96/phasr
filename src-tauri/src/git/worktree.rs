@@ -49,10 +49,7 @@ pub fn create_worktree(
     .is_ok();
 
     if branch_exists {
-        run_git(
-            repo_path,
-            &["worktree", "add", worktree_path_str, branch],
-        )?;
+        run_git(repo_path, &["worktree", "add", worktree_path_str, branch])?;
         return Ok(());
     }
 
@@ -93,6 +90,14 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<(), Git
     if worktree_path.exists() {
         let _ = std::fs::remove_dir_all(worktree_path);
     }
+    Ok(())
+}
+
+/// Prune stale worktree metadata for a repository. This only asks git
+/// to clean invalid `.git/worktrees/*` records; it does not delete
+/// untracked directories under Phasr's worktree base.
+pub fn prune_worktrees(repo_path: &Path) -> Result<(), GitError> {
+    run_git(repo_path, &["worktree", "prune"])?;
     Ok(())
 }
 
@@ -157,12 +162,32 @@ mod tests {
 
     /// Initialises a throwaway repo at `path` with one commit on `main`.
     fn init_repo(path: &Path) {
-        Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "user.email", "t@example.com"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["config", "user.name", "tester"]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@example.com"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "tester"])
+            .current_dir(path)
+            .status()
+            .unwrap();
         std::fs::write(path.join("README.md"), "hi").unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(path).status().unwrap();
-        Command::new("git").args(["commit", "-qm", "init"]).current_dir(path).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(path)
+            .status()
+            .unwrap();
     }
 
     #[test]
@@ -178,15 +203,11 @@ mod tests {
 
         let canonical = std::fs::canonicalize(&worktree_path).unwrap();
         let list = list_worktrees(repo_dir.path()).unwrap();
-        assert!(list
-            .iter()
-            .any(|w| Path::new(&w.path) == canonical));
+        assert!(list.iter().any(|w| Path::new(&w.path) == canonical));
 
         remove_worktree(repo_dir.path(), &worktree_path).unwrap();
         let list_after = list_worktrees(repo_dir.path()).unwrap();
-        assert!(!list_after
-            .iter()
-            .any(|w| Path::new(&w.path) == canonical));
+        assert!(!list_after.iter().any(|w| Path::new(&w.path) == canonical));
         assert!(!worktree_path.exists());
     }
 
@@ -203,7 +224,9 @@ mod tests {
         let canonical = std::fs::canonicalize(&wt).unwrap();
         let list = list_worktrees(repo_dir.path()).unwrap();
         assert_eq!(
-            list.iter().filter(|w| Path::new(&w.path) == canonical).count(),
+            list.iter()
+                .filter(|w| Path::new(&w.path) == canonical)
+                .count(),
             1
         );
     }

@@ -37,20 +37,3 @@ export function useSetAgentDefault() {
     onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
   });
 }
-
-export function useCreateCustomAgent() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: { name: string; command: string }) =>
-      tauri.createCustomAgent(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
-  });
-}
-
-export function useDeleteAgent() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => tauri.deleteAgent(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
-  });
-}

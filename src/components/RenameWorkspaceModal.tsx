@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { useUpdateWorkspace, useWorkspace } from "@/lib/hooks/useWorkspaces";
+import { reportP0Error } from "@/lib/sentry";
 import { useUiStore } from "@/lib/store";
 
 /**
@@ -67,7 +68,11 @@ function RenameBody({ workspaceId, onDone }: { workspaceId: string; onDone: () =
       await update.mutateAsync({ name: trimmed });
       onDone();
     } catch (err) {
-      console.error("rename workspace failed", err);
+      reportP0Error("Rename workspace failed", err, {
+        area: "workspace",
+        operation: "rename_workspace",
+        workspaceId,
+      });
     }
   };
 
@@ -83,7 +88,7 @@ function RenameBody({ workspaceId, onDone }: { workspaceId: string; onDone: () =
         <p className="text-[11px] text-(--color-danger)">{String(update.error)}</p>
       )}
       <div className="flex items-center justify-end gap-2">
-        <GlassButton variant="ghost" size="sm" type="button" onClick={onDone}>
+        <GlassButton variant="outline" size="sm" type="button" onClick={onDone}>
           Cancel
         </GlassButton>
         <GlassButton variant="primary" size="sm" type="submit" disabled={!canSubmit}>

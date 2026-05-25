@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::error::run_git;
+use super::error::{run_git, GitError};
 
 /// Best-effort lookup of `origin`'s fetch URL for a given local repo.
 /// Returns `None` if the repo has no `origin` remote configured (or
@@ -27,7 +27,10 @@ pub fn get_default_branch(repo_path: &Path) -> Option<String> {
             return Some(trimmed.into());
         }
     }
-    if let Ok(branch) = run_git(repo_path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Ok(branch) = run_git(
+        repo_path,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
         if let Some(stripped) = branch.trim().strip_prefix("origin/") {
             return Some(stripped.into());
         }
@@ -43,4 +46,22 @@ pub fn get_default_branch(repo_path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Sorted list of local branch names (no `refs/heads/` prefix). Empty
+/// repos return `[]` rather than erroring so the dropdown can fall back
+/// to a free-text field gracefully.
+pub fn list_local_branches(repo_path: &Path) -> Result<Vec<String>, GitError> {
+    let stdout = run_git(
+        repo_path,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )?;
+    let mut names: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    Ok(names)
 }

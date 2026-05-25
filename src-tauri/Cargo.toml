@@ -1,6 +1,6 @@
 [package]
 name = "phasr"
-version = "0.1.0"
+version = "0.1.1"
 description = "Phasr — run multiple coding agents in parallel, each in an isolated git worktree."
 authors = ["Phasr"]
 edition = "2021"
@@ -11,9 +11,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+base64 = "0.22"
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -38,6 +40,11 @@ bytes = "1"
 anyhow = "1"
 notify = "6"
 notify-debouncer-mini = { version = "0.4", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+jsonwebtoken = { version = "9", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -47,3 +54,5 @@ objc2-foundation = { version = "0.3", features = ["NSData"] }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "test-util"] }
+rsa = { version = "0.9", features = ["sha2"] }
+rand = "0.8"

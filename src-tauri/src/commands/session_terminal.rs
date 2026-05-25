@@ -12,6 +12,7 @@ use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
+use crate::auth::{AuthError, SessionState};
 use crate::pty::{PtyEvent, TaskRuntime};
 
 /// Distinct from `run:` and bare workspace UUIDs so the keys never collide.
@@ -25,6 +26,8 @@ fn pty_id(session_id: &str) -> String {
 pub enum SessionTerminalError {
     #[error(transparent)]
     Pty(#[from] crate::pty::handle::PtyError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     #[error("no running session for id `{0}`")]
     NotRunning(String),
 }
@@ -38,27 +41,46 @@ impl serde::Serialize for SessionTerminalError {
 #[tauri::command]
 pub async fn start_session_terminal(
     cwd: String,
+    initial_command: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
     on_event: Channel<PtyEvent>,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<String, SessionTerminalError> {
+    session.require()?;
     let session_id = Uuid::new_v4().to_string();
     let key = pty_id(&session_id);
 
-    // Pass None/None to TaskRuntime::spawn so it just runs the user's
-    // login shell (PtyHandle::spawn handles `$SHELL` resolution).
     let handle = runtime.spawn(
         key.clone(),
-        None,
+        initial_command,
         None,
         PathBuf::from(cwd),
         rows.unwrap_or(24),
         cols.unwrap_or(80),
     )?;
 
-    forward(handle.subscribe(), on_event, runtime.inner().clone(), key);
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event, runtime.inner().clone(), key);
     Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn attach_session_terminal(
+    session_id: String,
+    on_event: Channel<PtyEvent>,
+    runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), SessionTerminalError> {
+    session.require()?;
+    let key = pty_id(&session_id);
+    let handle = runtime
+        .get(&key)
+        .ok_or_else(|| SessionTerminalError::NotRunning(session_id.clone()))?;
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event, runtime.inner().clone(), key);
+    Ok(())
 }
 
 #[tauri::command]
@@ -66,7 +88,9 @@ pub async fn send_session_input(
     session_id: String,
     data: String,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), SessionTerminalError> {
+    session.require()?;
     let handle = runtime
         .get(&pty_id(&session_id))
         .ok_or_else(|| SessionTerminalError::NotRunning(session_id.clone()))?;
@@ -80,7 +104,9 @@ pub async fn resize_session(
     rows: u16,
     cols: u16,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), SessionTerminalError> {
+    session.require()?;
     let handle = runtime
         .get(&pty_id(&session_id))
         .ok_or_else(|| SessionTerminalError::NotRunning(session_id.clone()))?;
@@ -92,7 +118,9 @@ pub async fn resize_session(
 pub async fn stop_session_terminal(
     session_id: String,
     runtime: State<'_, Arc<TaskRuntime>>,
+    session: State<'_, Arc<SessionState>>,
 ) -> Result<(), SessionTerminalError> {
+    session.require()?;
     let key = pty_id(&session_id);
     if let Some(handle) = runtime.get(&key) {
         let _ = handle.kill();
@@ -102,12 +130,16 @@ pub async fn stop_session_terminal(
 }
 
 fn forward(
+    replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
     runtime: Arc<TaskRuntime>,
     key: String,
 ) {
     tauri::async_runtime::spawn(async move {
+        for event in replay {
+            let _ = channel.send(event);
+        }
         loop {
             match rx.recv().await {
                 Ok(event) => {

@@ -2,9 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// One agent run inside a repository. Owns an isolated git worktree on
-/// a `phasr/<short-id>` branch and a PTY session. Previously called
-/// `Task`; renamed in Phase 7 so the wording matches what users see
-/// in similar tools.
+/// a `phasr/*` branch and a PTY session. Previously called `Task`;
+/// renamed in Phase 7 so the wording matches what users see in similar tools.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceStatus {
@@ -58,11 +57,40 @@ impl WorkspaceStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceKind {
+    Agent,
+    Local,
+}
+
+impl WorkspaceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Local => "local",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "agent" => Self::Agent,
+            "local" => Self::Local,
+            _ => return None,
+        })
+    }
+
+    pub fn is_local(self) -> bool {
+        self == Self::Local
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
     pub repository_id: String,
+    pub workspace_kind: WorkspaceKind,
     pub name: String,
     pub prompt: Option<String>,
     pub agent_id: Option<String>,
@@ -84,6 +112,7 @@ impl Workspace {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             repository_id,
+            workspace_kind: WorkspaceKind::Agent,
             name,
             prompt: None,
             agent_id: None,
@@ -134,5 +163,14 @@ mod tests {
     #[test]
     fn unknown_status_string_returns_none() {
         assert_eq!(WorkspaceStatus::from_str("nonsense"), None);
+    }
+
+    #[test]
+    fn workspace_kind_round_trip_str() {
+        assert_eq!(WorkspaceKind::from_str("agent"), Some(WorkspaceKind::Agent));
+        assert_eq!(WorkspaceKind::from_str("local"), Some(WorkspaceKind::Local));
+        assert_eq!(WorkspaceKind::Agent.as_str(), "agent");
+        assert_eq!(WorkspaceKind::Local.as_str(), "local");
+        assert!(WorkspaceKind::Local.is_local());
     }
 }

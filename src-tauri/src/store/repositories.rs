@@ -24,14 +24,32 @@ impl RepositoryRepo {
         Self { db }
     }
 
+    #[allow(dead_code)]
     pub async fn insert(&self, repository: &Repository) -> Result<(), StoreError> {
+        self.insert_with_user(repository, None).await
+    }
+
+    pub async fn insert_for_user(
+        &self,
+        repository: &Repository,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        self.insert_with_user(repository, Some(user_id)).await
+    }
+
+    async fn insert_with_user(
+        &self,
+        repository: &Repository,
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO repositories (
-                id, name, remote_url, local_path, default_branch,
+                id, user_id, name, remote_url, local_path, default_branch,
                 created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&repository.id)
+        .bind(user_id)
         .bind(&repository.name)
         .bind(&repository.remote_url)
         .bind(&repository.local_path)
@@ -48,6 +66,7 @@ impl RepositoryRepo {
             "SELECT id, name, remote_url, local_path, default_branch,
                     created_at, updated_at
              FROM repositories
+             WHERE deleted_at IS NULL
              ORDER BY updated_at DESC",
         )
         .fetch_all(&self.db)
@@ -60,7 +79,7 @@ impl RepositoryRepo {
             "SELECT id, name, remote_url, local_path, default_branch,
                     created_at, updated_at
              FROM repositories
-             WHERE id = ?",
+             WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&self.db)
@@ -111,15 +130,96 @@ impl RepositoryRepo {
         Ok(current)
     }
 
+    /// Soft-delete the repository row and hard-delete all of its
+    /// children in one transaction. Soft-delete + dirty=1 means the
+    /// row stays in the table (so future cloud-sync pulls can compare
+    /// against the local tombstone) while every UI surface filters it
+    /// out via `deleted_at IS NULL`. The next cloud-sync push completes
+    /// the deletion remotely.
+    ///
+    /// Children get hard-deleted explicitly because SQLite's FK
+    /// cascade only fires on DELETE, not UPDATE. The cloud's own FK
+    /// cascade handles the corresponding cloud rows when the parent
+    /// delete pushes.
     pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        let res = sqlx::query("DELETE FROM repositories WHERE id = ?")
+        let now = Utc::now().to_rfc3339();
+
+        let mut tx = self.db.begin().await?;
+
+        sqlx::query("DELETE FROM run_commands WHERE repository_id = ?")
             .bind(id)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM repository_config WHERE repository_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM workspaces WHERE repository_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        let res = sqlx::query(
+            "UPDATE repositories
+             SET deleted_at = ?, updated_at = ?, dirty = 1
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound);
         }
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// Repositories that have been soft-deleted locally but haven't
+    /// been pushed to cloud yet. The cloud-sync bootstrap reads this
+    /// before pulling so any pending deletions land before we attempt
+    /// to reconcile.
+    pub async fn list_dirty_soft_deletes(&self) -> Result<Vec<String>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id FROM repositories
+             WHERE deleted_at IS NOT NULL AND dirty = 1",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>("id").map_err(StoreError::from))
+            .collect()
+    }
+
+    /// Clear `dirty` on a repository row after its cloud-side mirror
+    /// has confirmed (push for live rows, delete for tombstones).
+    pub async fn mark_synced(&self, id: &str) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE repositories
+             SET synced_at = ?, dirty = 0
+             WHERE id = ?",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// `true` when a row with this id is soft-deleted locally. Used by
+    /// the cloud-sync pull to skip resurrection of locally-tombstoned
+    /// repositories.
+    pub async fn exists_soft_deleted(&self, id: &str) -> Result<bool, StoreError> {
+        let row = sqlx::query(
+            "SELECT 1 AS sentinel FROM repositories
+             WHERE id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.is_some())
     }
 }
 
@@ -168,11 +268,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_row() {
+    async fn delete_soft_hides_row_and_marks_dirty() {
         let repo = fresh_repo().await;
         let r = Repository::new("doomed".into(), None, None);
         repo.insert(&r).await.unwrap();
         repo.delete(&r.id).await.unwrap();
+        // Visible to UI surfaces? No.
         assert!(matches!(repo.get(&r.id).await, Err(StoreError::NotFound)));
+        assert!(repo.list().await.unwrap().is_empty());
+        // Tombstone reachable via the soft-delete helpers? Yes.
+        assert!(repo.exists_soft_deleted(&r.id).await.unwrap());
+        let pending = repo.list_dirty_soft_deletes().await.unwrap();
+        assert_eq!(pending, vec![r.id.clone()]);
+    }
+
+    #[tokio::test]
+    async fn mark_synced_clears_dirty() {
+        let repo = fresh_repo().await;
+        let r = Repository::new("doomed".into(), None, None);
+        repo.insert(&r).await.unwrap();
+        repo.delete(&r.id).await.unwrap();
+        repo.mark_synced(&r.id).await.unwrap();
+        assert!(repo.list_dirty_soft_deletes().await.unwrap().is_empty());
+        // Tombstone is still present — exists_soft_deleted still true.
+        assert!(repo.exists_soft_deleted(&r.id).await.unwrap());
     }
 }
