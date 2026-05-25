@@ -6,7 +6,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
 import { GlassButton } from "@/components/ui/GlassButton";
-import { useCheckWorkspaceDelete, useDeleteWorkspace } from "@/lib/hooks/useWorkspaces";
+import {
+  useCheckWorkspaceDelete,
+  useDeleteWorkspace,
+} from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { Workspace } from "@/lib/types";
@@ -28,7 +31,10 @@ interface WorkspaceSidebarMenuProps {
  *      confirm, calls deleteWorkspace which tears down the worktree
  *      and the workspace record.
  */
-export function WorkspaceSidebarMenu({ workspace, children }: WorkspaceSidebarMenuProps) {
+export function WorkspaceSidebarMenu({
+  workspace,
+  children,
+}: WorkspaceSidebarMenuProps) {
   const navigate = useNavigate();
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
   const requestRename = useUiStore((s) => s.requestRenameWorkspace);
@@ -41,7 +47,10 @@ export function WorkspaceSidebarMenu({ workspace, children }: WorkspaceSidebarMe
   const onNewTerminal = async () => {
     await navigate({
       to: "/repositories/$repositoryId/workspaces/$workspaceId",
-      params: { repositoryId: workspace.repositoryId, workspaceId: workspace.id },
+      params: {
+        repositoryId: workspace.repositoryId,
+        workspaceId: workspace.id,
+      },
     });
     openInnerTerminalTab(workspace.id);
   };
@@ -101,14 +110,24 @@ export function WorkspaceSidebarMenu({ workspace, children }: WorkspaceSidebarMe
               "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
             )}
           >
-            <Item icon={<TerminalIcon size={12} />} onSelect={() => void onNewTerminal()}>
+            <Item
+              icon={<TerminalIcon size={12} />}
+              onSelect={() => void onNewTerminal()}
+            >
               New terminal
             </Item>
-            <Item icon={<Pencil size={12} />} onSelect={() => requestRename(workspace.id)}>
+            <Item
+              icon={<Pencil size={12} />}
+              onSelect={() => requestRename(workspace.id)}
+            >
               Rename…
             </Item>
             <Separator />
-            <Item icon={<Trash2 size={12} />} onSelect={() => void onCloseWorkspace()} danger>
+            <Item
+              icon={<Trash2 size={12} />}
+              onSelect={() => void onCloseWorkspace()}
+              danger
+            >
               Close workspace
             </Item>
           </ContextMenu.Content>
@@ -119,6 +138,7 @@ export function WorkspaceSidebarMenu({ workspace, children }: WorkspaceSidebarMe
         <CloseConfirm
           name={workspace.name}
           branch={workspace.branch}
+          isLocal={workspace.workspaceKind === "local"}
           unpushedWarning={unpushedWarning}
           pending={deleteWorkspace.isPending}
           onCancel={() => setConfirming(false)}
@@ -160,12 +180,15 @@ function Item({
 }
 
 function Separator() {
-  return <ContextMenu.Separator className="my-1 h-px bg-(--glass-border-hairline)" />;
+  return (
+    <ContextMenu.Separator className="my-1 h-px bg-(--glass-border-hairline)" />
+  );
 }
 
 function CloseConfirm({
   name,
   branch,
+  isLocal,
   unpushedWarning,
   pending,
   onCancel,
@@ -173,6 +196,7 @@ function CloseConfirm({
 }: {
   name: string;
   branch: string | null;
+  isLocal: boolean;
   unpushedWarning: boolean;
   pending: boolean;
   onCancel: () => void;
@@ -198,27 +222,50 @@ function CloseConfirm({
             <header className="border-b border-(--glass-border-hairline) px-5 py-3.5">
               <Dialog.Title asChild>
                 <h3 className="text-[13.5px] font-semibold leading-none">
-                  Close workspace &quot;{name}&quot;?
+                  {isLocal ? "Remove" : "Close"} workspace &quot;{name}&quot;?
                 </h3>
               </Dialog.Title>
             </header>
             <div className="space-y-2 px-5 py-4 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
-              <p>
-                Stops the agent, removes the worktree, and deletes the branch
-                {branch ? ` ${branch}` : ""}. The agent&apos;s commits on this branch will be gone.
-              </p>
+              {isLocal ? (
+                <p>
+                  Removes this workspace from Phasr. The repository folder stays
+                  on disk.
+                </p>
+              ) : (
+                <p>
+                  Stops the agent, removes the worktree, and deletes the branch
+                  {branch ? ` ${branch}` : ""}. The agent&apos;s commits on this
+                  branch will be gone.
+                </p>
+              )}
               {unpushedWarning && (
                 <p className="text-(--color-warning)">
-                  This branch has commits that haven&apos;t been pushed to origin.
+                  This branch has commits that haven&apos;t been pushed to
+                  origin.
                 </p>
               )}
             </div>
             <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="outline" size="sm" onClick={onCancel} disabled={pending}>
+              <GlassButton
+                variant="outline"
+                size="sm"
+                onClick={onCancel}
+                disabled={pending}
+              >
                 Cancel
               </GlassButton>
-              <GlassButton variant="danger" size="sm" onClick={onConfirm} disabled={pending}>
-                {pending ? "Closing…" : "Close workspace"}
+              <GlassButton
+                variant="danger"
+                size="sm"
+                onClick={onConfirm}
+                disabled={pending}
+              >
+                {pending
+                  ? "Closing…"
+                  : isLocal
+                    ? "Remove from Phasr"
+                    : "Close workspace"}
               </GlassButton>
             </footer>
           </div>

@@ -1,4 +1,5 @@
 import { CLERK_SESSION_JWT_TEMPLATE } from "./clerk";
+import { reportP0Error } from "./sentry";
 import { getMachineId, SUPABASE_ANON_KEY, SUPABASE_URL } from "./supabase";
 import { tauri } from "./tauri";
 
@@ -59,9 +60,21 @@ type ClerkSessionLike = {
   }) => Promise<string | null>;
 };
 
+type ClerkSignInAttemptLike = {
+  firstFactorVerification?: { status?: string | null } | null;
+};
+
+type ClerkSignUpAttemptLike = {
+  status?: string | null;
+};
+
 type ClerkClientLike = {
   reload?: () => Promise<unknown>;
   signedInSessions?: ClerkSessionLike[];
+  signIn?: ClerkSignInAttemptLike | null;
+  signUp?: {
+    create?: (params: { transfer: true }) => Promise<ClerkSignUpAttemptLike>;
+  } | null;
 };
 
 export type ClerkDesktopAuthClient = {
@@ -177,7 +190,16 @@ async function resolveSignedInClerkSession(clerk: ClerkDesktopAuthClient) {
 
   await clerk.client.reload?.();
 
-  const session = clerk.session ?? clerk.client.signedInSessions?.[0] ?? null;
+  let session = clerk.session ?? clerk.client.signedInSessions?.[0] ?? null;
+
+  if (!session && clerk.client.signIn?.firstFactorVerification?.status === "transferable") {
+    // First-time user: the OAuth identity has no Clerk account yet.
+    // Transfer the credentials to a new sign-up to create the account.
+    await clerk.client.signUp?.create?.({ transfer: true });
+    await clerk.client.reload?.();
+    session = clerk.session ?? clerk.client.signedInSessions?.[0] ?? null;
+  }
+
   if (!session) {
     throw new Error("Clerk browser callback did not activate a desktop session.");
   }
@@ -380,6 +402,10 @@ export async function syncAndCommitDesktopSession(session: DesktopSession) {
 
 export async function signOutDesktopSession() {
   clearDesktopSession();
-  await tauri.stopCloudSync().catch(() => {});
-  await tauri.clearSession().catch(() => {});
+  await tauri.stopCloudSync().catch((err: unknown) => {
+    reportP0Error("stopCloudSync failed during sign-out", err, { area: "auth", operation: "sign_out_cleanup" });
+  });
+  await tauri.clearSession().catch((err: unknown) => {
+    reportP0Error("clearSession failed during sign-out", err, { area: "auth", operation: "sign_out_cleanup" });
+  });
 }

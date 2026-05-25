@@ -28,7 +28,7 @@ type RustSessionState =
   | { state: "ready"; userId: string }
   | { state: "error"; message: string };
 
-const CLERK_READY_TIMEOUT_MS = 4_000;
+const CLERK_READY_TIMEOUT_MS = 8_000;
 const CLERK_REFRESH_TIMEOUT_MS = 5_000;
 const RUST_SESSION_SYNC_TIMEOUT_MS = 12_000;
 const SIGN_OUT_CLEANUP_TIMEOUT_MS = 2_000;

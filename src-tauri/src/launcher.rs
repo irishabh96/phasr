@@ -23,6 +23,7 @@ pub struct Launcher {
     pub id: &'static str,
     pub name: &'static str,
     pub kind: LauncherKind,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +32,8 @@ enum DetectStrategy {
     Cli(&'static [&'static str]),
     /// Tool is installed if any of these app bundles exists.
     AppBundle(&'static [&'static str]),
+    /// Tool is installed if either a CLI shim or an app bundle exists.
+    CliOrAppBundle(&'static [&'static str], &'static [&'static str]),
     /// Always considered available (e.g. Reveal in Finder uses `open`).
     Always,
 }
@@ -41,6 +44,8 @@ enum LaunchAction {
     Cli(&'static str),
     /// `open -a <bundle> <path>` style.
     OpenWithBundle(&'static str),
+    /// Prefer the CLI when available; otherwise use `open -a`.
+    CliOrOpenWithBundle(&'static str, &'static str),
     /// Custom: AppleScript or anything else built by the runner.
     Custom(fn(&Path) -> std::io::Result<()>),
 }
@@ -58,69 +63,90 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "vscode",
             name: "VS Code",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["code"]),
-        action: LaunchAction::Cli("code"),
+        detect: DetectStrategy::CliOrAppBundle(
+            &["code"],
+            &["/Applications/Visual Studio Code.app"],
+        ),
+        action: LaunchAction::CliOrOpenWithBundle("code", "Visual Studio Code"),
     },
     LauncherDef {
         info: Launcher {
             id: "cursor",
             name: "Cursor",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["cursor"]),
-        action: LaunchAction::Cli("cursor"),
+        detect: DetectStrategy::CliOrAppBundle(&["cursor"], &["/Applications/Cursor.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("cursor", "Cursor"),
     },
     LauncherDef {
         info: Launcher {
             id: "zed",
             name: "Zed",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["zed"]),
-        action: LaunchAction::Cli("zed"),
+        detect: DetectStrategy::CliOrAppBundle(&["zed"], &["/Applications/Zed.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("zed", "Zed"),
     },
     LauncherDef {
         info: Launcher {
             id: "windsurf",
             name: "Windsurf",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["windsurf"]),
-        action: LaunchAction::Cli("windsurf"),
+        detect: DetectStrategy::CliOrAppBundle(&["windsurf"], &["/Applications/Windsurf.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("windsurf", "Windsurf"),
     },
     LauncherDef {
         info: Launcher {
             id: "xcode",
             name: "Xcode",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["xed"]),
-        action: LaunchAction::Cli("xed"),
+        detect: DetectStrategy::CliOrAppBundle(&["xed"], &["/Applications/Xcode.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("xed", "Xcode"),
     },
     LauncherDef {
         info: Launcher {
             id: "intellij",
             name: "IntelliJ IDEA",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["idea"]),
-        action: LaunchAction::Cli("idea"),
+        detect: DetectStrategy::CliOrAppBundle(&["idea"], &["/Applications/IntelliJ IDEA.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("idea", "IntelliJ IDEA"),
     },
     LauncherDef {
         info: Launcher {
             id: "webstorm",
             name: "WebStorm",
             kind: LauncherKind::Editor,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["webstorm"]),
-        action: LaunchAction::Cli("webstorm"),
+        detect: DetectStrategy::CliOrAppBundle(&["webstorm"], &["/Applications/WebStorm.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("webstorm", "WebStorm"),
+    },
+    LauncherDef {
+        info: Launcher {
+            id: "sublime",
+            name: "Sublime Text",
+            kind: LauncherKind::Editor,
+            available: false,
+        },
+        detect: DetectStrategy::CliOrAppBundle(&["subl"], &["/Applications/Sublime Text.app"]),
+        action: LaunchAction::CliOrOpenWithBundle("subl", "Sublime Text"),
     },
     LauncherDef {
         info: Launcher {
             id: "pycharm",
             name: "PyCharm",
             kind: LauncherKind::Editor,
+            available: false,
         },
         detect: DetectStrategy::Cli(&["pycharm"]),
         action: LaunchAction::Cli("pycharm"),
@@ -130,6 +156,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "goland",
             name: "GoLand",
             kind: LauncherKind::Editor,
+            available: false,
         },
         detect: DetectStrategy::Cli(&["goland"]),
         action: LaunchAction::Cli("goland"),
@@ -139,6 +166,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "rustrover",
             name: "RustRover",
             kind: LauncherKind::Editor,
+            available: false,
         },
         detect: DetectStrategy::Cli(&["rustrover"]),
         action: LaunchAction::Cli("rustrover"),
@@ -148,6 +176,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "clion",
             name: "CLion",
             kind: LauncherKind::Editor,
+            available: false,
         },
         detect: DetectStrategy::Cli(&["clion"]),
         action: LaunchAction::Cli("clion"),
@@ -157,6 +186,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "phpstorm",
             name: "PhpStorm",
             kind: LauncherKind::Editor,
+            available: false,
         },
         detect: DetectStrategy::Cli(&["phpstorm"]),
         action: LaunchAction::Cli("phpstorm"),
@@ -166,6 +196,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "rubymine",
             name: "RubyMine",
             kind: LauncherKind::Editor,
+            available: false,
         },
         detect: DetectStrategy::Cli(&["rubymine"]),
         action: LaunchAction::Cli("rubymine"),
@@ -176,6 +207,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "iterm",
             name: "iTerm",
             kind: LauncherKind::Terminal,
+            available: false,
         },
         detect: DetectStrategy::AppBundle(&["/Applications/iTerm.app"]),
         action: LaunchAction::Custom(launch_iterm),
@@ -185,6 +217,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "warp",
             name: "Warp",
             kind: LauncherKind::Terminal,
+            available: false,
         },
         detect: DetectStrategy::AppBundle(&["/Applications/Warp.app"]),
         action: LaunchAction::OpenWithBundle("Warp"),
@@ -194,6 +227,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "terminal",
             name: "Terminal",
             kind: LauncherKind::Terminal,
+            available: false,
         },
         detect: DetectStrategy::AppBundle(&["/System/Applications/Utilities/Terminal.app"]),
         action: LaunchAction::OpenWithBundle("Terminal"),
@@ -203,8 +237,9 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "ghostty",
             name: "Ghostty",
             kind: LauncherKind::Terminal,
+            available: false,
         },
-        detect: DetectStrategy::Cli(&["ghostty"]),
+        detect: DetectStrategy::CliOrAppBundle(&["ghostty"], &["/Applications/Ghostty.app"]),
         action: LaunchAction::Custom(launch_ghostty),
     },
     // ── File manager ─────────────────────────────────────────────────
@@ -213,6 +248,7 @@ const LAUNCHERS: &[LauncherDef] = &[
             id: "finder",
             name: "Reveal in Finder",
             kind: LauncherKind::FileManager,
+            available: false,
         },
         detect: DetectStrategy::Always,
         action: LaunchAction::Custom(reveal_in_finder),
@@ -224,6 +260,9 @@ fn is_available(strategy: DetectStrategy) -> bool {
         DetectStrategy::Always => true,
         DetectStrategy::Cli(names) => names.iter().any(|n| which(n).is_some()),
         DetectStrategy::AppBundle(paths) => paths.iter().any(|p| Path::new(p).exists()),
+        DetectStrategy::CliOrAppBundle(names, paths) => {
+            names.iter().any(|n| which(n).is_some()) || paths.iter().any(|p| Path::new(p).exists())
+        }
     }
 }
 
@@ -249,8 +288,10 @@ pub fn list_launchers(session: State<'_, Arc<SessionState>>) -> Result<Vec<Launc
     session.require().map_err(|e| e.to_string())?;
     Ok(LAUNCHERS
         .iter()
-        .filter(|d| is_available(d.detect))
-        .map(|d| d.info.clone())
+        .map(|d| Launcher {
+            available: is_available(d.detect),
+            ..d.info.clone()
+        })
         .collect())
 }
 
@@ -266,10 +307,20 @@ pub fn launch_app(
     if !target.exists() {
         return Err(format!("path does not exist: {path}"));
     }
+    if !is_available(def.detect) {
+        return Err(format!("{} is not installed or not found", def.info.name));
+    }
     match def.action {
         LaunchAction::Cli(cmd) => spawn_cli(cmd, target).map_err(|e| e.to_string()),
         LaunchAction::OpenWithBundle(name) => {
             open_with_bundle(name, target).map_err(|e| e.to_string())
+        }
+        LaunchAction::CliOrOpenWithBundle(cmd, name) => {
+            if which(cmd).is_some() {
+                spawn_cli(cmd, target).map_err(|e| e.to_string())
+            } else {
+                open_with_bundle(name, target).map_err(|e| e.to_string())
+            }
         }
         LaunchAction::Custom(f) => f(target).map_err(|e| e.to_string()),
     }
@@ -318,8 +369,12 @@ fn launch_iterm(path: &Path) -> std::io::Result<()> {
 }
 
 fn launch_ghostty(path: &Path) -> std::io::Result<()> {
-    std::process::Command::new("ghostty")
-        .arg(format!("--working-directory={}", path.display()))
-        .spawn()?;
+    if which("ghostty").is_some() {
+        std::process::Command::new("ghostty")
+            .arg(format!("--working-directory={}", path.display()))
+            .spawn()?;
+    } else {
+        open_with_bundle("Ghostty", path)?;
+    }
     Ok(())
 }

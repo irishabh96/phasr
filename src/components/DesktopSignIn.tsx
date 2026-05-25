@@ -9,7 +9,13 @@ import {
   clerkDesktopCallbackUrl,
   clerkOAuthStrategy,
 } from "@/lib/clerk";
-import { onDesktopSessionChanged, readDesktopSession } from "@/lib/desktopAuth";
+import {
+  type ClerkDesktopAuthClient,
+  createDesktopSessionFromClerk,
+  onDesktopSessionChanged,
+  readDesktopSession,
+  syncAndCommitDesktopSession,
+} from "@/lib/desktopAuth";
 import {
   AUTH_ERROR_CODES,
   AUTH_ERROR_MESSAGES,
@@ -40,6 +46,29 @@ function isProviderBusy(state: LoginState, provider: ClerkOAuthProvider) {
   );
 }
 
+function hasActiveClerkSession(clerk: ClerkDesktopAuthClient) {
+  return Boolean(clerk.session || clerk.client?.signedInSessions?.[0]);
+}
+
+function isClerkSessionExistsError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeError = error as {
+    code?: unknown;
+    errors?: Array<{ code?: unknown }>;
+  };
+
+  if (maybeError.code === "session_exists") {
+    return true;
+  }
+
+  return (
+    maybeError.errors?.some((entry) => entry.code === "session_exists") ?? false
+  );
+}
+
 export function DesktopSignIn() {
   const clerk = useClerk();
   const [loginState, setLoginState] = useState<LoginState>({ kind: "idle" });
@@ -64,7 +93,47 @@ export function DesktopSignIn() {
 
     setLoginState({ kind: "opening", provider });
 
+    const completeExistingSession = async () => {
+      setLoginState({ kind: "finishing" });
+      clearPendingOAuthState();
+      const session = await createDesktopSessionFromClerk(
+        clerk as ClerkDesktopAuthClient,
+      );
+      await syncAndCommitDesktopSession(session);
+      setHasDesktopSession(true);
+    };
+
+    const handleExistingSessionFailure = (sessionError: unknown) => {
+      clearPendingOAuthState();
+      const errorCode = classifyAuthError(
+        sessionError,
+        AUTH_ERROR_CODES.DESKTOP_SESSION_NOT_ACTIVATED,
+      );
+      reportP0Error("Existing Clerk session activation failed", sessionError, {
+        area: "auth",
+        operation: "desktop_session_recovery",
+        errorCode,
+        provider,
+      });
+      showToast({
+        intent: "error",
+        title: "Login failed",
+        message: AUTH_ERROR_MESSAGES[errorCode],
+        code: errorCode,
+      });
+      setLoginState({ kind: "idle" });
+    };
+
     try {
+      if (hasActiveClerkSession(clerk as ClerkDesktopAuthClient)) {
+        try {
+          await completeExistingSession();
+        } catch (sessionError) {
+          handleExistingSessionFailure(sessionError);
+        }
+        return;
+      }
+
       const oauthState = createPendingOAuthState(provider);
       const callbackUrl = clerkDesktopCallbackUrl(oauthState.state);
       const signInAttempt = await clerk.client.signIn.create({
@@ -85,6 +154,16 @@ export function DesktopSignIn() {
       await openUrl(verificationUrl.toString());
       setLoginState({ kind: "waiting", provider });
     } catch (error) {
+      if (isClerkSessionExistsError(error)) {
+        try {
+          await completeExistingSession();
+          return;
+        } catch (sessionError) {
+          handleExistingSessionFailure(sessionError);
+          return;
+        }
+      }
+
       clearPendingOAuthState();
       const errorCode = classifyAuthError(
         error,
@@ -107,9 +186,7 @@ export function DesktopSignIn() {
   };
 
   const disabled =
-    !clerk.loaded ||
-    !clerk.client ||
-    loginState.kind === "finishing";
+    !clerk.loaded || !clerk.client || loginState.kind === "finishing";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-6 text-(--color-text-primary)">

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
-use crate::domain::{Workspace, WorkspaceStatus};
+use crate::domain::{Workspace, WorkspaceKind, WorkspaceStatus};
 
 use super::error::StoreError;
 use super::pool::Db;
@@ -48,17 +48,23 @@ impl WorkspaceRepo {
         workspace: &Workspace,
         user_id: Option<&str>,
     ) -> Result<(), StoreError> {
+        let dirty = if workspace.workspace_kind.is_local() {
+            0
+        } else {
+            1
+        };
         sqlx::query(
             "INSERT INTO workspaces (
-                id, user_id, repository_id, name, prompt, agent_id, command, status,
+                id, user_id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
         )
         .bind(&workspace.id)
         .bind(user_id)
         .bind(&workspace.repository_id)
+        .bind(workspace.workspace_kind.as_str())
         .bind(&workspace.name)
         .bind(&workspace.prompt)
         .bind(&workspace.agent_id)
@@ -72,6 +78,7 @@ impl WorkspaceRepo {
         .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.archived_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.updated_at.to_rfc3339())
+        .bind(dirty)
         .execute(&self.db)
         .await?;
         Ok(())
@@ -82,7 +89,7 @@ impl WorkspaceRepo {
         repository_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -100,7 +107,7 @@ impl WorkspaceRepo {
         status: WorkspaceStatus,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -115,7 +122,7 @@ impl WorkspaceRepo {
 
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
-            "SELECT id, repository_id, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -129,6 +136,25 @@ impl WorkspaceRepo {
             .map(row_to_workspace)
             .transpose()?
             .ok_or(StoreError::NotFound)
+    }
+
+    pub async fn get_local_by_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND workspace_kind = 'local'
+             LIMIT 1",
+        )
+        .bind(repository_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
     }
 
     pub async fn update(&self, id: &str, patch: WorkspaceUpdate) -> Result<Workspace, StoreError> {
@@ -184,7 +210,7 @@ impl WorkspaceRepo {
                 name = ?, prompt = ?, agent_id = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 started_at = ?, finished_at = ?, archived_at = ?, updated_at = ?,
-                dirty = 1
+                dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
              WHERE id = ?",
         )
         .bind(&current.name)
@@ -225,10 +251,17 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
             field: "status",
             message: format!("unknown status `{status_str}`"),
         })?;
+    let kind_str: String = row.try_get("workspace_kind")?;
+    let workspace_kind =
+        WorkspaceKind::from_str(&kind_str).ok_or_else(|| StoreError::InvalidValue {
+            field: "workspace_kind",
+            message: format!("unknown workspace kind `{kind_str}`"),
+        })?;
 
     Ok(Workspace {
         id: row.try_get("id")?,
         repository_id: row.try_get("repository_id")?,
+        workspace_kind,
         name: row.try_get("name")?,
         prompt: row.try_get("prompt")?,
         agent_id: row.try_get("agent_id")?,
@@ -322,5 +355,41 @@ mod tests {
         repos.delete(&repo.id).await.unwrap();
         let list = workspaces.list_by_repository(&repo.id).await.unwrap();
         assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_workspace_round_trips_and_stays_clean() {
+        let (_repos, workspaces, repo) = fresh().await;
+        let mut ws = Workspace::new(repo.id.clone(), "local".into(), String::new());
+        ws.workspace_kind = WorkspaceKind::Local;
+        ws.status = WorkspaceStatus::Stopped;
+        ws.worktree_path = Some("/tmp/repo".into());
+        workspaces.insert(&ws).await.unwrap();
+
+        let local = workspaces
+            .get_local_by_repository(&repo.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.workspace_kind, WorkspaceKind::Local);
+        assert_eq!(local.worktree_path.as_deref(), Some("/tmp/repo"));
+
+        workspaces
+            .update(
+                &ws.id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = ?")
+            .bind(&ws.id)
+            .fetch_one(&workspaces.db)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
     }
 }

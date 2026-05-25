@@ -1,10 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ExternalLink, FolderOpen, TerminalSquare } from "lucide-react";
+import {
+  ChevronDown,
+  ExternalLink,
+  FolderOpen,
+  TerminalSquare,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { reportP0Error } from "@/lib/sentry";
 import { tauri } from "@/lib/tauri";
 import type { Launcher, LauncherKind } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 interface OpenInMenuProps {
   /** Worktree (or repo) path to launch each app against. */
@@ -55,6 +61,8 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
   }
 
   const handleLaunch = async (id: string) => {
+    const launcher = launchers?.find((item) => item.id === id);
+    if (launcher && !launcher.available) return;
     setOpen(false);
     try {
       await tauri.launchApp(id, path);
@@ -103,7 +111,18 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                     key={launcher.id}
                     type="button"
                     onClick={() => handleLaunch(launcher.id)}
-                    className="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] text-(--color-text-primary) transition-colors duration-100 hover:bg-(--color-bg-hover)"
+                    disabled={!launcher.available}
+                    title={
+                      launcher.available
+                        ? launcher.name
+                        : "Not installed or not found"
+                    }
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] transition-colors duration-100",
+                      launcher.available
+                        ? "text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                        : "cursor-not-allowed text-(--color-text-muted) opacity-55",
+                    )}
                   >
                     <KindIcon kind={launcher.kind} />
                     <span className="leading-none">{launcher.name}</span>

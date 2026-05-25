@@ -41,6 +41,7 @@ impl serde::Serialize for SessionTerminalError {
 #[tauri::command]
 pub async fn start_session_terminal(
     cwd: String,
+    initial_command: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
     on_event: Channel<PtyEvent>,
@@ -51,11 +52,9 @@ pub async fn start_session_terminal(
     let session_id = Uuid::new_v4().to_string();
     let key = pty_id(&session_id);
 
-    // Pass None/None to TaskRuntime::spawn so it just runs the user's
-    // login shell (PtyHandle::spawn handles `$SHELL` resolution).
     let handle = runtime.spawn(
         key.clone(),
-        None,
+        initial_command,
         None,
         PathBuf::from(cwd),
         rows.unwrap_or(24),

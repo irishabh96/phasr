@@ -1,8 +1,13 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { PanelLeft, PanelLeftClose, Plus } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  PanelLeft,
+  PanelLeftClose,
+  Plus,
+} from "lucide-react";
 import { RepositorySidebarMenu } from "@/components/RepositorySidebarMenu";
 import { WorkspaceSidebarMenu } from "@/components/WorkspaceSidebarMenu";
-import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
@@ -16,8 +21,10 @@ export function AppSidebar() {
   const toggleSidebarPin = useUiStore((s) => s.toggleSidebarPin);
   const repositories = useRepositories();
   const params = useParams({ strict: false });
-  const activeRepoId = (params as { repositoryId?: string }).repositoryId ?? null;
-  const activeWorkspaceId = (params as { workspaceId?: string }).workspaceId ?? null;
+  const activeRepoId =
+    (params as { repositoryId?: string }).repositoryId ?? null;
+  const activeWorkspaceId =
+    (params as { workspaceId?: string }).workspaceId ?? null;
 
   if (sidebarMode === "hidden") return null;
 
@@ -64,30 +71,42 @@ function RepoBlock({
   activeWorkspaceId: string | null;
 }) {
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
-  const navigateToRepoEntry = useNavigateToRepoEntry();
+  const workspaceExpanded = useUiStore(
+    (s) => s.repoWorkspaceExpanded[repo.id] ?? true,
+  );
+  const toggleWorkspaceExpanded = useUiStore(
+    (s) => s.toggleRepoWorkspaceExpanded,
+  );
   const initial = repo.name.charAt(0).toUpperCase();
+  const ExpandIcon = workspaceExpanded ? ChevronDown : ChevronRight;
 
   return (
     <div className="flex flex-col">
       <RepositorySidebarMenu repository={repo}>
         <div
+          onClick={() => toggleWorkspaceExpanded(repo.id)}
           className={cn(
-            "group/repo flex h-[38px] items-center rounded-[10px]",
+            "group/repo flex h-[38px] cursor-pointer items-center rounded-[10px]",
             isExpanded ? "pl-3 pr-1" : "justify-center",
-            "transition-colors duration-150",
+            "outline-none transition-colors duration-150",
             "hover:bg-(--color-bg-hover)",
-            isActive && "bg-[color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
+            "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
+            "data-[state=open]:bg-(--color-bg-elevated)",
+            isActive &&
+              "bg-[color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
           )}
         >
-          <button
-            type="button"
-            onClick={() => void navigateToRepoEntry(repo.id)}
+          <div
             className={cn(
               "flex min-w-0 flex-1 items-center text-left",
               isExpanded ? "" : "justify-center",
             )}
           >
-            <GlassTooltip content={repo.name} side="right" disabled={isExpanded}>
+            <GlassTooltip
+              content={repo.name}
+              side="right"
+              disabled={isExpanded}
+            >
               <span
                 className={cn(
                   "flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px]",
@@ -105,32 +124,59 @@ function RepoBlock({
               <span
                 className={cn(
                   "ml-2.5 min-w-0 flex-1 truncate text-[14px] font-medium leading-none",
-                  isActive ? "text-(--color-text-primary)" : "text-(--color-text-secondary)",
+                  isActive
+                    ? "text-(--color-text-primary)"
+                    : "text-(--color-text-secondary)",
                 )}
               >
                 {repo.name}
               </span>
             )}
-          </button>
+          </div>
           {isExpanded && (
-            <GlassTooltip content="New workspace (⌘N)" side="right">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  requestNewWorkspace(repo.id);
-                }}
-                title="New workspace"
-                aria-label={`New workspace in ${repo.name}`}
-                className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) opacity-0 transition-all duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary) group-hover/repo:opacity-100 focus-visible:opacity-100"
+            <>
+              <GlassTooltip
+                content={
+                  workspaceExpanded ? "Hide workspaces" : "Show workspaces"
+                }
+                side="right"
               >
-                <Plus size={12} />
-              </button>
-            </GlassTooltip>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    toggleWorkspaceExpanded(repo.id);
+                  }}
+                  title={
+                    workspaceExpanded ? "Hide workspaces" : "Show workspaces"
+                  }
+                  aria-label={`${workspaceExpanded ? "Hide" : "Show"} workspaces in ${repo.name}`}
+                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary)"
+                >
+                  <ExpandIcon size={12} />
+                </button>
+              </GlassTooltip>
+              <GlassTooltip content="New workspace (⌘N)" side="right">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    requestNewWorkspace(repo.id);
+                  }}
+                  title="New workspace"
+                  aria-label={`New workspace in ${repo.name}`}
+                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) opacity-0 transition-all duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary) group-hover/repo:opacity-100 focus-visible:opacity-100"
+                >
+                  <Plus size={12} />
+                </button>
+              </GlassTooltip>
+            </>
           )}
         </div>
       </RepositorySidebarMenu>
-      {isActive && (
+      {workspaceExpanded && (
         <RepoWorkspaces
           repoId={repo.id}
           activeWorkspaceId={activeWorkspaceId}
@@ -151,11 +197,13 @@ function RepoWorkspaces({
   isExpanded: boolean;
 }) {
   const workspaces = useWorkspaces(repoId);
-  const openWorkspaceTabs = useUiStore((s) => s.innerTabs);
-  const visibleWorkspaces = (workspaces.data ?? []).filter((ws) => {
-    const tabState = openWorkspaceTabs[ws.id];
-    return (tabState?.tabs.length ?? 0) > 0;
-  });
+  const visibleWorkspaces = [...(workspaces.data ?? [])]
+    .filter((ws) => ws.status !== "archived")
+    .sort((a, b) => {
+      if (a.workspaceKind !== b.workspaceKind)
+        return a.workspaceKind === "local" ? -1 : 1;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
 
   if (!visibleWorkspaces.length) return null;
 
@@ -163,7 +211,9 @@ function RepoWorkspaces({
     <div
       className={cn(
         "mt-1.5 flex flex-col gap-0.5",
-        isExpanded ? "ml-3.5 border-l border-(--glass-border-hairline) pl-2" : "items-center",
+        isExpanded
+          ? "ml-3.5 border-l border-(--glass-border-hairline) pl-2"
+          : "items-center",
       )}
     >
       {visibleWorkspaces.map((ws) => (
@@ -197,7 +247,9 @@ function WorkspaceLink({
         params={{ repositoryId: repoId, workspaceId: ws.id }}
         className={cn(
           "flex items-center rounded-[8px]",
-          isExpanded ? "min-h-[36px] w-full px-2 py-1" : "h-7 w-7 justify-center",
+          isExpanded
+            ? "min-h-[36px] w-full px-2 py-1"
+            : "h-7 w-7 justify-center",
           "transition-colors duration-150",
           "hover:bg-(--color-bg-elevated)",
           active && "bg-(--color-bg-elevated)",
@@ -213,7 +265,9 @@ function WorkspaceLink({
             <span
               className={cn(
                 "truncate text-left text-[13px] leading-none",
-                active ? "text-(--color-text-primary)" : "text-(--color-text-secondary)",
+                active
+                  ? "text-(--color-text-primary)"
+                  : "text-(--color-text-secondary)",
               )}
             >
               {ws.name}

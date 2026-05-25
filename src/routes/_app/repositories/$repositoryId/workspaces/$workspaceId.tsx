@@ -10,6 +10,7 @@ import { WorkspaceRightSidebar } from "@/components/WorkspaceRightSidebar";
 import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
 import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
+import { WorkspaceAgentToolbar } from "@/components/WorkspaceAgentToolbar";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
 import { useGitStatus } from "@/lib/hooks/useGit";
@@ -24,7 +25,9 @@ function WorkspaceDetail() {
   const { data: changes } = useGitStatus(workspaceId);
   const rightPanelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
-  const setActiveWorkspaceContext = useUiStore((s) => s.setActiveWorkspaceContext);
+  const setActiveWorkspaceContext = useUiStore(
+    (s) => s.setActiveWorkspaceContext,
+  );
   const ensureInnerTabs = useUiStore((s) => s.ensureInnerTabs);
   const runPanel = useUiStore((s) => s.runPanel);
   const { data: runCommands } = useRunCommands(repositoryId);
@@ -72,7 +75,9 @@ function WorkspaceDetail() {
   }, [runCommands, runPanel]);
 
   const refresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["workspaces", "detail", workspaceId] });
+    queryClient.invalidateQueries({
+      queryKey: ["workspaces", "detail", workspaceId],
+    });
     queryClient.invalidateQueries({
       queryKey: ["workspaces", "repository", repositoryId],
     });
@@ -90,25 +95,34 @@ function WorkspaceDetail() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-[var(--layout-header-height)] shrink-0 items-center gap-3 border-b border-(--color-border-subtle) pl-4 pr-2">
-        <div className="flex shrink-0 items-center gap-2">
-          {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
+      <header className="flex shrink-0 flex-col border-b border-(--color-border-subtle)">
+        <div className="flex h-[var(--layout-header-height)] items-center gap-3 pl-4 pr-2">
+          <div className="flex shrink-0 items-center gap-2">
+            {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
+          </div>
+          <WorkspaceInnerTabBar workspaceId={workspaceId} />
+          <div className="flex shrink-0 items-center gap-1">
+            <PinnedRunCommandsToolbar repositoryId={repositoryId} />
+            <RunCommandPicker repositoryId={repositoryId} />
+            {workspace.worktreePath && workspace.workspaceKind !== "local" && (
+              <SyncButton workspaceId={workspaceId} />
+            )}
+            {workspace.worktreePath && (
+              <OpenInMenu path={workspace.worktreePath} />
+            )}
+            {workspace.worktreePath && (
+              <ChangesToggle
+                count={changeCount}
+                collapsed={rightPanelCollapsed}
+                onToggle={toggleRightPanel}
+              />
+            )}
+            <WorkspaceActionsMenu workspace={workspace} />
+          </div>
         </div>
-        <WorkspaceInnerTabBar workspaceId={workspaceId} />
-        <div className="flex shrink-0 items-center gap-1">
-          <PinnedRunCommandsToolbar repositoryId={repositoryId} />
-          <RunCommandPicker repositoryId={repositoryId} />
-          {workspace.worktreePath && <SyncButton workspaceId={workspaceId} />}
-          {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
-          {workspace.worktreePath && (
-            <ChangesToggle
-              count={changeCount}
-              collapsed={rightPanelCollapsed}
-              onToggle={toggleRightPanel}
-            />
-          )}
-          <WorkspaceActionsMenu workspace={workspace} />
-        </div>
+        {workspace.worktreePath && (
+          <WorkspaceAgentToolbar workspaceId={workspaceId} />
+        )}
       </header>
 
       <div className="flex min-h-0 flex-1">

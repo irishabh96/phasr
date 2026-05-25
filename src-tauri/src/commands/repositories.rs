@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::Repository;
+use crate::domain::{Repository, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::git::{self, GitError};
 use crate::orchestrator::TaskOrchestrator;
 use crate::pty::TaskRuntime;
@@ -74,6 +74,7 @@ pub struct UpdateRepositoryInput {
 pub async fn create_repository(
     input: CreateRepositoryInput,
     repo: State<'_, RepositoryRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
@@ -116,6 +117,7 @@ pub async fn create_repository(
 
     repo.insert_for_user(&repository, &current_session.user_id)
         .await?;
+    ensure_local_workspace(&repository, &workspaces, Some(&current_session.user_id)).await?;
     Ok(repository)
 }
 
@@ -143,16 +145,19 @@ pub async fn update_repository(
     id: String,
     input: UpdateRepositoryInput,
     repo: State<'_, RepositoryRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
-    session.require()?;
+    let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let patch = RepositoryUpdate {
         name: input.name,
         remote_url: input.remote_url.map(Some),
         local_path: input.local_path.map(Some),
         default_branch: input.default_branch,
     };
-    Ok(repo.update(&id, patch).await?)
+    let repository = repo.update(&id, patch).await?;
+    ensure_local_workspace(&repository, &workspaces, Some(&current_session.user_id)).await?;
+    Ok(repository)
 }
 
 #[tauri::command]
@@ -190,6 +195,9 @@ pub async fn delete_repository(
     //    to plain `rm -rf` on the worktree path so the dir doesn't
     //    linger on disk.
     for ws in &owned_workspaces {
+        if ws.workspace_kind.is_local() {
+            continue;
+        }
         let Some(path) = ws.worktree_path.as_deref() else {
             continue;
         };
@@ -347,4 +355,40 @@ pub async fn list_local_branches(
 ) -> Result<Vec<String>, RepositoryCmdError> {
     session.require()?;
     Ok(git::list_local_branches(std::path::Path::new(&path))?)
+}
+
+async fn ensure_local_workspace(
+    repository: &Repository,
+    workspaces: &WorkspaceRepo,
+    user_id: Option<&str>,
+) -> Result<Option<Workspace>, RepositoryCmdError> {
+    let Some(local_path) = repository.local_path.as_deref() else {
+        return Ok(None);
+    };
+    if local_path.trim().is_empty() {
+        return Ok(None);
+    }
+    if let Some(existing) = workspaces.get_local_by_repository(&repository.id).await? {
+        return Ok(Some(existing));
+    }
+
+    let path = std::path::Path::new(local_path);
+    let branch = if path.exists() && path.join(".git").exists() {
+        git::get_default_branch(path)
+    } else {
+        None
+    };
+
+    let mut workspace = Workspace::new(repository.id.clone(), "local".into(), String::new());
+    workspace.workspace_kind = WorkspaceKind::Local;
+    workspace.status = WorkspaceStatus::Stopped;
+    workspace.branch = branch;
+    workspace.worktree_path = Some(local_path.to_string());
+
+    if let Some(user_id) = user_id {
+        workspaces.insert_for_user(&workspace, user_id).await?;
+    } else {
+        workspaces.insert(&workspace).await?;
+    }
+    Ok(Some(workspace))
 }

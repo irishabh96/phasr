@@ -649,7 +649,7 @@ async fn dirty_workspace_rows(
         "SELECT id, repository_id, name, prompt, command, status, branch, worktree_path,
                 exit_code, created_at, started_at, finished_at, archived_at, updated_at
          FROM workspaces
-         WHERE dirty = 1 AND user_id = ?",
+         WHERE dirty = 1 AND user_id = ? AND workspace_kind = 'agent'",
     )
     .bind(user_id)
     .fetch_all(db)

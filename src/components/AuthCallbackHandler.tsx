@@ -77,27 +77,37 @@ export function AuthCallbackHandler() {
         }
 
         const handshake = callback.searchParams.get("__clerk_handshake");
-        if (!handshake) {
-          throw new Error("Clerk browser callback did not include Clerk login data.");
-        }
 
-        const result = applyClerkHandshakeCookies(handshake);
-        expectedCookieNames = result.cookies.map((cookie) => cookie.name);
-        storedCookieNames = result.storedCookieNames;
+        if (handshake) {
+          const result = applyClerkHandshakeCookies(handshake);
+          expectedCookieNames = result.cookies.map((cookie) => cookie.name);
+          storedCookieNames = result.storedCookieNames;
 
-        if (storedCookieNames.length !== expectedCookieNames.length) {
-          captureAuthWarning("Clerk handshake cookies were not persisted", {
-            callbackKind: "clerk_handshake",
-            errorCode: AUTH_ERROR_CODES.HANDSHAKE_COOKIE_WRITE_FAILED,
+          if (storedCookieNames.length !== expectedCookieNames.length) {
+            captureAuthWarning("Clerk handshake cookies were not persisted", {
+              callbackKind: "clerk_handshake",
+              errorCode: AUTH_ERROR_CODES.HANDSHAKE_COOKIE_WRITE_FAILED,
+              origin: window.location.origin,
+              protocol: window.location.protocol,
+              expectedCookieNames,
+              storedCookieNames,
+            });
+          }
+
+          if (!handshakeCookieValue(result.cookies, "__session")) {
+            throw new Error("Clerk handshake did not include a session token.");
+          }
+        } else {
+          // Clerk skips __clerk_handshake when the user's default browser
+          // already has a valid Clerk session. The webview won't have session
+          // cookies yet, but resolveSignedInClerkSession will activate the
+          // completed sign-in attempt explicitly via clerk.setActive().
+          captureAuthWarning("Clerk callback missing handshake — attempting session recovery", {
+            callbackKind: "clerk_handshake_missing",
+            errorCode: AUTH_ERROR_CODES.HANDSHAKE_CALLBACK_MISSING,
             origin: window.location.origin,
             protocol: window.location.protocol,
-            expectedCookieNames,
-            storedCookieNames,
           });
-        }
-
-        if (!handshakeCookieValue(result.cookies, "__session")) {
-          throw new Error("Clerk handshake did not include a session token.");
         }
 
         const session = await createDesktopSessionFromClerk(

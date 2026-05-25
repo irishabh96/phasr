@@ -309,6 +309,11 @@ pub async fn check_workspace_delete(
 ) -> Result<WorkspaceDeleteCheck, WorkspaceCmdError> {
     session.require()?;
     let workspace = workspaces.get(&id).await?;
+    if workspace.workspace_kind.is_local() {
+        return Ok(WorkspaceDeleteCheck {
+            has_unpushed_commits: false,
+        });
+    }
     let Some(branch) = workspace.branch.as_deref() else {
         return Ok(WorkspaceDeleteCheck {
             has_unpushed_commits: false,
@@ -346,6 +351,9 @@ pub async fn delete_workspace(
                 let _ = handle.kill();
                 runtime.drop_task(&workspace.id);
             }
+        }
+        if workspace.workspace_kind.is_local() {
+            return Ok(repo.delete(&id).await?);
         }
         if let Ok(repository) = repositories.get(&workspace.repository_id).await {
             if let Some(repo_path) = repository.local_path.as_deref() {
