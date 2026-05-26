@@ -1,7 +1,7 @@
 {
   "name": "phasr",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "format": "prettier --write .",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "gen:dmg-background": "swift scripts/generate-dmg-background.swift src-tauri/icons/dmg-background.png"
   },
   "dependencies": {
     "@clerk/react": "^6.6.6",
