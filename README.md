@@ -12,10 +12,6 @@ worktrees, live terminal streaming, and an integrated git workflow.
 
 ![Workspace — agent terminal with live streaming output](docs/screenshots/workspace.png)
 
-![File viewer](docs/screenshots/file.png)
-
-![File search](docs/screenshots/search.png)
-
 ## Install (macOS, Apple Silicon)
 
 1. Grab the latest DMG from [Releases](https://github.com/irishabh96/phasr/releases) — look for `Phasr_<version>_aarch64.dmg`.
