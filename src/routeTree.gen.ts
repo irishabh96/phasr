@@ -18,6 +18,7 @@ import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppNewProjectRouteImport } from './routes/_app/new-project'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
+import { Route as AppSettingsRepositoriesRouteImport } from './routes/_app/settings/repositories'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app/settings/appearance'
 import { Route as AppSettingsAgentsRouteImport } from './routes/_app/settings/agents'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app/settings/account'
@@ -68,6 +69,11 @@ const AppNewProjectRoute = AppNewProjectRouteImport.update({
 const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsRepositoriesRoute = AppSettingsRepositoriesRouteImport.update({
+  id: '/repositories',
+  path: '/repositories',
   getParentRoute: () => AppSettingsRoute,
 } as any)
 const AppSettingsAppearanceRoute = AppSettingsAppearanceRouteImport.update({
@@ -121,6 +127,7 @@ export interface FileRoutesByFullPath {
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/repositories': typeof AppSettingsRepositoriesRoute
   '/settings/': typeof AppSettingsIndexRoute
   '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
@@ -137,6 +144,7 @@ export interface FileRoutesByTo {
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/repositories': typeof AppSettingsRepositoriesRoute
   '/settings': typeof AppSettingsIndexRoute
   '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/repositories/$repositoryId': typeof AppRepositoriesRepositoryIdIndexRoute
@@ -156,6 +164,7 @@ export interface FileRoutesById {
   '/_app/settings/account': typeof AppSettingsAccountRoute
   '/_app/settings/agents': typeof AppSettingsAgentsRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/_app/settings/repositories': typeof AppSettingsRepositoriesRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/_app/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
@@ -175,6 +184,7 @@ export interface FileRouteTypes {
     | '/settings/account'
     | '/settings/agents'
     | '/settings/appearance'
+    | '/settings/repositories'
     | '/settings/'
     | '/repositories/$repositoryId/settings'
     | '/repositories/$repositoryId/'
@@ -191,6 +201,7 @@ export interface FileRouteTypes {
     | '/settings/account'
     | '/settings/agents'
     | '/settings/appearance'
+    | '/settings/repositories'
     | '/settings'
     | '/repositories/$repositoryId/settings'
     | '/repositories/$repositoryId'
@@ -209,6 +220,7 @@ export interface FileRouteTypes {
     | '/_app/settings/account'
     | '/_app/settings/agents'
     | '/_app/settings/appearance'
+    | '/_app/settings/repositories'
     | '/_app/settings/'
     | '/_app/repositories/$repositoryId/settings'
     | '/_app/repositories/$repositoryId/'
@@ -286,6 +298,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsIndexRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/settings/repositories': {
+      id: '/_app/settings/repositories'
+      path: '/repositories'
+      fullPath: '/settings/repositories'
+      preLoaderRoute: typeof AppSettingsRepositoriesRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/settings/appearance': {
       id: '/_app/settings/appearance'
       path: '/appearance'
@@ -342,6 +361,7 @@ interface AppSettingsRouteChildren {
   AppSettingsAccountRoute: typeof AppSettingsAccountRoute
   AppSettingsAgentsRoute: typeof AppSettingsAgentsRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
+  AppSettingsRepositoriesRoute: typeof AppSettingsRepositoriesRoute
   AppSettingsIndexRoute: typeof AppSettingsIndexRoute
 }
 
@@ -349,6 +369,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAccountRoute: AppSettingsAccountRoute,
   AppSettingsAgentsRoute: AppSettingsAgentsRoute,
   AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
+  AppSettingsRepositoriesRoute: AppSettingsRepositoriesRoute,
   AppSettingsIndexRoute: AppSettingsIndexRoute,
 }
 

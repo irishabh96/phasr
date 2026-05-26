@@ -8,6 +8,14 @@ worktrees, live terminal streaming, and an integrated git workflow.
 
 > Pre-1.0, macOS (Apple Silicon) only. Builds are unsigned for now (see Install below). Intel Mac support isn't planned for pre-1.0.
 
+## Screenshots
+
+![Workspace — agent terminal with live streaming output](docs/screenshots/workspace.png)
+
+![File viewer](docs/screenshots/file.png)
+
+![File search](docs/screenshots/search.png)
+
 ## Install (macOS, Apple Silicon)
 
 1. Grab the latest DMG from [Releases](https://github.com/irishabh96/phasr/releases) — look for `Phasr_<version>_aarch64.dmg`.

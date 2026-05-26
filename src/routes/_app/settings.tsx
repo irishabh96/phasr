@@ -1,5 +1,5 @@
 import { Link, Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
-import { ArrowLeft, Bot, Palette, UserCircle } from "lucide-react";
+import { ArrowLeft, Bot, FolderGit2, Palette, UserCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -12,6 +12,7 @@ const NAV: NavItem[] = [
   { label: "Account", to: "/settings/account", icon: <UserCircle size={13} /> },
   { label: "Appearance", to: "/settings/appearance", icon: <Palette size={13} /> },
   { label: "Agents", to: "/settings/agents", icon: <Bot size={13} /> },
+  { label: "Run commands", to: "/settings/repositories", icon: <FolderGit2 size={13} /> },
 ];
 
 function SettingsLayout() {

@@ -65,6 +65,11 @@ function AppShell() {
   // edits to a binding live there, not here.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (matchShortcut(e, SHORTCUTS.openSettings)) {
+        e.preventDefault();
+        void navigate({ to: "/settings/account" });
+        return;
+      }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarHide)) {
         e.preventDefault();
         toggleSidebarHidden();
