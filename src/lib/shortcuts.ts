@@ -32,6 +32,12 @@ export interface Shortcut {
 
 export const SHORTCUTS = {
   // App
+  openSettings: {
+    key: ",",
+    meta: true,
+    display: ["⌘", ","],
+    label: "Open settings",
+  },
   togglePalette: {
     key: "k",
     meta: true,
