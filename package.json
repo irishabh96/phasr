@@ -2,6 +2,7 @@
   "name": "phasr",
   "private": true,
   "version": "0.2.2",
+  "author": "Rishabh Bhatia <irishabh96@gmail.com>",
   "type": "module",
   "scripts": {
     "dev": "vite",

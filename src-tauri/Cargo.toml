@@ -2,7 +2,7 @@
 name = "phasr"
 version = "0.2.2"
 description = "Phasr — run multiple coding agents in parallel, each in an isolated git worktree."
-authors = ["Phasr"]
+authors = ["Rishabh Bhatia <irishabh96@gmail.com>"]
 edition = "2021"
 
 [lib]
