@@ -18,6 +18,7 @@ use crate::orchestrator::{
     OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
 };
 use crate::pty::PtyEvent;
+use crate::sync::CloudSyncState;
 
 /// Tauri event name on which task status transitions are broadcast.
 pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
@@ -50,6 +51,7 @@ pub async fn start_task(
     input: StartTaskInput,
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<StartedTask, OrchestratorError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let request = StartTaskRequest {
@@ -63,7 +65,9 @@ pub async fn start_task(
         rows: input.rows,
         cols: input.cols,
     };
-    orchestrator.start_task(request).await
+    let started = orchestrator.start_task(request).await?;
+    sync_state.request_sync();
+    Ok(started)
 }
 
 #[tauri::command]

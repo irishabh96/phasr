@@ -12,12 +12,16 @@ use sqlx::Row;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
+use tokio::sync::Notify;
 
 use crate::auth::{AuthError, SessionState};
 use crate::domain::{Repository, UserSettings};
 use crate::store::Db;
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(30);
+/// After a mutation trigger, wait briefly so a burst of related writes
+/// (e.g. create repo + its local workspace) ride a single sync cycle.
+const SYNC_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Error)]
 pub enum SyncError {
@@ -55,6 +59,9 @@ impl From<sqlx::Error> for SyncError {
 #[derive(Default)]
 pub struct CloudSyncState {
     handle: Mutex<Option<JoinHandle<()>>>,
+    /// Signalled by mutating commands so the worker runs a sync cycle
+    /// immediately instead of waiting for the next `SYNC_INTERVAL` tick.
+    trigger: Arc<Notify>,
 }
 
 impl CloudSyncState {
@@ -70,6 +77,13 @@ impl CloudSyncState {
         if let Some(existing) = self.handle.lock().take() {
             existing.abort();
         }
+    }
+
+    /// Ask the running sync worker to push/pull now. Coalesces a burst of
+    /// calls into at most one extra cycle (`Notify::notify_one` stores a
+    /// single permit). A no-op-but-safe park if no worker is running yet.
+    pub fn request_sync(&self) {
+        self.trigger.notify_one();
     }
 }
 
@@ -128,6 +142,7 @@ pub async fn start_cloud_sync(
     let client = SupabaseRestClient::new(config, session.user_id, session.jwt)?;
     let db = db.inner().clone();
     let app_for_loop = app.clone();
+    let trigger = sync_state.trigger.clone();
 
     let handle = tauri::async_runtime::spawn(async move {
         loop {
@@ -139,7 +154,15 @@ pub async fn start_cloud_sync(
                     let _ = app_for_loop.emit("cloud-sync-error", err.to_string());
                 }
             }
-            tokio::time::sleep(SYNC_INTERVAL).await;
+            // Wake on the periodic sweep OR an explicit mutation trigger,
+            // whichever comes first. A short debounce coalesces a burst of
+            // mutations into a single follow-up cycle.
+            tokio::select! {
+                _ = tokio::time::sleep(SYNC_INTERVAL) => {}
+                _ = trigger.notified() => {
+                    tokio::time::sleep(SYNC_DEBOUNCE).await;
+                }
+            }
         }
     });
 
@@ -234,12 +257,17 @@ impl SupabaseRestClient {
         self.ensure_success(response).await
     }
 
-    async fn delete_by_id(&self, table: &str, id: &str) -> Result<(), SyncError> {
+    /// PATCH an existing row by id. Unlike `upsert` this never inserts,
+    /// so it's the right verb for writing a soft-delete tombstone onto a
+    /// row that already exists in the cloud.
+    async fn patch_by_id(&self, table: &str, id: &str, payload: Value) -> Result<(), SyncError> {
         let path = format!("/rest/v1/{table}?id=eq.{id}");
         let response = self
             .http
-            .delete(self.url(&path))
-            .headers(self.headers(false))
+            .patch(self.url(&path))
+            .headers(self.headers(true))
+            .header("Prefer", "return=minimal")
+            .json(&payload)
             .send()
             .await
             .map_err(|err| SyncError::Request(err.to_string()))?;
@@ -304,6 +332,8 @@ struct CloudRepositoryRow {
     default_branch: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    #[serde(default)]
+    deleted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -398,7 +428,7 @@ async fn push_dirty_users(client: &SupabaseRestClient, db: &Db) -> Result<(), Sy
 
 async fn push_repository_deletes(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
     let rows = sqlx::query(
-        "SELECT id FROM repositories
+        "SELECT id, deleted_at, updated_at FROM repositories
              WHERE deleted_at IS NOT NULL AND dirty = 1 AND user_id = ?",
     )
     .bind(&client.user_id)
@@ -406,7 +436,19 @@ async fn push_repository_deletes(client: &SupabaseRestClient, db: &Db) -> Result
     .await?;
     for row in rows {
         let id: String = row.try_get("id")?;
-        client.delete_by_id("repositories", &id).await?;
+        // Soft-delete in the cloud too: PATCH the tombstone onto the
+        // existing row instead of removing it, so the repo (and its
+        // children) are preserved remotely.
+        client
+            .patch_by_id(
+                "repositories",
+                &id,
+                json!({
+                    "deleted_at": row.try_get::<String, _>("deleted_at")?,
+                    "updated_at": row.try_get::<String, _>("updated_at")?,
+                }),
+            )
+            .await?;
         mark_synced(db, "repositories", &id).await?;
     }
     Ok(())
@@ -428,6 +470,34 @@ async fn upsert_repository_from_cloud(
     row: &CloudRepositoryRow,
 ) -> Result<(), SyncError> {
     if repository_is_soft_deleted(db, &row.id, &client.user_id).await? {
+        return Ok(());
+    }
+
+    // Cloud tombstone: the repo was soft-deleted on another device.
+    // Mirror it locally (hard-delete children, set deleted_at, clear
+    // dirty) if we still have a live row, then stop — never resurrect it.
+    if row.deleted_at.is_some() {
+        if get_repository_row(db, &row.id, &client.user_id).await?.is_some() {
+            let mut tx = db.begin().await?;
+            for child in ["run_commands", "repository_config", "workspaces"] {
+                sqlx::query(&format!("DELETE FROM {child} WHERE repository_id = ?"))
+                    .bind(&row.id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            sqlx::query(
+                "UPDATE repositories
+                    SET deleted_at = ?, updated_at = ?, synced_at = ?, dirty = 0
+                  WHERE id = ?",
+            )
+            .bind(row.deleted_at.map(|d| d.to_rfc3339()))
+            .bind(row.updated_at.to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .bind(&row.id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
         return Ok(());
     }
 
@@ -1281,6 +1351,7 @@ mod tests {
                 default_branch: "main".into(),
                 created_at: now,
                 updated_at: now,
+                deleted_at: None,
             },
         )
         .await
@@ -1525,5 +1596,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(dirty, 0);
+    }
+
+    #[tokio::test]
+    async fn request_sync_signals_the_worker() {
+        let state = CloudSyncState::default();
+        // notify_one parks a permit even with no waiter yet…
+        state.request_sync();
+        // …which the worker's next `notified()` consumes immediately.
+        tokio::time::timeout(Duration::from_millis(100), state.trigger.notified())
+            .await
+            .expect("request_sync should wake a waiter");
+    }
+
+    #[tokio::test]
+    async fn push_repository_delete_soft_deletes_in_cloud() {
+        use wiremock::matchers::{body_string_contains, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 1).await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE repositories SET deleted_at = ?, dirty = 1 WHERE id = 'repo-a'")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // A hard DELETE would be the old, wrong behavior.
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/rest/v1/repositories"))
+            .and(query_param("id", "eq.repo-a"))
+            .and(body_string_contains("deleted_at"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        push_repository_deletes(&client, &db).await.unwrap();
+
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM repositories WHERE id = 'repo-a'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
+    }
+
+    #[tokio::test]
+    async fn pull_cloud_tombstone_soft_deletes_local_repo_and_children() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+
+        // No HTTP in the tombstone path, so the dummy URL is never hit.
+        let client = client_at("user-a", "http://127.0.0.1:1");
+        let now = Utc::now();
+        upsert_repository_from_cloud(
+            &client,
+            &db,
+            &CloudRepositoryRow {
+                id: "repo-a".into(),
+                name: "R".into(),
+                remote_url: None,
+                local_paths: HashMap::new(),
+                default_branch: "main".into(),
+                created_at: now,
+                updated_at: now,
+                deleted_at: Some(now),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Local repo is tombstoned (hidden) and its child workspace is gone.
+        let live: Option<String> =
+            sqlx::query_scalar("SELECT id FROM repositories WHERE id='repo-a' AND deleted_at IS NULL")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(live.is_none());
+        let tomb: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM repositories WHERE id='repo-a' AND deleted_at IS NOT NULL",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap();
+        assert!(tomb.is_some());
+        let ws_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces WHERE id='ws-a'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(ws_count, 0);
     }
 }

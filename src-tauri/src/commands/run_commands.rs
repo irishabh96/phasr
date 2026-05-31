@@ -16,6 +16,7 @@ use crate::auth::{AuthError, SessionState};
 use crate::domain::RunCommand;
 use crate::pty::{PtyEvent, TaskRuntime};
 use crate::store::{RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError};
+use crate::sync::CloudSyncState;
 
 /// Prefix every running PTY id with this so they never collide with
 /// workspace UUIDs in the `TaskRuntime` map.
@@ -86,12 +87,14 @@ pub async fn create_run_command(
     input: CreateRunCommandInput,
     repo: State<'_, RunCommandRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<RunCommand, RunCommandError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let mut rc = RunCommand::new(input.repository_id, input.name, input.command);
     rc.shortcut = input.shortcut;
     rc.pinned = input.pinned.unwrap_or(false);
     repo.insert_for_user(&rc, &current_session.user_id).await?;
+    sync_state.request_sync();
     Ok(rc)
 }
 
@@ -111,6 +114,7 @@ pub async fn update_run_command(
     input: UpdateRunCommandInput,
     repo: State<'_, RunCommandRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<RunCommand, RunCommandError> {
     session.require()?;
     let patch = RunCommandUpdate {
@@ -120,7 +124,9 @@ pub async fn update_run_command(
         pinned: input.pinned,
         sort_order: input.sort_order,
     };
-    Ok(repo.update(&id, patch).await?)
+    let run_command = repo.update(&id, patch).await?;
+    sync_state.request_sync();
+    Ok(run_command)
 }
 
 #[tauri::command]
@@ -129,6 +135,7 @@ pub async fn delete_run_command(
     repo: State<'_, RunCommandRepo>,
     runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RunCommandError> {
     session.require()?;
     // Kill the PTY if it's still running so the row deletion doesn't
@@ -138,6 +145,7 @@ pub async fn delete_run_command(
         runtime.drop_task(&pty_id(&id));
     }
     repo.delete(&id).await?;
+    sync_state.request_sync();
     Ok(())
 }
 

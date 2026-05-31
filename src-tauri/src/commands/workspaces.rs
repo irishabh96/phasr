@@ -10,6 +10,7 @@ use crate::fswatch::WorktreeWatchRegistry;
 use crate::git;
 use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
+use crate::sync::CloudSyncState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +111,7 @@ pub async fn create_workspace(
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let repository = repositories.get(&input.repository_id).await?;
@@ -141,6 +143,7 @@ pub async fn create_workspace(
     workspaces
         .insert_for_user(&workspace, &current_session.user_id)
         .await?;
+    sync_state.request_sync();
     Ok(workspace)
 }
 
@@ -170,6 +173,7 @@ pub async fn update_workspace(
     input: UpdateWorkspaceInput,
     repo: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
     session.require()?;
     let patch = WorkspaceUpdate {
@@ -187,7 +191,9 @@ pub async fn update_workspace(
         exit_code: input.exit_code.map(Some),
         ..Default::default()
     };
-    Ok(repo.update(&id, patch).await?)
+    let workspace = repo.update(&id, patch).await?;
+    sync_state.request_sync();
+    Ok(workspace)
 }
 
 #[tauri::command]
@@ -197,6 +203,7 @@ pub async fn archive_workspace(
     repo: State<'_, WorkspaceRepo>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<crate::domain::Workspace, WorkspaceCmdError> {
     session.require()?;
     // Stop the PTY if it's running so the status flip doesn't race
@@ -217,7 +224,9 @@ pub async fn archive_workspace(
         archived_at: Some(Some(now)),
         ..Default::default()
     };
-    Ok(repo.update(&id, patch).await?)
+    let workspace = repo.update(&id, patch).await?;
+    sync_state.request_sync();
+    Ok(workspace)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -347,6 +356,7 @@ pub async fn delete_workspace(
     repositories: State<'_, RepositoryRepo>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), WorkspaceCmdError> {
     session.require()?;
     watchers.stop(&id);
@@ -375,5 +385,7 @@ pub async fn delete_workspace(
         }
     }
 
-    Ok(repo.delete(&id).await?)
+    repo.delete(&id).await?;
+    sync_state.request_sync();
+    Ok(())
 }

@@ -9,6 +9,7 @@ use crate::git::{self, GitError};
 use crate::orchestrator::TaskOrchestrator;
 use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError, WorkspaceRepo};
+use crate::sync::CloudSyncState;
 
 #[derive(Debug)]
 pub enum RepositoryCmdError {
@@ -76,6 +77,7 @@ pub async fn create_repository(
     repo: State<'_, RepositoryRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Repository, RepositoryCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     // Idempotent: same canonical path returns the existing row.
@@ -118,6 +120,7 @@ pub async fn create_repository(
     repo.insert_for_user(&repository, &current_session.user_id)
         .await?;
     ensure_local_workspace(&repository, &workspaces, Some(&current_session.user_id)).await?;
+    sync_state.request_sync();
     Ok(repository)
 }
 
@@ -147,6 +150,7 @@ pub async fn update_repository(
     repo: State<'_, RepositoryRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Repository, RepositoryCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let patch = RepositoryUpdate {
@@ -157,6 +161,7 @@ pub async fn update_repository(
     };
     let repository = repo.update(&id, patch).await?;
     ensure_local_workspace(&repository, &workspaces, Some(&current_session.user_id)).await?;
+    sync_state.request_sync();
     Ok(repository)
 }
 
@@ -168,6 +173,7 @@ pub async fn delete_repository(
     orchestrator: State<'_, TaskOrchestrator>,
     runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RepositoryCmdError> {
     session.require()?;
 
@@ -217,6 +223,7 @@ pub async fn delete_repository(
     // 3. Soft-delete the parent + hard-delete children in one tx
     //    (handled inside RepositoryRepo::delete).
     repo.delete(&id).await?;
+    sync_state.request_sync();
     Ok(())
 }
 

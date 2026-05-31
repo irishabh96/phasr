@@ -5,6 +5,7 @@ use tauri::State;
 use crate::auth::{AuthError, SessionState};
 use crate::domain::UserSettings;
 use crate::store::{SettingsRepo, StoreError};
+use crate::sync::CloudSyncState;
 
 /// Wraps `StoreError` so we can carry an auth-rejection variant on the
 /// command surface. Same string envelope as before.
@@ -55,7 +56,10 @@ pub async fn update_user_settings(
     settings: UserSettings,
     repo: State<'_, SettingsRepo>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<UserSettings, SettingsCmdError> {
     session.require()?;
-    Ok(repo.update(&settings).await?)
+    let updated = repo.update(&settings).await?;
+    sync_state.request_sync();
+    Ok(updated)
 }
