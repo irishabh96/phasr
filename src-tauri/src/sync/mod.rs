@@ -153,17 +153,39 @@ pub fn stop_cloud_sync(sync_state: State<'_, Arc<CloudSyncState>>) {
 }
 
 async fn sync_once(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
-    push_dirty_users(client, db).await?;
-    push_repository_deletes(client, db).await?;
-    pull_repositories(client, db).await?;
-    push_dirty_repositories(client, db).await?;
-    pull_workspaces(client, db).await?;
-    push_dirty_workspaces(client, db).await?;
-    pull_run_commands(client, db).await?;
-    push_dirty_run_commands(client, db).await?;
-    pull_user_settings(client, db).await?;
-    push_dirty_user_settings(client, db).await?;
-    Ok(())
+    // Each step is independent: a failure in one entity (e.g. a pull
+    // that can't deserialize one bad cloud row) must not abort the
+    // rest of the cycle. In particular it must never stop dirty
+    // workspaces from being pushed. We attempt every step, log each
+    // failure with its label, and return the first error so the worker
+    // still emits a single `cloud-sync-error` for the UI/Sentry.
+    let mut first_err: Option<SyncError> = None;
+    macro_rules! step {
+        ($label:expr, $fut:expr) => {
+            if let Err(err) = $fut.await {
+                eprintln!("[cloud-sync] step `{}` failed: {err}", $label);
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
+            }
+        };
+    }
+
+    step!("push_dirty_users", push_dirty_users(client, db));
+    step!("push_repository_deletes", push_repository_deletes(client, db));
+    step!("pull_repositories", pull_repositories(client, db));
+    step!("push_dirty_repositories", push_dirty_repositories(client, db));
+    step!("pull_workspaces", pull_workspaces(client, db));
+    step!("push_dirty_workspaces", push_dirty_workspaces(client, db));
+    step!("pull_run_commands", pull_run_commands(client, db));
+    step!("push_dirty_run_commands", push_dirty_run_commands(client, db));
+    step!("pull_user_settings", pull_user_settings(client, db));
+    step!("push_dirty_user_settings", push_dirty_user_settings(client, db));
+
+    match first_err {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 struct SupabaseRestClient {
@@ -290,7 +312,8 @@ struct CloudWorkspaceRow {
     repository_id: String,
     name: String,
     prompt: Option<String>,
-    agent_id: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
     command: String,
     status: String,
     branch: Option<String>,
@@ -328,9 +351,6 @@ struct CloudUserSettingsRow {
     terminal_scrollback: i64,
     default_editor: String,
     default_terminal: String,
-    default_agent_id: Option<String>,
-    #[serde(default)]
-    disabled_agent_ids: Value,
     #[serde(default)]
     keyboard_shortcuts: Value,
     branch_prefix_template: String,
@@ -550,7 +570,7 @@ async fn upsert_workspace_from_cloud(
         }
         sqlx::query(
             "UPDATE workspaces SET
-                user_id = ?, repository_id = ?, name = ?, prompt = ?, agent_id = ?, command = ?, status = ?,
+                user_id = ?, repository_id = ?, name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 created_at = ?, started_at = ?, finished_at = ?, archived_at = ?,
                 updated_at = ?, synced_at = ?, dirty = 0
@@ -560,7 +580,7 @@ async fn upsert_workspace_from_cloud(
         .bind(&row.repository_id)
         .bind(&row.name)
         .bind(&row.prompt)
-        .bind(&row.agent_id)
+        .bind(&row.agent)
         .bind(&row.command)
         .bind(&row.status)
         .bind(&row.branch)
@@ -578,7 +598,7 @@ async fn upsert_workspace_from_cloud(
     } else {
         sqlx::query(
             "INSERT INTO workspaces (
-                id, user_id, repository_id, name, prompt, agent_id, command, status,
+                id, user_id, repository_id, name, prompt, agent, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
                 synced_at, dirty
@@ -589,7 +609,7 @@ async fn upsert_workspace_from_cloud(
         .bind(&row.repository_id)
         .bind(&row.name)
         .bind(&row.prompt)
-        .bind(&row.agent_id)
+        .bind(&row.agent)
         .bind(&row.command)
         .bind(&row.status)
         .bind(&row.branch)
@@ -622,7 +642,7 @@ async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(
                     "repository_id": row.try_get::<String, _>("repository_id")?,
                     "name": row.try_get::<String, _>("name")?,
                     "prompt": row.try_get::<Option<String>, _>("prompt")?,
-                    "agent_id": Value::Null,
+                    "agent": row.try_get::<Option<String>, _>("agent")?,
                     "command": row.try_get::<String, _>("command")?,
                     "status": row.try_get::<String, _>("status")?,
                     "branch": row.try_get::<Option<String>, _>("branch")?,
@@ -646,7 +666,7 @@ async fn dirty_workspace_rows(
     user_id: &str,
 ) -> Result<Vec<sqlx::sqlite::SqliteRow>, SyncError> {
     Ok(sqlx::query(
-        "SELECT id, repository_id, name, prompt, command, status, branch, worktree_path,
+        "SELECT id, repository_id, name, prompt, agent, command, status, branch, worktree_path,
                 exit_code, created_at, started_at, finished_at, archived_at, updated_at
          FROM workspaces
          WHERE dirty = 1 AND user_id = ? AND workspace_kind = 'agent'",
@@ -781,7 +801,7 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
             theme = ?, accent_color = ?, sans_font = ?, mono_font = ?,
             base_font_size = ?, cursor_style = ?, cursor_blink = ?,
             terminal_scrollback = ?, default_editor = ?, default_terminal = ?,
-            default_agent_id = ?, disabled_agent_ids = ?, keyboard_shortcuts = ?,
+            keyboard_shortcuts = ?,
             branch_prefix_template = ?, worktree_base_path = ?,
             default_merge_strategy = ?, auto_fetch_seconds = ?,
             honor_gpg_sign = ?, auto_push_on_commit = ?,
@@ -798,8 +818,6 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
     .bind(row.terminal_scrollback)
     .bind(&row.default_editor)
     .bind(&row.default_terminal)
-    .bind(&row.default_agent_id)
-    .bind(row.disabled_agent_ids.to_string())
     .bind(row.keyboard_shortcuts.to_string())
     .bind(&row.branch_prefix_template)
     .bind(&row.worktree_base_path)
@@ -820,7 +838,7 @@ async fn push_dirty_user_settings(client: &SupabaseRestClient, db: &Db) -> Resul
     let row = sqlx::query(
         "SELECT theme, accent_color, sans_font, mono_font, base_font_size,
                 cursor_style, cursor_blink, terminal_scrollback, default_editor,
-                default_terminal, default_agent_id, disabled_agent_ids,
+                default_terminal,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                 default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
                 auto_push_on_commit, updated_at
@@ -851,8 +869,6 @@ async fn push_dirty_user_settings(client: &SupabaseRestClient, db: &Db) -> Resul
                 "terminal_scrollback": row.try_get::<i64, _>("terminal_scrollback")?,
                 "default_editor": row.try_get::<String, _>("default_editor")?,
                 "default_terminal": row.try_get::<String, _>("default_terminal")?,
-                "default_agent_id": row.try_get::<Option<String>, _>("default_agent_id")?,
-                "disabled_agent_ids": parse_json_column(row.try_get("disabled_agent_ids")?)?,
                 "keyboard_shortcuts": parse_json_column(row.try_get("keyboard_shortcuts")?)?,
                 "branch_prefix_template": row.try_get::<String, _>("branch_prefix_template")?,
                 "worktree_base_path": row.try_get::<String, _>("worktree_base_path")?,
@@ -878,7 +894,7 @@ async fn get_or_init_user_settings(
     let existing = sqlx::query(
         "SELECT user_id, theme, accent_color, sans_font, mono_font, base_font_size,
                 cursor_style, cursor_blink, terminal_scrollback, default_editor,
-                default_terminal, default_agent_id, disabled_agent_ids,
+                default_terminal,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                 default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
                 auto_push_on_commit, updated_at
@@ -909,8 +925,6 @@ async fn get_or_init_user_settings(
             terminal_scrollback: row.try_get("terminal_scrollback")?,
             default_editor: row.try_get("default_editor")?,
             default_terminal: row.try_get("default_terminal")?,
-            default_agent_id: row.try_get("default_agent_id")?,
-            disabled_agent_ids: row.try_get("disabled_agent_ids")?,
             keyboard_shortcuts: row.try_get("keyboard_shortcuts")?,
             branch_prefix_template: row.try_get("branch_prefix_template")?,
             worktree_base_path: row.try_get("worktree_base_path")?,
@@ -927,11 +941,11 @@ async fn get_or_init_user_settings(
         "INSERT INTO user_settings (
             id, user_id, theme, accent_color, sans_font, mono_font, base_font_size,
             cursor_style, cursor_blink, terminal_scrollback, default_editor,
-            default_terminal, default_agent_id, disabled_agent_ids,
+            default_terminal,
             keyboard_shortcuts, branch_prefix_template, worktree_base_path,
             default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
             auto_push_on_commit, updated_at, synced_at, dirty
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
     )
     .bind(user_id)
     .bind(&defaults.theme)
@@ -944,8 +958,6 @@ async fn get_or_init_user_settings(
     .bind(defaults.terminal_scrollback)
     .bind(&defaults.default_editor)
     .bind(&defaults.default_terminal)
-    .bind(&defaults.default_agent_id)
-    .bind(&defaults.disabled_agent_ids)
     .bind(&defaults.keyboard_shortcuts)
     .bind(&defaults.branch_prefix_template)
     .bind(&defaults.worktree_base_path)
@@ -1099,9 +1111,16 @@ mod tests {
     }
 
     fn test_client(user_id: &str) -> SupabaseRestClient {
+        client_at(user_id, "http://127.0.0.1:1")
+    }
+
+    /// Like `test_client` but pointed at a given base URL (a wiremock
+    /// mock server). Builds `SyncConfig` directly so it skips the
+    /// `https://`-only check in `SyncConfig::try_from`.
+    fn client_at(user_id: &str, base_url: &str) -> SupabaseRestClient {
         SupabaseRestClient::new(
             SyncConfig {
-                supabase_url: "http://127.0.0.1:1".into(),
+                supabase_url: base_url.into(),
                 supabase_anon_key: "anon".into(),
                 machine_id: "machine-a".into(),
             },
@@ -1109,6 +1128,41 @@ mod tests {
             "jwt".into(),
         )
         .unwrap()
+    }
+
+    async fn insert_repo(db: &Db, id: &str, user_id: &str, dirty: i64) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO repositories (id, user_id, name, default_branch, created_at, updated_at, dirty)
+             VALUES (?, ?, 'R', 'main', ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(&now)
+        .bind(&now)
+        .bind(dirty)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_agent_workspace(db: &Db, id: &str, user_id: &str, repo_id: &str, agent: &str) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO workspaces (
+                id, user_id, repository_id, workspace_kind, name, agent, command, status,
+                created_at, updated_at, dirty
+             ) VALUES (?, ?, ?, 'agent', 'W', ?, 'run', 'stopped', ?, ?, 1)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(repo_id)
+        .bind(agent)
+        .bind(&now)
+        .bind(&now)
+        .execute(db)
+        .await
+        .unwrap();
     }
 
     async fn insert_user(db: &Db, id: &str) {
@@ -1240,7 +1294,7 @@ mod tests {
                 repository_id: "repo-cloud".into(),
                 name: "Cloud Workspace".into(),
                 prompt: None,
-                agent_id: None,
+                agent: Some("claude".into()),
                 command: "echo hi".into(),
                 status: "stopped".into(),
                 branch: None,
@@ -1286,6 +1340,15 @@ mod tests {
                 .unwrap();
             assert_eq!(row.try_get::<String, _>("user_id").unwrap(), "user-b");
         }
+
+        // The agent enum round-trips from the cloud row onto the local row.
+        let agent: Option<String> =
+            sqlx::query_scalar("SELECT agent FROM workspaces WHERE id = ?")
+                .bind("workspace-cloud")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(agent.as_deref(), Some("claude"));
     }
 
     #[tokio::test]
@@ -1331,5 +1394,136 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.try_get::<String, _>("user_id").unwrap(), "user-b");
+    }
+
+    // ── HTTP sync round-trip tests (mock Supabase via wiremock) ──────────
+    // These exercise the real push/pull code paths against a stubbed
+    // PostgREST so the agent round-trip and sync resilience are guarded.
+
+    #[tokio::test]
+    async fn push_workspace_sends_agent_and_marks_synced() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/workspaces"))
+            .and(body_string_contains(r#""agent":"claude""#))
+            .and(body_string_contains(r#""repository_id":"repo-a""#))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        push_dirty_workspaces(&client, &db).await.unwrap();
+
+        // mark_synced runs only after a successful upsert.
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = 'ws-a'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
+        // `expect(1)` is verified when `server` drops at end of scope.
+    }
+
+    #[tokio::test]
+    async fn pull_workspace_writes_agent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        // Pull only applies rows whose repository exists locally.
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+
+        let now = Utc::now().to_rfc3339();
+        let body = serde_json::json!([{
+            "id": "ws-cloud",
+            "repository_id": "repo-a",
+            "name": "Cloud WS",
+            "prompt": null,
+            "agent": "codex",
+            "command": "codex",
+            "status": "stopped",
+            "branch": null,
+            "worktree_path": null,
+            "exit_code": null,
+            "created_at": now,
+            "started_at": null,
+            "finished_at": null,
+            "archived_at": null,
+            "updated_at": now,
+        }]);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        pull_workspaces(&client, &db).await.unwrap();
+
+        let agent: Option<String> =
+            sqlx::query_scalar("SELECT agent FROM workspaces WHERE id = 'ws-cloud'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(agent.as_deref(), Some("codex"));
+    }
+
+    #[tokio::test]
+    async fn sync_once_pushes_workspace_even_when_an_earlier_step_fails() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await; // already synced → not pushed
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+
+        let server = MockServer::start().await;
+        // Specific mocks first — wiremock returns the first mounted match.
+        // An earlier pull step fails hard…
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/repositories"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        // …but the dirty workspace must still be pushed.
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Catch-alls last for every other GET/POST the cycle makes.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        let result = sync_once(&client, &db).await;
+
+        // The first error is still surfaced…
+        assert!(result.is_err());
+        // …yet the workspace push happened anyway (resilience fix).
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = 'ws-a'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
     }
 }

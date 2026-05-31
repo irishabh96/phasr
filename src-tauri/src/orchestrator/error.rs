@@ -25,8 +25,6 @@ pub enum OrchestratorError {
     RepositoryPathMissing(String),
     #[error("repository path `{0}` is not a git checkout")]
     RepositoryNotAGitRepo(String),
-    #[error("agent `{0}` is not in the seeded list and not stored locally")]
-    AgentNotFound(String),
     #[error("no running task for task id `{0}`")]
     TaskNotRunning(String),
     #[error("task is already finished (status: {0}); create a new one to retry")]

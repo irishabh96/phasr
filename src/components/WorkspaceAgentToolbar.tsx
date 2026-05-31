@@ -30,27 +30,25 @@ export function WorkspaceAgentToolbar({
 }: WorkspaceAgentToolbarProps) {
   const { data: agents } = useAgents();
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
-  const enabledAgents = [...(agents ?? [])]
-    .filter((agent) => agent.isEnabled)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const allAgents = agents ?? [];
 
-  if (enabledAgents.length === 0) return null;
+  if (allAgents.length === 0) return null;
 
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 border-t border-(--glass-border-hairline) px-4">
-      {enabledAgents.map((agent) => {
-        const key = agent.name.toLowerCase().replace(/\s+/g, "");
+      {allAgents.map((agent) => {
+        const key = agent.agent;
         return (
           <GlassTooltip
-            key={agent.id}
-            content={`Run ${agent.name}`}
+            key={agent.agent}
+            content={`Run ${agent.label}`}
             side="bottom"
           >
             <button
               type="button"
               onClick={() =>
                 openInnerTerminalTab(workspaceId, {
-                  title: agent.name,
+                  title: agent.label,
                   initialCommand: agent.command,
                 })
               }
@@ -65,8 +63,8 @@ export function WorkspaceAgentToolbar({
                 "focus-visible:border-(--color-border-strong) focus-visible:bg-(--color-bg-hover) focus-visible:text-(--color-text-primary)",
               )}
             >
-              <AgentIcon nameKey={key} icon={agent.icon} />
-              <span className="leading-none">{agent.name}</span>
+              <AgentIcon nameKey={key} />
+              <span className="leading-none">{agent.label}</span>
             </button>
           </GlassTooltip>
         );
@@ -75,19 +73,13 @@ export function WorkspaceAgentToolbar({
   );
 }
 
-function AgentIcon({
-  nameKey,
-  icon,
-}: {
-  nameKey: string;
-  icon: string | null;
-}) {
+function AgentIcon({ nameKey }: { nameKey: string }) {
   const mappedIcon =
     AGENT_ICON_DATA_URIS[nameKey as keyof typeof AGENT_ICON_DATA_URIS];
-  if (icon || mappedIcon) {
+  if (mappedIcon) {
     return (
       <img
-        src={icon ?? mappedIcon}
+        src={mappedIcon}
         alt=""
         className="h-3.5 w-3.5 shrink-0 transition-[filter,transform] duration-150 group-hover/agent:scale-110 group-hover/agent:brightness-125"
       />

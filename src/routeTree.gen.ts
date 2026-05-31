@@ -20,7 +20,6 @@ import { Route as AppNewProjectRouteImport } from './routes/_app/new-project'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
 import { Route as AppSettingsRepositoriesRouteImport } from './routes/_app/settings/repositories'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app/settings/appearance'
-import { Route as AppSettingsAgentsRouteImport } from './routes/_app/settings/agents'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app/settings/account'
 import { Route as AppDevDiffPreviewRouteImport } from './routes/_app/dev.diff-preview'
 import { Route as AppRepositoriesRepositoryIdIndexRouteImport } from './routes/_app/repositories/$repositoryId/index'
@@ -81,11 +80,6 @@ const AppSettingsAppearanceRoute = AppSettingsAppearanceRouteImport.update({
   path: '/appearance',
   getParentRoute: () => AppSettingsRoute,
 } as any)
-const AppSettingsAgentsRoute = AppSettingsAgentsRouteImport.update({
-  id: '/agents',
-  path: '/agents',
-  getParentRoute: () => AppSettingsRoute,
-} as any)
 const AppSettingsAccountRoute = AppSettingsAccountRouteImport.update({
   id: '/account',
   path: '/account',
@@ -125,7 +119,6 @@ export interface FileRoutesByFullPath {
   '/sign-up/$': typeof SignUpSplatRoute
   '/dev/diff-preview': typeof AppDevDiffPreviewRoute
   '/settings/account': typeof AppSettingsAccountRoute
-  '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/repositories': typeof AppSettingsRepositoriesRoute
   '/settings/': typeof AppSettingsIndexRoute
@@ -142,7 +135,6 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/dev/diff-preview': typeof AppDevDiffPreviewRoute
   '/settings/account': typeof AppSettingsAccountRoute
-  '/settings/agents': typeof AppSettingsAgentsRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/repositories': typeof AppSettingsRepositoriesRoute
   '/settings': typeof AppSettingsIndexRoute
@@ -162,7 +154,6 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/dev/diff-preview': typeof AppDevDiffPreviewRoute
   '/_app/settings/account': typeof AppSettingsAccountRoute
-  '/_app/settings/agents': typeof AppSettingsAgentsRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/repositories': typeof AppSettingsRepositoriesRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
@@ -182,7 +173,6 @@ export interface FileRouteTypes {
     | '/sign-up/$'
     | '/dev/diff-preview'
     | '/settings/account'
-    | '/settings/agents'
     | '/settings/appearance'
     | '/settings/repositories'
     | '/settings/'
@@ -199,7 +189,6 @@ export interface FileRouteTypes {
     | '/'
     | '/dev/diff-preview'
     | '/settings/account'
-    | '/settings/agents'
     | '/settings/appearance'
     | '/settings/repositories'
     | '/settings'
@@ -218,7 +207,6 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/dev/diff-preview'
     | '/_app/settings/account'
-    | '/_app/settings/agents'
     | '/_app/settings/appearance'
     | '/_app/settings/repositories'
     | '/_app/settings/'
@@ -312,13 +300,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsAppearanceRouteImport
       parentRoute: typeof AppSettingsRoute
     }
-    '/_app/settings/agents': {
-      id: '/_app/settings/agents'
-      path: '/agents'
-      fullPath: '/settings/agents'
-      preLoaderRoute: typeof AppSettingsAgentsRouteImport
-      parentRoute: typeof AppSettingsRoute
-    }
     '/_app/settings/account': {
       id: '/_app/settings/account'
       path: '/account'
@@ -359,7 +340,6 @@ declare module '@tanstack/react-router' {
 
 interface AppSettingsRouteChildren {
   AppSettingsAccountRoute: typeof AppSettingsAccountRoute
-  AppSettingsAgentsRoute: typeof AppSettingsAgentsRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
   AppSettingsRepositoriesRoute: typeof AppSettingsRepositoriesRoute
   AppSettingsIndexRoute: typeof AppSettingsIndexRoute
@@ -367,7 +347,6 @@ interface AppSettingsRouteChildren {
 
 const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAccountRoute: AppSettingsAccountRoute,
-  AppSettingsAgentsRoute: AppSettingsAgentsRoute,
   AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
   AppSettingsRepositoriesRoute: AppSettingsRepositoriesRoute,
   AppSettingsIndexRoute: AppSettingsIndexRoute,

@@ -31,7 +31,7 @@ use crate::domain::{Agent, Workspace, WorkspaceStatus};
 use crate::git;
 use crate::pty::handle::PtyHandle;
 use crate::pty::{PtyEvent, TaskRuntime};
-use crate::store::{AgentRepo, RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
+use crate::store::{RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
 use super::error::OrchestratorError;
 use super::repo_locks::RepoLockRegistry;
@@ -61,7 +61,16 @@ pub struct TaskStatusEvent {
 #[derive(Debug, Clone)]
 pub struct StartTaskRequest {
     pub repository_id: String,
-    pub agent_id: String,
+    /// The signed-in user the workspace belongs to. Required for the row
+    /// to be picked up by cloud sync (`dirty_workspace_rows` filters on
+    /// `user_id`). `None` only in tests, which run without a session.
+    pub user_id: Option<String>,
+    /// The agent recorded on the workspace (metadata).
+    pub agent: Agent,
+    /// The command to actually run. In production this is
+    /// `agent.command()`, resolved by the command layer; kept separate
+    /// so tests can substitute a fast-exiting command.
+    pub command: String,
     pub name: String,
     pub prompt: Option<String>,
     pub base_branch: Option<String>,
@@ -89,7 +98,6 @@ pub struct TaskTerminalSubscription {
 pub struct TaskOrchestrator {
     workspaces: WorkspaceRepo,
     repositories: RepositoryRepo,
-    agents: AgentRepo,
     runtime: Arc<TaskRuntime>,
     repo_locks: Arc<RepoLockRegistry>,
     status_tx: broadcast::Sender<TaskStatusEvent>,
@@ -99,14 +107,12 @@ impl TaskOrchestrator {
     pub fn new(
         workspaces: WorkspaceRepo,
         repositories: RepositoryRepo,
-        agents: AgentRepo,
         runtime: Arc<TaskRuntime>,
     ) -> Self {
         let (status_tx, _rx) = broadcast::channel(STATUS_BROADCAST_CAPACITY);
         Self {
             workspaces,
             repositories,
-            agents,
             runtime,
             repo_locks: Arc::new(RepoLockRegistry::new()),
             status_tx,
@@ -141,8 +147,7 @@ impl TaskOrchestrator {
             ));
         }
 
-        let agent_command = self.resolve_agent_command(&request.agent_id).await?;
-        let interpolated = interpolate_for_task(&agent_command, request.prompt.as_deref());
+        let interpolated = interpolate_for_task(&request.command, request.prompt.as_deref());
 
         let mut workspace = Workspace::new(
             request.repository_id.clone(),
@@ -150,7 +155,7 @@ impl TaskOrchestrator {
             interpolated.clone(),
         );
         workspace.prompt = request.prompt.clone();
-        workspace.agent_id = Some(request.agent_id.clone());
+        workspace.agent = Some(request.agent);
 
         let task_id = workspace.id.clone();
         let slug = git::slugify(&workspace.name);
@@ -175,7 +180,12 @@ impl TaskOrchestrator {
         workspace.branch = Some(branch);
         workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
 
-        self.workspaces.insert(&workspace).await?;
+        // Stamp the owner so cloud sync picks the row up. Without a
+        // user_id the workspace stays local-only forever.
+        match request.user_id.as_deref() {
+            Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
+            None => self.workspaces.insert(&workspace).await?,
+        }
 
         let started_at = Utc::now();
         let updated = self
@@ -395,19 +405,6 @@ impl TaskOrchestrator {
         Ok(())
     }
 
-    /// Resolve a built-in agent id to its command template. Local rows
-    /// win so command overrides from Settings are honored.
-    async fn resolve_agent_command(&self, agent_id: &str) -> Result<String, OrchestratorError> {
-        let all = self.agents.list_all().await?;
-        if let Some(agent) = all.into_iter().find(|a| a.id == agent_id) {
-            return Ok(agent.command);
-        }
-        if let Some(agent) = Agent::seeded().into_iter().find(|a| a.id == agent_id) {
-            return Ok(agent.command);
-        }
-        Err(OrchestratorError::AgentNotFound(agent_id.to_string()))
-    }
-
     async fn cwd_for_task(&self, workspace: &Workspace) -> Result<PathBuf, OrchestratorError> {
         if let Some(path) = workspace.worktree_path.as_deref() {
             let path = PathBuf::from(path);
@@ -517,17 +514,17 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
-    async fn fresh_orchestrator() -> (TaskOrchestrator, RepositoryRepo, tempfile::TempDir) {
+    async fn fresh_orchestrator(
+    ) -> (TaskOrchestrator, RepositoryRepo, crate::store::Db, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.sqlite");
         let pool = init_pool(&db_path).await.unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let repositories = RepositoryRepo::new(pool.clone());
-        let agents = AgentRepo::new(pool);
         let log_dir = dir.path().join("logs");
         let runtime = Arc::new(TaskRuntime::new(log_dir));
-        let orchestrator = TaskOrchestrator::new(workspaces, repositories.clone(), agents, runtime);
-        (orchestrator, repositories, dir)
+        let orchestrator = TaskOrchestrator::new(workspaces, repositories.clone(), runtime);
+        (orchestrator, repositories, pool, dir)
     }
 
     fn init_repo(path: &Path) {
@@ -561,7 +558,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_task_creates_worktree_and_transitions_through_running_to_completed() {
-        let (orchestrator, repositories, tmp) = fresh_orchestrator().await;
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
 
         // Build a real git repo so the worktree create works.
         let repo_dir = tmp.path().join("repo");
@@ -576,17 +573,17 @@ mod tests {
         repo.default_branch = "main".into();
         repositories.insert(&repo).await.unwrap();
 
-        // Override a built-in agent with a quick command so the exit watcher fires.
-        let mut agent = Agent::seeded().remove(0);
-        agent.command = "echo hello-phasr; exit".into();
-        orchestrator.agents.insert(&agent).await.unwrap();
-
         let mut status_rx = orchestrator.subscribe_status();
 
         let started = orchestrator
             .start_task(StartTaskRequest {
                 repository_id: repo.id.clone(),
-                agent_id: agent.id.clone(),
+                user_id: None,
+                agent: Agent::Claude,
+                // A quick-exiting command so the exit watcher fires
+                // deterministically regardless of which agents are
+                // installed on the machine running the test.
+                command: "echo hello-phasr; exit".into(),
                 name: "test task".into(),
                 prompt: None,
                 base_branch: None,
@@ -643,15 +640,75 @@ mod tests {
         ));
     }
 
+    // Regression: workspaces created via the orchestrator must carry the
+    // signed-in user_id, otherwise cloud sync (which filters dirty rows by
+    // user_id) never pushes them and they stay invisible in Supabase.
+    #[tokio::test]
+    async fn start_task_stamps_user_id_for_sync() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+
+        // workspaces.user_id has a FK to users(id), so seed a user row.
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+             VALUES ('user-x', 'user-x', 'X', 'x@example.com', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let started = orchestrator
+            .start_task(StartTaskRequest {
+                repository_id: repo.id.clone(),
+                user_id: Some("user-x".into()),
+                agent: Agent::Claude,
+                command: "echo hi; exit".into(),
+                name: "owned task".into(),
+                prompt: None,
+                base_branch: None,
+                rows: None,
+                cols: None,
+            })
+            .await
+            .expect("start_task should succeed");
+
+        let user_id: Option<String> =
+            sqlx::query_scalar("SELECT user_id FROM workspaces WHERE id = ?")
+                .bind(&started.workspace.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(user_id.as_deref(), Some("user-x"));
+
+        // And it must be dirty so the sync worker picks it up.
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = ?")
+            .bind(&started.workspace.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 1);
+    }
+
     #[tokio::test]
     async fn start_task_rejects_repository_without_local_path() {
-        let (orchestrator, repositories, _tmp) = fresh_orchestrator().await;
+        let (orchestrator, repositories, _pool, _tmp) = fresh_orchestrator().await;
         let repo = Repository::new("no-path".into(), None, None);
         repositories.insert(&repo).await.unwrap();
         let err = orchestrator
             .start_task(StartTaskRequest {
                 repository_id: repo.id,
-                agent_id: "nonexistent".into(),
+                user_id: None,
+                agent: Agent::Claude,
+                command: Agent::Claude.command().into(),
                 name: "t".into(),
                 prompt: None,
                 base_branch: None,
@@ -665,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_task_errors_when_task_not_running() {
-        let (orchestrator, _r, _t) = fresh_orchestrator().await;
+        let (orchestrator, _r, _pool, _t) = fresh_orchestrator().await;
         let err = orchestrator.stop_task("missing").await.unwrap_err();
         assert!(matches!(err, OrchestratorError::TaskNotRunning(_)));
     }

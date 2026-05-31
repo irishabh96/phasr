@@ -4,7 +4,7 @@ import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { useCreateWorkspace } from "@/lib/hooks/useWorkspaces";
 import { reportP0Error } from "@/lib/sentry";
-import type { Workspace } from "@/lib/types";
+import type { Agent, Workspace } from "@/lib/types";
 
 interface NewWorkspaceFormProps {
   repositoryId: string;
@@ -35,12 +35,12 @@ export function NewWorkspaceForm({
   const createWorkspace = useCreateWorkspace();
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agent, setAgent] = useState<Agent | null>(null);
 
-  const enabledAgents = agents?.filter((a) => a.isEnabled) ?? [];
-  const defaultAgent = enabledAgents.find((a) => a.isDefault) ?? enabledAgents[0];
-  const activeAgentId = agentId ?? defaultAgent?.id ?? null;
-  const activeAgent = enabledAgents.find((a) => a.id === activeAgentId);
+  const allAgents = agents ?? [];
+  const defaultAgent = allAgents.find((a) => a.isDefault) ?? allAgents[0];
+  const activeAgentValue = agent ?? defaultAgent?.agent ?? null;
+  const activeAgent = allAgents.find((a) => a.agent === activeAgentValue);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,9 +49,8 @@ export function NewWorkspaceForm({
       const workspace = await createWorkspace.mutateAsync({
         repositoryId,
         name: name.trim(),
-        command: activeAgent.command,
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-        ...(activeAgentId ? { agentId: activeAgentId } : {}),
+        agent: activeAgent.agent,
       });
       setName("");
       setPrompt("");
@@ -61,7 +60,7 @@ export function NewWorkspaceForm({
         area: "workspace",
         operation: "create_workspace",
         repositoryId,
-        agentId: activeAgentId,
+        agentId: activeAgentValue,
       });
     }
   };
@@ -79,13 +78,13 @@ export function NewWorkspaceForm({
           Agent
         </label>
         <select
-          value={activeAgentId ?? ""}
-          onChange={(e) => setAgentId(e.target.value)}
+          value={activeAgentValue ?? ""}
+          onChange={(e) => setAgent(e.target.value as Agent)}
           className="h-9 w-full rounded-[10px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,var(--color-bg-input)_70%,transparent)] px-3 text-[13px] backdrop-blur-md focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
         >
-          {enabledAgents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+          {allAgents.map((a) => (
+            <option key={a.agent} value={a.agent}>
+              {a.label}
             </option>
           ))}
         </select>

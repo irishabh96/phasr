@@ -1,7 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
-  Bot,
   FolderGit2,
   LogOut,
   Palette,
@@ -217,14 +216,6 @@ export function CommandPalette() {
               >
                 <Palette size={15} className="shrink-0 text-(--color-text-secondary)" />
                 <span className="flex-1 text-[15px]">Appearance</span>
-              </Command.Item>
-              <Command.Item
-                value="settings agents ai claude codex cursor"
-                onSelect={() => go(() => navigate({ to: "/settings/agents" }))}
-                className={ITEM_CLS}
-              >
-                <Bot size={15} className="shrink-0 text-(--color-text-secondary)" />
-                <span className="flex-1 text-[15px]">Agents</span>
               </Command.Item>
               <Command.Item
                 value="settings all"

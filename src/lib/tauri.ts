@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   Agent,
+  AgentOption,
   BranchStatus,
   Commit,
   CommitFileChange,
@@ -42,15 +43,14 @@ interface UpdateRepositoryInput {
 interface CreateWorkspaceInput {
   repositoryId: string;
   name: string;
-  command: string;
   prompt?: string;
-  agentId?: string;
+  agent?: Agent;
 }
 
 interface UpdateWorkspaceInput {
   name?: string;
   prompt?: string;
-  agentId?: string;
+  agent?: Agent;
   command?: string;
   status?: WorkspaceStatus;
   branch?: string;
@@ -60,7 +60,7 @@ interface UpdateWorkspaceInput {
 
 interface StartTaskInput {
   repositoryId: string;
-  agentId: string;
+  agent: Agent;
   name: string;
   prompt?: string;
   baseBranch?: string;
@@ -163,12 +163,7 @@ export const tauri = {
   unwatchWorkspace: (id: string) => invoke<void>("unwatch_workspace", { id }),
 
   // ── agents ───────────────────────────────────────────────────────────
-  listAgents: () => invoke<Agent[]>("list_agents"),
-  setAgentEnabled: (id: string, enabled: boolean) =>
-    invoke<void>("set_agent_enabled", { id, enabled }),
-  setAgentCommand: (id: string, command: string) =>
-    invoke<void>("set_agent_command", { id, command }),
-  setAgentDefault: (id: string) => invoke<void>("set_agent_default", { id }),
+  listAgents: () => invoke<AgentOption[]>("list_agents"),
 
   // ── settings ─────────────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),

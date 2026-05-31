@@ -12,7 +12,8 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::auth::SessionState;
+use crate::auth::{AuthError, SessionState};
+use crate::domain::Agent;
 use crate::orchestrator::{
     OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
 };
@@ -25,7 +26,7 @@ pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
 #[serde(rename_all = "camelCase")]
 pub struct StartTaskInput {
     pub repository_id: String,
-    pub agent_id: String,
+    pub agent: Agent,
     pub name: String,
     #[serde(default)]
     pub prompt: Option<String>,
@@ -50,10 +51,12 @@ pub async fn start_task(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<StartedTask, OrchestratorError> {
-    session.require()?;
+    let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let request = StartTaskRequest {
         repository_id: input.repository_id,
-        agent_id: input.agent_id,
+        user_id: Some(current_session.user_id),
+        agent: input.agent,
+        command: input.agent.command().to_string(),
         name: input.name,
         prompt: input.prompt,
         base_branch: input.base_branch,

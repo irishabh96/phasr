@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
-use crate::domain::{Workspace, WorkspaceKind, WorkspaceStatus};
+use crate::domain::{Agent, Workspace, WorkspaceKind, WorkspaceStatus};
 
 use super::error::StoreError;
 use super::pool::Db;
@@ -10,7 +10,7 @@ use super::pool::Db;
 pub struct WorkspaceUpdate {
     pub name: Option<String>,
     pub prompt: Option<Option<String>>,
-    pub agent_id: Option<Option<String>>,
+    pub agent: Option<Option<Agent>>,
     pub command: Option<String>,
     pub status: Option<WorkspaceStatus>,
     pub branch: Option<Option<String>>,
@@ -55,7 +55,7 @@ impl WorkspaceRepo {
         };
         sqlx::query(
             "INSERT INTO workspaces (
-                id, user_id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
+                id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
                 synced_at, dirty
@@ -67,7 +67,7 @@ impl WorkspaceRepo {
         .bind(workspace.workspace_kind.as_str())
         .bind(&workspace.name)
         .bind(&workspace.prompt)
-        .bind(&workspace.agent_id)
+        .bind(workspace.agent.map(Agent::as_str))
         .bind(&workspace.command)
         .bind(workspace.status.as_str())
         .bind(&workspace.branch)
@@ -89,7 +89,7 @@ impl WorkspaceRepo {
         repository_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -107,7 +107,7 @@ impl WorkspaceRepo {
         status: WorkspaceStatus,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -122,7 +122,7 @@ impl WorkspaceRepo {
 
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -143,7 +143,7 @@ impl WorkspaceRepo {
         repository_id: &str,
     ) -> Result<Option<Workspace>, StoreError> {
         let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent_id, command, status,
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
@@ -166,8 +166,8 @@ impl WorkspaceRepo {
         if let Some(prompt) = patch.prompt {
             current.prompt = prompt;
         }
-        if let Some(agent_id) = patch.agent_id {
-            current.agent_id = agent_id;
+        if let Some(agent) = patch.agent {
+            current.agent = agent;
         }
         if let Some(command) = patch.command {
             current.command = command;
@@ -207,7 +207,7 @@ impl WorkspaceRepo {
 
         sqlx::query(
             "UPDATE workspaces SET
-                name = ?, prompt = ?, agent_id = ?, command = ?, status = ?,
+                name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 started_at = ?, finished_at = ?, archived_at = ?, updated_at = ?,
                 dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
@@ -215,7 +215,7 @@ impl WorkspaceRepo {
         )
         .bind(&current.name)
         .bind(&current.prompt)
-        .bind(&current.agent_id)
+        .bind(current.agent.map(Agent::as_str))
         .bind(&current.command)
         .bind(current.status.as_str())
         .bind(&current.branch)
@@ -257,6 +257,15 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
             field: "workspace_kind",
             message: format!("unknown workspace kind `{kind_str}`"),
         })?;
+    let agent = row
+        .try_get::<Option<String>, _>("agent")?
+        .map(|s| {
+            Agent::from_str(&s).ok_or_else(|| StoreError::InvalidValue {
+                field: "agent",
+                message: format!("unknown agent `{s}`"),
+            })
+        })
+        .transpose()?;
 
     Ok(Workspace {
         id: row.try_get("id")?,
@@ -264,7 +273,7 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         workspace_kind,
         name: row.try_get("name")?,
         prompt: row.try_get("prompt")?,
-        agent_id: row.try_get("agent_id")?,
+        agent,
         command: row.try_get("command")?,
         status,
         branch: row.try_get("branch")?,

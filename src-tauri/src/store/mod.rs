@@ -1,7 +1,6 @@
 //! SQLite-backed storage. Owns all SQL; everything outside this module
 //! talks via the repository structs.
 
-mod agents;
 mod error;
 mod pool;
 mod repositories;
@@ -10,7 +9,6 @@ mod settings;
 mod users;
 mod workspaces;
 
-pub use agents::AgentRepo;
 pub use error::StoreError;
 pub use pool::{default_db_path, init_pool, Db};
 pub use repositories::{RepositoryRepo, RepositoryUpdate};

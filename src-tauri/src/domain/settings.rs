@@ -14,9 +14,6 @@ pub struct UserSettings {
     pub terminal_scrollback: i64,
     pub default_editor: String,
     pub default_terminal: String,
-    pub default_agent_id: Option<String>,
-    /// JSON-encoded array of built-in agent IDs the user has turned off.
-    pub disabled_agent_ids: String,
     /// Stored as a JSON-encoded string in the database. Frontend parses it.
     pub keyboard_shortcuts: String,
     pub branch_prefix_template: String,
@@ -41,8 +38,6 @@ impl Default for UserSettings {
             terminal_scrollback: 10_000,
             default_editor: "vscode".into(),
             default_terminal: "iterm".into(),
-            default_agent_id: None,
-            disabled_agent_ids: "[]".into(),
             keyboard_shortcuts: "{}".into(),
             branch_prefix_template: "phasr/{{slug}}".into(),
             worktree_base_path: "~/.phasr/worktrees".into(),

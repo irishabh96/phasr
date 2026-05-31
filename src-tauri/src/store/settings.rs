@@ -33,7 +33,7 @@ impl SettingsRepo {
                 theme = ?, accent_color = ?, sans_font = ?, mono_font = ?,
                 base_font_size = ?, cursor_style = ?, cursor_blink = ?,
                 terminal_scrollback = ?, default_editor = ?, default_terminal = ?,
-                default_agent_id = ?, disabled_agent_ids = ?, keyboard_shortcuts = ?,
+                keyboard_shortcuts = ?,
                 branch_prefix_template = ?, worktree_base_path = ?,
                 default_merge_strategy = ?, auto_fetch_seconds = ?,
                 honor_gpg_sign = ?, auto_push_on_commit = ?,
@@ -50,8 +50,6 @@ impl SettingsRepo {
         .bind(settings.terminal_scrollback)
         .bind(&settings.default_editor)
         .bind(&settings.default_terminal)
-        .bind(&settings.default_agent_id)
-        .bind(&settings.disabled_agent_ids)
         .bind(&settings.keyboard_shortcuts)
         .bind(&settings.branch_prefix_template)
         .bind(&settings.worktree_base_path)
@@ -72,8 +70,7 @@ impl SettingsRepo {
         let row = sqlx::query(
             "SELECT theme, accent_color, sans_font, mono_font, base_font_size,
                     cursor_style, cursor_blink, terminal_scrollback,
-                    default_editor, default_terminal, default_agent_id,
-                    disabled_agent_ids,
+                    default_editor, default_terminal,
                     keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                     default_merge_strategy, auto_fetch_seconds,
                     honor_gpg_sign, auto_push_on_commit, updated_at
@@ -90,12 +87,11 @@ impl SettingsRepo {
             "INSERT INTO user_settings (
                 id, theme, accent_color, sans_font, mono_font, base_font_size,
                 cursor_style, cursor_blink, terminal_scrollback,
-                default_editor, default_terminal, default_agent_id,
-                disabled_agent_ids,
+                default_editor, default_terminal,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                 default_merge_strategy, auto_fetch_seconds,
                 honor_gpg_sign, auto_push_on_commit, updated_at, synced_at, dirty
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&settings.theme)
         .bind(&settings.accent_color)
@@ -107,8 +103,6 @@ impl SettingsRepo {
         .bind(settings.terminal_scrollback)
         .bind(&settings.default_editor)
         .bind(&settings.default_terminal)
-        .bind(&settings.default_agent_id)
-        .bind(&settings.disabled_agent_ids)
         .bind(&settings.keyboard_shortcuts)
         .bind(&settings.branch_prefix_template)
         .bind(&settings.worktree_base_path)
@@ -135,8 +129,6 @@ fn row_to_settings(row: &sqlx::sqlite::SqliteRow) -> Result<UserSettings, StoreE
         terminal_scrollback: row.try_get("terminal_scrollback")?,
         default_editor: row.try_get("default_editor")?,
         default_terminal: row.try_get("default_terminal")?,
-        default_agent_id: row.try_get("default_agent_id")?,
-        disabled_agent_ids: row.try_get("disabled_agent_ids")?,
         keyboard_shortcuts: row.try_get("keyboard_shortcuts")?,
         branch_prefix_template: row.try_get("branch_prefix_template")?,
         worktree_base_path: row.try_get("worktree_base_path")?,

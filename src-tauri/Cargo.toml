@@ -56,3 +56,4 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "test-util"] }
 rsa = { version = "0.9", features = ["sha2"] }
 rand = "0.8"
+wiremock = "0.6"

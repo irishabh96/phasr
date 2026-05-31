@@ -7,7 +7,7 @@ import { useRepository } from "@/lib/hooks/useRepositories";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { reportP0Error } from "@/lib/sentry";
 import { tauri } from "@/lib/tauri";
-import type { Workspace } from "@/lib/types";
+import type { Agent, Workspace } from "@/lib/types";
 
 interface NewTaskFormProps {
   repositoryId: string;
@@ -45,15 +45,15 @@ export function NewTaskForm({
 
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agent, setAgent] = useState<Agent | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const enabledAgents = agents?.filter((a) => a.isEnabled) ?? [];
-  const defaultAgent = enabledAgents.find((a) => a.isDefault) ?? enabledAgents[0];
-  const activeAgentId = agentId ?? defaultAgent?.id ?? null;
-  const activeAgent = enabledAgents.find((a) => a.id === activeAgentId);
+  const allAgents = agents ?? [];
+  const defaultAgent = allAgents.find((a) => a.isDefault) ?? allAgents[0];
+  const activeAgentValue = agent ?? defaultAgent?.agent ?? null;
+  const activeAgent = allAgents.find((a) => a.agent === activeAgentValue);
 
   // Seed the base-branch field once the repository row has loaded so
   // the field shows "main" / "master" by default. The user can edit if
@@ -77,7 +77,7 @@ export function NewTaskForm({
     try {
       const started = await tauri.startTask({
         repositoryId,
-        agentId: activeAgent.id,
+        agent: activeAgent.agent,
         name: trimmedName,
         ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
         ...(trimmedBaseBranch ? { baseBranch: trimmedBaseBranch } : {}),
@@ -99,7 +99,7 @@ export function NewTaskForm({
         area: "task",
         operation: "start_task",
         repositoryId,
-        agentId: activeAgent.id,
+        agentId: activeAgent.agent,
       });
       setError(String(err));
     } finally {
@@ -126,13 +126,13 @@ export function NewTaskForm({
           Agent
         </label>
         <select
-          value={activeAgentId ?? ""}
-          onChange={(e) => setAgentId(e.target.value)}
+          value={activeAgentValue ?? ""}
+          onChange={(e) => setAgent(e.target.value as Agent)}
           className="h-9 w-full rounded-[10px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,var(--color-bg-input)_70%,transparent)] px-3 text-[13px] backdrop-blur-md focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
         >
-          {enabledAgents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+          {allAgents.map((a) => (
+            <option key={a.agent} value={a.agent}>
+              {a.label}
             </option>
           ))}
         </select>

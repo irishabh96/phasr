@@ -43,17 +43,31 @@ impl UserRepo {
         self.attach_unowned_local_rows(&user.id).await
     }
 
+    /// Claim any local rows that don't yet have an owner for the
+    /// signed-in user. Crucially we also flip `dirty = 1` so the rows
+    /// get pushed on the next sync cycle — without this, an adopted row
+    /// that wasn't already dirty would stay local-only forever and never
+    /// reach the cloud.
+    ///
+    /// `local`-kind workspaces are intentionally never synced (see
+    /// `0009_local_workspaces.sql`), so we adopt them but leave their
+    /// `dirty` flag untouched to avoid a stuck `dirty = 1` row the sync
+    /// worker never clears.
     pub async fn attach_unowned_local_rows(&self, user_id: &str) -> Result<(), StoreError> {
-        for table in [
-            "repositories",
-            "workspaces",
-            "repository_config",
-            "run_commands",
-            "user_settings",
-        ] {
-            let sql = format!("UPDATE {table} SET user_id = ? WHERE user_id IS NULL");
+        for table in ["repositories", "repository_config", "run_commands", "user_settings"] {
+            let sql = format!("UPDATE {table} SET user_id = ?, dirty = 1 WHERE user_id IS NULL");
             sqlx::query(&sql).bind(user_id).execute(&self.db).await?;
         }
+
+        sqlx::query(
+            "UPDATE workspaces
+                SET user_id = ?,
+                    dirty = CASE WHEN workspace_kind = 'local' THEN dirty ELSE 1 END
+              WHERE user_id IS NULL",
+        )
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
 
         Ok(())
     }

@@ -5,7 +5,7 @@ use serde::Deserialize;
 use tauri::{Manager, State};
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::{Workspace, WorkspaceStatus};
+use crate::domain::{Agent, Workspace, WorkspaceStatus};
 use crate::fswatch::WorktreeWatchRegistry;
 use crate::git;
 use crate::pty::TaskRuntime;
@@ -16,9 +16,8 @@ use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 pub struct CreateWorkspaceInput {
     pub repository_id: String,
     pub name: String,
-    pub command: String,
     pub prompt: Option<String>,
-    pub agent_id: Option<String>,
+    pub agent: Option<Agent>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -26,7 +25,7 @@ pub struct CreateWorkspaceInput {
 pub struct UpdateWorkspaceInput {
     pub name: Option<String>,
     pub prompt: Option<String>,
-    pub agent_id: Option<String>,
+    pub agent: Option<Agent>,
     pub command: Option<String>,
     pub status: Option<WorkspaceStatus>,
     pub branch: Option<String>,
@@ -115,9 +114,13 @@ pub async fn create_workspace(
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let repository = repositories.get(&input.repository_id).await?;
 
-    let mut workspace = Workspace::new(input.repository_id.clone(), input.name, input.command);
+    // The launch command is derived from the selected agent (defaulting
+    // to Claude); agents are a fixed enum with hardcoded commands.
+    let agent = input.agent.unwrap_or_else(Agent::default);
+    let mut workspace =
+        Workspace::new(input.repository_id.clone(), input.name, agent.command().to_string());
     workspace.prompt = input.prompt;
-    workspace.agent_id = input.agent_id;
+    workspace.agent = Some(agent);
 
     if let Some(repo_path_str) = repository.local_path.as_deref() {
         let repo_path = PathBuf::from(repo_path_str);
@@ -172,8 +175,12 @@ pub async fn update_workspace(
     let patch = WorkspaceUpdate {
         name: input.name,
         prompt: input.prompt.map(Some),
-        agent_id: input.agent_id.map(Some),
-        command: input.command,
+        agent: input.agent.map(Some),
+        // Switching agent updates the stored command to match, unless the
+        // caller explicitly provided one.
+        command: input
+            .command
+            .or_else(|| input.agent.map(|a| a.command().to_string())),
         status: input.status,
         branch: input.branch.map(Some),
         worktree_path: input.worktree_path.map(Some),

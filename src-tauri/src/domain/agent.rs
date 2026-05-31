@@ -1,76 +1,82 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
-/// Stable namespace for deriving seed-agent UUIDs via uuid_v5.
-/// NEVER change this — it's what keeps `seed:Claude` to the same UUID
-/// on every machine and every user account.
-const AGENT_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x8e, 0x6a, 0x59, 0xfa, 0x1b, 0x2b, 0x4f, 0x7e, 0x8d, 0x7e, 0xbd, 0xa6, 0xd4, 0xb1, 0xb2, 0xe1,
-]);
 
 /// An AI tool/CLI that can be run as a workspace's command.
 ///
-/// Built-in agents (Claude, Codex, Copilot, …) have deterministic UUIDs
-/// and are mirrored into the local `agents` table so command overrides,
-/// default state, and sort order can persist.
-///
-/// Per-user enabled state is in `user_settings.disabled_agent_ids`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Agent {
-    pub id: String,
-    pub name: String,
-    pub command: String,
-    pub icon: Option<String>,
-    pub is_default: bool,
-    pub is_enabled: bool,
-    pub is_seed: bool,
-    pub sort_order: i64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+/// Agents are a fixed, built-in set. Each variant carries a hardcoded
+/// launch command. The selected agent is stored directly on the
+/// workspace (`workspaces.agent`) as a lowercase string — there is no
+/// `agents` table and no per-user customization.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Agent {
+    Claude,
+    Codex,
+    Copilot,
+    Gemini,
+    OpenCode,
 }
 
 impl Agent {
-    /// Hardcoded seed agents shipped with the app. UUIDs are stable
-    /// (uuid_v5 of the agent name under AGENT_NAMESPACE), so the same
-    /// "Claude" agent has the same id on every install.
-    pub fn seeded() -> Vec<Self> {
-        let now = Utc::now();
-        let entries = [
-            ("Claude", "claude --dangerously-skip-permissions", true),
-            ("Copilot", "copilot --allow-all", false),
-            ("OpenCode", "opencode", false),
-            ("Gemini", "gemini --yolo", false),
-            (
-                "Codex",
-                r#"codex -c model_reasoning_effort="high" --dangerously-bypass-approvals-and-sandbox -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#,
-                false,
-            ),
-        ];
-        entries
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (name, command, is_default))| Self {
-                id: seed_id(name),
-                name: name.into(),
-                command: command.into(),
-                icon: None,
-                is_default,
-                is_enabled: true,
-                is_seed: true,
-                sort_order: idx as i64,
-                created_at: now,
-                updated_at: now,
-            })
-            .collect()
-    }
-}
+    /// Every agent, in display order. The first entry is the default.
+    pub const ALL: [Agent; 5] = [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::Copilot,
+        Agent::Gemini,
+        Agent::OpenCode,
+    ];
 
-/// Deterministic UUID for a seed agent's name. Both ends of the sync
-/// layer compute the same value.
-pub fn seed_id(name: &str) -> String {
-    Uuid::new_v5(&AGENT_NAMESPACE, name.as_bytes()).to_string()
+    /// The agent selected when the user hasn't chosen one.
+    pub fn default() -> Self {
+        Agent::Claude
+    }
+
+    /// Stable lowercase identifier persisted in SQLite and sent to the
+    /// frontend.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Copilot => "copilot",
+            Agent::Gemini => "gemini",
+            Agent::OpenCode => "opencode",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "claude" => Agent::Claude,
+            "codex" => Agent::Codex,
+            "copilot" => Agent::Copilot,
+            "gemini" => Agent::Gemini,
+            "opencode" => Agent::OpenCode,
+            _ => return None,
+        })
+    }
+
+    /// Human-friendly name shown in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude",
+            Agent::Codex => "Codex",
+            Agent::Copilot => "Copilot",
+            Agent::Gemini => "Gemini",
+            Agent::OpenCode => "OpenCode",
+        }
+    }
+
+    /// The hardcoded shell command used to launch the agent.
+    pub fn command(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude --dangerously-skip-permissions",
+            Agent::Codex => {
+                r#"codex -c model_reasoning_effort="high" --dangerously-bypass-approvals-and-sandbox -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#
+            }
+            Agent::Copilot => "copilot --allow-all",
+            Agent::Gemini => "gemini --yolo",
+            Agent::OpenCode => "opencode",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -78,19 +84,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seeded_includes_all_five_agents() {
-        let seeded = Agent::seeded();
-        let names: Vec<_> = seeded.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["Claude", "Copilot", "OpenCode", "Gemini", "Codex"]);
-        assert!(seeded.iter().all(|a| a.is_seed));
-        assert_eq!(seeded.iter().filter(|a| a.is_default).count(), 1);
+    fn round_trips_str() {
+        for agent in Agent::ALL {
+            assert_eq!(Agent::from_str(agent.as_str()), Some(agent));
+        }
     }
 
     #[test]
-    fn seed_id_is_stable() {
-        // Locking in the expected UUIDs so a future rename doesn't
-        // silently break cross-device linkage.
-        assert_eq!(seed_id("Claude"), seed_id("Claude"));
-        assert_ne!(seed_id("Claude"), seed_id("Codex"));
+    fn unknown_string_returns_none() {
+        assert_eq!(Agent::from_str("nonsense"), None);
+    }
+
+    #[test]
+    fn default_is_claude() {
+        assert_eq!(Agent::default(), Agent::Claude);
+        assert_eq!(Agent::ALL[0], Agent::Claude);
+    }
+
+    #[test]
+    fn every_agent_has_a_command() {
+        for agent in Agent::ALL {
+            assert!(!agent.command().is_empty());
+        }
     }
 }

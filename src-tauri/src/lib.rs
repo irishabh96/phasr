@@ -21,7 +21,7 @@ use domain::WorkspaceStatus;
 use orchestrator::TaskOrchestrator;
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, AgentRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
+    default_db_path, init_pool, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
     WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
@@ -135,9 +135,6 @@ pub fn run() {
             commands::workspaces::watch_workspace,
             commands::workspaces::unwatch_workspace,
             commands::agents::list_agents,
-            commands::agents::set_agent_enabled,
-            commands::agents::set_agent_command,
-            commands::agents::set_agent_default,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
             commands::orchestrator::start_task,
@@ -196,8 +193,6 @@ async fn initialize_database_state(
     task_runtime: Arc<TaskRuntime>,
 ) -> Result<(), store::StoreError> {
     let pool = init_pool(db_path).await?;
-    let agent_repo = AgentRepo::new(pool.clone());
-    agent_repo.ensure_seeded().await?;
 
     let repository_repo = RepositoryRepo::new(pool.clone());
     let workspace_repo = WorkspaceRepo::new(pool.clone());
@@ -206,7 +201,6 @@ async fn initialize_database_state(
     let orchestrator = TaskOrchestrator::new(
         workspace_repo.clone(),
         repository_repo.clone(),
-        agent_repo.clone(),
         task_runtime,
     );
     commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
@@ -214,7 +208,6 @@ async fn initialize_database_state(
     handle.manage(repository_repo);
     handle.manage(workspace_repo);
     handle.manage(RunCommandRepo::new(pool.clone()));
-    handle.manage(agent_repo);
     handle.manage(SettingsRepo::new(pool.clone()));
     handle.manage(UserRepo::new(pool.clone()));
     handle.manage(pool);

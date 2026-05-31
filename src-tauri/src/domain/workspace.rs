@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::agent::Agent;
+
 /// One agent run inside a repository. Owns an isolated git worktree on
 /// a `phasr/*` branch and a PTY session. Previously called `Task`;
 /// renamed in Phase 7 so the wording matches what users see in similar tools.
@@ -93,7 +95,7 @@ pub struct Workspace {
     pub workspace_kind: WorkspaceKind,
     pub name: String,
     pub prompt: Option<String>,
-    pub agent_id: Option<String>,
+    pub agent: Option<Agent>,
     pub command: String,
     pub status: WorkspaceStatus,
     pub branch: Option<String>,
@@ -115,7 +117,7 @@ impl Workspace {
             workspace_kind: WorkspaceKind::Agent,
             name,
             prompt: None,
-            agent_id: None,
+            agent: None,
             command,
             status: WorkspaceStatus::Pending,
             branch: None,

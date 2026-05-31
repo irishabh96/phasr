@@ -19,13 +19,16 @@ export interface Repository {
   updatedAt: string;
 }
 
+/** The fixed set of built-in agents. Matches `domain::agent::Agent`. */
+export type Agent = "claude" | "codex" | "copilot" | "gemini" | "opencode";
+
 export interface Workspace {
   id: string;
   repositoryId: string;
   workspaceKind: "agent" | "local";
   name: string;
   prompt: string | null;
-  agentId: string | null;
+  agent: Agent | null;
   command: string;
   status: WorkspaceStatus;
   branch: string | null;
@@ -38,17 +41,12 @@ export interface Workspace {
   updatedAt: string;
 }
 
-export interface Agent {
-  id: string;
-  name: string;
+/** One built-in agent as returned by `list_agents`. */
+export interface AgentOption {
+  agent: Agent;
+  label: string;
   command: string;
-  icon: string | null;
   isDefault: boolean;
-  isEnabled: boolean;
-  isSeed: boolean;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface UserSettings {
@@ -62,8 +60,6 @@ export interface UserSettings {
   terminalScrollback: number;
   defaultEditor: string;
   defaultTerminal: string;
-  defaultAgentId: string | null;
-  disabledAgentIds: string;
   keyboardShortcuts: string;
   branchPrefixTemplate: string;
   worktreeBasePath: string;

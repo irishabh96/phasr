@@ -10,7 +10,7 @@ import { reportP0Error } from "@/lib/sentry";
 import { slugify } from "@/lib/slug";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
-import type { Repository } from "@/lib/types";
+import type { Agent, AgentOption, Repository } from "@/lib/types";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 
@@ -52,7 +52,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
   const [name, setName] = useState("");
   const [baseBranch, setBaseBranch] = useState(repo.defaultBranch);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agent, setAgent] = useState<Agent | null>(null);
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,10 +61,10 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
     setBaseBranch(repo.defaultBranch);
   }, [repo.defaultBranch]);
 
-  const enabledAgents = agents?.filter((a) => a.isEnabled) ?? [];
-  const defaultAgent = enabledAgents.find((a) => a.isDefault) ?? enabledAgents[0];
-  const activeAgentId = agentId ?? defaultAgent?.id ?? null;
-  const activeAgent = enabledAgents.find((a) => a.id === activeAgentId);
+  const allAgents = agents ?? [];
+  const defaultAgent = allAgents.find((a) => a.isDefault) ?? allAgents[0];
+  const activeAgentValue = agent ?? defaultAgent?.agent ?? null;
+  const activeAgent = allAgents.find((a) => a.agent === activeAgentValue);
 
   const trimmedName = name.trim();
   const previewSlug = useMemo(() => slugify(trimmedName), [trimmedName]);
@@ -77,7 +77,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
     try {
       const started = await tauri.startTask({
         repositoryId: repo.id,
-        agentId: activeAgent.id,
+        agent: activeAgent.agent,
         name: trimmedName,
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
         ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
@@ -95,7 +95,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
         area: "task",
         operation: "start_first_workspace_task",
         repositoryId: repo.id,
-        agentId: activeAgent.id,
+        agentId: activeAgent.agent,
       });
       setError(String(err));
     } finally {
@@ -165,9 +165,9 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
           />
         ) : (
           <Step2
-            enabledAgents={enabledAgents}
-            activeAgentId={activeAgentId}
-            setAgentId={setAgentId}
+            agents={allAgents}
+            activeAgentValue={activeAgentValue}
+            setAgent={setAgent}
             activeCommand={activeAgent?.command}
             prompt={prompt}
             setPrompt={setPrompt}
@@ -302,9 +302,9 @@ function Step1({
 }
 
 function Step2({
-  enabledAgents,
-  activeAgentId,
-  setAgentId,
+  agents,
+  activeAgentValue,
+  setAgent,
   activeCommand,
   prompt,
   setPrompt,
@@ -314,9 +314,9 @@ function Step2({
   onBack,
   onStart,
 }: {
-  enabledAgents: { id: string; name: string; command: string }[];
-  activeAgentId: string | null;
-  setAgentId: (id: string) => void;
+  agents: AgentOption[];
+  activeAgentValue: Agent | null;
+  setAgent: (agent: Agent) => void;
   activeCommand: string | undefined;
   prompt: string;
   setPrompt: (v: string) => void;
@@ -346,13 +346,13 @@ function Step2({
         </label>
         <select
           id="first-task-agent"
-          value={activeAgentId ?? ""}
-          onChange={(e) => setAgentId(e.target.value)}
+          value={activeAgentValue ?? ""}
+          onChange={(e) => setAgent(e.target.value as Agent)}
           className="h-10 w-full rounded-[10px] border border-(--glass-border-hairline) bg-(--color-bg-input) px-3 text-[13px] backdrop-blur-md focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
         >
-          {enabledAgents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+          {agents.map((a) => (
+            <option key={a.agent} value={a.agent}>
+              {a.label}
             </option>
           ))}
         </select>

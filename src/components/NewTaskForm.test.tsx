@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewTaskForm } from "@/components/NewTaskForm";
-import type { Agent, Repository, StartedTask, Workspace } from "@/lib/types";
+import type { AgentOption, Repository, StartedTask, Workspace } from "@/lib/types";
 
 const startTask = vi.fn();
 const listAgents = vi.fn();
@@ -16,18 +16,12 @@ vi.mock("@/lib/tauri", () => ({
   },
 }));
 
-function makeAgent(overrides: Partial<Agent> = {}): Agent {
+function makeAgent(overrides: Partial<AgentOption> = {}): AgentOption {
   return {
-    id: "agent-claude",
-    name: "Claude",
+    agent: "claude",
+    label: "Claude",
     command: "claude --dangerously-skip-permissions",
-    icon: null,
     isDefault: true,
-    isEnabled: true,
-    isSeed: true,
-    sortOrder: 0,
-    createdAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,
   };
 }
@@ -52,7 +46,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     workspaceKind: "agent",
     name: "fix login bug",
     prompt: null,
-    agentId: "agent-claude",
+    agent: "claude",
     command: "claude --dangerously-skip-permissions",
     status: "running",
     branch: "phasr/abcd1234",
@@ -81,8 +75,13 @@ beforeEach(() => {
   listAgents.mockReset();
   getRepository.mockReset();
   listAgents.mockResolvedValue([
-    makeAgent({ id: "agent-claude", name: "Claude", isDefault: true }),
-    makeAgent({ id: "agent-codex", name: "Codex", isDefault: false }),
+    makeAgent({ agent: "claude", label: "Claude", isDefault: true }),
+    makeAgent({
+      agent: "codex",
+      label: "Codex",
+      command: "codex",
+      isDefault: false,
+    }),
   ]);
   getRepository.mockResolvedValue(makeRepository());
 });
@@ -138,7 +137,7 @@ describe("NewTaskForm", () => {
     await waitFor(() => expect(startTask).toHaveBeenCalledTimes(1));
     expect(startTask.mock.calls[0]?.[0]).toMatchObject({
       repositoryId: "repo-1",
-      agentId: "agent-claude",
+      agent: "claude",
       name: "fix login bug",
       prompt: "make it work",
       baseBranch: "main",
