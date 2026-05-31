@@ -1,8 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
+import { disposeSessionXterm } from "@/components/SessionTerminalTab";
+import { disposeMainXterm } from "@/components/Terminal";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
-import type { Repository } from "@/lib/types";
+import type { Repository, Workspace } from "@/lib/types";
 
 export const repositoryKeys = {
   all: ["repositories"] as const,
@@ -64,13 +67,39 @@ export function useDeleteRepository() {
     mutationKey: repositoryMutationKeys.delete,
     mutationFn: (id: string) => tauri.deleteRepository(id),
     onSuccess: (_v, id) => {
+      // Tear down the deleted repo's open tabs + cached terminals before
+      // its rows disappear, mirroring the per-workspace close path.
+      const workspaces =
+        queryClient.getQueryData<Workspace[]>(workspaceKeys.byRepository(id)) ??
+        [];
+      const store = useUiStore.getState();
+      for (const ws of workspaces) {
+        store.innerTabs[ws.id]?.tabs.forEach((t) =>
+          t.kind === "terminal"
+            ? disposeSessionXterm(t.id)
+            : disposeMainXterm(ws.id),
+        );
+        disposeMainXterm(ws.id);
+      }
+      store.forgetRepository(
+        id,
+        workspaces.map((w) => w.id),
+      );
+
+      // Optimistically drop the repo from the list so the home redirect,
+      // sidebar, and route guards see the new truth immediately — an
+      // invalidate alone serves the stale (deleted) repo until the
+      // refetch lands, which bounced the user right back into it.
+      queryClient.setQueryData<Repository[]>(repositoryKeys.list(), (prev) =>
+        prev ? prev.filter((r) => r.id !== id) : prev,
+      );
       queryClient.invalidateQueries({ queryKey: repositoryKeys.list() });
       queryClient.removeQueries({ queryKey: repositoryKeys.detail(id) });
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.byRepository(id) });
-      // If the user is currently on the just-deleted repo's home or
-      // any of its workspace routes, bounce them to the welcome screen.
-      // Otherwise the Terminal component stays mounted and the orphaned
-      // route shows a "Repository not found" placeholder.
+      queryClient.removeQueries({ queryKey: workspaceKeys.byRepository(id) });
+
+      // If the user is currently on the just-deleted repo's home or any
+      // of its workspace routes, bounce them to `/` — which lands on the
+      // first remaining repo's workspace, or the welcome flow if none.
       const currentPath = router.state.location.pathname;
       if (currentPath.startsWith(`/repositories/${id}`)) {
         void navigate({ to: "/" });

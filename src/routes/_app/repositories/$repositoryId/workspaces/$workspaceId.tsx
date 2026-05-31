@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { BranchChip } from "@/components/BranchChip";
@@ -13,12 +13,14 @@ import { WorkspaceAgentToolbar } from "@/components/WorkspaceAgentToolbar";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
 import { useGitStatus } from "@/lib/hooks/useGit";
+import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 function WorkspaceDetail() {
   const { repositoryId, workspaceId } = Route.useParams();
+  const { data: repos } = useRepositories();
   const { data: workspace } = useWorkspace(workspaceId);
   const { data: changes } = useGitStatus(workspaceId);
   const rightPanelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
@@ -52,6 +54,12 @@ function WorkspaceDetail() {
       queryKey: ["workspaces", "repository", repositoryId],
     });
   }, [queryClient, workspaceId, repositoryId]);
+
+  // The parent repo is gone (e.g. just deleted) — bounce home instead of
+  // showing this orphaned workspace (and its stale terminal) forever.
+  if (repos && !repos.some((r) => r.id === repositoryId)) {
+    return <Navigate to="/" replace />;
+  }
 
   if (!workspace) {
     return (

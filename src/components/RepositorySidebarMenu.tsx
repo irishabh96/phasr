@@ -60,7 +60,9 @@ export function RepositorySidebarMenu({
     deleteRepo.mutate(repository.id, {
       onSuccess: () => {
         setConfirming(false);
-        navigate({ to: "/" });
+        // Navigation is owned by useDeleteRepository — it only bounces
+        // home when you're viewing the repo you just deleted, so removing
+        // a background repo leaves your current view intact.
       },
     });
   };

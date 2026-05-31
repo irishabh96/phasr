@@ -213,6 +213,12 @@ interface UiState {
   openInnerPreviewTab: (workspaceId: string, filePath: string) => InnerTab;
   /** Refuses to close the non-closable "main" tab. */
   closeInnerTab: (workspaceId: string, tabId: string) => InnerTab | null;
+  /**
+   * Drop all tab state for a deleted repository: its workspaces' inner
+   * tabs, the repo's own inner tabs, and the active workspace context if
+   * it points at this repo. Callers dispose the xterm instances first.
+   */
+  forgetRepository: (repositoryId: string, workspaceIds: string[]) => void;
   setActiveInnerTab: (workspaceId: string, tabId: string) => void;
   setInnerTabPtySession: (
     workspaceId: string,
@@ -564,6 +570,20 @@ export const useUiStore = create<UiState>((set, get) => ({
       },
     });
     return closed;
+  },
+
+  forgetRepository: (repositoryId, workspaceIds) => {
+    const innerTabs = { ...get().innerTabs };
+    for (const wsId of workspaceIds) delete innerTabs[wsId];
+    const { [repositoryId]: _removedRepo, ...repoInnerTabs } =
+      get().repoInnerTabs;
+    const ctx = get().activeWorkspaceContext;
+    set({
+      innerTabs,
+      repoInnerTabs,
+      activeWorkspaceContext:
+        ctx?.repositoryId === repositoryId ? null : ctx,
+    });
   },
   setActiveInnerTab: (workspaceId, tabId) => {
     const state = get().innerTabs[workspaceId];
