@@ -111,6 +111,9 @@ impl RunCommandRepo {
         self.get(&rc.id).await
     }
 
+    /// Unscoped list — retained for tests only. Production reads go
+    /// through `list_by_repository_for_user` for account isolation.
+    #[cfg(test)]
     pub async fn list_by_repository(
         &self,
         repository_id: &str,
@@ -123,6 +126,27 @@ impl RunCommandRepo {
              ORDER BY sort_order ASC, name ASC",
         )
         .bind(repository_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_run_command).collect()
+    }
+
+    /// Owner-scoped variant so a different signed-in account never sees
+    /// another user's run commands.
+    pub async fn list_by_repository_for_user(
+        &self,
+        repository_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<RunCommand>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
+                    created_at, updated_at
+             FROM run_commands
+             WHERE repository_id = ? AND user_id = ?
+             ORDER BY sort_order ASC, name ASC",
+        )
+        .bind(repository_id)
+        .bind(user_id)
         .fetch_all(&self.db)
         .await?;
         rows.iter().map(row_to_run_command).collect()

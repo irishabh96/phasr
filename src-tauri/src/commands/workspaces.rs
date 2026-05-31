@@ -153,8 +153,10 @@ pub async fn list_workspaces(
     repo: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<Workspace>, WorkspaceCmdError> {
-    session.require()?;
-    Ok(repo.list_by_repository(&repository_id).await?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    Ok(repo
+        .list_by_repository_for_user(&repository_id, &current.user_id)
+        .await?)
 }
 
 #[tauri::command]
@@ -163,8 +165,8 @@ pub async fn get_workspace(
     repo: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
-    session.require()?;
-    Ok(repo.get(&id).await?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    Ok(repo.get_for_user(&id, &current.user_id).await?)
 }
 
 #[tauri::command]

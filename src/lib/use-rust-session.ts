@@ -17,10 +17,23 @@ import {
   type AuthErrorCode,
   classifyAuthError,
 } from "./authErrorCodes";
+import { queryClient } from "./query";
 import { reportP0Error } from "./sentry";
+import { useUiStore } from "./store";
 import { isSupabaseConfigured } from "./supabase";
 import { tauri } from "./tauri";
 import { showToast } from "./toast";
+
+/**
+ * Drop all of the previous account's in-memory state when the signed-in
+ * identity changes (or on sign-out). The local DB reads are user-scoped,
+ * but the React Query cache + UI tab store would otherwise keep showing
+ * the prior account's repositories/tabs until a refetch lands.
+ */
+function clearAccountScopedState() {
+  queryClient.clear();
+  useUiStore.getState().resetForAccountSwitch();
+}
 
 type RustSessionState =
   | { state: "loading" }
@@ -79,12 +92,19 @@ export function useRustSession(): RustSessionState {
   const [state, setState] = useState<RustSessionState>({ state: "loading" });
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSessionKeyRef = useRef<string | null>(null);
+  // The last account we became "ready" for, so we can detect a switch to
+  // a different account and purge the prior one's cached data.
+  const lastReadyUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     const clearAuthState = () => {
       lastSessionKeyRef.current = null;
+      if (lastReadyUserIdRef.current !== null) {
+        clearAccountScopedState();
+        lastReadyUserIdRef.current = null;
+      }
       clearDesktopSession({ emitChange: false });
       void withTimeout(
         tauri.stopCloudSync().catch(() => {}),
@@ -199,6 +219,15 @@ export function useRustSession(): RustSessionState {
           commitDesktopSession(session, { emitChange: false });
         }
         lastSessionKeyRef.current = desktopSessionKey(session);
+        // Switched to a different account on this machine — purge the
+        // previous account's cached repos/tabs so they don't leak through.
+        if (
+          lastReadyUserIdRef.current !== null &&
+          lastReadyUserIdRef.current !== session.userId
+        ) {
+          clearAccountScopedState();
+        }
+        lastReadyUserIdRef.current = session.userId;
         if (!cancelled) setState({ state: "ready", userId: session.userId });
       } catch (err) {
         if (cancelled) return;

@@ -74,6 +74,22 @@ impl RepositoryRepo {
         rows.iter().map(row_to_repository).collect()
     }
 
+    /// Like `list`, but scoped to a single owner so a different account
+    /// signed in on the same machine never sees these rows.
+    pub async fn list_for_user(&self, user_id: &str) -> Result<Vec<Repository>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, name, remote_url, local_path, default_branch,
+                    created_at, updated_at
+             FROM repositories
+             WHERE deleted_at IS NULL AND user_id = ?
+             ORDER BY updated_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_repository).collect()
+    }
+
     pub async fn get(&self, id: &str) -> Result<Repository, StoreError> {
         let row = sqlx::query(
             "SELECT id, name, remote_url, local_path, default_branch,
@@ -82,6 +98,26 @@ impl RepositoryRepo {
              WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref()
+            .map(row_to_repository)
+            .transpose()?
+            .ok_or(StoreError::NotFound)
+    }
+
+    /// Owner-scoped `get`: returns `NotFound` for a repo owned by another
+    /// account (so stale routes self-heal instead of leaking).
+    pub async fn get_for_user(&self, id: &str, user_id: &str) -> Result<Repository, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, name, remote_url, local_path, default_branch,
+                    created_at, updated_at
+             FROM repositories
+             WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .bind(user_id)
         .fetch_optional(&self.db)
         .await?;
 
@@ -280,6 +316,45 @@ mod tests {
         assert!(repo.exists_soft_deleted(&r.id).await.unwrap());
         let pending = repo.list_dirty_soft_deletes().await.unwrap();
         assert_eq!(pending, vec![r.id.clone()]);
+    }
+
+    async fn insert_user(db: &Db, id: &str) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, created_at, updated_at, dirty)
+             VALUES (?, ?, ?, ?, 0)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(&now)
+        .bind(&now)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_are_scoped_to_the_owner() {
+        let repo = fresh_repo().await;
+        insert_user(&repo.db, "user-a").await;
+        insert_user(&repo.db, "user-b").await;
+
+        let a = Repository::new("a-repo".into(), None, None);
+        let b = Repository::new("b-repo".into(), None, None);
+        repo.insert_for_user(&a, "user-a").await.unwrap();
+        repo.insert_for_user(&b, "user-b").await.unwrap();
+
+        // Each account sees only its own repositories.
+        let a_list = repo.list_for_user("user-a").await.unwrap();
+        assert_eq!(a_list.len(), 1);
+        assert_eq!(a_list[0].id, a.id);
+
+        // And can't fetch another account's repo by id.
+        assert_eq!(repo.get_for_user(&a.id, "user-a").await.unwrap().id, a.id);
+        assert!(matches!(
+            repo.get_for_user(&b.id, "user-a").await,
+            Err(StoreError::NotFound)
+        ));
     }
 
     #[tokio::test]

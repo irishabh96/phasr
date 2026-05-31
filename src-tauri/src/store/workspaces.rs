@@ -102,6 +102,28 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
+    /// Owner-scoped variant so a different signed-in account never sees
+    /// another user's workspaces.
+    pub async fn list_by_repository_for_user(
+        &self,
+        repository_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND user_id = ?
+             ORDER BY created_at DESC",
+        )
+        .bind(repository_id)
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
     pub async fn list_by_status(
         &self,
         status: WorkspaceStatus,
@@ -129,6 +151,27 @@ impl WorkspaceRepo {
              WHERE id = ?",
         )
         .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref()
+            .map(row_to_workspace)
+            .transpose()?
+            .ok_or(StoreError::NotFound)
+    }
+
+    /// Owner-scoped `get`: `NotFound` for a workspace owned by another
+    /// account.
+    pub async fn get_for_user(&self, id: &str, user_id: &str) -> Result<Workspace, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE id = ? AND user_id = ?",
+        )
+        .bind(id)
+        .bind(user_id)
         .fetch_optional(&self.db)
         .await?;
 

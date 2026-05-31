@@ -219,6 +219,12 @@ interface UiState {
    * it points at this repo. Callers dispose the xterm instances first.
    */
   forgetRepository: (repositoryId: string, workspaceIds: string[]) => void;
+  /**
+   * Wipe all per-account tab/workspace state. Called when the signed-in
+   * account changes (or on sign-out) so one user's tabs never bleed into
+   * another's session.
+   */
+  resetForAccountSwitch: () => void;
   setActiveInnerTab: (workspaceId: string, tabId: string) => void;
   setInnerTabPtySession: (
     workspaceId: string,
@@ -584,6 +590,10 @@ export const useUiStore = create<UiState>((set, get) => ({
       activeWorkspaceContext:
         ctx?.repositoryId === repositoryId ? null : ctx,
     });
+  },
+
+  resetForAccountSwitch: () => {
+    set({ innerTabs: {}, repoInnerTabs: {}, activeWorkspaceContext: null });
   },
   setActiveInnerTab: (workspaceId, tabId) => {
     const state = get().innerTabs[workspaceId];

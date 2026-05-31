@@ -129,8 +129,8 @@ pub async fn list_repositories(
     repo: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<Repository>, RepositoryCmdError> {
-    session.require()?;
-    Ok(repo.list().await?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    Ok(repo.list_for_user(&current.user_id).await?)
 }
 
 #[tauri::command]
@@ -139,8 +139,8 @@ pub async fn get_repository(
     repo: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
-    session.require()?;
-    Ok(repo.get(&id).await?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    Ok(repo.get_for_user(&id, &current.user_id).await?)
 }
 
 #[tauri::command]

@@ -104,8 +104,10 @@ pub async fn list_run_commands(
     repo: State<'_, RunCommandRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<RunCommand>, RunCommandError> {
-    session.require()?;
-    Ok(repo.list_by_repository(&repository_id).await?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    Ok(repo
+        .list_by_repository_for_user(&repository_id, &current.user_id)
+        .await?)
 }
 
 #[tauri::command]
