@@ -167,7 +167,7 @@ function RepoBlock({
                   }}
                   title="New workspace"
                   aria-label={`New workspace in ${repo.name}`}
-                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) opacity-0 transition-all duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary) group-hover/repo:opacity-100 focus-visible:opacity-100"
+                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary)"
                 >
                   <Plus size={12} />
                 </button>

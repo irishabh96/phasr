@@ -93,7 +93,7 @@ impl WorkspaceRepo {
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
-             WHERE repository_id = ?
+             WHERE repository_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
         )
         .bind(repository_id)
@@ -114,7 +114,7 @@ impl WorkspaceRepo {
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
-             WHERE repository_id = ? AND user_id = ?
+             WHERE repository_id = ? AND user_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
         )
         .bind(repository_id)
@@ -133,7 +133,7 @@ impl WorkspaceRepo {
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
-             WHERE status = ?
+             WHERE status = ? AND deleted_at IS NULL
              ORDER BY updated_at DESC",
         )
         .bind(status.as_str())
@@ -148,7 +148,7 @@ impl WorkspaceRepo {
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
-             WHERE id = ?",
+             WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&self.db)
@@ -168,7 +168,7 @@ impl WorkspaceRepo {
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
-             WHERE id = ? AND user_id = ?",
+             WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(user_id)
@@ -190,7 +190,7 @@ impl WorkspaceRepo {
                     branch, worktree_path, exit_code,
                     created_at, started_at, finished_at, archived_at, updated_at
              FROM workspaces
-             WHERE repository_id = ? AND workspace_kind = 'local'
+             WHERE repository_id = ? AND workspace_kind = 'local' AND deleted_at IS NULL
              LIMIT 1",
         )
         .bind(repository_id)
@@ -275,11 +275,25 @@ impl WorkspaceRepo {
         Ok(current)
     }
 
+    /// Soft-delete: tombstone the row (mirrors `RepositoryRepo::delete`)
+    /// and mark it dirty so the deletion pushes to the cloud. Without the
+    /// tombstone the next sync pull would re-insert the still-present
+    /// cloud row. `local`-kind workspaces aren't synced, so they don't
+    /// get marked dirty. The worktree/branch teardown lives in the
+    /// `delete_workspace` command.
     pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        let res = sqlx::query("DELETE FROM workspaces WHERE id = ?")
-            .bind(id)
-            .execute(&self.db)
-            .await?;
+        let now = Utc::now().to_rfc3339();
+        let res = sqlx::query(
+            "UPDATE workspaces
+                SET deleted_at = ?, updated_at = ?,
+                    dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
+              WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.db)
+        .await?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound);
         }
@@ -373,6 +387,35 @@ mod tests {
         let list = workspaces.list_by_repository(&repo.id).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "fix bug");
+    }
+
+    #[tokio::test]
+    async fn delete_soft_hides_workspace_but_keeps_tombstone() {
+        let (_repos, workspaces, repo) = fresh().await;
+        let ws = Workspace::new(repo.id.clone(), "doomed".into(), "claude".into());
+        workspaces.insert(&ws).await.unwrap();
+        workspaces.delete(&ws.id).await.unwrap();
+
+        // Hidden from UI reads…
+        assert!(workspaces
+            .list_by_repository(&repo.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            workspaces.get(&ws.id).await,
+            Err(StoreError::NotFound)
+        ));
+
+        // …but the row survives as a tombstone (so the delete can sync
+        // and the cloud can't resurrect it).
+        let deleted_at: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM workspaces WHERE id = ?")
+                .bind(&ws.id)
+                .fetch_one(&workspaces.db)
+                .await
+                .unwrap();
+        assert!(deleted_at.is_some());
     }
 
     #[tokio::test]
