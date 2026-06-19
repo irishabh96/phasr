@@ -198,6 +198,7 @@ async fn sync_once(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError
     step!("push_repository_deletes", push_repository_deletes(client, db));
     step!("pull_repositories", pull_repositories(client, db));
     step!("push_dirty_repositories", push_dirty_repositories(client, db));
+    step!("push_workspace_deletes", push_workspace_deletes(client, db));
     step!("pull_workspaces", pull_workspaces(client, db));
     step!("push_dirty_workspaces", push_dirty_workspaces(client, db));
     step!("pull_run_commands", pull_run_commands(client, db));
@@ -344,6 +345,8 @@ struct CloudWorkspaceRow {
     prompt: Option<String>,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default)]
+    deleted_at: Option<DateTime<Utc>>,
     command: String,
     status: String,
     branch: Option<String>,
@@ -633,6 +636,27 @@ async fn upsert_workspace_from_cloud(
     db: &Db,
     row: &CloudWorkspaceRow,
 ) -> Result<(), SyncError> {
+    // Already tombstoned locally — never resurrect it.
+    if workspace_is_soft_deleted(db, &row.id, &client.user_id).await? {
+        return Ok(());
+    }
+    // Cloud tombstone (deleted on another device) — mirror it locally on
+    // the live row if we still have one, then stop.
+    if row.deleted_at.is_some() {
+        sqlx::query(
+            "UPDATE workspaces
+                SET deleted_at = ?, updated_at = ?, synced_at = ?, dirty = 0
+              WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
+        )
+        .bind(row.deleted_at.map(|d| d.to_rfc3339()))
+        .bind(row.updated_at.to_rfc3339())
+        .bind(Utc::now().to_rfc3339())
+        .bind(&row.id)
+        .bind(&client.user_id)
+        .execute(db)
+        .await?;
+        return Ok(());
+    }
     let current = get_updated_at(db, "workspaces", &row.id, &client.user_id).await?;
     if let Some(current) = current {
         if current >= row.updated_at {
@@ -739,11 +763,52 @@ async fn dirty_workspace_rows(
         "SELECT id, repository_id, name, prompt, agent, command, status, branch, worktree_path,
                 exit_code, created_at, started_at, finished_at, archived_at, updated_at
          FROM workspaces
-         WHERE dirty = 1 AND user_id = ? AND workspace_kind = 'agent'",
+         WHERE dirty = 1 AND deleted_at IS NULL AND user_id = ? AND workspace_kind = 'agent'",
     )
     .bind(user_id)
     .fetch_all(db)
     .await?)
+}
+
+/// Push workspace soft-deletes: PATCH the `deleted_at` tombstone onto the
+/// cloud row instead of leaving it live (which the next pull would
+/// re-insert locally). Mirrors `push_repository_deletes`.
+async fn push_workspace_deletes(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
+    let rows = sqlx::query(
+        "SELECT id, deleted_at, updated_at FROM workspaces
+             WHERE deleted_at IS NOT NULL AND dirty = 1
+               AND user_id = ? AND workspace_kind = 'agent'",
+    )
+    .bind(&client.user_id)
+    .fetch_all(db)
+    .await?;
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        client
+            .patch_by_id(
+                "workspaces",
+                &id,
+                json!({
+                    "deleted_at": row.try_get::<String, _>("deleted_at")?,
+                    "updated_at": row.try_get::<String, _>("updated_at")?,
+                }),
+            )
+            .await?;
+        mark_synced(db, "workspaces", &id).await?;
+    }
+    Ok(())
+}
+
+async fn workspace_is_soft_deleted(db: &Db, id: &str, user_id: &str) -> Result<bool, SyncError> {
+    let row = sqlx::query(
+        "SELECT 1 AS sentinel FROM workspaces
+         WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
 }
 
 async fn pull_run_commands(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
@@ -1366,6 +1431,7 @@ mod tests {
                 name: "Cloud Workspace".into(),
                 prompt: None,
                 agent: Some("claude".into()),
+                deleted_at: None,
                 command: "echo hi".into(),
                 status: "stopped".into(),
                 branch: None,
@@ -1696,5 +1762,146 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ws_count, 0);
+    }
+
+    #[tokio::test]
+    async fn push_workspace_delete_soft_deletes_in_cloud() {
+        use wiremock::matchers::{body_string_contains, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE workspaces SET deleted_at = ?, dirty = 1 WHERE id = 'ws-a'")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // A hard DELETE would be the old, wrong behavior.
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/rest/v1/workspaces"))
+            .and(query_param("id", "eq.ws-a"))
+            .and(body_string_contains("deleted_at"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        push_workspace_deletes(&client, &db).await.unwrap();
+
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = 'ws-a'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
+    }
+
+    #[tokio::test]
+    async fn pull_cloud_tombstone_does_not_resurrect_workspace() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+
+        // Cloud row says deleted — pulling must tombstone the live local
+        // row, not keep/resurrect it.
+        let client = client_at("user-a", "http://127.0.0.1:1");
+        let now = Utc::now();
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &CloudWorkspaceRow {
+                id: "ws-a".into(),
+                repository_id: "repo-a".into(),
+                name: "W".into(),
+                prompt: None,
+                agent: Some("claude".into()),
+                deleted_at: Some(now),
+                command: "run".into(),
+                status: "stopped".into(),
+                branch: None,
+                worktree_path: None,
+                exit_code: None,
+                created_at: now,
+                started_at: None,
+                finished_at: None,
+                archived_at: None,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
+        let live: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workspaces WHERE id='ws-a' AND deleted_at IS NULL",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(live, 0);
+    }
+
+    // Backward-compat: if the cloud tombstone hasn't landed yet (cloud
+    // migration not applied / push failed), the cloud still reports the
+    // workspace LIVE. A pull must NOT resurrect a row we soft-deleted
+    // locally, and must leave it dirty so the tombstone can still push.
+    #[tokio::test]
+    async fn pull_does_not_resurrect_locally_deleted_workspace() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE workspaces SET deleted_at = ?, dirty = 1 WHERE id = 'ws-a'")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let client = client_at("user-a", "http://127.0.0.1:1");
+        let now_dt = Utc::now();
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &CloudWorkspaceRow {
+                id: "ws-a".into(),
+                repository_id: "repo-a".into(),
+                name: "W".into(),
+                prompt: None,
+                agent: Some("claude".into()),
+                deleted_at: None, // cloud still thinks it's live
+                command: "run".into(),
+                status: "stopped".into(),
+                branch: None,
+                worktree_path: None,
+                exit_code: None,
+                created_at: now_dt,
+                started_at: None,
+                finished_at: None,
+                archived_at: None,
+                updated_at: now_dt,
+            },
+        )
+        .await
+        .unwrap();
+
+        let row = sqlx::query(
+            "SELECT (deleted_at IS NULL) AS live, dirty FROM workspaces WHERE id = 'ws-a'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row.try_get::<i64, _>("live").unwrap(), 0); // still tombstoned
+        assert_eq!(row.try_get::<i64, _>("dirty").unwrap(), 1); // tombstone still pending push
     }
 }
