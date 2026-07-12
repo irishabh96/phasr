@@ -8,14 +8,30 @@ import {
 import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
+import { useUiStore } from "@/lib/store";
 import type { Repository } from "@/lib/types";
 
 function Home() {
   const { data: repositories, isLoading } = useRepositories();
+  const lastWorkspace = useUiStore((s) => s.lastWorkspace);
   const mostRecentRepo = repositories?.[0];
-  const { data: workspaces, isLoading: wsLoading } = useWorkspaces(mostRecentRepo?.id);
 
-  if (isLoading || (mostRecentRepo && wsLoading)) {
+  // Re-entry restore: prefer the *actual* last-open workspace over the
+  // newest one. Only trust the stored repo if it still exists in the live
+  // list (guards stale/cross-account values); otherwise fall back to the
+  // most-recent repo. We load whichever repo's workspaces we might redirect
+  // into, so the query key is stable regardless of which path we take.
+  const storedRepoValid =
+    !!lastWorkspace &&
+    !!repositories?.some((r) => r.id === lastWorkspace.repositoryId);
+  const targetRepo = storedRepoValid
+    ? repositories!.find((r) => r.id === lastWorkspace!.repositoryId)
+    : mostRecentRepo;
+  const { data: workspaces, isLoading: wsLoading } = useWorkspaces(
+    targetRepo?.id,
+  );
+
+  if (isLoading || (targetRepo && wsLoading)) {
     return (
       <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
         Loading…
@@ -27,7 +43,26 @@ function Home() {
     return <WelcomeState />;
   }
 
-  const repo = mostRecentRepo!;
+  const repo = targetRepo ?? mostRecentRepo!;
+
+  // Restore the real last-open workspace when it still resolves in its
+  // repo's list. A stale workspace id (deleted since last session) simply
+  // falls through to the newest-workspace behavior below — never a dead-end.
+  if (storedRepoValid) {
+    const restored = workspaces?.find(
+      (w) => w.id === lastWorkspace!.workspaceId,
+    );
+    if (restored) {
+      return (
+        <Navigate
+          to="/repositories/$repositoryId/workspaces/$workspaceId"
+          params={{ repositoryId: repo.id, workspaceId: restored.id }}
+          replace
+        />
+      );
+    }
+  }
+
   const ws = workspaces?.[0];
 
   if (ws) {
@@ -69,7 +104,7 @@ function WelcomeState() {
             onClick={() => void navigate({ to: "/new-project" })}
             className="glass-panel group flex h-full w-full max-w-[320px] flex-col items-start p-6 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
           >
-            <div className="flex items-center gap-2 text-(--color-accent-400)">
+            <div className="flex items-center gap-2 text-(--color-accent-text)">
               <Sparkles size={15} />
               <span className="text-[13px] font-medium">New project</span>
             </div>
@@ -88,7 +123,9 @@ function WelcomeState() {
           >
             <div className="flex items-center gap-2 text-(--color-text-secondary)">
               <FolderOpen size={15} />
-              <span className="text-[13px] font-medium">Open existing project</span>
+              <span className="text-[13px] font-medium">
+                Open existing project
+              </span>
             </div>
             <p className="mt-2 text-[12px] text-(--color-text-muted)">
               Point Phasr at a folder on disk that's already a git repo.

@@ -27,6 +27,7 @@ import {
 } from "@/lib/oauthState";
 import { reportP0Error } from "@/lib/sentry";
 import { showToast } from "@/lib/toast";
+import { GlassButton } from "@/components/ui/GlassButton";
 
 type LoginState =
   | { kind: "idle" }
@@ -72,6 +73,7 @@ function isClerkSessionExistsError(error: unknown) {
 export function DesktopSignIn() {
   const clerk = useClerk();
   const [loginState, setLoginState] = useState<LoginState>({ kind: "idle" });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasDesktopSession, setHasDesktopSession] = useState(() =>
     Boolean(readDesktopSession()),
   );
@@ -88,9 +90,18 @@ export function DesktopSignIn() {
     return <Navigate to="/" replace />;
   }
 
+  // Abandon a pending browser-based sign-in and return to the button list
+  // so the user isn't stranded on the "waiting" copy (I4).
+  const cancelWaiting = () => {
+    clearPendingOAuthState();
+    setErrorMessage(null);
+    setLoginState({ kind: "idle" });
+  };
+
   const startOAuth = async (provider: ClerkOAuthProvider) => {
     if (!clerk.loaded || !clerk.client) return;
 
+    setErrorMessage(null);
     setLoginState({ kind: "opening", provider });
 
     const completeExistingSession = async () => {
@@ -121,6 +132,7 @@ export function DesktopSignIn() {
         message: AUTH_ERROR_MESSAGES[errorCode],
         code: errorCode,
       });
+      setErrorMessage(AUTH_ERROR_MESSAGES[errorCode]);
       setLoginState({ kind: "idle" });
     };
 
@@ -181,6 +193,7 @@ export function DesktopSignIn() {
         message: AUTH_ERROR_MESSAGES[errorCode],
         code: errorCode,
       });
+      setErrorMessage(AUTH_ERROR_MESSAGES[errorCode]);
       setLoginState({ kind: "idle" });
     }
   };
@@ -190,19 +203,20 @@ export function DesktopSignIn() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-6 text-(--color-text-primary)">
-      <section className="w-full max-w-[440px] rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6 shadow-xl">
+      <section className="w-full max-w-[440px] rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
         <div className="mb-6 text-center">
           <PhasrWordmark />
           <h1 className="text-[1.25rem] font-semibold leading-tight">
             Welcome to Phasr
           </h1>
           <p className="mt-1 text-[0.875rem] text-(--color-text-secondary)">
-            sign in to get started
+            Sign in to get started
           </p>
         </div>
 
         <div className="space-y-3">
           <OAuthButton
+            autoFocus
             disabled={disabled}
             loading={isProviderBusy(loginState, "google")}
             label="Continue with Google"
@@ -218,11 +232,22 @@ export function DesktopSignIn() {
           />
         </div>
 
-        {loginState.kind === "waiting" ? (
-          <p className="mt-4 text-sm text-(--color-text-secondary)">
-            Complete {PROVIDER_LABELS[loginState.provider]} login in your
-            browser, then return here.
+        {errorMessage ? (
+          <p role="alert" className="mt-4 text-sm text-(--color-danger)">
+            {errorMessage}
           </p>
+        ) : null}
+
+        {loginState.kind === "waiting" ? (
+          <div className="mt-4 space-y-2">
+            <p className="text-sm text-(--color-text-secondary)">
+              Complete {PROVIDER_LABELS[loginState.provider]} login in your
+              browser, then return here.
+            </p>
+            <GlassButton variant="ghost" size="sm" onClick={cancelWaiting}>
+              Cancel
+            </GlassButton>
+          </div>
         ) : null}
         {loginState.kind === "finishing" ? (
           <p className="mt-4 text-sm text-(--color-text-secondary)">
@@ -235,12 +260,14 @@ export function DesktopSignIn() {
 }
 
 function OAuthButton({
+  autoFocus,
   disabled,
   icon,
   label,
   loading,
   onClick,
 }: {
+  autoFocus?: boolean;
   disabled: boolean;
   icon: ReactNode;
   label: string;
@@ -248,15 +275,14 @@ function OAuthButton({
   onClick: () => void;
 }) {
   return (
-    <button
+    <GlassButton
+      variant="outline"
+      size="lg"
       type="button"
+      autoFocus={autoFocus}
       disabled={disabled || loading}
       onClick={onClick}
-      className="flex h-12 w-full items-center justify-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-(--color-text-primary) transition hover:border-(--color-border-strong) hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-60"
-      style={{
-        background: "var(--color-bg-input)",
-        border: "1px solid var(--color-border-subtle)",
-      }}
+      className="w-full gap-3"
     >
       {loading ? (
         <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -264,7 +290,7 @@ function OAuthButton({
         icon
       )}
       <span>{label}</span>
-    </button>
+    </GlassButton>
   );
 }
 
@@ -274,28 +300,28 @@ function PhasrWordmark() {
       viewBox="300 360 880 270"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className="mx-auto mb-6 h-[78px] w-80"
+      className="mx-auto mb-6 h-[78px] w-80 text-(--color-text-primary)"
       aria-hidden="true"
     >
       <path
         d="M700.672 393.279C725.217 392.664 752.062 393.257 776.791 393.261L810.935 429.865L810.97 598.805C798.469 598.82 775.519 597.98 764.29 599.15V556.172L764.339 545.077C751.542 545.092 724.436 545.977 712.582 544.874L712.666 598.85C697.235 598.61 681.331 598.82 665.863 598.812C665.343 580.628 665.816 560.05 665.82 541.648L665.844 430.576C677.539 418.234 689.148 405.802 700.672 393.279ZM712.828 498.183L764.17 498.22C764.205 481.484 763.973 463.959 764.283 447.29L712.561 447.26C712.589 462.016 711.991 483.802 712.828 498.183Z"
-        fill="#E6EDF3"
+        fill="currentColor"
       />
       <path
         d="M995.646 393.249L1108.5 393.234C1118.52 403.661 1128.4 414.237 1138.14 424.958C1138.77 451.514 1138.25 480.606 1138.26 507.305C1130.39 515.572 1122.42 523.726 1114.34 531.761C1125.12 553.456 1137.63 577.207 1147.75 598.91C1139.22 598.43 1126.34 598.812 1117.52 598.812C1110.94 598.775 1104.36 598.842 1097.78 599.015C1089.07 579.848 1078.72 559.315 1069.52 540.253L1042.87 540.426V598.887C1029.22 598.145 1009.88 598.79 995.772 598.782L995.646 393.249ZM1042.86 488.325C1052.2 488.175 1084.35 488.941 1091.67 487.943C1092.56 486.472 1092.38 485.812 1092.34 484.064C1092.37 471.116 1092.3 457.95 1092.48 445.017C1079.55 445.377 1055.4 446.105 1042.84 445.212L1042.86 488.325Z"
-        fill="#E6EDF3"
+        fill="currentColor"
       />
       <path
         d="M331.355 393.239L444.989 393.285L473.782 424.062C474.872 448.791 473.966 482.091 473.967 507.282L443.07 540.238L418.788 540.268L374.971 540.261C374.907 559.773 374.978 579.278 375.184 598.79C367.95 598.782 337.261 598.235 331.421 599.315C330.521 531.701 331.106 460.996 331.355 393.239ZM375.203 486.307L428.276 486.277C428.261 472.541 428.01 457.935 428.295 444.275C411.106 444.267 392.059 444.702 375.024 444.14C375.008 457.575 374.67 473.037 375.203 486.307Z"
-        fill="#E6EDF3"
+        fill="currentColor"
       />
       <path
         d="M496.032 393.249H540.082L540.139 472.144C557.944 471.566 577.592 472.016 595.533 472.039L595.512 393.226L641.348 393.255C640.886 415.942 641.3 440.246 641.3 463.074L641.303 598.82L624.804 598.835L595.602 598.82C595.314 573.441 595.58 547.5 595.592 522.076C578.085 521.626 557.594 521.761 540.086 522.129L540.138 598.865C532.023 598.805 502.184 598.19 496.159 599.315C496.259 591.22 496.218 582.991 496.154 574.889C495.679 514.372 496.646 453.749 496.032 393.249Z"
-        fill="#E6EDF3"
+        fill="currentColor"
       />
       <path
         d="M861.068 393.243L968.801 393.222C967.795 407.256 968.435 429.814 968.864 444.29L877.57 444.38L877.662 474.222L945.97 474.319L974.011 504.889L974.13 569.81C967.268 578.017 954.288 590.83 946.68 598.827L937.519 598.812L866.63 598.805C857.461 598.797 839.397 598.22 831.22 599.255L831.276 552.256L930.276 552.248L930.248 519.248L859.444 519.3C850.957 510.276 838.673 498.1 831.171 488.79L831.276 425.059C840.22 414.811 851.639 403.278 861.068 393.243Z"
-        fill="#E6EDF3"
+        fill="currentColor"
       />
     </svg>
   );

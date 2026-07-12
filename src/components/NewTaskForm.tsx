@@ -2,7 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
+import { GlassSelect } from "@/components/ui/GlassSelect";
 import { useAgents } from "@/lib/hooks/useAgents";
+import { humanizeError } from "@/lib/humanizeError";
+import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { reportP0Error } from "@/lib/sentry";
@@ -45,6 +48,7 @@ export function NewTaskForm({
 
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
+  const promptDrop = usePromptDropTarget(prompt, setPrompt);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -101,7 +105,7 @@ export function NewTaskForm({
         repositoryId,
         agentId: activeAgent.agent,
       });
-      setError(String(err));
+      setError(humanizeError(err));
     } finally {
       setSubmitting(false);
     }
@@ -110,10 +114,14 @@ export function NewTaskForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
       <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)">
+        <label
+          htmlFor="new-task-name"
+          className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)"
+        >
           Name
         </label>
         <GlassInput
+          id="new-task-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. fix login redirect bug"
@@ -122,20 +130,18 @@ export function NewTaskForm({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)">
+        <label
+          htmlFor="new-task-agent"
+          className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)"
+        >
           Agent
         </label>
-        <select
+        <GlassSelect
+          id="new-task-agent"
           value={activeAgentValue ?? ""}
           onChange={(e) => setAgent(e.target.value as Agent)}
-          className="h-9 w-full rounded-[10px] border border-(--glass-border-hairline) bg-[color-mix(in_oklab,var(--color-bg-input)_70%,transparent)] px-3 text-[13px] backdrop-blur-md focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
-        >
-          {allAgents.map((a) => (
-            <option key={a.agent} value={a.agent}>
-              {a.label}
-            </option>
-          ))}
-        </select>
+          options={allAgents.map((a) => ({ label: a.label, value: a.agent }))}
+        />
         {activeAgent && (
           <code className="block truncate text-[11px] text-(--color-text-muted)">
             {activeAgent.command}
@@ -144,41 +150,66 @@ export function NewTaskForm({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)">
+        <label
+          htmlFor="new-task-prompt"
+          className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)"
+        >
           Prompt
         </label>
         <GlassTextarea
+          id="new-task-prompt"
+          ref={promptDrop.ref}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          onFocus={promptDrop.onFocus}
+          onBlur={promptDrop.onBlur}
           placeholder="What should the agent do?"
           rows={4}
         />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)">
+        <label
+          htmlFor="new-task-base-branch"
+          className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)"
+        >
           Base branch
         </label>
         <GlassInput
+          id="new-task-base-branch"
           value={baseBranch}
           onChange={(e) => setBaseBranch(e.target.value)}
           placeholder={repository?.defaultBranch ?? "main"}
         />
         <span className="text-[11px] text-(--color-text-muted)">
-          Worktree will branch off this ref onto a new <code>phasr/...</code> branch.
+          Worktree will branch off this ref onto a new <code>phasr/...</code>{" "}
+          branch.
         </span>
       </div>
 
+      {error && (
+        <p className="truncate text-[11px] text-(--color-danger)" title={error}>
+          {error}
+        </p>
+      )}
+
       <div className="flex items-center justify-end gap-2 pt-1">
-        {error && (
-          <span className="mr-auto truncate text-[11px] text-(--color-danger)">{error}</span>
-        )}
         {onCancel && (
-          <GlassButton variant="outline" size="sm" type="button" onClick={onCancel}>
+          <GlassButton
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={onCancel}
+          >
             Cancel
           </GlassButton>
         )}
-        <GlassButton variant="primary" size="sm" type="submit" disabled={!canSubmit}>
+        <GlassButton
+          variant="primary"
+          size="sm"
+          type="submit"
+          disabled={!canSubmit}
+        >
           {submitting ? "Starting…" : submitLabel}
         </GlassButton>
       </div>

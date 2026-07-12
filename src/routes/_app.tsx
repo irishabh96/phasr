@@ -13,6 +13,8 @@ import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
+import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
+import { useFileDrop } from "@/lib/hooks/useFileDrop";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
@@ -60,6 +62,8 @@ function AppShell() {
 
   useCloudSync();
   useTaskEvents();
+  useCompletionNotifications();
+  useFileDrop();
 
   // Global chrome shortcuts. All bindings come from `@/lib/shortcuts` —
   // edits to a binding live there, not here.

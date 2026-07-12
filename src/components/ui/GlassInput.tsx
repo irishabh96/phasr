@@ -1,7 +1,15 @@
-import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import {
+  forwardRef,
+  type InputHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from "react";
 import { cn } from "@/lib/utils";
 
-const baseClasses = [
+/**
+ * Shared field chrome — border/hover/focus/disabled tokens. Exported so
+ * `GlassSelect` renders as a visually matched set with the input/textarea.
+ */
+export const inputBaseClasses = [
   "block w-full",
   "bg-[color-mix(in_oklab,var(--color-bg-input)_70%,transparent)]",
   "backdrop-blur-md",
@@ -21,7 +29,11 @@ type InputProps = InputHTMLAttributes<HTMLInputElement>;
 export const GlassInput = forwardRef<HTMLInputElement, InputProps>(
   ({ className, ...props }, ref) => {
     return (
-      <input ref={ref} className={cn(baseClasses, "h-9 px-3 text-[13px]", className)} {...props} />
+      <input
+        ref={ref}
+        className={cn(inputBaseClasses, "h-9 px-3 text-[13px]", className)}
+        {...props}
+      />
     );
   },
 );
@@ -35,7 +47,11 @@ export const GlassTextarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         ref={ref}
         rows={rows}
-        className={cn(baseClasses, "py-2 px-3 text-[13px] resize-none leading-relaxed", className)}
+        className={cn(
+          inputBaseClasses,
+          "py-2 px-3 text-[13px] resize-none leading-relaxed",
+          className,
+        )}
         {...props}
       />
     );

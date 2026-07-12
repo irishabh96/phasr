@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SignUpRouteImport } from './routes/sign-up'
 import { Route as SignInRouteImport } from './routes/sign-in'
+import { Route as DesignTestRouteImport } from './routes/design-test'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
@@ -34,6 +35,11 @@ const SignUpRoute = SignUpRouteImport.update({
 const SignInRoute = SignInRouteImport.update({
   id: '/sign-in',
   path: '/sign-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DesignTestRoute = DesignTestRouteImport.update({
+  id: '/design-test',
+  path: '/design-test',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -111,6 +117,7 @@ const AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/design-test': typeof DesignTestRoute
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
   '/new-project': typeof AppNewProjectRoute
@@ -127,6 +134,7 @@ export interface FileRoutesByFullPath {
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
+  '/design-test': typeof DesignTestRoute
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
   '/new-project': typeof AppNewProjectRoute
@@ -145,6 +153,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/design-test': typeof DesignTestRoute
   '/sign-in': typeof SignInRouteWithChildren
   '/sign-up': typeof SignUpRouteWithChildren
   '/_app/new-project': typeof AppNewProjectRoute
@@ -165,6 +174,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/design-test'
     | '/sign-in'
     | '/sign-up'
     | '/new-project'
@@ -181,6 +191,7 @@ export interface FileRouteTypes {
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/design-test'
     | '/sign-in'
     | '/sign-up'
     | '/new-project'
@@ -198,6 +209,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_app'
+    | '/design-test'
     | '/sign-in'
     | '/sign-up'
     | '/_app/new-project'
@@ -217,6 +229,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  DesignTestRoute: typeof DesignTestRoute
   SignInRoute: typeof SignInRouteWithChildren
   SignUpRoute: typeof SignUpRouteWithChildren
 }
@@ -235,6 +248,13 @@ declare module '@tanstack/react-router' {
       path: '/sign-in'
       fullPath: '/sign-in'
       preLoaderRoute: typeof SignInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/design-test': {
+      id: '/design-test'
+      path: '/design-test'
+      fullPath: '/design-test'
+      preLoaderRoute: typeof DesignTestRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -404,6 +424,7 @@ const SignUpRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  DesignTestRoute: DesignTestRoute,
   SignInRoute: SignInRouteWithChildren,
   SignUpRoute: SignUpRouteWithChildren,
 }

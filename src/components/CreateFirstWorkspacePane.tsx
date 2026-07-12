@@ -1,9 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, ChevronDown, ChevronRight, GitBranch } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useAgents } from "@/lib/hooks/useAgents";
+import { humanizeError } from "@/lib/humanizeError";
 import { useGitBranches } from "@/lib/hooks/useGit";
+import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { reportP0Error } from "@/lib/sentry";
@@ -13,6 +20,7 @@ import { tauri } from "@/lib/tauri";
 import type { Agent, AgentOption, Repository } from "@/lib/types";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
+import { GlassSelect } from "@/components/ui/GlassSelect";
 
 interface CreateFirstWorkspacePaneProps {
   repo: Repository;
@@ -28,7 +36,9 @@ interface CreateFirstWorkspacePaneProps {
  * GitInitConfirmModal during onboarding), a banner above STEP 1 OF 2
  * offers to re-initialize.
  */
-export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps) {
+export function CreateFirstWorkspacePane({
+  repo,
+}: CreateFirstWorkspacePaneProps) {
   const { data: agents } = useAgents();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -43,7 +53,14 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
     enabled: !!repo.localPath,
     staleTime: 5_000,
   });
+  // Optimistic for chrome (banner / branch list) so the "not a git repo"
+  // banner doesn't flash while the check is in flight.
   const isGit = isGitQuery.data?.isGitRepo ?? true;
+  // Gate the CTAs on a *resolved, confirmed* git repo — never the
+  // optimistic default — so the user can't advance before the check
+  // actually lands (E3).
+  const isGitConfirmed =
+    isGitQuery.isSuccess && (isGitQuery.data?.isGitRepo ?? false);
 
   const branchesQuery = useGitBranches(isGit ? repo.localPath : null);
   const branches = branchesQuery.data ?? [];
@@ -68,10 +85,11 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
 
   const trimmedName = name.trim();
   const previewSlug = useMemo(() => slugify(trimmedName), [trimmedName]);
-  const previewBranch = previewSlug.length > 0 ? `phasr/${previewSlug}` : "branch-name";
+  const previewBranch =
+    previewSlug.length > 0 ? `phasr/${previewSlug}` : "branch-name";
 
   const handleStart = async () => {
-    if (!trimmedName || !activeAgent || !isGit) return;
+    if (!trimmedName || !activeAgent || !isGitConfirmed) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -82,7 +100,10 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
         ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
       });
-      queryClient.setQueryData(workspaceKeys.detail(started.workspace.id), started.workspace);
+      queryClient.setQueryData(
+        workspaceKeys.detail(started.workspace.id),
+        started.workspace,
+      );
       queryClient.invalidateQueries({
         queryKey: workspaceKeys.byRepository(started.workspace.repositoryId),
       });
@@ -97,7 +118,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
         repositoryId: repo.id,
         agentId: activeAgent.agent,
       });
-      setError(String(err));
+      setError(humanizeError(err));
     } finally {
       setSubmitting(false);
     }
@@ -106,16 +127,21 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
   // ⌘+Enter advances Step 1 → Step 2 (when the task name is set) and
   // submits on Step 2 (when an agent is picked and the repo is git).
   // Skips when the target gate isn't satisfied so the user can't
-  // accidentally fire an incomplete form.
+  // accidentally fire an incomplete form. Esc on Step 2 steps back (E4).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && step === 2) {
+        e.preventDefault();
+        setStep(1);
+        return;
+      }
       if (!matchShortcut(e, SHORTCUTS.submitForm)) return;
       if (step === 1) {
-        if (trimmedName.length > 0 && isGit) {
+        if (trimmedName.length > 0 && isGitConfirmed) {
           e.preventDefault();
           setStep(2);
         }
-      } else if (activeAgent && !submitting && isGit) {
+      } else if (activeAgent && !submitting && isGitConfirmed) {
         e.preventDefault();
         void handleStart();
       }
@@ -125,14 +151,17 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
     // handleStart is reconstructed each render but the effect re-binds
     // cheaply; the alternative (a ref dance) buys nothing here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, trimmedName, isGit, activeAgent, submitting]);
+  }, [step, trimmedName, isGitConfirmed, activeAgent, submitting]);
 
   return (
     <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-10">
       <div className="w-full max-w-2xl">
         {!isGit && repo.localPath && (
           <div className="mb-6 flex items-center gap-3 rounded-[10px] border border-(--color-warning)/40 bg-(--color-warning)/10 px-3 py-2 text-[12.5px] text-(--color-text-secondary)">
-            <AlertTriangle size={14} className="shrink-0 text-(--color-warning)" />
+            <AlertTriangle
+              size={14}
+              className="shrink-0 text-(--color-warning)"
+            />
             <span className="flex-1">
               This repo isn't a git repository — workspaces require git.
             </span>
@@ -160,7 +189,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
             branches={branches}
             advancedOpen={advancedOpen}
             setAdvancedOpen={setAdvancedOpen}
-            canContinue={trimmedName.length > 0 && isGit}
+            canContinue={trimmedName.length > 0 && isGitConfirmed}
             onContinue={() => setStep(2)}
           />
         ) : (
@@ -171,7 +200,7 @@ export function CreateFirstWorkspacePane({ repo }: CreateFirstWorkspacePaneProps
             activeCommand={activeAgent?.command}
             prompt={prompt}
             setPrompt={setPrompt}
-            canStart={!!activeAgent && !submitting && isGit}
+            canStart={!!activeAgent && !submitting && isGitConfirmed}
             submitting={submitting}
             error={error}
             onBack={() => setStep(1)}
@@ -207,7 +236,13 @@ function Step1({
   onContinue: () => void;
 }) {
   return (
-    <div className="space-y-5">
+    <form
+      className="space-y-5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canContinue) onContinue();
+      }}
+    >
       <header>
         <h1 className="text-[24px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
           Create your first workspace
@@ -247,7 +282,11 @@ function Step1({
           onClick={() => setAdvancedOpen(!advancedOpen)}
           className="flex items-center gap-1 text-[12.5px] text-(--color-text-secondary) transition-colors hover:text-(--color-text-primary)"
         >
-          {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          {advancedOpen ? (
+            <ChevronDown size={13} />
+          ) : (
+            <ChevronRight size={13} />
+          )}
           Advanced options
         </button>
         {advancedOpen && (
@@ -259,18 +298,13 @@ function Step1({
               Base branch
             </label>
             {branches.length > 0 ? (
-              <select
+              <GlassSelect
                 id="first-task-base-branch"
                 value={branches.includes(baseBranch) ? baseBranch : branches[0]}
                 onChange={(e) => setBaseBranch(e.target.value)}
-                className="h-10 w-full rounded-[10px] border border-(--glass-border-hairline) bg-(--color-bg-input) px-3 font-mono text-[12.5px] text-(--color-text-primary) focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
-              >
-                {branches.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
+                options={branches.map((b) => ({ label: b, value: b }))}
+                className="h-10 font-mono text-[12.5px]"
+              />
             ) : (
               // Fall back to a free-text field if the branch list isn't
               // available (e.g. newly-init'd repo before the initial
@@ -291,13 +325,13 @@ function Step1({
         <GlassButton
           variant="primary"
           size="md"
-          onClick={onContinue}
+          type="submit"
           disabled={!canContinue}
         >
           Continue →
         </GlassButton>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -326,8 +360,15 @@ function Step2({
   onBack: () => void;
   onStart: () => void;
 }) {
+  const promptDrop = usePromptDropTarget(prompt, setPrompt);
   return (
-    <div className="space-y-5">
+    <form
+      className="space-y-5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canStart) onStart();
+      }}
+    >
       <header>
         <h1 className="text-[24px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
           Pick an agent and prompt
@@ -344,18 +385,14 @@ function Step2({
         >
           Agent
         </label>
-        <select
+        <GlassSelect
           id="first-task-agent"
+          autoFocus
           value={activeAgentValue ?? ""}
           onChange={(e) => setAgent(e.target.value as Agent)}
-          className="h-10 w-full rounded-[10px] border border-(--glass-border-hairline) bg-(--color-bg-input) px-3 text-[13px] backdrop-blur-md focus:border-(--color-accent-500) focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_25%,transparent)]"
-        >
-          {agents.map((a) => (
-            <option key={a.agent} value={a.agent}>
-              {a.label}
-            </option>
-          ))}
-        </select>
+          options={agents.map((a) => ({ label: a.label, value: a.agent }))}
+          className="h-10"
+        />
         {activeCommand && (
           <code className="block truncate text-[11.5px] text-(--color-text-muted)">
             {activeCommand}
@@ -371,9 +408,12 @@ function Step2({
           Prompt
         </label>
         <GlassTextarea
+          ref={promptDrop.ref}
           id="first-task-prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          onFocus={promptDrop.onFocus}
+          onBlur={promptDrop.onBlur}
           placeholder={
             "e.g. Add a dark mode toggle to the settings page and " +
             "persist the choice in user preferences."
@@ -384,19 +424,31 @@ function Step2({
 
       <div className="flex items-center justify-between gap-2">
         {error ? (
-          <span className="truncate text-[12px] text-(--color-danger)">{error}</span>
+          <span className="truncate text-[12px] text-(--color-danger)">
+            {error}
+          </span>
         ) : (
           <span />
         )}
         <div className="flex items-center gap-2">
-          <GlassButton variant="outline" size="md" onClick={onBack}>
+          <GlassButton
+            variant="outline"
+            size="md"
+            type="button"
+            onClick={onBack}
+          >
             ← Back
           </GlassButton>
-          <GlassButton variant="primary" size="md" onClick={onStart} disabled={!canStart}>
+          <GlassButton
+            variant="primary"
+            size="md"
+            type="submit"
+            disabled={!canStart}
+          >
             {submitting ? "Starting…" : "Start task"}
           </GlassButton>
         </div>
       </div>
-    </div>
+    </form>
   );
 }

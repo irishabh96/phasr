@@ -1,33 +1,55 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useNavigate } from "@tanstack/react-router";
 import { LogOut, Search, Settings as SettingsIcon, UserRound } from "lucide-react";
+import { useSyncExternalStore } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import {
   type DesktopSession,
+  desktopSessionKey,
+  onDesktopSessionChanged,
   readDesktopSession,
   signOutDesktopSession,
 } from "@/lib/desktopAuth";
+import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
-
-type TitleBarProps = {
-  /** Center content — typically a breadcrumb. */
-  breadcrumb?: ReactNode;
-};
 
 const isMac =
   typeof navigator !== "undefined" && /Mac/i.test(navigator.platform ?? navigator.userAgent);
+
+// Cache the session by its stable key so useSyncExternalStore's getSnapshot
+// returns a referentially-stable value between changes (readDesktopSession()
+// allocates a fresh object on every call otherwise).
+let sessionSnapshot: DesktopSession | null = null;
+let sessionSnapshotKey: string | null = null;
+function getSessionSnapshot(): DesktopSession | null {
+  const next = readDesktopSession();
+  const key = desktopSessionKey(next);
+  if (key !== sessionSnapshotKey) {
+    sessionSnapshotKey = key;
+    sessionSnapshot = next;
+  }
+  return sessionSnapshot;
+}
+
+/** Reactive desktop session — re-renders when sign-in/out changes it. */
+function useDesktopSession(): DesktopSession | null {
+  return useSyncExternalStore(
+    onDesktopSessionChanged,
+    getSessionSnapshot,
+    () => null,
+  );
+}
 
 /**
  * Transparent overlay titlebar. On macOS the native traffic lights stick out
  * the top-left, so we leave them ~92px of clearance. The whole bar is a
  * Tauri drag region — interactive children stop the drag automatically.
  */
-export function TitleBar({ breadcrumb }: TitleBarProps) {
+export function TitleBar() {
   const navigate = useNavigate();
   const openCommandPalette = useUiStore((s) => s.openCommandPalette);
-  const session = readDesktopSession();
+  const session = useDesktopSession();
 
   return (
     <div
@@ -42,19 +64,20 @@ export function TitleBar({ breadcrumb }: TitleBarProps) {
         data-tauri-drag-region
         className="flex min-w-0 items-center gap-2 text-[13px] leading-none text-(--color-text-secondary)"
       >
-        {breadcrumb ?? (
-          <span className="font-medium leading-none text-(--color-text-primary)">Phasr</span>
-        )}
+        <span className="font-medium leading-none text-(--color-text-primary)">
+          Phasr
+        </span>
       </div>
 
-      <div className="flex items-center gap-0.5">
+      <div className="flex items-center gap-3">
         <GlassButton
           variant="ghost"
           size="icon"
           onClick={openCommandPalette}
-          title="Search (⌘K)"
+          aria-label="Search"
+          title={`Search (${SHORTCUTS.togglePalette.display.join("")})`}
         >
-          <Search size={13} />
+          <Search size={15} />
         </GlassButton>
         <ProfileMenu
           session={session}
@@ -89,7 +112,7 @@ function ProfileMenu({
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-50 min-w-44 overflow-hidden glass-modal p-1 text-[12.5px] animate-[modal-in_180ms_var(--ease-glass)]"
+          className="z-(--z-dropdown) min-w-44 origin-top-right overflow-hidden glass-modal p-1 text-[12.5px] animate-[modal-in_180ms_var(--ease-glass)]"
         >
           <DropdownMenu.Item
             onSelect={onSettings}
@@ -118,7 +141,7 @@ function ProfileAvatar({ session }: { session: DesktopSession | null }) {
       <img
         src={session.profile.imageUrl}
         alt=""
-        className="h-5 w-5 rounded-full object-cover"
+        className="h-[22px] w-[22px] rounded-full object-cover"
       />
     );
   }
@@ -126,13 +149,13 @@ function ProfileAvatar({ session }: { session: DesktopSession | null }) {
   const initials = session ? accountInitials(session) : null;
   if (initials) {
     return (
-      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-(--color-bg-hover) text-[10px] font-semibold uppercase leading-none">
+      <span className="flex h-[22px] w-[22px] items-center justify-center rounded-full bg-(--color-bg-hover) text-[11px] font-semibold uppercase leading-none">
         {initials}
       </span>
     );
   }
 
-  return <UserRound size={13} />;
+  return <UserRound size={14} />;
 }
 
 function accountInitials(session: DesktopSession) {
@@ -143,11 +166,17 @@ function accountInitials(session: DesktopSession) {
     .map((part) => part.trim())
     .filter(Boolean);
 
+  // Spread-index so emoji / non-BMP characters aren't split into surrogate
+  // halves.
+  const firstChar = (word: string | undefined) =>
+    word ? ([...word][0] ?? "") : "";
+
   if (parts.length >= 2) {
-    return `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase();
+    return `${firstChar(parts[0])}${firstChar(parts[1])}`.toUpperCase();
   }
 
-  return (parts[0]?.slice(0, 2) || "P").toUpperCase();
+  const single = parts[0] ? [...parts[0]].slice(0, 2).join("") : "";
+  return (single || "P").toUpperCase();
 }
 
 function menuItemClassName(className?: string) {

@@ -123,6 +123,15 @@ export interface FileChange {
   oldPath: string | null;
   staged: FileStatus;
   unstaged: FileStatus;
+  /**
+   * Lines added for this path (working-tree + index numstat, summed).
+   * `null` for binary files and untracked files — the backend has no
+   * numstat entry for those. Lets a collapsed diff card draw its +N/-N
+   * badge without fetching the file's full diff.
+   */
+  adds: number | null;
+  /** Lines removed for this path (see `adds`). */
+  removes: number | null;
 }
 
 export type DiffScope = "Unstaged" | "Staged" | "Head";
@@ -207,6 +216,13 @@ export interface OpenPullRequestOutcome {
   provider: string;
   headBranch: string;
   baseBranch: string;
+}
+
+export interface GitPushOutcome {
+  branch: string;
+  /** Best-effort "create PR/MR" link, or null for unknown remotes. */
+  pullRequestUrl: string | null;
+  provider: string | null;
 }
 
 export interface WorkspaceDeleteCheck {

@@ -32,8 +32,6 @@ const router = createRouter({
   context: { queryClient },
 });
 
-initSentry(router);
-
 declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
@@ -88,3 +86,20 @@ createRoot(rootElement, reactRootOptions).render(
     </ClerkProvider>
   ),
 );
+
+// Defer Sentry off the first-paint path. `@sentry/react` is heavy and
+// isn't needed to render the initial UI, so we dynamically load and
+// initialise it after the first frame via an idle callback. The DSN gate
+// still lives inside `initSentry`.
+function initSentryWhenIdle() {
+  const start = () => {
+    void initSentry(router);
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(start);
+  } else {
+    window.setTimeout(start, 0);
+  }
+}
+
+initSentryWhenIdle();

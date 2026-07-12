@@ -1,7 +1,9 @@
-import { Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { Pencil, Pin, PinOff, Play, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { ConfirmDialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
+import { PanelState } from "@/components/ui/PanelState";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import {
   useCreateRunCommand,
@@ -61,6 +63,7 @@ export function RunCommandsSection({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editCommand, setEditCommand] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<RunCommand | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,7 +176,9 @@ export function RunCommandsSection({
                       </div>
                     ) : (
                       <>
-                        <span className="text-sm font-medium">{rc.name}</span>
+                        <span className="block truncate text-sm font-medium">
+                          {rc.name}
+                        </span>
                         <code className="block truncate text-[12px] text-(--color-text-muted)">
                           {rc.command}
                         </code>
@@ -184,23 +189,62 @@ export function RunCommandsSection({
                   <div className="flex shrink-0 items-center gap-1">
                     {isEditing ? (
                       <>
-                        <GlassButton variant="primary" size="sm" onClick={() => saveEdit(rc.id)}>
-                          Save
+                        <GlassButton
+                          variant="primary"
+                          size="sm"
+                          onClick={() => saveEdit(rc.id)}
+                          disabled={
+                            updateRC.isPending ||
+                            !editName.trim() ||
+                            !editCommand.trim()
+                          }
+                        >
+                          {updateRC.isPending ? "Saving…" : "Save"}
                         </GlassButton>
-                        <GlassButton variant="ghost" size="sm" onClick={cancelEdit}>
+                        <GlassButton
+                          variant="ghost"
+                          size="sm"
+                          onClick={cancelEdit}
+                        >
                           Cancel
                         </GlassButton>
                       </>
                     ) : (
                       <>
                         <GlassButton
-                          variant="primary"
+                          variant="ghost"
                           size="sm"
                           onClick={() => runHere(rc.id)}
                           title="Run"
                         >
-                          <Play size={11} fill="currentColor" />
+                          <Play
+                            size={11}
+                            fill="currentColor"
+                            className="text-(--color-accent-text)"
+                          />
                           Run
+                        </GlassButton>
+                        <GlassButton
+                          variant="ghost"
+                          size="icon"
+                          onClick={() =>
+                            updateRC.mutate({
+                              id: rc.id,
+                              input: rc.pinned
+                                ? { pinned: false }
+                                : { pinned: true, sortOrder: Date.now() },
+                            })
+                          }
+                          title={
+                            rc.pinned
+                              ? "Unpin from workspace toolbar"
+                              : "Pin to workspace toolbar (⌘1–9)"
+                          }
+                          className={
+                            rc.pinned ? "text-(--color-accent-text)" : ""
+                          }
+                        >
+                          {rc.pinned ? <PinOff size={12} /> : <Pin size={12} />}
                         </GlassButton>
                         <GlassButton
                           variant="ghost"
@@ -213,11 +257,7 @@ export function RunCommandsSection({
                         <GlassButton
                           variant="ghost"
                           size="icon"
-                          onClick={() => {
-                            if (window.confirm(`Delete "${rc.name}"?`)) {
-                              deleteRC.mutate(rc.id);
-                            }
-                          }}
+                          onClick={() => setDeleteTarget(rc)}
                           title="Delete"
                           className="hover:text-(--color-danger)"
                         >
@@ -232,6 +272,40 @@ export function RunCommandsSection({
           })}
         </ul>
       )}
+
+      {sorted.length === 0 && !showAdd && (
+        <PanelState
+          kind="empty"
+          title="No run commands yet"
+          description="Save a command you run often to launch it in one click."
+          action={
+            <GlassButton variant="primary" size="sm" onClick={toggleAdd}>
+              <Plus size={12} />
+              Add command
+            </GlassButton>
+          }
+        />
+      )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setDeleteTarget(null);
+        }}
+        title="Delete run command?"
+        description={`"${deleteTarget?.name ?? ""}" will be removed. This can't be undone.`}
+        destructive
+        confirmLabel="Delete"
+        pending={deleteRC.isPending}
+        pendingLabel="Deleting…"
+        onConfirm={() => {
+          const target = deleteTarget;
+          if (!target) return;
+          deleteRC.mutate(target.id, {
+            onSettled: () => setDeleteTarget(null),
+          });
+        }}
+      />
     </section>
   );
 }

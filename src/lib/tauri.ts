@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   Agent,
   AgentOption,
@@ -9,6 +10,7 @@ import type {
   ConflictSide,
   DiffScope,
   FileChange,
+  GitPushOutcome,
   InProgress,
   Launcher,
   LogOptions,
@@ -185,7 +187,8 @@ export const tauri = {
     invoke<void>("git_discard", { workspaceId, paths }),
   gitCommit: (workspaceId: string, message: string) =>
     invoke<CommitOutput>("git_commit", { workspaceId, message }),
-  gitPush: (workspaceId: string) => invoke<void>("git_push", { workspaceId }),
+  gitPush: (workspaceId: string) =>
+    invoke<GitPushOutcome>("git_push", { workspaceId }),
   gitBranchStatus: (workspaceId: string) =>
     invoke<BranchStatus>("git_branch_status", { workspaceId }),
   gitFetch: (workspaceId: string) => invoke<void>("git_fetch", { workspaceId }),
@@ -258,7 +261,13 @@ export const tauri = {
 
   // ── orchestrator (task lifecycle + terminal) ─────────────────────────
   startTask: (input: StartTaskInput) =>
-    invoke<StartedTask>("start_task", { input }),
+    invoke<StartedTask>("start_task", { input }).then((started) => {
+      // First successful agent launch is the moment to ask for OS-notification
+      // permission (DDR-003 §7 — never on cold start). Fire-and-forget; the
+      // helper prompts at most once ever via a localStorage guard.
+      void maybeRequestNotificationPermission();
+      return started;
+    }),
   stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
   openTaskTerminal: (
     taskId: string,

@@ -3,12 +3,22 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent } from "@/lib/types";
+
+type StartMode = "initial" | "retry" | "restart";
+
+/** Overlay state driven onto <TerminalStatus>. `null` = no overlay. */
+type TermStatus =
+  | { state: "starting" | "retrying" | "restarting" }
+  | { state: "failed"; error: string }
+  | { state: "exited"; exitCode: number | null }
+  | null;
 
 interface SessionTerminalTabProps {
   /**
@@ -52,6 +62,11 @@ interface CachedSession {
   sessionId: string | null;
   /** Input/resize handlers — replaced on each remount. */
   inputDisposables: { dispose(): void }[];
+  /** Latest mount's status setter — lets the persistent channel reach the
+   *  live component after a remount. */
+  setStatus: ((s: TermStatus) => void) | null;
+  /** Set when the shell exits so a later remount can restore the overlay. */
+  exitStatus: { exitCode: number | null } | null;
 }
 
 const sessionXtermCache = new Map<string, CachedSession>();
@@ -106,6 +121,9 @@ export function SessionTerminalTab({
 }: SessionTerminalTabProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const { data: settings } = useUserSettings();
+  const [status, setStatus] = useState<TermStatus>(null);
+  const retryStartRef = useRef<(() => void) | null>(null);
+  const restartRef = useRef<(() => void) | null>(null);
   const setInnerTabPtySession = useUiStore((s) => s.setInnerTabPtySession);
   const setRepoInnerTabPtySession = useUiStore(
     (s) => s.setRepoInnerTabPtySession,
@@ -120,6 +138,7 @@ export function SessionTerminalTab({
     if (!mount) return;
 
     let entry = sessionXtermCache.get(tabId);
+    const isFresh = !entry;
 
     if (!entry) {
       // Fresh — create the persistent container and open xterm in it.
@@ -162,6 +181,8 @@ export function SessionTerminalTab({
         channel,
         sessionId: ptySessionId ?? null,
         inputDisposables: [],
+        setStatus: null,
+        exitStatus: null,
       };
       sessionXtermCache.set(tabId, entry);
 
@@ -169,86 +190,96 @@ export function SessionTerminalTab({
         if (event.type === "output") {
           term.write(event.chunk);
         } else if (event.type === "exit") {
-          term.write(
-            `\r\n\x1b[2m── shell exited${
-              event.exitCode == null ? "" : ` (code ${event.exitCode})`
-            } ──\x1b[0m\r\n`,
-          );
+          entry!.exitStatus = { exitCode: event.exitCode };
+          entry!.setStatus?.({ state: "exited", exitCode: event.exitCode });
         }
       };
-
-      const wireInteractive = (id: string) => {
-        entry!.inputDisposables = [
-          term.onData((data) => {
-            void tauri.sendSessionInput(id, data).catch(() => {});
-          }),
-          term.onResize(({ rows, cols }) => {
-            void tauri.resizeSession(id, rows, cols).catch(() => {});
-          }),
-        ];
-        term.focus();
-      };
-
-      const start = async () => {
-        try {
-          const id = await tauri.startSessionTerminal(
-            cwd,
-            channel,
-            term.rows,
-            term.cols,
-            initialCommand,
-          );
-          entry!.sessionId = id;
-          persistSession(id);
-          wireInteractive(id);
-          // Catch any fit() that fired between start request and reply —
-          // the onResize handler isn't wired during the await, so a
-          // resize there is otherwise lost.
-          void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
-        } catch (err) {
-          term.write(
-            `\r\n\x1b[31m✗ Failed to start shell: ${String(err)}\x1b[0m\r\n`,
-          );
-        }
-      };
-
-      const attach = async (id: string) => {
-        try {
-          await tauri.attachSessionTerminal(id, channel);
-          wireInteractive(id);
-          void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
-        } catch {
-          entry!.sessionId = null;
-          term.write(
-            "\r\n\x1b[2m── previous shell is no longer running; starting a new one ──\x1b[0m\r\n",
-          );
-          void start();
-        }
-      };
-
-      if (entry.sessionId) {
-        void attach(entry.sessionId);
-      } else {
-        void start();
-      }
     } else {
       // Cache hit — move the persistent container back into this mount.
       // appendChild moves the node from wherever it currently lives
       // (hidden host, or a previous mount) without disposing anything.
       mount.appendChild(entry.container);
+    }
 
-      // Re-wire React-bound input handlers against the live session.
-      const id = entry.sessionId;
-      if (id) {
-        entry.inputDisposables = [
-          entry.term.onData((data) => {
-            void tauri.sendSessionInput(id, data).catch(() => {});
-          }),
-          entry.term.onResize(({ rows, cols }) => {
-            void tauri.resizeSession(id, rows, cols).catch(() => {});
-          }),
-        ];
-        entry.term.focus();
+    const term = entry.term;
+    const channel = entry.channel;
+    entry.setStatus = setStatus;
+
+    const wireInteractive = (id: string) => {
+      for (const d of entry!.inputDisposables) d.dispose();
+      entry!.inputDisposables = [
+        term.onData((data) => {
+          void tauri.sendSessionInput(id, data).catch((err) => {
+            entry!.setStatus?.({ state: "failed", error: String(err) });
+          });
+        }),
+        term.onResize(({ rows, cols }) => {
+          void tauri.resizeSession(id, rows, cols).catch(() => {});
+        }),
+      ];
+      term.focus();
+    };
+
+    const start = async (mode: StartMode = "initial") => {
+      entry!.exitStatus = null;
+      entry!.setStatus?.(
+        mode === "retry"
+          ? { state: "retrying" }
+          : mode === "restart"
+            ? { state: "restarting" }
+            : { state: "starting" },
+      );
+      try {
+        const id = await tauri.startSessionTerminal(
+          cwd,
+          channel,
+          term.rows,
+          term.cols,
+          initialCommand,
+        );
+        entry!.sessionId = id;
+        persistSession(id);
+        entry!.setStatus?.(null);
+        wireInteractive(id);
+        // Catch any fit() that fired between start request and reply — the
+        // onResize handler isn't wired during the await, so a resize there
+        // is otherwise lost.
+        void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
+      } catch (err) {
+        entry!.setStatus?.({ state: "failed", error: String(err) });
+      }
+    };
+
+    const attach = async (id: string) => {
+      try {
+        await tauri.attachSessionTerminal(id, channel);
+        entry!.setStatus?.(null);
+        wireInteractive(id);
+        void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
+      } catch {
+        // Previous shell is gone — spin up a fresh one (start() shows the
+        // "Starting…" overlay in place of the old raw-ANSI note).
+        entry!.sessionId = null;
+        void start();
+      }
+    };
+
+    retryStartRef.current = () => void start("retry");
+    restartRef.current = () => void start("restart");
+
+    if (isFresh) {
+      if (entry.sessionId) {
+        void attach(entry.sessionId);
+      } else {
+        void start("initial");
+      }
+    } else {
+      // Cache hit — the shell (and its channel) are still live. Restore the
+      // exit overlay if it ended while away, otherwise re-wire input.
+      if (entry.exitStatus) {
+        setStatus({ state: "exited", exitCode: entry.exitStatus.exitCode });
+      } else if (entry.sessionId) {
+        wireInteractive(entry.sessionId);
       }
     }
 
@@ -257,20 +288,44 @@ export function SessionTerminalTab({
         const c = entry!.container;
         // Skip when hidden — fit on a 0×0 container collapses xterm to
         // a 1×1 grid and the WebGL canvas gets stuck rendering into a
-        // tiny region even after the tab becomes visible again.
-        if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
+        // tiny region even after the tab becomes visible again. The
+        // offscreen park host is 1px, so guard on < 2 (not < 1) so a
+        // parked container isn't treated as visible.
+        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
         entry!.fit.fit();
         if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
       } catch {
         /* layout settling */
       }
     };
-    const rafId = requestAnimationFrame(refit);
+    // See Terminal.tsx — after the canvas is reparented out of the
+    // offscreen park host on a same-size switch, fit() no-ops and a bare
+    // refresh() leaves the reparented WebGL canvas blank. clearTextureAtlas()
+    // resets the atlas + glyph model and redraws without a resize. One-shot
+    // only; NOT inside refit (which fires on every resize tick).
+    const forceRepaint = () => {
+      try {
+        const c = entry!.container;
+        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
+        if (entry!.webgl) entry!.webgl.clearTextureAtlas();
+        else if (entry!.term.rows > 0)
+          entry!.term.refresh(0, entry!.term.rows - 1);
+      } catch {
+        /* renderer paused / layout settling */
+      }
+    };
+    const rafId = requestAnimationFrame(() => {
+      refit();
+      forceRepaint();
+    });
     // See Terminal.tsx — trailing refits catch a delayed window
     // maximize whose ResizeObserver fire lands on stale layout.
     const settleTimers = [
       window.setTimeout(refit, 60),
-      window.setTimeout(refit, 250),
+      window.setTimeout(() => {
+        refit();
+        forceRepaint();
+      }, 250),
       window.setTimeout(refit, 600),
     ];
 
@@ -287,6 +342,9 @@ export function SessionTerminalTab({
       resizeObserver.disconnect();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
+      // Stop routing channel updates to this (unmounting) instance — a
+      // later mount re-points it and restores state from `exitStatus`.
+      if (entry!.setStatus === setStatus) entry!.setStatus = null;
       // Park the persistent container in the hidden host so the canvas
       // stays in the document — preserves the WebGL GPU context.
       getHiddenHost().appendChild(entry!.container);
@@ -318,9 +376,12 @@ export function SessionTerminalTab({
     if (!entry) return;
     try {
       const c = entry.container;
-      if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
+      if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
       entry.fit.fit();
-      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
+      // Reset the reparented WebGL canvas (see forceRepaint above) so an
+      // inner-tab visibility flip repaints without needing a resize.
+      if (entry.webgl) entry.webgl.clearTextureAtlas();
+      else if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
     } catch {
       /* layout still settling */
     }
@@ -334,14 +395,23 @@ export function SessionTerminalTab({
       }}
       style={{
         display: visible ? "block" : "none",
-        paddingTop: 10,
+        paddingTop: 8,
         paddingRight: 8,
-        paddingBottom: 2,
+        paddingBottom: 4,
         paddingLeft: 16,
       }}
-      className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
+      className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
     >
       <div ref={mountRef} className="h-full w-full" />
+      {status && (
+        <TerminalStatus
+          state={status.state}
+          {...(status.state === "failed" ? { error: status.error } : {})}
+          {...(status.state === "exited" ? { exitCode: status.exitCode } : {})}
+          onRetry={() => retryStartRef.current?.()}
+          onRestart={() => restartRef.current?.()}
+        />
+      )}
     </div>
   );
 }

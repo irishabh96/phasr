@@ -20,7 +20,7 @@ const button = cva(
         // has a clear edge even when the accent fill renders dim on a
         // particular theme — the affordance is unambiguous.
         primary: [
-          "bg-[var(--color-accent-500)] text-[var(--color-text-inverse)]",
+          "bg-[var(--color-accent-500)] text-[var(--color-accent-onfill)]",
           "border border-[var(--glass-border-strong)]",
           "hover:bg-[var(--color-accent-400)] hover:-translate-y-px",
           "active:bg-[var(--color-accent-600)] active:translate-y-0 active:scale-[0.98]",
@@ -34,6 +34,7 @@ const button = cva(
           "hover:border-[var(--glass-border-hairline)]",
           "active:bg-[var(--color-bg-active)]",
           "focus-visible:border-[var(--color-accent-500)]",
+          "focus-visible:shadow-[0_0_0_2px_var(--color-accent-300)]",
         ].join(" "),
         // Outlined glass — soft pill, used in dialogs and toolbars.
         outline: [
@@ -42,13 +43,15 @@ const button = cva(
           "hover:border-[var(--glass-border-strong)]",
           "hover:bg-[var(--color-bg-hover)]",
           "focus-visible:border-[var(--color-accent-500)]",
+          "focus-visible:shadow-[0_0_0_2px_var(--color-accent-300)]",
         ].join(" "),
         // Destructive. Flat red.
         danger: [
-          "bg-[var(--color-danger)] text-white",
+          "bg-[var(--color-danger-solid)] text-white",
           "border border-[color-mix(in_oklab,var(--color-text-primary)_15%,transparent)]",
           "hover:brightness-110",
           "active:brightness-90",
+          "focus-visible:shadow-[0_0_0_2px_color-mix(in_oklab,var(--color-danger)_65%,transparent)]",
         ].join(" "),
       },
       size: {
