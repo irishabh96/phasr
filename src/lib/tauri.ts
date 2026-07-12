@@ -76,6 +76,12 @@ interface StartCloudSyncInput {
   machineId: string;
 }
 
+interface RegisterNotificationRouteInput {
+  taskId: string;
+  repositoryId: string;
+  status?: WorkspaceStatus;
+}
+
 export const tauri = {
   // ── auth ─────────────────────────────────────────────────────────────
   setSession: (jwt: string) => invoke<string>("set_session", { jwt }),
@@ -163,6 +169,17 @@ export const tauri = {
   deleteWorkspace: (id: string) => invoke<void>("delete_workspace", { id }),
   watchWorkspace: (id: string) => invoke<void>("watch_workspace", { id }),
   unwatchWorkspace: (id: string) => invoke<void>("unwatch_workspace", { id }),
+
+  // ── notifications (DDR-003 §6 activation seam) ───────────────────────
+  // Records the routing metadata for a workspace's OS notification so the
+  // Rust side can resolve it on activation. Called before `sendNotification`
+  // because the notification plugin drops `extra` on desktop.
+  registerNotificationRoute: (input: RegisterNotificationRouteInput) =>
+    invoke<void>("register_notification_route", { input }),
+  // Emits `phasr://notification-activated` for a task (the seam a
+  // notification-click transport calls). See useCompletionNotifications.ts.
+  activateNotification: (taskId: string) =>
+    invoke<void>("activate_notification", { taskId }),
 
   // ── agents ───────────────────────────────────────────────────────────
   listAgents: () => invoke<AgentOption[]>("list_agents"),

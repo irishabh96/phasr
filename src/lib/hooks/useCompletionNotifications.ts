@@ -11,6 +11,7 @@ import {
   osNotificationsGranted,
 } from "@/lib/notificationPermission";
 import { useUiStore } from "@/lib/store";
+import { tauri } from "@/lib/tauri";
 import { showToast, type ToastIntent } from "@/lib/toast";
 import type {
   Repository,
@@ -176,6 +177,7 @@ export function useCompletionNotifications() {
       let actionLabel: string;
       let code: string | undefined;
       let target: { repositoryId: string; taskId: string };
+      let targetStatus: "completed" | "failed";
       let revealChanges: boolean;
 
       if (events.length === 1) {
@@ -183,6 +185,7 @@ export function useCompletionNotifications() {
         const w = workspaceName(qc, e.taskId, e.repositoryId);
         const r = lookupRepositoryName(qc, e.repositoryId);
         target = { repositoryId: e.repositoryId, taskId: e.taskId };
+        targetStatus = e.status;
         if (e.status === "completed") {
           toastTitle = `${w} finished`;
           toastMessage = `Agent completed in ${r}. Review the changes.`;
@@ -241,6 +244,7 @@ export function useCompletionNotifications() {
           repositoryId: latestEvent.repositoryId,
           taskId: latestEvent.taskId,
         };
+        targetStatus = latestEvent.status;
         revealChanges = latestEvent.status === "completed";
       }
 
@@ -261,9 +265,15 @@ export function useCompletionNotifications() {
       });
 
       if (fireOs) {
-        // `extra` carries the routing target for a future JS-side click hook;
-        // today the click path is the Rust `phasr://notification-activated`
-        // event listened for below.
+        // The notification plugin drops `extra` on desktop, so we hand the
+        // routing target to Rust out-of-band first; a click transport resolves
+        // it back via `phasr://notification-activated` (listener below). `extra`
+        // is still attached for the mobile/future JS-hook path.
+        void tauri.registerNotificationRoute({
+          taskId: target.taskId,
+          repositoryId: target.repositoryId,
+          status: targetStatus,
+        });
         sendNotification({
           title: osTitle,
           body: osBody,
@@ -312,11 +322,16 @@ export function useCompletionNotifications() {
     });
 
     // ── OS-notification click → same activation path (DDR-003 §6) ─────────
-    // TODO(tauri-engineer): the JS plugin does not expose a reliable desktop
-    // notification-click callback, so the Rust side must emit
-    // `phasr://notification-activated { taskId, repositoryId, status }` on
-    // click. This listener is already wired to `activateWorkspace`, so the
-    // OS-click → focus + navigate behavior lights up the moment Rust emits it.
+    // The Rust side owns the activation seam: `registerNotificationRoute`
+    // stores the target above, and `activate_notification` emits
+    // `phasr://notification-activated { taskId, repositoryId, status }`, which
+    // this listener turns into focus + navigate. KNOWN GAP: tauri-plugin-
+    // notification v2 has no desktop click callback (it fires notifications
+    // fire-and-forget and drops `extra`), so no OS banner click reaches Rust
+    // today — this listener lights up the moment a click transport calls
+    // `activate_notification`. Until then, macOS still raises the app on a
+    // banner click (OS default) and the persistent in-app toast carries the
+    // one-click route.
     void listen<NotificationActivatedPayload>(
       "phasr://notification-activated",
       (event) => {

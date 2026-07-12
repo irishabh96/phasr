@@ -57,7 +57,9 @@ api/
 archive/
 ci/
 ci-cd/
-commands/
+# Anchored to repo root: bare `commands/` also matched src-tauri/src/commands
+# and silently hid new backend command modules from git.
+/commands/
 config/
 database/
 guides/

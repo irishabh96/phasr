@@ -40,6 +40,12 @@ pub fn run() {
         .manage(auth_deeplink::AuthDeepLinkState::default())
         .manage(session_state)
         .manage(cloud_sync_state)
+        // Holds per-task routing metadata for the notification-activation seam
+        // (DDR-003 §6); the plugin drops `extra` on desktop, so the frontend
+        // records it here before firing each OS notification.
+        .manage(Arc::new(
+            commands::notifications::NotificationRouteRegistry::default(),
+        ))
         .setup(|app| {
             auth_deeplink::configure_auth_deeplink(app)?;
 
@@ -173,6 +179,8 @@ pub fn run() {
             commands::git::git_log,
             commands::git::git_commit_files,
             commands::git::git_commit_diff,
+            commands::notifications::register_notification_route,
+            commands::notifications::activate_notification,
             localfs::validate_workspace_path,
             localfs::default_projects_dir,
             localfs::ensure_dir,
