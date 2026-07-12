@@ -86,7 +86,11 @@ workflow/
 .cursor/
 .agents/
 dark-factory/
-docs
+# SAFe-template docs stay ignored, EXCEPT phasr's own design/architecture docs.
+/docs/*
+!/docs/design/
+!/docs/adr/
+!/docs/PERFORMANCE-RETENTION-REPORT.md
 patterns_library/
 scripts/
 specs_templates
