@@ -350,6 +350,11 @@ struct CloudWorkspaceRow {
     command: String,
     status: String,
     branch: Option<String>,
+    // F2: present in the cloud schema but intentionally NOT consumed on
+    // pull — worktree paths are machine-local and derived locally from the
+    // id (see `upsert_workspace_from_cloud`). Kept so this row stays a
+    // faithful mirror of the cloud table's shape.
+    #[allow(dead_code)]
     worktree_path: Option<String>,
     exit_code: Option<i64>,
     created_at: DateTime<Utc>,
@@ -657,6 +662,23 @@ async fn upsert_workspace_from_cloud(
         .await?;
         return Ok(());
     }
+
+    // F2: `worktree_path` is machine-local and fully derivable from the
+    // workspace id (`default_worktree_base_path().join(id)`), so we never
+    // write the value that travelled through the cloud — on a second
+    // machine it points at a filesystem path that doesn't exist there,
+    // which is exactly what made synced workspaces fail to open. Derive it
+    // locally instead, but only when the row actually has a branch (i.e. a
+    // worktree was ever created). On first open, `cwd_for_task` self-heals
+    // the missing dir from that branch (F1). The push side stores NULL
+    // remotely so nothing leaks a local absolute path to the cloud.
+    let worktree_path: Option<String> = row.branch.as_ref().map(|_| {
+        crate::git::default_worktree_base_path()
+            .join(&row.id)
+            .to_string_lossy()
+            .into_owned()
+    });
+
     let current = get_updated_at(db, "workspaces", &row.id, &client.user_id).await?;
     if let Some(current) = current {
         if current >= row.updated_at {
@@ -678,7 +700,7 @@ async fn upsert_workspace_from_cloud(
         .bind(&row.command)
         .bind(&row.status)
         .bind(&row.branch)
-        .bind(&row.worktree_path)
+        .bind(&worktree_path)
         .bind(row.exit_code)
         .bind(row.created_at.to_rfc3339())
         .bind(row.started_at.map(|dt| dt.to_rfc3339()))
@@ -707,7 +729,7 @@ async fn upsert_workspace_from_cloud(
         .bind(&row.command)
         .bind(&row.status)
         .bind(&row.branch)
-        .bind(&row.worktree_path)
+        .bind(&worktree_path)
         .bind(row.exit_code)
         .bind(row.created_at.to_rfc3339())
         .bind(row.started_at.map(|dt| dt.to_rfc3339()))
@@ -740,7 +762,10 @@ async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(
                     "command": row.try_get::<String, _>("command")?,
                     "status": row.try_get::<String, _>("status")?,
                     "branch": row.try_get::<Option<String>, _>("branch")?,
-                    "worktree_path": row.try_get::<Option<String>, _>("worktree_path")?,
+                    // F2: never publish a machine-local worktree path to the
+                    // cloud — it's derived locally from the id on pull. Store
+                    // NULL so a second machine can't inherit a dead path.
+                    "worktree_path": Value::Null,
                     "exit_code": row.try_get::<Option<i64>, _>("exit_code")?,
                     "created_at": row.try_get::<String, _>("created_at")?,
                     "started_at": row.try_get::<Option<String>, _>("started_at")?,
@@ -1486,6 +1511,147 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(agent.as_deref(), Some("claude"));
+    }
+
+    // F2: a workspace synced from another machine carries that machine's
+    // worktree path. We must NOT store it verbatim (it doesn't exist here);
+    // instead derive the local path from the id. Prevents the multi-machine
+    // "✗ Failed to start".
+    #[tokio::test]
+    async fn pull_derives_local_worktree_path_and_ignores_cloud_value() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-b").await;
+        insert_repo(&db, "repo-1", "user-b", 0).await;
+        let client = test_client("user-b");
+        let now = Utc::now();
+
+        let foreign_path = "/other/machine/.phasr/worktrees/ws-1";
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &CloudWorkspaceRow {
+                id: "ws-1".into(),
+                repository_id: "repo-1".into(),
+                name: "W".into(),
+                prompt: None,
+                agent: Some("claude".into()),
+                deleted_at: None,
+                command: "echo".into(),
+                status: "stopped".into(),
+                branch: Some("phasr/abc".into()),
+                worktree_path: Some(foreign_path.into()),
+                exit_code: None,
+                created_at: now,
+                started_at: None,
+                finished_at: None,
+                archived_at: None,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT worktree_path FROM workspaces WHERE id = ?")
+                .bind("ws-1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let expected = crate::git::default_worktree_base_path()
+            .join("ws-1")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(stored.as_deref(), Some(expected.as_str()));
+        assert_ne!(stored.as_deref(), Some(foreign_path));
+    }
+
+    // A branch-less cloud workspace (never had a worktree) stays NULL —
+    // deriving a path for it would trigger a doomed self-heal on open.
+    #[tokio::test]
+    async fn pull_leaves_worktree_path_null_when_no_branch() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-b").await;
+        insert_repo(&db, "repo-1", "user-b", 0).await;
+        let client = test_client("user-b");
+        let now = Utc::now();
+
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &CloudWorkspaceRow {
+                id: "ws-2".into(),
+                repository_id: "repo-1".into(),
+                name: "W".into(),
+                prompt: None,
+                agent: None,
+                deleted_at: None,
+                command: "echo".into(),
+                status: "stopped".into(),
+                branch: None,
+                worktree_path: Some("/other/machine/x".into()),
+                exit_code: None,
+                created_at: now,
+                started_at: None,
+                finished_at: None,
+                archived_at: None,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT worktree_path FROM workspaces WHERE id = ?")
+                .bind("ws-2")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored, None);
+    }
+
+    // F2 push: the local (machine-specific) worktree path must never leave
+    // this machine — it goes to the cloud as NULL.
+    #[tokio::test]
+    async fn push_workspace_sends_null_worktree_path() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-b").await;
+        insert_repo(&db, "repo-1", "user-b", 0).await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO workspaces (
+                id, user_id, repository_id, workspace_kind, name, command, status,
+                branch, worktree_path, created_at, updated_at, dirty
+             ) VALUES (?, ?, ?, 'agent', 'W', 'echo', 'stopped', ?, ?, ?, ?, 1)",
+        )
+        .bind("ws-push")
+        .bind("user-b")
+        .bind("repo-1")
+        .bind("phasr/abc")
+        .bind("/local/machine/.phasr/worktrees/ws-push")
+        .bind(&now)
+        .bind(&now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let client = client_at("user-b", &server.uri());
+
+        push_dirty_workspaces(&client, &db).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        // Upserts post a single-object body.
+        assert_eq!(body["worktree_path"], Value::Null);
+        assert_eq!(body["branch"], "phasr/abc");
     }
 
     #[tokio::test]

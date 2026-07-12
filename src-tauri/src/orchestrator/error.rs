@@ -29,6 +29,11 @@ pub enum OrchestratorError {
     TaskNotRunning(String),
     #[error("task is already finished (status: {0}); create a new one to retry")]
     AlreadyFinished(String),
+    #[error(
+        "this workspace's worktree isn't available on this machine \
+         (no branch or local repository to recreate it from)"
+    )]
+    WorktreeUnavailable,
 }
 
 impl serde::Serialize for OrchestratorError {

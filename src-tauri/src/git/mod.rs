@@ -33,7 +33,7 @@ pub use merge::{
 pub use naming::{
     default_branch_name, default_worktree_base_path, short_id, slugify, unique_branch_name,
 };
-pub use pr::build_pull_request_target;
+pub use pr::{build_pull_request_target, resolve_base_branch};
 pub use remote::{get_default_branch, get_remote_url, list_local_branches};
 pub use status::{status, FileChange};
 pub use template::init_from_template;

@@ -8,6 +8,7 @@ use crate::auth::{AuthError, SessionState};
 use crate::domain::{Agent, Workspace, WorkspaceStatus};
 use crate::fswatch::WorktreeWatchRegistry;
 use crate::git;
+use crate::orchestrator::RepoLockRegistry;
 use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
@@ -110,6 +111,7 @@ pub async fn create_workspace(
     input: CreateWorkspaceInput,
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
@@ -129,6 +131,13 @@ pub async fn create_workspace(
         if repo_path.exists() && repo_path.join(".git").exists() {
             let branch = format!("phasr/{}", git::short_id(&workspace.id));
             let worktree_path = git::default_worktree_base_path().join(&workspace.id);
+            // F6: `git worktree add` writes `.git/worktrees/` and refs in the
+            // SHARED repo; serialize against every other worktree-add,
+            // merge-to-main, and branch-delete on this repo via the shared
+            // per-repo lock so a concurrent create/start/delete can't corrupt
+            // `index.lock`/refs.
+            let lock = repo_locks.for_repository(&input.repository_id);
+            let _guard = lock.lock().await;
             git::create_worktree(
                 &repo_path,
                 &worktree_path,
@@ -276,24 +285,10 @@ pub async fn open_pull_request(
         });
     crate::git::push(&cwd, "origin", &branch)?;
 
-    // Use the configured default branch when it actually exists, else
-    // fall back to whatever git reports — keeps existing rows that
-    // were created with `default_branch = "main"` working on
-    // master-style repos.
-    let local_path = repository.local_path.as_deref();
-    let configured_exists = local_path.is_some_and(|p| {
-        crate::git::get_default_branch(std::path::Path::new(p))
-            .is_some_and(|d| d == repository.default_branch)
-    });
-    let base_branch = if configured_exists {
-        repository.default_branch.clone()
-    } else if let Some(detected) =
-        local_path.and_then(|p| crate::git::get_default_branch(std::path::Path::new(p)))
-    {
-        detected
-    } else {
-        repository.default_branch.clone()
-    };
+    let base_branch = crate::git::resolve_base_branch(
+        repository.local_path.as_deref(),
+        &repository.default_branch,
+    );
 
     let target = crate::git::build_pull_request_target(&remote_url, &base_branch, &branch)
         .ok_or_else(|| {
@@ -356,6 +351,7 @@ pub async fn delete_workspace(
     app: tauri::AppHandle,
     repo: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
@@ -377,6 +373,11 @@ pub async fn delete_workspace(
         if let Ok(repository) = repositories.get(&workspace.repository_id).await {
             if let Some(repo_path) = repository.local_path.as_deref() {
                 let repo_path = PathBuf::from(repo_path);
+                // F6: worktree-remove + branch-delete both mutate the shared
+                // repo's `.git/worktrees`/refs; hold the per-repo lock across
+                // both so they can't race a concurrent worktree-add or merge.
+                let lock = repo_locks.for_repository(&workspace.repository_id);
+                let _guard = lock.lock().await;
                 if let Some(worktree_path) = workspace.worktree_path.as_deref() {
                     let _ = git::remove_worktree(&repo_path, &PathBuf::from(worktree_path));
                 }

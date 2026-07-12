@@ -12,6 +12,7 @@ use crate::git::{
     self, BranchStatus, Commit, CommitFileChange, CommitOutput, ConflictSide, DiffScope,
     FileChange, GitError, InProgress, LogOptions, MergeOutcome, MergeStrategy,
 };
+use crate::orchestrator::RepoLockRegistry;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 
 #[derive(Debug)]
@@ -65,6 +66,26 @@ async fn workspace_cwd(repo: &WorkspaceRepo, workspace_id: &str) -> Result<PathB
         .ok_or(GitCmdError::NoWorktree)
 }
 
+/// Run a synchronous git operation off the async runtime. `run_git`
+/// blocks the calling thread for the subprocess's full duration; doing
+/// that directly on a Tokio worker starves unrelated IPC — terminal
+/// input, cloud sync — during a diff/status burst on a large worktree
+/// (PERFORMANCE-RETENTION-REPORT E1/A7). `spawn_blocking` moves the wait
+/// onto the blocking pool. The closure owns its inputs (`move`) so no
+/// borrow crosses the task boundary.
+async fn blocking_git<T, F>(f: F) -> Result<T, GitCmdError>
+where
+    F: FnOnce() -> Result<T, GitError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        // A JoinError only happens if the blocking task panicked; surface
+        // it as a git failure rather than silently dropping the command.
+        .map_err(|e| GitCmdError::Git(GitError::CommandFailed(format!("git task failed: {e}"))))?
+        .map_err(GitCmdError::Git)
+}
+
 #[tauri::command]
 pub async fn git_status(
     workspace_id: String,
@@ -73,7 +94,7 @@ pub async fn git_status(
 ) -> Result<Vec<FileChange>, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::status(&cwd)?)
+    blocking_git(move || git::status(&cwd)).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,7 +113,9 @@ pub async fn git_diff(
 ) -> Result<String, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &input.workspace_id).await?;
-    Ok(git::diff(&cwd, input.scope, input.path.as_deref())?)
+    let scope = input.scope;
+    let path = input.path;
+    blocking_git(move || git::diff(&cwd, scope, path.as_deref())).await
 }
 
 #[tauri::command]
@@ -104,9 +127,11 @@ pub async fn git_stage(
 ) -> Result<(), GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    git::stage(&cwd, &refs)?;
-    Ok(())
+    blocking_git(move || {
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        git::stage(&cwd, &refs)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -118,9 +143,11 @@ pub async fn git_unstage(
 ) -> Result<(), GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    git::unstage(&cwd, &refs)?;
-    Ok(())
+    blocking_git(move || {
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        git::unstage(&cwd, &refs)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -132,9 +159,11 @@ pub async fn git_discard(
 ) -> Result<(), GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    git::discard(&cwd, &refs)?;
-    Ok(())
+    blocking_git(move || {
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        git::discard(&cwd, &refs)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -146,15 +175,28 @@ pub async fn git_commit(
 ) -> Result<CommitOutput, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::commit(&cwd, &message)?)
+    blocking_git(move || git::commit(&cwd, &message)).await
+}
+
+/// Result of a successful push. `pull_request_url` is a best-effort
+/// "create PR/MR" link for the pushed branch (None when the remote host
+/// isn't recognised or no remote is configured); the frontend surfaces
+/// it as a clickable action on the "Pushed" toast.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushOutcome {
+    pub branch: String,
+    pub pull_request_url: Option<String>,
+    pub provider: Option<String>,
 }
 
 #[tauri::command]
 pub async fn git_push(
     workspace_id: String,
     workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
-) -> Result<(), GitCmdError> {
+) -> Result<GitPushOutcome, GitCmdError> {
     session.require()?;
     let workspace = workspaces.get(&workspace_id).await?;
     let cwd = workspace
@@ -162,11 +204,42 @@ pub async fn git_push(
         .as_ref()
         .map(PathBuf::from)
         .ok_or(GitCmdError::NoWorktree)?;
-    let branch = workspace.branch.ok_or_else(|| {
+    let branch = workspace.branch.clone().ok_or_else(|| {
         GitCmdError::Git(GitError::CommandFailed("no branch on workspace".into()))
     })?;
-    git::push(&cwd, "origin", &branch)?;
-    Ok(())
+    {
+        let cwd = cwd.clone();
+        let branch = branch.clone();
+        blocking_git(move || git::push(&cwd, "origin", &branch)).await?;
+    }
+
+    // Best-effort PR link for the success toast. A missing remote, an
+    // unknown host, or a failed repo lookup just yields no link — it
+    // never fails the push, which already succeeded above. The two git
+    // shell-outs (`get_remote_url`, `resolve_base_branch`) also run off
+    // the async runtime.
+    let target = match repositories.get(&workspace.repository_id).await {
+        Ok(repository) => {
+            let remote_hint = repository.remote_url.clone();
+            let local_path = repository.local_path.clone();
+            let default_branch = repository.default_branch.clone();
+            let branch = branch.clone();
+            blocking_git(move || {
+                let remote_url = remote_hint.or_else(|| git::get_remote_url(&cwd));
+                let base = git::resolve_base_branch(local_path.as_deref(), &default_branch);
+                Ok(remote_url.and_then(|url| git::build_pull_request_target(&url, &base, &branch)))
+            })
+            .await
+            .unwrap_or(None)
+        }
+        Err(_) => None,
+    };
+
+    Ok(GitPushOutcome {
+        branch,
+        pull_request_url: target.as_ref().map(|t| t.url.clone()),
+        provider: target.map(|t| t.provider.to_string()),
+    })
 }
 
 #[tauri::command]
@@ -192,7 +265,7 @@ pub async fn git_branch_status(
         .await
         .ok()
         .map(|r| r.default_branch);
-    Ok(git::branch_status(&cwd, target.as_deref())?)
+    blocking_git(move || git::branch_status(&cwd, target.as_deref())).await
 }
 
 #[tauri::command]
@@ -204,17 +277,21 @@ pub async fn git_fetch(
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
     // `--prune` so stale tracking refs disappear; non-fatal if there's
-    // no remote (offline use).
-    let output = std::process::Command::new("git")
-        .args(["fetch", "--prune", "--quiet"])
-        .current_dir(&cwd)
-        .output()
-        .map_err(|e| GitCmdError::Git(GitError::Io(e)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(GitCmdError::Git(GitError::CommandFailed(stderr)));
-    }
-    Ok(())
+    // no remote (offline use). `fetch` hits the network, so keep it off
+    // the async runtime.
+    blocking_git(move || {
+        let output = std::process::Command::new("git")
+            .args(["fetch", "--prune", "--quiet"])
+            .current_dir(&cwd)
+            .output()
+            .map_err(GitError::Io)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(GitError::CommandFailed(stderr));
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -242,7 +319,7 @@ pub async fn git_sync_with_main(
     } else {
         repository.default_branch.clone()
     };
-    Ok(git::merge_into(&worktree, &source_ref, strategy)?)
+    blocking_git(move || git::merge_into(&worktree, &source_ref, strategy)).await
 }
 
 #[tauri::command]
@@ -251,6 +328,7 @@ pub async fn git_merge_to_main(
     strategy: MergeStrategy,
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<MergeOutcome, GitCmdError> {
     session.require()?;
@@ -268,12 +346,17 @@ pub async fn git_merge_to_main(
                 "repository has no local path".into(),
             ))
         })?;
-    Ok(git::merge_to(
-        &main_repo,
-        &repository.default_branch,
-        &branch,
-        strategy,
-    )?)
+    let default_branch = repository.default_branch.clone();
+
+    // F6: merge-to-main checks out the target branch directly in the
+    // SHARED main repo `.git`, touching the same `.git/index`/refs that
+    // every worktree-add and branch-delete on this repo touches. Serialize
+    // against them via the shared per-repo lock so a concurrent
+    // create/start/delete can't corrupt `index.lock`/refs mid-merge. The
+    // guard is held across the `spawn_blocking` await (tokio Mutex).
+    let lock = repo_locks.for_repository(&workspace.repository_id);
+    let _guard = lock.lock().await;
+    blocking_git(move || git::merge_to(&main_repo, &default_branch, &branch, strategy)).await
 }
 
 #[tauri::command]
@@ -284,7 +367,7 @@ pub async fn git_merge_in_progress(
 ) -> Result<InProgress, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::merge_in_progress(&cwd)?)
+    blocking_git(move || git::merge_in_progress(&cwd)).await
 }
 
 #[tauri::command]
@@ -295,8 +378,7 @@ pub async fn git_abort_merge(
 ) -> Result<(), GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    git::merge_abort(&cwd)?;
-    Ok(())
+    blocking_git(move || git::merge_abort(&cwd)).await
 }
 
 #[tauri::command]
@@ -307,7 +389,7 @@ pub async fn git_continue_merge(
 ) -> Result<MergeOutcome, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::merge_continue(&cwd)?)
+    blocking_git(move || git::merge_continue(&cwd)).await
 }
 
 #[tauri::command]
@@ -320,8 +402,7 @@ pub async fn git_resolve_conflict(
 ) -> Result<(), GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    git::merge_set_resolution(&cwd, &path, side)?;
-    Ok(())
+    blocking_git(move || git::merge_set_resolution(&cwd, &path, side)).await
 }
 
 #[tauri::command]
@@ -350,7 +431,7 @@ pub async fn git_log(
             .ok()
             .map(|r| r.default_branch);
     }
-    Ok(git::git_log_query(&cwd, &opts)?)
+    blocking_git(move || git::git_log_query(&cwd, &opts)).await
 }
 
 #[tauri::command]
@@ -362,7 +443,7 @@ pub async fn git_commit_files(
 ) -> Result<Vec<CommitFileChange>, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::commit_files(&cwd, &sha)?)
+    blocking_git(move || git::commit_files(&cwd, &sha)).await
 }
 
 #[tauri::command]
@@ -375,5 +456,5 @@ pub async fn git_commit_diff(
 ) -> Result<String, GitCmdError> {
     session.require()?;
     let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    Ok(git::diff_for_commit(&cwd, &sha, path.as_deref())?)
+    blocking_git(move || git::diff_for_commit(&cwd, &sha, path.as_deref())).await
 }

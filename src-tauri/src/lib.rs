@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use auth::SessionState;
 use domain::WorkspaceStatus;
-use orchestrator::TaskOrchestrator;
+use orchestrator::{RepoLockRegistry, TaskOrchestrator};
 use pty::TaskRuntime;
 use store::{
     default_db_path, init_pool, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
@@ -36,6 +36,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(auth_deeplink::AuthDeepLinkState::default())
         .manage(session_state)
         .manage(cloud_sync_state)
@@ -45,10 +46,14 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             dock_icon::set_dock_icon();
 
-            // Replace the default macOS menu so `⌘W` is no longer claimed
-            // by `Window → Close Window`. JS handles ⌘W to close the
-            // active in-app tab. Edit + App items keep their native
-            // accelerators (⌘C, ⌘V, ⌘Q, etc.).
+            // Custom macOS menu that reaches parity with Tauri's default
+            // (App / Edit / View / Window) EXCEPT it omits `close_window`,
+            // so `⌘W` is no longer claimed by `Window → Close Window` and
+            // the JS handler can use it to close the active in-app tab.
+            // muda hardcodes ⌘W onto `PredefinedMenuItem::close_window`
+            // with no accelerator setter, so omitting the item is the only
+            // way to free the key. All other items keep native
+            // accelerators (⌘C/⌘V/⌘Z/⌃⌘F/…).
             let app_submenu = SubmenuBuilder::new(app, "Phasr")
                 .items(&[
                     &PredefinedMenuItem::about(app, None, None)?,
@@ -73,11 +78,17 @@ pub fn run() {
                     &PredefinedMenuItem::select_all(app, None)?,
                 ])
                 .build()?;
+            let view_submenu = SubmenuBuilder::new(app, "View")
+                .items(&[&PredefinedMenuItem::fullscreen(app, None)?])
+                .build()?;
             let window_submenu = SubmenuBuilder::new(app, "Window")
-                .items(&[&PredefinedMenuItem::minimize(app, None)?])
+                .items(&[
+                    &PredefinedMenuItem::minimize(app, None)?,
+                    &PredefinedMenuItem::maximize(app, None)?,
+                ])
                 .build()?;
             let menu = MenuBuilder::new(app)
-                .items(&[&app_submenu, &edit_submenu, &window_submenu])
+                .items(&[&app_submenu, &edit_submenu, &view_submenu, &window_submenu])
                 .build()?;
             app.set_menu(menu)?;
 
@@ -198,10 +209,17 @@ async fn initialize_database_state(
     let workspace_repo = WorkspaceRepo::new(pool.clone());
     recover_startup_state(&workspace_repo, &repository_repo).await;
 
+    // One registry shared between the orchestrator (guards `git worktree
+    // add` in start_task) and the command layer (guards create_workspace /
+    // merge_to_main / delete_workspace) so every shared-`.git` mutation for
+    // a repo serializes against the same lock.
+    let repo_locks = Arc::new(RepoLockRegistry::new());
+
     let orchestrator = TaskOrchestrator::new(
         workspace_repo.clone(),
         repository_repo.clone(),
         task_runtime,
+        repo_locks.clone(),
     );
     commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
 
@@ -211,6 +229,7 @@ async fn initialize_database_state(
     handle.manage(SettingsRepo::new(pool.clone()));
     handle.manage(UserRepo::new(pool.clone()));
     handle.manage(pool);
+    handle.manage(repo_locks);
     handle.manage(orchestrator);
 
     Ok(())

@@ -12,4 +12,5 @@ mod service;
 mod templating;
 
 pub use error::OrchestratorError;
+pub use repo_locks::RepoLockRegistry;
 pub use service::{StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent};
