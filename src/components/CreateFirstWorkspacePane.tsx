@@ -6,7 +6,7 @@ import {
   ChevronRight,
   GitBranch,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { humanizeError } from "@/lib/humanizeError";
 import { useGitBranches } from "@/lib/hooks/useGit";
@@ -74,6 +74,11 @@ export function CreateFirstWorkspacePane({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Synchronous re-entrancy guard (D1). `submitting` state lags a tick, so two
+  // submits within one JS task both pass the guard and fire start_task TWICE.
+  // This ref flips synchronously — belt AND suspenders with the disabled UI.
+  const inFlightRef = useRef(false);
+
   useEffect(() => {
     setBaseBranch(repo.defaultBranch);
   }, [repo.defaultBranch]);
@@ -90,6 +95,8 @@ export function CreateFirstWorkspacePane({
 
   const handleStart = async () => {
     if (!trimmedName || !activeAgent || !isGitConfirmed) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setSubmitting(true);
     setError(null);
     try {
@@ -121,6 +128,7 @@ export function CreateFirstWorkspacePane({
       setError(humanizeError(err));
     } finally {
       setSubmitting(false);
+      inFlightRef.current = false;
     }
   };
 

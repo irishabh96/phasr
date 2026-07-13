@@ -349,3 +349,18 @@ above. **No new color/radius/motion tokens.**
   `taskId`, `repositoryId`, `status`, `exitCode`).
 
 **Escalate to POPM:** open question 4 (agent-only vs. also local workspaces).
+
+---
+
+## Amendment (2026-07-13) — leading-edge coalescing (defect D3)
+
+§2's pure trailing coalesce delayed **every** toast by the full `COALESCE_WINDOW_MS`
+(2.5s), including a lone finish — the common case. Amended to **leading-edge +
+trailing coalesce**: the first completion (when no window is open) shows
+**immediately**, then a cooldown window opens; further finishes within it buffer
+and flush together at close. So a lone finish appears instantly; a burst = one
+instant toast + one coalesced "N agents finished" trailing toast for the
+stragglers. Suppression (don't notify the viewed workspace), the OS-vs-toast
+rule, dedupe-by-taskId, and `MAX_TOASTS` are unchanged.
+Impl: `src/lib/hooks/useCompletionNotifications.ts`. Pinned by
+`e2e/forms.spec.ts` "LEADING-EDGE (D3)".

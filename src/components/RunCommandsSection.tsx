@@ -1,5 +1,5 @@
 import { Pencil, Pin, PinOff, Play, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
@@ -65,13 +65,28 @@ export function RunCommandsSection({
   const [editCommand, setEditCommand] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<RunCommand | null>(null);
 
+  // Synchronous re-entrancy guard (D1). Mutation state (`createRC.isPending`)
+  // commits a tick late, so two submits within one JS task both pass the guard
+  // and fire create_run_command TWICE. This ref flips synchronously — belt AND
+  // suspenders with the disabled submit button below.
+  const inFlightRef = useRef(false);
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !command.trim()) return;
-    await createRC.mutateAsync({ name: name.trim(), command: command.trim() });
-    setName("");
-    setCommand("");
-    closeAdd();
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    try {
+      await createRC.mutateAsync({
+        name: name.trim(),
+        command: command.trim(),
+      });
+      setName("");
+      setCommand("");
+      closeAdd();
+    } finally {
+      inFlightRef.current = false;
+    }
   };
 
   const startEdit = (rc: RunCommand) => {

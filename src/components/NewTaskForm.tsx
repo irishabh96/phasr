@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { GlassSelect } from "@/components/ui/GlassSelect";
@@ -54,6 +54,12 @@ export function NewTaskForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Synchronous re-entrancy guard (D1). React state (`submitting`) commits a
+  // tick late, so two submits fired within one JS task both pass the
+  // `!submitting` check and fire start_task TWICE. This ref flips synchronously
+  // — belt AND suspenders with the `disabled` UI below.
+  const inFlightRef = useRef(false);
+
   const allAgents = agents ?? [];
   const defaultAgent = allAgents.find((a) => a.isDefault) ?? allAgents[0];
   const activeAgentValue = agent ?? defaultAgent?.agent ?? null;
@@ -76,6 +82,8 @@ export function NewTaskForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit || !activeAgent) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setSubmitting(true);
     setError(null);
     try {
@@ -108,6 +116,7 @@ export function NewTaskForm({
       setError(humanizeError(err));
     } finally {
       setSubmitting(false);
+      inFlightRef.current = false;
     }
   };
 

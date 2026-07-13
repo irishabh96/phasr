@@ -308,9 +308,14 @@ export function useCompletionNotifications() {
       // Dedupe by id inside the window; keep the last status for a re-emit.
       buffer.set(taskId, { taskId, repositoryId, status, exitCode });
       latestId = taskId;
-      // Trailing window opens on the FIRST qualifying event and does not reset.
+      // LEADING-EDGE + trailing coalesce (D3 / DDR-003 amendment): when no
+      // window is open, show this completion IMMEDIATELY (no 2.5s wait for a
+      // lone finish), then open a cooldown window during which further finishes
+      // buffer and flush together at close. A burst = one instant toast + one
+      // coalesced trailing toast for the stragglers.
       if (flushTimer == null) {
-        flushTimer = window.setTimeout(flush, COALESCE_WINDOW_MS);
+        flush(); // leading edge — shows the just-buffered event now
+        flushTimer = window.setTimeout(flush, COALESCE_WINDOW_MS); // trailing window
       }
     };
 
