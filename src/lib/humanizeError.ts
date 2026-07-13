@@ -19,14 +19,18 @@ export function humanizeError(err: unknown): string {
   )
     return "Git authentication failed — check your credentials or SSH key.";
   if (
+    s.includes("repository not found") ||
+    s.includes("does not appear to be a git repository")
+  )
+    return "That repository couldn't be found — check the URL; it may be private, renamed, or removed.";
+  if (
     s.includes("couldn't find remote ref") ||
     s.includes("unknown revision") ||
     s.includes("invalid reference") ||
     s.includes("did not match any file(s) known to git")
   )
     return "That branch or ref doesn't exist.";
-  if (s.includes("is a directory"))
-    return "That path is a folder, not a file.";
+  if (s.includes("is a directory")) return "That path is a folder, not a file.";
   if (s.includes("no such file") || s.includes("does not exist"))
     return "That path doesn't exist.";
   if (
