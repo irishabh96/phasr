@@ -12,8 +12,8 @@ import type { Workspace } from "@/lib/types";
  *
  * Used by the sidebar's repo rows, the GitInitConfirmModal's Cancel /
  * Initialize Git handlers, and the command palette's repo items. No
- * longer pops the legacy NewWorkspaceModal — the workspace-less path
- * lands on a real route now.
+ * longer pops a legacy modal — the workspace-less path lands on a real
+ * route now.
  */
 export function useNavigateToRepoEntry() {
   const navigate = useNavigate();

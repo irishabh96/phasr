@@ -107,7 +107,9 @@ export const RIGHT_PANEL_WIDTH_MAX = 640;
 export const RIGHT_PANEL_WIDTH_DEFAULT = 360;
 
 function clampWidth(value: number, min: number, max: number, fallback: number) {
-  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  return Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
 }
 
 function readWidth(key: string, min: number, max: number, fallback: number) {
@@ -223,7 +225,7 @@ interface UiState {
   setActiveRepoInnerTab: (repositoryId: string, tabId: string) => void;
 
   /**
-   * Drives the NewWorkspaceModal mounted in the app shell. Set by:
+   * Drives the NewTaskModal mounted in the app shell. Set by:
    * - sidebar `+` icon per repo row
    * - sidebar repo row click when the repo has no workspaces yet
    * - ⌘N hotkey (resolves to the active workspace's repo)
@@ -692,8 +694,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({
       innerTabs,
       repoInnerTabs,
-      activeWorkspaceContext:
-        ctx?.repositoryId === repositoryId ? null : ctx,
+      activeWorkspaceContext: ctx?.repositoryId === repositoryId ? null : ctx,
     });
   },
 
