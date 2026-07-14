@@ -94,7 +94,10 @@ dark-factory/
 !/docs/adr/
 !/docs/PERFORMANCE-RETENTION-REPORT.md
 patterns_library/
-scripts/
+# SAFe-template scripts stay ignored, EXCEPT phasr's own project scripts.
+/scripts/*
+!/scripts/generate-dmg-background.swift
+!/scripts/check-template-urls.mjs
 specs_templates
 CLAUDE.md
 AGENTS.md
