@@ -12,7 +12,9 @@ function AppearancePage() {
   return (
     <div className="space-y-6">
       <header>
-        <h2 className="text-[15px] font-semibold tracking-tight leading-none">Appearance</h2>
+        <h2 className="text-[15px] font-semibold tracking-tight leading-none">
+          Appearance
+        </h2>
         <p className="mt-1.5 text-[12px] text-(--color-text-muted)">
           Theme applies across devices once cloud sync runs.
         </p>
@@ -39,9 +41,11 @@ function AppearancePage() {
                 )}
               >
                 <ThemePreview option={option} />
-                <span className="relative text-[13px] font-medium">{option}</span>
+                <span className="relative text-[13px] font-medium">
+                  {option}
+                </span>
                 {active && (
-                  <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-(--color-accent-500) text-(--color-text-inverse)">
+                  <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-(--color-accent-500) text-(--color-accent-onfill)">
                     <Check size={10} />
                   </span>
                 )}
@@ -68,8 +72,14 @@ function ThemePreview({ option }: { option: Theme }) {
       className="absolute inset-2 rounded-[8px] border border-(--glass-border-hairline) opacity-70"
       style={{ background: bg }}
     >
-      <div className="absolute left-2 top-2 h-1 w-6 rounded-full" style={{ background: fg }} />
-      <div className="absolute left-2 top-4 h-1 w-3 rounded-full opacity-50" style={{ background: fg }} />
+      <div
+        className="absolute left-2 top-2 h-1 w-6 rounded-full"
+        style={{ background: fg }}
+      />
+      <div
+        className="absolute left-2 top-4 h-1 w-3 rounded-full opacity-50"
+        style={{ background: fg }}
+      />
     </div>
   );
 }

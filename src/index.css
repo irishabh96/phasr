@@ -3,23 +3,39 @@
 /* ---------- Design tokens (from the rebuild plan: Theming) ---------- */
 
 @theme {
-  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+  --font-sans:
+    ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
     "Segoe UI Symbol", "Noto Color Emoji";
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
 
   /* Phasr Dark — GitHub-Dark-inspired surfaces */
   --color-bg-base: #010409;
   --color-bg-surface: #0d1117;
-  --color-bg-elevated: #161b22;
+  /* One step above --color-bg-hover (#161b22) so "selected/elevated"
+     reads distinct from a transient hover. */
+  --color-bg-elevated: #1c222b;
   --color-bg-input: #010409;
   --color-bg-sidebar: #0b0f14;
   --color-bg-terminal: #000000;
-  --color-bg-tooltip: #1b212c;
+  --color-bg-tooltip: #242c3b;
   --color-bg-dropdown: #161b22;
   --color-bg-hover: #161b22;
   --color-bg-active: #1f2630;
   --color-bg-overlay: rgba(0, 0, 0, 0.42);
+  /* Persistent "active/selected" row/tab encoding. ONE token unifying the
+     three prior divergent treatments (repo row 12%, inner tab 14%, workspace
+     row == hover). A translucent coral tint — hue-distinct from the NEUTRAL
+     grey of --color-bg-hover, so a selected row reads apart from a transient
+     hover in both themes. accent-500 is theme-invariant (like --color-accent-
+     onfill), so this needs NO light override: the same coral composites over
+     the sidebar/tabbar surface in either theme. */
+  --color-bg-selected: color-mix(
+    in oklab,
+    var(--color-accent-500) 12%,
+    transparent
+  );
 
   --color-border-subtle: #21262d;
   --color-border-default: #30363d;
@@ -27,7 +43,9 @@
 
   --color-text-primary: #e6edf3;
   --color-text-secondary: #b1bac4;
-  --color-text-muted: #6e7681;
+  /* Lightened from #6e7681 (≈4.2:1, failed AA) to clear 4.5:1 on the
+     dark surfaces where it's used for labels/help/line-numbers. */
+  --color-text-muted: #8b949e;
   --color-text-inverse: #010409;
 
   /* Accent palette — Phasr coral. 50–950 scale is derived around the
@@ -47,10 +65,25 @@
   --color-accent-primary: var(--color-accent-500);
   --color-accent-hover: var(--color-accent-400);
   --color-accent-active: var(--color-accent-600);
+  /* Accent used as TEXT on theme surfaces. Light coral (400) reads on
+     dark; the light theme overrides this to a darker coral that clears
+     AA on white (pale coral fails there). */
+  --color-accent-text: var(--color-accent-400);
+  /* Dark ink for text/icons ON a coral fill. Coral is light in both
+     themes, so this stays dark — do NOT override in light. */
+  --color-accent-onfill: #010409;
 
   --color-success: #3fb950;
   --color-warning: #d29922;
   --color-danger: #ff7b72;
+  /* Solid danger fill for buttons (white text needs a darker red than
+     --color-danger). */
+  --color-danger-solid: #c93c37;
+  /* Diff line-marker + counts foreground. On the 14%-tinted diff rows the raw
+     success/danger read fine in dark but drop below AA in light, so these get a
+     darker light-theme override (below). Dark keeps the vivid tokens. */
+  --diff-add-fg: var(--color-success);
+  --diff-remove-fg: var(--color-danger);
   --color-info: #58a6ff;
   --color-purple: #bc8cff;
   --color-cyan: #39c5cf;
@@ -76,8 +109,13 @@
   /* Glass material tokens. Derived from the base palette via color-mix so
      accent and theme swaps recolor every glass surface automatically. */
   --glass-rail: color-mix(in oklab, var(--color-bg-surface) 70%, transparent);
-  --glass-panel: color-mix(in oklab, var(--color-bg-elevated) 60%, transparent);
-  --glass-modal: color-mix(in oklab, var(--color-bg-elevated) 50%, transparent);
+  /* Glass panels/modals derive from a base one step DARKER than
+     --color-bg-elevated. That token was lightened (#161b22 → #1c222b) so
+     selected rows read distinct from hover, but the frosted surfaces must
+     stay dark or they wash out over the blurred backdrop (e.g. ⌘K palette). */
+  --glass-base: #161b22;
+  --glass-panel: color-mix(in oklab, var(--glass-base) 60%, transparent);
+  --glass-modal: color-mix(in oklab, var(--glass-base) 50%, transparent);
 
   --glass-border-hairline: color-mix(in oklab, white 6%, transparent);
   --glass-border-strong: color-mix(in oklab, white 12%, transparent);
@@ -111,6 +149,25 @@
 
   --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-glass: 180ms;
+
+  /* ---------- Layering (z-index scale) ----------
+     Single ascending ladder. Previously ad-hoc (dropdowns z-200 rendered
+     OVER modals z-190). The ordering guarantees a bare dropdown/context menu
+     sits BELOW a modal, a dropdown opened INSIDE a modal uses --z-popover to
+     sit above it, and toasts sit above everything. */
+  --z-dropdown: 1000; /* menus/context-menus/selects anchored in page flow */
+  --z-sticky: 1100; /* sticky headers / toolbars pinned during scroll */
+  --z-overlay: 1200; /* modal & drawer backdrop scrim */
+  --z-modal: 1300; /* modal / dialog content */
+  --z-popover: 1400; /* popovers/menus/selects that must layer OVER a modal */
+  --z-toast: 1500; /* toasts / notifications — always on top */
+
+  /* ---------- Focus ring ----------
+     Canonical focus-visible ring (the pattern GlassButton already ships).
+     Apply to hand-rolled interactive controls as
+     `focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]`.
+     Note: text inputs keep their own softer ring (GlassInput: 4px @ 12%). */
+  --ring-focus: 0 0 0 2px var(--color-accent-300);
 }
 
 /* Light mode overrides */
@@ -126,17 +183,30 @@
 
   --color-text-primary: #0a0a0b;
   --color-text-secondary: #52525b;
-  --color-text-muted: #8e8e96;
+  /* Tuned from #6e7781 (which cleared 4.5:1 only on pure white; it fell to
+     4.14–4.36:1 on the off-white surfaces it's actually used on) to clear
+     4.5:1 on #f4f4f5 input, #f4f5f7 sidebar, and #fafafb base. Still a step
+     lighter than secondary #52525b. */
+  --color-text-muted: #5c636b;
 
   --color-success: #16a34a;
   --color-warning: #d97706;
   --color-danger: #dc2626;
+  /* Solid danger fill for buttons — white on it = 4.83:1. */
+  --color-danger-solid: #dc2626;
+  /* Darker diff markers/counts for light theme — clear AA on the tinted rows
+     (add-fg 5.46:1 on #def2e6, remove-fg 5.21:1 on #fae1e1) and on white
+     (6.39:1 / 6.47:1). Vivid success/danger fail there (2.82:1 / 3.89:1). */
+  --diff-add-fg: #0c6e2e;
+  --diff-remove-fg: #b91c1c;
   --color-info: #2563eb;
+  --color-accent-text: var(--color-accent-700); /* darker coral — AA on white */
 
   /* Glass tokens — light variant. White-tinted instead of black-tinted. */
   --glass-rail: color-mix(in oklab, var(--color-bg-surface) 75%, transparent);
-  --glass-panel: color-mix(in oklab, var(--color-bg-elevated) 65%, transparent);
-  --glass-modal: color-mix(in oklab, var(--color-bg-elevated) 55%, transparent);
+  --glass-base: #ffffff; /* light glass base == elevated white (unchanged look) */
+  --glass-panel: color-mix(in oklab, var(--glass-base) 65%, transparent);
+  --glass-modal: color-mix(in oklab, var(--glass-base) 55%, transparent);
 
   --glass-border-hairline: color-mix(in oklab, black 6%, transparent);
   --glass-border-strong: color-mix(in oklab, black 12%, transparent);
@@ -208,12 +278,18 @@ body {
   box-sizing: border-box;
 }
 
-button {
-  font: inherit;
-  background: none;
-  border: none;
-  color: inherit;
-  cursor: pointer;
+/* In @layer base so Tailwind utilities (bg-*, text-*, border-*) override these
+   resets. Unlayered, this rule beat every `@layer utilities` declaration in the
+   cascade, silently killing `bg-*`/`text-*` on ALL <button>s (e.g. GlassButton
+   primary/danger fills + text colors never rendered). */
+@layer base {
+  button {
+    font: inherit;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
 }
 
 input,
@@ -232,7 +308,25 @@ textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--color-accent-500);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+}
+
+/* ---------- Reduced motion ----------
+   One global fallback so every entrance transform/animation (modal-in,
+   pulse-dot, sidebar-width transition, toast enter/exit, hover lifts)
+   honors the OS "reduce motion" setting without per-component wiring.
+   Near-zero (not 0) durations keep transitionend/animationend events
+   firing so JS that awaits them still resolves. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ---------- Glass surface utilities (Tailwind v4 @utility) ---------- */
@@ -263,11 +357,18 @@ select:focus {
 /* ---------- Animations ---------- */
 
 @keyframes pulse-dot {
-  0%, 100% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color, var(--color-info)) 60%, transparent);
+  0%,
+  100% {
+    box-shadow: 0 0 0 0
+      color-mix(
+        in oklab,
+        var(--pulse-color, var(--color-info)) 60%,
+        transparent
+      );
   }
   50% {
-    box-shadow: 0 0 0 6px color-mix(in oklab, var(--pulse-color, var(--color-info)) 0%, transparent);
+    box-shadow: 0 0 0 6px
+      color-mix(in oklab, var(--pulse-color, var(--color-info)) 0%, transparent);
   }
 }
 
@@ -279,6 +380,100 @@ select:focus {
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+/* Content exit for the shared <Dialog> (data-[state=closed]). */
+@keyframes modal-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Fade-ONLY overlay animation for the shared <Dialog> backdrop. A scale-based
+   keyframe (like modal-in) on the full-viewport scrim produces an edge-gap
+   flash at the corners as it grows into place — a plain opacity fade avoids it. */
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Toast enter/exit. Slide + fade in, fade + small lift out. The reduced-motion
+   block below re-declares these as opacity-only (no translate) per DDR-002. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Skeleton shimmer for <PanelState kind="loading">. Reduced-motion pins the
+   bars to a static 0.7 opacity (see the .skeleton-bar rule below). */
+@keyframes pulse-skeleton {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Reduced-motion refinements layered on top of the global rule above:
+   - toast enter/exit become an opacity-only crossfade (drop the translate).
+   - skeleton bars stop pulsing and sit at a steady 0.7 opacity. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes toast-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+  .skeleton-bar {
+    opacity: 0.7 !important;
   }
 }
 

@@ -47,6 +47,26 @@ pub fn build_pull_request_target(
     None
 }
 
+/// Resolves the base branch a PR should target.
+///
+/// Uses the repo's configured `default_branch` when it actually exists
+/// in the local checkout, otherwise falls back to whatever git reports
+/// as the default (keeps rows created with `default_branch = "main"`
+/// working on master-style repos), and finally to the configured value.
+///
+/// `local_path` must be the **main repo checkout**, not a worktree —
+/// `get_default_branch` on a worktree returns the checked-out feature
+/// branch, which is never the PR base.
+pub fn resolve_base_branch(local_path: Option<&str>, configured_default: &str) -> String {
+    let detected =
+        local_path.and_then(|p| super::get_default_branch(std::path::Path::new(p)));
+    match detected {
+        Some(d) if d == configured_default => configured_default.to_string(),
+        Some(d) => d,
+        None => configured_default.to_string(),
+    }
+}
+
 /// Returns `(host, owner, repo)` parsed from a typical git remote URL.
 /// Handles SSH (`git@host:owner/repo.git`), HTTPS, and `ssh://` forms.
 pub fn parse_remote_url(url: &str) -> Option<(String, String, String)> {
@@ -144,5 +164,16 @@ mod tests {
     #[test]
     fn returns_none_for_unknown_host() {
         assert!(build_pull_request_target("git@example.com:foo/bar.git", "main", "feat").is_none());
+    }
+
+    #[test]
+    fn resolve_base_branch_falls_back_to_configured() {
+        // No local path to inspect → use the configured default.
+        assert_eq!(resolve_base_branch(None, "main"), "main");
+        // Path that isn't a git repo → detection fails → configured default.
+        assert_eq!(
+            resolve_base_branch(Some("/nonexistent/phasr/path/xyz"), "develop"),
+            "develop"
+        );
     }
 }

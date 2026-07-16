@@ -19,7 +19,7 @@
 //! the API so the React side can use the same noun everywhere.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,17 +104,23 @@ pub struct TaskOrchestrator {
 }
 
 impl TaskOrchestrator {
+    /// `repo_locks` is passed in (rather than created here) so the same
+    /// registry is shared with the command layer via Tauri `State` —
+    /// `create_workspace`, `merge_to_main`, and `delete_workspace` must
+    /// serialize their shared-`.git` mutations against the same locks
+    /// this orchestrator uses for `git worktree add` (F6).
     pub fn new(
         workspaces: WorkspaceRepo,
         repositories: RepositoryRepo,
         runtime: Arc<TaskRuntime>,
+        repo_locks: Arc<RepoLockRegistry>,
     ) -> Self {
         let (status_tx, _rx) = broadcast::channel(STATUS_BROADCAST_CAPACITY);
         Self {
             workspaces,
             repositories,
             runtime,
-            repo_locks: Arc::new(RepoLockRegistry::new()),
+            repo_locks,
             status_tx,
         }
     }
@@ -408,12 +414,17 @@ impl TaskOrchestrator {
     async fn cwd_for_task(&self, workspace: &Workspace) -> Result<PathBuf, OrchestratorError> {
         if let Some(path) = workspace.worktree_path.as_deref() {
             let path = PathBuf::from(path);
-            if !path.exists() {
-                return Err(OrchestratorError::RepositoryPathMissing(
-                    path.to_string_lossy().into_owned(),
-                ));
+            if path.exists() {
+                return Ok(path);
             }
-            return Ok(path);
+            // Self-heal (F1): the DB still points at a worktree dir that's
+            // gone — a moved repo, a cleaned temp dir, or a row synced from
+            // another machine. Recreate it from the workspace's branch
+            // instead of returning `RepositoryPathMissing` → the terminal's
+            // "✗ Failed to start". `create_worktree` is idempotent and
+            // re-attaches an existing branch, so this restores the exact
+            // branch the agent was on.
+            return self.recreate_missing_worktree(workspace, &path).await;
         }
 
         let repository = self.repositories.get(&workspace.repository_id).await?;
@@ -428,6 +439,40 @@ impl TaskOrchestrator {
             ));
         }
         Ok(path)
+    }
+
+    /// Recreate a missing worktree at `worktree_path` from the workspace's
+    /// branch, under the shared per-repo lock. Returns the calm
+    /// `WorktreeUnavailable` error — not a hard `RepositoryPathMissing` —
+    /// when recreation is impossible: no branch recorded, the repository
+    /// has no local path on this machine, or that checkout is itself gone.
+    async fn recreate_missing_worktree(
+        &self,
+        workspace: &Workspace,
+        worktree_path: &Path,
+    ) -> Result<PathBuf, OrchestratorError> {
+        let branch = workspace
+            .branch
+            .as_deref()
+            .ok_or(OrchestratorError::WorktreeUnavailable)?;
+        let repository = self.repositories.get(&workspace.repository_id).await?;
+        let repo_path = repository
+            .local_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or(OrchestratorError::WorktreeUnavailable)?;
+        if !repo_path.join(".git").exists() {
+            return Err(OrchestratorError::WorktreeUnavailable);
+        }
+        let base_ref = repository.default_branch.clone();
+        let worktree_path = worktree_path.to_path_buf();
+
+        // Serialize the worktree-add against every other shared-`.git`
+        // mutation for this repo (F6) — same lock start_task uses.
+        let lock = self.repo_locks.for_repository(&workspace.repository_id);
+        let _guard = lock.lock().await;
+        git::create_worktree(&repo_path, &worktree_path, branch, &base_ref)?;
+        Ok(worktree_path)
     }
 
     fn broadcast_status(&self, event: TaskStatusEvent) {
@@ -523,7 +568,9 @@ mod tests {
         let repositories = RepositoryRepo::new(pool.clone());
         let log_dir = dir.path().join("logs");
         let runtime = Arc::new(TaskRuntime::new(log_dir));
-        let orchestrator = TaskOrchestrator::new(workspaces, repositories.clone(), runtime);
+        let repo_locks = Arc::new(RepoLockRegistry::new());
+        let orchestrator =
+            TaskOrchestrator::new(workspaces, repositories.clone(), runtime, repo_locks);
         (orchestrator, repositories, pool, dir)
     }
 
@@ -725,6 +772,67 @@ mod tests {
         let (orchestrator, _r, _pool, _t) = fresh_orchestrator().await;
         let err = orchestrator.stop_task("missing").await.unwrap_err();
         assert!(matches!(err, OrchestratorError::TaskNotRunning(_)));
+    }
+
+    // F1: opening a workspace whose worktree dir is gone (moved repo,
+    // cleaned temp dir, synced from another machine) must self-heal by
+    // recreating the worktree from the branch — not fail to start.
+    #[tokio::test]
+    async fn cwd_for_task_recreates_a_missing_worktree() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+
+        // Points at a worktree dir that doesn't exist, but records a branch
+        // we can re-attach.
+        let worktree_path = tmp.path().join("gone-worktree");
+        assert!(!worktree_path.exists());
+        let mut workspace = Workspace::new(repo.id.clone(), "restore me".into(), "echo".into());
+        workspace.branch = Some("phasr/restore".into());
+        workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
+
+        let cwd = orchestrator
+            .cwd_for_task(&workspace)
+            .await
+            .expect("self-heal should recreate the missing worktree");
+        assert_eq!(cwd, worktree_path);
+        assert!(
+            worktree_path.join("README.md").exists(),
+            "recreated worktree should carry the repo's tracked files"
+        );
+    }
+
+    // The calm path: a missing worktree with no branch to recreate from
+    // returns WorktreeUnavailable, not a hard RepositoryPathMissing.
+    #[tokio::test]
+    async fn cwd_for_task_returns_calm_error_when_it_cannot_recreate() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+
+        let mut workspace = Workspace::new(repo.id.clone(), "no branch".into(), "echo".into());
+        workspace.branch = None;
+        workspace.worktree_path =
+            Some(tmp.path().join("gone").to_string_lossy().into_owned());
+
+        let err = orchestrator.cwd_for_task(&workspace).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::WorktreeUnavailable));
     }
 
     #[test]

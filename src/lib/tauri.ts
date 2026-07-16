@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   Agent,
   AgentOption,
@@ -9,6 +10,7 @@ import type {
   ConflictSide,
   DiffScope,
   FileChange,
+  GitPushOutcome,
   InProgress,
   Launcher,
   LogOptions,
@@ -72,6 +74,12 @@ interface StartCloudSyncInput {
   supabaseUrl: string;
   supabaseAnonKey: string;
   machineId: string;
+}
+
+interface RegisterNotificationRouteInput {
+  taskId: string;
+  repositoryId: string;
+  status?: WorkspaceStatus;
 }
 
 export const tauri = {
@@ -162,6 +170,17 @@ export const tauri = {
   watchWorkspace: (id: string) => invoke<void>("watch_workspace", { id }),
   unwatchWorkspace: (id: string) => invoke<void>("unwatch_workspace", { id }),
 
+  // ── notifications (DDR-003 §6 activation seam) ───────────────────────
+  // Records the routing metadata for a workspace's OS notification so the
+  // Rust side can resolve it on activation. Called before `sendNotification`
+  // because the notification plugin drops `extra` on desktop.
+  registerNotificationRoute: (input: RegisterNotificationRouteInput) =>
+    invoke<void>("register_notification_route", { input }),
+  // Emits `phasr://notification-activated` for a task (the seam a
+  // notification-click transport calls). See useCompletionNotifications.ts.
+  activateNotification: (taskId: string) =>
+    invoke<void>("activate_notification", { taskId }),
+
   // ── agents ───────────────────────────────────────────────────────────
   listAgents: () => invoke<AgentOption[]>("list_agents"),
 
@@ -185,7 +204,8 @@ export const tauri = {
     invoke<void>("git_discard", { workspaceId, paths }),
   gitCommit: (workspaceId: string, message: string) =>
     invoke<CommitOutput>("git_commit", { workspaceId, message }),
-  gitPush: (workspaceId: string) => invoke<void>("git_push", { workspaceId }),
+  gitPush: (workspaceId: string) =>
+    invoke<GitPushOutcome>("git_push", { workspaceId }),
   gitBranchStatus: (workspaceId: string) =>
     invoke<BranchStatus>("git_branch_status", { workspaceId }),
   gitFetch: (workspaceId: string) => invoke<void>("git_fetch", { workspaceId }),
@@ -258,7 +278,13 @@ export const tauri = {
 
   // ── orchestrator (task lifecycle + terminal) ─────────────────────────
   startTask: (input: StartTaskInput) =>
-    invoke<StartedTask>("start_task", { input }),
+    invoke<StartedTask>("start_task", { input }).then((started) => {
+      // First successful agent launch is the moment to ask for OS-notification
+      // permission (DDR-003 §7 — never on cold start). Fire-and-forget; the
+      // helper prompts at most once ever via a localStorage guard.
+      void maybeRequestNotificationPermission();
+      return started;
+    }),
   stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
   openTaskTerminal: (
     taskId: string,

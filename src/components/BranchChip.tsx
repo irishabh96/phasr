@@ -1,4 +1,5 @@
-import { GitBranch } from "lucide-react";
+import { GitBranch, GitCommit } from "lucide-react";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { useGitBranchStatus } from "@/lib/hooks/useGit";
 import { cn } from "@/lib/utils";
 
@@ -22,13 +23,16 @@ export function BranchChip({ workspaceId, className }: BranchChipProps) {
   if (!status) return null;
 
   const label = status.detached ? status.branch.slice(0, 7) : status.branch;
+  const Icon = status.detached ? GitCommit : GitBranch;
 
-  return (
+  const chip = (
     <span
       aria-label={
-        status.upstream
-          ? `Branch ${label}, ${status.ahead} ahead, ${status.behind} behind`
-          : `Branch ${label}`
+        status.detached
+          ? `Detached HEAD at ${label}`
+          : status.upstream
+            ? `Branch ${label}, ${status.ahead} ahead, ${status.behind} behind`
+            : `Branch ${label}`
       }
       className={cn(
         "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2",
@@ -38,12 +42,17 @@ export function BranchChip({ workspaceId, className }: BranchChipProps) {
         className,
       )}
     >
-      <GitBranch size={11} className="shrink-0" />
-      <code className="font-mono leading-none text-(--color-text-primary)">{label}</code>
+      <Icon size={11} className="shrink-0" />
+      <code
+        title={status.detached ? undefined : status.branch}
+        className="min-w-0 max-w-[160px] truncate font-mono leading-none text-(--color-text-primary)"
+      >
+        {label}
+      </code>
       {status.upstream && (status.ahead > 0 || status.behind > 0) && (
-        <span className="flex items-center gap-1 text-(--color-text-muted)">
+        <span className="flex shrink-0 items-center gap-1 text-(--color-text-muted)">
           {status.ahead > 0 && (
-            <span className="text-(--color-accent-400)">↑{status.ahead}</span>
+            <span className="text-(--color-accent-text)">↑{status.ahead}</span>
           )}
           {status.behind > 0 && (
             <span className="text-(--color-warning)">↓{status.behind}</span>
@@ -55,4 +64,14 @@ export function BranchChip({ workspaceId, className }: BranchChipProps) {
       )}
     </span>
   );
+
+  if (status.detached) {
+    return (
+      <GlassTooltip content={`Detached HEAD at ${label}`} side="bottom">
+        {chip}
+      </GlassTooltip>
+    );
+  }
+
+  return chip;
 }

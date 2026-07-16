@@ -50,3 +50,55 @@ test-results/
 
 # Claude Code session files (plans, etc.)
 .claude/
+# Safe Agentic Workflow assets
+agent-outputs/
+agents/
+api/
+archive/
+ci/
+ci-cd/
+# Anchored to repo root: bare `commands/` also matched src-tauri/src/commands
+# and silently hid new backend command modules from git.
+/commands/
+config/
+database/
+guides/
+# Anchored to repo root: bare `hooks/` also matched src/lib/hooks and hid it
+# from Tailwind v4's content scan (which prunes .gitignored paths).
+/hooks/
+onboarding/
+patterns/
+release/
+releases/
+rules/
+security/
+skills/
+sop/
+team/
+templates/
+testing/
+# Anchored to repo root: bare `ui/` also matched src/components/ui and hid it
+# from Tailwind's content scan — every class used only there (GlassTooltip,
+# GlassButton, …) was silently never generated. This is the tooltip-transparency bug.
+/ui/
+whitepapers/
+workflow/
+.gemini/
+.codex/
+.cursor/
+.agents/
+dark-factory/
+# SAFe-template docs stay ignored, EXCEPT phasr's own design/architecture docs.
+/docs/*
+!/docs/design/
+!/docs/adr/
+!/docs/PERFORMANCE-RETENTION-REPORT.md
+patterns_library/
+# SAFe-template scripts stay ignored, EXCEPT phasr's own project scripts.
+/scripts/*
+!/scripts/generate-dmg-background.swift
+!/scripts/check-template-urls.mjs
+specs_templates
+CLAUDE.md
+AGENTS.md
+.geminiignore

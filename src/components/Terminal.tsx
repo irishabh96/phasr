@@ -3,7 +3,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { tauri } from "@/lib/tauri";
 import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
@@ -23,6 +24,15 @@ const FINISHED_STATUSES: WorkspaceStatus[] = [
   "failed",
   "archived",
 ];
+
+type StartMode = "initial" | "retry" | "restart";
+
+/** Overlay state driven onto <TerminalStatus>. `null` = no overlay. */
+type TermStatus =
+  | { state: "starting" | "retrying" | "restarting" }
+  | { state: "failed"; error: string }
+  | { state: "exited"; exitCode: number | null }
+  | null;
 
 /**
  * Workspace agent terminal. Each instance owns a persistent container
@@ -45,6 +55,11 @@ interface CachedMain {
   started: boolean;
   /** Latest onExit callback (kept fresh across remounts via ref). */
   onExit: ((exitCode: number | null) => void) | undefined;
+  /** Latest mount's status setter — lets the persistent PTY channel push
+   *  lifecycle updates to the live component after a remount. */
+  setStatus: ((s: TermStatus) => void) | null;
+  /** Set when the PTY exits so a later remount can restore the overlay. */
+  exitStatus: { exitCode: number | null } | null;
 }
 
 const mainXtermCache = new Map<string, CachedMain>();
@@ -97,15 +112,20 @@ export function Terminal({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const initialStatusRef = useRef(status);
   const { data: settings } = useUserSettings();
+  const [termStatus, setTermStatus] = useState<TermStatus>(null);
+  // Set inside the mount effect so the overlay's Retry/Restart can re-run
+  // the PTY without recreating the whole terminal.
+  const retryStartRef = useRef<(() => void) | null>(null);
+  const restartRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
     let entry = mainXtermCache.get(workspaceId);
+    const isFresh = !entry;
 
     if (!entry) {
-      const initialStatus = initialStatusRef.current;
       const container = document.createElement("div");
       container.className = "h-full w-full";
 
@@ -144,101 +164,114 @@ export function Terminal({
         inputDisposables: [],
         started: false,
         onExit,
+        setStatus: null,
+        exitStatus: null,
       };
       mainXtermCache.set(workspaceId, entry);
-
-      const wireInteractive = () => {
-        entry!.inputDisposables = [
-          term.onData((data) => {
-            // Routes user keystrokes through the orchestrator's
-            // `send_input_to_task` command so the React side speaks
-            // task vocabulary end-to-end.
-            void tauri.sendInputToTask(workspaceId, data).catch((err) => {
-              term.write(
-                `\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`,
-              );
-            });
-          }),
-          term.onResize(({ rows, cols }) => {
-            void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
-          }),
-        ];
-        term.focus();
-      };
-
-      const startOrAttach = async () => {
-        const channel = new Channel<PtyEvent>();
-        channel.onmessage = (event) => {
-          if (event.type === "output") {
-            term.write(event.chunk);
-          } else if (event.type === "exit") {
-            term.write(
-              `\r\n\x1b[2m── process exited${
-                event.exitCode == null ? "" : ` (code ${event.exitCode})`
-              } ──\x1b[0m\r\n`,
-            );
-            entry!.onExit?.(event.exitCode);
-          }
-        };
-        try {
-          await tauri.openTaskTerminal(
-            workspaceId,
-            channel,
-            term.rows,
-            term.cols,
-          );
-          entry!.started = true;
-          wireInteractive();
-          // Catch any fit() that fired between start request and reply —
-          // the onResize handler isn't wired during the await, so a
-          // resize there is otherwise lost.
-          void tauri
-            .resizeTask(workspaceId, term.rows, term.cols)
-            .catch(() => {});
-        } catch (err) {
-          term.write(
-            `\r\n\x1b[31m✗ Failed to start: ${String(err)}\x1b[0m\r\n`,
-          );
-        }
-      };
-
-      const loadLog = async () => {
-        try {
-          const log = await tauri.readTaskLog(workspaceId);
-          term.write(
-            log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n",
-          );
-          entry!.started = true;
-        } catch (err) {
-          term.write(
-            `\r\n\x1b[31mFailed to load log: ${String(err)}\x1b[0m\r\n`,
-          );
-        }
-      };
-
-      if (FINISHED_STATUSES.includes(initialStatus)) {
-        void loadLog();
-      } else {
-        void startOrAttach();
-      }
     } else {
       // Cache hit — move the persistent container back into this mount.
       mount.appendChild(entry.container);
       entry.onExit = onExit;
+    }
 
-      entry.inputDisposables = [
-        entry.term.onData((data) => {
+    const term = entry.term;
+    // Route lifecycle updates from the (persistent) PTY channel to the
+    // CURRENT mount's React state, so an exit that lands after a remount
+    // still reaches the live component instead of a stale setter.
+    entry.setStatus = setTermStatus;
+
+    const wireInteractive = () => {
+      for (const d of entry!.inputDisposables) d.dispose();
+      entry!.inputDisposables = [
+        term.onData((data) => {
+          // Routes user keystrokes through the orchestrator's
+          // `send_input_to_task` command so the React side speaks
+          // task vocabulary end-to-end.
           void tauri.sendInputToTask(workspaceId, data).catch((err) => {
-            entry!.term.write(
-              `\r\n\x1b[31m[input error: ${String(err)}]\x1b[0m\r\n`,
-            );
+            entry!.setStatus?.({ state: "failed", error: String(err) });
           });
         }),
-        entry.term.onResize(({ rows, cols }) => {
+        term.onResize(({ rows, cols }) => {
           void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
         }),
       ];
-      entry.term.focus();
+      term.focus();
+    };
+
+    const startOrAttach = async (mode: StartMode = "initial") => {
+      entry!.exitStatus = null;
+      entry!.setStatus?.(
+        mode === "retry"
+          ? { state: "retrying" }
+          : mode === "restart"
+            ? { state: "restarting" }
+            : { state: "starting" },
+      );
+      const channel = new Channel<PtyEvent>();
+      channel.onmessage = (event) => {
+        if (event.type === "output") {
+          term.write(event.chunk);
+        } else if (event.type === "exit") {
+          entry!.exitStatus = { exitCode: event.exitCode };
+          entry!.setStatus?.({ state: "exited", exitCode: event.exitCode });
+          entry!.onExit?.(event.exitCode);
+        }
+      };
+      try {
+        await tauri.openTaskTerminal(
+          workspaceId,
+          channel,
+          term.rows,
+          term.cols,
+        );
+        entry!.started = true;
+        entry!.setStatus?.(null);
+        wireInteractive();
+        // Catch any fit() that fired between start request and reply — the
+        // onResize handler isn't wired during the await, so a resize there
+        // is otherwise lost.
+        void tauri
+          .resizeTask(workspaceId, term.rows, term.cols)
+          .catch(() => {});
+      } catch (err) {
+        entry!.setStatus?.({ state: "failed", error: String(err) });
+      }
+    };
+
+    const loadLog = async (retry = false) => {
+      if (retry) entry!.setStatus?.({ state: "retrying" });
+      try {
+        const log = await tauri.readTaskLog(workspaceId);
+        term.write(log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n");
+        entry!.started = true;
+        entry!.setStatus?.(null);
+      } catch (err) {
+        entry!.setStatus?.({ state: "failed", error: String(err) });
+      }
+    };
+
+    if (isFresh) {
+      if (FINISHED_STATUSES.includes(initialStatusRef.current)) {
+        // Finished workspace — replay its log. Retry re-reads the log.
+        retryStartRef.current = () => void loadLog(true);
+        restartRef.current = () => void loadLog(true);
+        void loadLog();
+      } else {
+        retryStartRef.current = () => void startOrAttach("retry");
+        restartRef.current = () => void startOrAttach("restart");
+        void startOrAttach("initial");
+      }
+    } else {
+      // Cache hit — the PTY (and its channel) are still live and writing to
+      // the persistent xterm. Restore the exit overlay if the process ended
+      // while this workspace was away; otherwise re-wire input against it.
+      retryStartRef.current = () => void startOrAttach("retry");
+      restartRef.current = () => void startOrAttach("restart");
+      if (entry.exitStatus) {
+        setTermStatus({ state: "exited", exitCode: entry.exitStatus.exitCode });
+      } else {
+        wireInteractive();
+      }
     }
 
     const refit = () => {
@@ -246,15 +279,39 @@ export function Terminal({
         const c = entry!.container;
         // Skip when hidden — fit on a 0×0 container collapses xterm to
         // a 1×1 grid and the WebGL canvas gets stuck rendering into a
-        // tiny region even after the tab becomes visible again.
-        if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
+        // tiny region even after the tab becomes visible again. The
+        // offscreen park host is 1px, so guard on < 2 (not < 1) so a
+        // parked container isn't treated as visible.
+        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
         entry!.fit.fit();
         if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
       } catch {
         /* layout settling */
       }
     };
-    const rafId = requestAnimationFrame(refit);
+    // After the canvas is reparented out of the offscreen park host on a
+    // same-size workspace switch, fit() no-ops (cols/rows unchanged) and
+    // a bare refresh() never resets the reparented WebGL canvas → blank
+    // until some resize forces it (which is why toggling a sidebar
+    // fixes it). clearTextureAtlas() resets the atlas + glyph model and
+    // redraws WITHOUT a resize (no spurious PTY reflow) — reproducing
+    // the sidebar-toggle cure. One-shot only; NOT inside refit (which
+    // fires on every resize tick and would thrash the atlas on drags).
+    const forceRepaint = () => {
+      try {
+        const c = entry!.container;
+        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
+        if (entry!.webgl) entry!.webgl.clearTextureAtlas();
+        else if (entry!.term.rows > 0)
+          entry!.term.refresh(0, entry!.term.rows - 1);
+      } catch {
+        /* renderer paused / layout settling */
+      }
+    };
+    const rafId = requestAnimationFrame(() => {
+      refit();
+      forceRepaint();
+    });
     // The OS may finish applying `maximized: true` after the WebView has
     // already painted and after our first rAF refit. ResizeObserver
     // catches container-size changes, but on macOS the post-maximize
@@ -263,7 +320,10 @@ export function Terminal({
     // width. These trailing refits catch that case.
     const settleTimers = [
       window.setTimeout(refit, 60),
-      window.setTimeout(refit, 250),
+      window.setTimeout(() => {
+        refit();
+        forceRepaint();
+      }, 250),
       window.setTimeout(refit, 600),
     ];
 
@@ -280,6 +340,9 @@ export function Terminal({
       resizeObserver.disconnect();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
+      // Stop routing channel updates to this (unmounting) instance — a
+      // later mount re-points it and restores state from `exitStatus`.
+      if (entry!.setStatus === setTermStatus) entry!.setStatus = null;
       // Park the persistent container in the hidden host so the canvas
       // stays in the document — preserves the WebGL GPU context.
       getHiddenHost().appendChild(entry!.container);
@@ -311,9 +374,12 @@ export function Terminal({
     if (!entry) return;
     try {
       const c = entry.container;
-      if (!c.isConnected || c.clientWidth < 1 || c.clientHeight < 1) return;
+      if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
       entry.fit.fit();
-      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
+      // Reset the reparented WebGL canvas (see forceRepaint above) so an
+      // inner-tab visibility flip repaints without needing a resize.
+      if (entry.webgl) entry.webgl.clearTextureAtlas();
+      else if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
     } catch {
       /* layout still settling */
     }
@@ -325,16 +391,29 @@ export function Terminal({
         const buf = mountRef.current?.querySelector("textarea");
         (buf as HTMLTextAreaElement | null)?.focus();
       }}
-      className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
+      className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
       style={{
         display: visible ? "block" : "none",
-        paddingTop: 10,
+        paddingTop: 8,
         paddingRight: 8,
-        paddingBottom: 2,
+        paddingBottom: 4,
         paddingLeft: 16,
       }}
     >
       <div ref={mountRef} className="h-full w-full" />
+      {termStatus && (
+        <TerminalStatus
+          state={termStatus.state}
+          {...(termStatus.state === "failed"
+            ? { error: termStatus.error }
+            : {})}
+          {...(termStatus.state === "exited"
+            ? { exitCode: termStatus.exitCode }
+            : {})}
+          onRetry={() => retryStartRef.current?.()}
+          onRestart={() => restartRef.current?.()}
+        />
+      )}
     </div>
   );
 }

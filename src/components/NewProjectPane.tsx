@@ -2,9 +2,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
-import { ArrowLeft, FolderOpen, FolderPlus, GitBranch, LayoutGrid } from "lucide-react";
+import {
+  ArrowLeft,
+  FolderOpen,
+  FolderPlus,
+  GitBranch,
+  LayoutGrid,
+} from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
+import { humanizeError } from "@/lib/humanizeError";
 import {
   repositoryKeys,
   useCreateRepository,
@@ -43,7 +50,9 @@ export function NewProjectPane() {
   // placeholder — Create is one click away.
   const [name, setName] = useState("my-project");
   const [url, setUrl] = useState("");
-  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
+  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(
+    null,
+  );
   const [templateName, setTemplateName] = useState("");
   // Tracks whether the user has edited the template-mode name field.
   // While `false`, switching templates re-fills the field with the
@@ -86,8 +95,18 @@ export function NewProjectPane() {
       localPath: dest,
     });
     queryClient.invalidateQueries({ queryKey: repositoryKeys.list() });
-    void navigateToRepoEntry(repo.id);
-    void navigate({ to: "/" });
+    // Single, awaited navigation — `navigateToRepoEntry` already routes to
+    // the repo's entry (first workspace or repo home). The extra
+    // `navigate({ to: "/" })` used to race it, sometimes stranding the
+    // user on the root pane (D3).
+    await navigateToRepoEntry(repo.id);
+  };
+
+  // Clear any prior error when switching modes so a failure from one mode
+  // doesn't linger under another (D2).
+  const changeMode = (next: Mode) => {
+    setError(null);
+    setMode(next);
   };
 
   const runEmpty = async () => {
@@ -99,7 +118,7 @@ export function NewProjectPane() {
       await tauri.gitInitEmptyRepository(dest);
       await settle(name.trim(), dest);
     } catch (err) {
-      setError(String(err));
+      setError(humanizeError(err));
     } finally {
       setSubmitting(false);
     }
@@ -115,7 +134,7 @@ export function NewProjectPane() {
       await tauri.gitCloneRepository(url.trim(), dest);
       await settle(derived, dest);
     } catch (err) {
-      setError(String(err));
+      setError(humanizeError(err));
     } finally {
       setSubmitting(false);
     }
@@ -130,7 +149,7 @@ export function NewProjectPane() {
       await tauri.gitInitFromTemplate(selectedTemplate.gitUrl, dest);
       await settle(templateName.trim(), dest);
     } catch (err) {
-      setError(String(err));
+      setError(humanizeError(err));
     } finally {
       setSubmitting(false);
     }
@@ -143,7 +162,7 @@ export function NewProjectPane() {
           <button
             type="button"
             onClick={() => void navigate({ to: "/" })}
-            className="mb-5 inline-flex items-center gap-1.5 text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary)"
+            className="mb-5 inline-flex items-center gap-1.5 rounded-[6px] text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
           >
             <ArrowLeft size={11} />
             Back
@@ -169,7 +188,7 @@ export function NewProjectPane() {
               onClick={browse}
               aria-label="Browse for parent folder"
               title="Browse for parent folder"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-(--glass-border-strong) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-(--glass-border-strong) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <FolderOpen size={14} />
             </button>
@@ -179,21 +198,21 @@ export function NewProjectPane() {
         <div className="grid grid-cols-3 gap-3">
           <ModeTile
             active={mode === "empty"}
-            onClick={() => setMode("empty")}
+            onClick={() => changeMode("empty")}
             icon={<FolderPlus size={20} />}
             title="Empty"
             description="New git repository from scratch"
           />
           <ModeTile
             active={mode === "clone"}
-            onClick={() => setMode("clone")}
+            onClick={() => changeMode("clone")}
             icon={<GitBranch size={20} />}
             title="Clone"
             description="Clone from a remote URL"
           />
           <ModeTile
             active={mode === "template"}
-            onClick={() => setMode("template")}
+            onClick={() => changeMode("template")}
             icon={<LayoutGrid size={20} />}
             title="Template"
             description="Start from a project template"
@@ -201,11 +220,21 @@ export function NewProjectPane() {
         </div>
 
         {mode === "empty" && (
-          <div className="space-y-2 border-t border-(--color-border-subtle) pt-5">
-            <label className="block text-[12px] font-medium text-(--color-text-primary)">
+          <form
+            className="space-y-2 border-t border-(--color-border-subtle) pt-5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void runEmpty();
+            }}
+          >
+            <label
+              htmlFor="empty-repo-name"
+              className="block text-[12px] font-medium text-(--color-text-primary)"
+            >
               Repository Name
             </label>
             <GlassInput
+              id="empty-repo-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="my-project"
@@ -218,46 +247,71 @@ export function NewProjectPane() {
                 <GlassButton
                   variant="primary"
                   size="md"
-                  onClick={() => void runEmpty()}
+                  type="submit"
                   disabled={submitting || !name.trim() || !location.trim()}
                 >
                   {submitting ? "Creating…" : "Create"}
                 </GlassButton>
               }
             />
-          </div>
+          </form>
         )}
 
         {mode === "clone" && (
-          <div className="space-y-2 border-t border-(--color-border-subtle) pt-5">
-            <label className="block text-[12px] font-medium text-(--color-text-primary)">
+          <form
+            className="space-y-2 border-t border-(--color-border-subtle) pt-5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void runClone();
+            }}
+          >
+            <label
+              htmlFor="clone-repo-url"
+              className="block text-[12px] font-medium text-(--color-text-primary)"
+            >
               Repository URL
             </label>
             <GlassInput
+              id="clone-repo-url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https:// or git@github.com:user/repo.git"
               className="h-10 font-mono text-[12.5px]"
               autoFocus
             />
+            {url.trim() && location.trim() && (
+              <p
+                className="truncate font-mono text-[11.5px] text-(--color-text-muted)"
+                title={`${location.replace(/\/$/, "")}/${deriveNameFromUrl(url.trim())}`}
+              >
+                Creates {location.replace(/\/$/, "")}/
+                {deriveNameFromUrl(url.trim())}
+              </p>
+            )}
             <Footer
               error={error}
               right={
                 <GlassButton
                   variant="primary"
                   size="md"
-                  onClick={() => void runClone()}
+                  type="submit"
                   disabled={submitting || !url.trim() || !location.trim()}
                 >
                   {submitting ? "Cloning…" : "Clone"}
                 </GlassButton>
               }
             />
-          </div>
+          </form>
         )}
 
         {mode === "template" && (
-          <div className="space-y-3 border-t border-(--color-border-subtle) pt-5">
+          <form
+            className="space-y-3 border-t border-(--color-border-subtle) pt-5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void runTemplate();
+            }}
+          >
             <div className="grid grid-cols-2 gap-2">
               {TEMPLATES.map((t) => (
                 <TemplateCard
@@ -269,7 +323,10 @@ export function NewProjectPane() {
                     // Refill the name field with the new template's id
                     // unless the user has manually edited it. An empty
                     // field is treated as "still auto-fillable".
-                    if (!templateNameDirty || templateName.trim().length === 0) {
+                    if (
+                      !templateNameDirty ||
+                      templateName.trim().length === 0
+                    ) {
                       setTemplateName(t.id);
                       setTemplateNameDirty(false);
                     }
@@ -279,10 +336,14 @@ export function NewProjectPane() {
             </div>
             {selectedTemplate && (
               <div className="space-y-2">
-                <label className="block text-[12px] font-medium text-(--color-text-primary)">
+                <label
+                  htmlFor="template-repo-name"
+                  className="block text-[12px] font-medium text-(--color-text-primary)"
+                >
                   Repository Name
                 </label>
                 <GlassInput
+                  id="template-repo-name"
                   value={templateName}
                   onChange={(e) => {
                     setTemplateName(e.target.value);
@@ -299,7 +360,7 @@ export function NewProjectPane() {
                 <GlassButton
                   variant="primary"
                   size="md"
-                  onClick={() => void runTemplate()}
+                  type="submit"
                   disabled={
                     submitting ||
                     !selectedTemplate ||
@@ -311,7 +372,7 @@ export function NewProjectPane() {
                 </GlassButton>
               }
             />
-          </div>
+          </form>
         )}
       </div>
     </div>
@@ -338,12 +399,17 @@ function ModeTile({
       aria-pressed={active}
       className={cn(
         "flex flex-col items-center gap-2 rounded-[10px] border-2 px-4 py-5 text-center transition-all",
+        "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
           : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
       )}
     >
-      <span className={cn(active ? "text-(--color-accent-400)" : "text-(--color-text-primary)")}>
+      <span
+        className={cn(
+          active ? "text-(--color-accent-text)" : "text-(--color-text-primary)",
+        )}
+      >
         {icon}
       </span>
       <span
@@ -354,7 +420,9 @@ function ModeTile({
       >
         {title}
       </span>
-      <span className="text-[11.5px] text-(--color-text-secondary)">{description}</span>
+      <span className="text-[11.5px] text-(--color-text-secondary)">
+        {description}
+      </span>
     </button>
   );
 }
@@ -375,6 +443,7 @@ function TemplateCard({
       aria-pressed={active}
       className={cn(
         "flex flex-col gap-1 rounded-[10px] border-2 p-3 text-left transition-all",
+        "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
           : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
@@ -395,7 +464,9 @@ function TemplateCard({
           </span>
         )}
       </div>
-      <span className="text-[11.5px] text-(--color-text-secondary)">{template.description}</span>
+      <span className="text-[11.5px] text-(--color-text-secondary)">
+        {template.description}
+      </span>
     </button>
   );
 }
@@ -404,7 +475,9 @@ function Footer({ error, right }: { error: string | null; right: ReactNode }) {
   return (
     <div className="mt-3 flex items-center justify-between border-t border-(--color-border-subtle) pt-3">
       {error ? (
-        <span className="truncate text-[12px] text-(--color-danger)">{error}</span>
+        <span className="truncate text-[12px] text-(--color-danger)">
+          {error}
+        </span>
       ) : (
         <span />
       )}
@@ -420,8 +493,14 @@ function Footer({ error, right }: { error: string | null; right: ReactNode }) {
  * Falls back to `"project"` for anything we can't parse.
  */
 function deriveNameFromUrl(url: string): string {
-  const trimmed = url.trim().replace(/\.git\/?$/, "").replace(/\/$/, "");
-  const lastSlash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf(":"));
+  const trimmed = url
+    .trim()
+    .replace(/\.git\/?$/, "")
+    .replace(/\/$/, "");
+  const lastSlash = Math.max(
+    trimmed.lastIndexOf("/"),
+    trimmed.lastIndexOf(":"),
+  );
   const tail = lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
   return tail.length > 0 ? tail : "project";
 }

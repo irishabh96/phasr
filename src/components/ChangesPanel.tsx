@@ -1,7 +1,8 @@
 import { useQueries } from "@tanstack/react-query";
 import { AlertTriangle, Check, GitBranch } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DiffList } from "@/components/diff/DiffList";
+import { DiffModeToggle, type DiffViewMode } from "@/components/diff/DiffView";
 import type { DiffCardFile } from "@/components/diff/DiffCard";
 import {
   useGitAbortMerge,
@@ -16,15 +17,33 @@ import {
   useGitStatus,
   useGitUnstage,
 } from "@/lib/hooks/useGit";
+import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { tauri } from "@/lib/tauri";
-import type { DiffScope, FileChange } from "@/lib/types";
+import type {
+  ConflictSide,
+  DiffScope,
+  FileChange,
+  FileStatus,
+} from "@/lib/types";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassTextarea } from "@/components/ui/GlassInput";
 
 const COMMIT_SHORTCUT = SHORTCUTS.submitForm;
 const COMMIT_AND_PUSH_SHORTCUT = SHORTCUTS.commitAndPush;
 const SUCCESS_FADE_MS = 4_000;
+const DIFF_MODE_KEY = "phasr.diff.viewMode";
+// Cards auto-expanded per section on load; matches the old per-DiffList
+// `defaultExpanded={10}`. Only expanded cards fetch their diff, so this is
+// also the cap on how many diffs we fetch up front.
+const DEFAULT_EXPANDED_PER_SECTION = 10;
+
+function readDiffMode(): DiffViewMode {
+  if (typeof window === "undefined") return "side-by-side";
+  return window.localStorage.getItem(DIFF_MODE_KEY) === "inline"
+    ? "inline"
+    : "side-by-side";
+}
 
 interface ChangesPanelProps {
   workspaceId: string;
@@ -42,7 +61,12 @@ type Bucket = "conflicts" | "staged" | "unstaged" | "partial";
  * sees results stream in instead of waiting for the whole set.
  */
 export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
-  const { data: changes } = useGitStatus(workspaceId);
+  const {
+    data: changes,
+    isLoading: statusLoading,
+    isError: statusError,
+    error: statusErr,
+  } = useGitStatus(workspaceId);
   const { data: branchStatus } = useGitBranchStatus(workspaceId);
   const { data: mergeInProgress } = useGitMergeInProgress(workspaceId);
   const stage = useGitStage(workspaceId);
@@ -64,7 +88,67 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const [lastCommitAt, setLastCommitAt] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
 
-  const allFiles = useDiffFiles(workspaceId, changes ?? []);
+  // The diff view mode + its ⌘\ shortcut live HERE (not in each DiffList) so
+  // split/inline flips every section at once and only ONE keyboard listener
+  // runs instead of one per section (the 4×-listener bug).
+  const [diffMode, setDiffMode] = useState<DiffViewMode>(readDiffMode);
+  const handleDiffModeChange = useCallback((next: DiffViewMode) => {
+    setDiffMode(next);
+    try {
+      window.localStorage.setItem(DIFF_MODE_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!matchShortcut(e, SHORTCUTS.toggleDiffMode)) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+      if (target?.isContentEditable) return;
+      e.preventDefault();
+      handleDiffModeChange(
+        diffMode === "side-by-side" ? "inline" : "side-by-side",
+      );
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [diffMode, handleDiffModeChange]);
+
+  // Expansion is owned HERE (not inside each DiffList) so we can gate the
+  // per-file diff fetch on it: only expanded cards fetch their raw diff, so
+  // collapsed cards issue ZERO gitDiff calls. One flat set of open paths
+  // spans all four sections.
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const changesKey = useMemo(
+    () => (changes ?? []).map((c) => c.path).join(" "),
+    [changes],
+  );
+  useEffect(() => {
+    const list = changes ?? [];
+    setExpandedPaths((prev) => {
+      // Keep the user's toggles for paths that survive a worktree change;
+      // only auto-seed when none of the previously-open paths remain (a
+      // fresh worktree / first load) — new files stay collapsed.
+      const surviving = new Set<string>();
+      for (const c of list) if (prev.has(c.path)) surviving.add(c.path);
+      if (surviving.size > 0) return surviving;
+      return seedExpandedPaths(list, DEFAULT_EXPANDED_PER_SECTION);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [changesKey]);
+  const toggleExpanded = useCallback((path: string) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const allFiles = useDiffFiles(workspaceId, changes ?? [], expandedPaths);
 
   const { conflicts, staged, unstaged, partial } = useMemo(() => {
     const groups: Record<Bucket, DiffCardFile[]> = {
@@ -81,11 +165,15 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const mergeKind = mergeInProgress?.kind ?? "none";
   const inMerge = mergeKind !== "none";
   const conflictCount = conflicts.length;
+  // A branch with no upstream (`upstream === null`) has never been
+  // pushed, so `ahead` is 0 even when it has commits — allow that first
+  // push (git's `--set-upstream` publishes it), otherwise the button
+  // would be permanently disabled on brand-new workspace branches.
   const canPush =
     !!branchStatus &&
     branchStatus.hasRemote &&
     !branchStatus.detached &&
-    branchStatus.ahead > 0;
+    (branchStatus.ahead > 0 || branchStatus.upstream === null);
 
   // Re-render once after a success message lands so we can hide it
   // when SUCCESS_FADE_MS has elapsed. The tick state is intentionally
@@ -108,15 +196,44 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const handleStage = (p: string) => stage.mutate([p]);
   const handleUnstage = (p: string) => unstage.mutate([p]);
   const handleDiscard = (p: string) => discard.mutate([p]);
-  const handleUseOurs = (p: string) =>
-    resolveConflict.mutate({ path: p, side: "ours" });
-  const handleUseTheirs = (p: string) =>
-    resolveConflict.mutate({ path: p, side: "theirs" });
+
+  // Conflict resolution — framed by intent ("keep mine" / "use theirs")
+  // and mapped to the correct git side. Git INVERTS --ours/--theirs
+  // during a rebase (HEAD is the branch you're replaying onto), so the
+  // side that preserves YOUR work is `ours` in a merge but `theirs` in
+  // a rebase. Getting this wrong silently discards the user's work.
+  const mineSide: ConflictSide = mergeKind === "rebase" ? "theirs" : "ours";
+  const otherSide: ConflictSide = mergeKind === "rebase" ? "ours" : "theirs";
+  const mineName = branchStatus?.branch ?? null;
+  const otherName =
+    mergeKind === "rebase"
+      ? (branchStatus?.targetRef ?? "the base branch")
+      : "the incoming branch";
+  const conflictActions = {
+    keepMine: {
+      label: `Keep your changes${mineName ? ` (${mineName})` : ""}`,
+      confirmTitle: "Keep your changes?",
+      confirmBody: `Keep your version and discard ${otherName}'s changes to this file. This can't be undone.`,
+      confirmLabel: "Keep mine",
+      onResolve: (p: string) =>
+        resolveConflict.mutate({ path: p, side: mineSide }),
+    },
+    useOther: {
+      label: `Use ${otherName}'s version`,
+      confirmTitle: `Use ${otherName}'s version?`,
+      confirmBody: `Replace this file with ${otherName}'s version and discard your changes. This can't be undone.`,
+      confirmLabel: "Use theirs",
+      onResolve: (p: string) =>
+        resolveConflict.mutate({ path: p, side: otherSide }),
+    },
+  };
 
   const handleCommit = async () => {
     if (!message.trim() || stagedCount === 0) return;
     await commit.mutateAsync(message.trim());
     setMessage("");
+    // Collapse the textarea back to its resting height now the message is sent.
+    setExpanded(false);
     setLastCommitAt(Date.now());
     setLastPushAt(null);
   };
@@ -133,6 +250,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
       try {
         await commit.mutateAsync(message.trim());
         setMessage("");
+        setExpanded(false);
         setLastCommitAt(Date.now());
       } catch {
         return;
@@ -146,7 +264,9 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
     }
   };
 
-  const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleTextareaKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+  ) => {
     const native = e.nativeEvent as KeyboardEvent;
     if (matchShortcut(native, COMMIT_AND_PUSH_SHORTCUT)) {
       e.preventDefault();
@@ -161,12 +281,30 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {allFiles.length > 0 && (
+        <div className="flex shrink-0 items-center justify-end border-b border-(--color-border-subtle) px-2 py-1.5">
+          <DiffModeToggle mode={diffMode} onChange={handleDiffModeChange} />
+        </div>
+      )}
       <div className="min-h-0 flex-1 space-y-4 overflow-auto p-2">
-        {(changes ?? []).length === 0 && !inMerge && (
-          <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
-            No changes in this worktree yet.
+        {statusError && (
+          <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-(--color-danger)">
+            Couldn't load changes — {humanizeError(statusErr)}
           </div>
         )}
+        {!statusError && changes === undefined && statusLoading && (
+          <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
+            Loading changes…
+          </div>
+        )}
+        {!statusError &&
+          changes !== undefined &&
+          changes.length === 0 &&
+          !inMerge && (
+            <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
+              No changes in this worktree yet.
+            </div>
+          )}
 
         {conflicts.length > 0 && (
           <Section
@@ -175,10 +313,12 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
           >
             <DiffList
               files={conflicts}
-              defaultExpanded={10}
+              expanded={expandedPaths}
+              onToggle={toggleExpanded}
+              mode={diffMode}
+              onModeChange={handleDiffModeChange}
               onCopyPath={copyPath}
-              onUseOurs={handleUseOurs}
-              onUseTheirs={handleUseTheirs}
+              conflict={conflictActions}
             />
           </Section>
         )}
@@ -200,7 +340,10 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
           >
             <DiffList
               files={staged}
-              defaultExpanded={10}
+              expanded={expandedPaths}
+              onToggle={toggleExpanded}
+              mode={diffMode}
+              onModeChange={handleDiffModeChange}
               onCopyPath={copyPath}
               onUnstage={handleUnstage}
               onDiscard={handleDiscard}
@@ -225,7 +368,10 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
           >
             <DiffList
               files={unstaged}
-              defaultExpanded={10}
+              expanded={expandedPaths}
+              onToggle={toggleExpanded}
+              mode={diffMode}
+              onModeChange={handleDiffModeChange}
               onCopyPath={copyPath}
               onStage={handleStage}
               onDiscard={handleDiscard}
@@ -237,7 +383,10 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
           <Section title="Partial" count={partial.length}>
             <DiffList
               files={partial}
-              defaultExpanded={10}
+              expanded={expandedPaths}
+              onToggle={toggleExpanded}
+              mode={diffMode}
+              onModeChange={handleDiffModeChange}
               onCopyPath={copyPath}
               onStage={handleStage}
               onUnstage={handleUnstage}
@@ -262,84 +411,98 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
             }}
             error={
               continueMerge.error
-                ? extractMessage(continueMerge.error)
+                ? humanizeError(continueMerge.error)
                 : abortMerge.error
-                  ? extractMessage(abortMerge.error)
+                  ? humanizeError(abortMerge.error)
                   : null
             }
           />
         )}
         {!inMerge && (
           <>
-        <GlassTextarea
-          value={message}
-          onChange={(e) => {
-            setMessage(e.target.value);
-            if (e.target.value.length > 0) setExpanded(true);
-          }}
-          onFocus={() => setExpanded(true)}
-          onKeyDown={handleTextareaKeyDown}
-          rows={expanded ? 5 : 2}
-          placeholder="Commit message"
-        />
-        <div className="mt-2 flex items-center gap-1">
-          <GlassButton
-            variant="primary"
-            size="sm"
-            onClick={handleCommit}
-            disabled={commit.isPending || !message.trim() || stagedCount === 0}
-            title={`Commit (${COMMIT_SHORTCUT.display.join(" ")})`}
-          >
-            <Check size={12} />
-            {commit.isPending ? "Committing…" : "Commit"}
-            {stagedCount > 0 && ` (${stagedCount})`}
-          </GlassButton>
-          <GlassButton
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void (async () => {
-                try {
-                  await push.mutateAsync();
-                  setLastPushAt(Date.now());
-                } catch {
-                  /* surfaced below */
+            <GlassTextarea
+              value={message}
+              onChange={(e) => {
+                setMessage(e.target.value);
+                if (e.target.value.length > 0) setExpanded(true);
+              }}
+              onFocus={() => setExpanded(true)}
+              onKeyDown={handleTextareaKeyDown}
+              rows={expanded ? 5 : 2}
+              placeholder="Commit message"
+            />
+            <div className="mt-2 flex items-center gap-1">
+              <GlassButton
+                variant="primary"
+                size="sm"
+                onClick={handleCommit}
+                disabled={
+                  commit.isPending || !message.trim() || stagedCount === 0
                 }
-              })();
-            }}
-            disabled={push.isPending || !canPush}
-            className="ml-auto"
-            title={
-              !branchStatus?.hasRemote
-                ? "No remote configured"
-                : branchStatus.detached
-                  ? "Detached HEAD — checkout a branch to push"
-                  : branchStatus.ahead === 0
-                    ? "Nothing to push"
-                    : `Push ${branchStatus.ahead} commit${branchStatus.ahead === 1 ? "" : "s"} (${COMMIT_AND_PUSH_SHORTCUT.display.join(" ")} commits then pushes)`
-            }
-          >
-            <GitBranch size={12} />
-            {push.isPending ? "Pushing…" : "Push"}
-            {branchStatus && branchStatus.ahead > 0 && ` (${branchStatus.ahead})`}
-          </GlassButton>
-        </div>
-        {commit.error && (
-          <p className="mt-2 text-[11px] text-(--color-danger)">
-            {extractMessage(commit.error)}
-          </p>
-        )}
-        {push.error && (
-          <p className="mt-2 text-[11px] text-(--color-danger)">
-            {extractMessage(push.error)}
-          </p>
-        )}
-        {showPushSuccess && (
-          <p className="mt-2 text-[11px] text-(--color-success)">Pushed.</p>
-        )}
-        {showCommitSuccess && !showPushSuccess && (
-          <p className="mt-2 text-[11px] text-(--color-success)">Committed.</p>
-        )}
+                title={
+                  stagedCount === 0
+                    ? "Stage changes to commit"
+                    : !message.trim()
+                      ? "Enter a commit message to commit"
+                      : `Commit (${COMMIT_SHORTCUT.display.join(" ")})`
+                }
+              >
+                <Check size={12} />
+                {commit.isPending ? "Committing…" : "Commit"}
+                {stagedCount > 0 && ` (${stagedCount})`}
+              </GlassButton>
+              <GlassButton
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      await push.mutateAsync();
+                      setLastPushAt(Date.now());
+                    } catch {
+                      /* surfaced below */
+                    }
+                  })();
+                }}
+                disabled={push.isPending || !canPush}
+                className="ml-auto"
+                title={
+                  !branchStatus?.hasRemote
+                    ? "No remote configured"
+                    : branchStatus.detached
+                      ? "Detached HEAD — checkout a branch to push"
+                      : branchStatus.upstream === null
+                        ? "Publish branch to origin"
+                        : branchStatus.ahead === 0
+                          ? "Nothing to push"
+                          : `Push ${branchStatus.ahead} commit${branchStatus.ahead === 1 ? "" : "s"} (${COMMIT_AND_PUSH_SHORTCUT.display.join(" ")} commits then pushes)`
+                }
+              >
+                <GitBranch size={12} />
+                {push.isPending ? "Pushing…" : "Push"}
+                {branchStatus &&
+                  branchStatus.ahead > 0 &&
+                  ` (${branchStatus.ahead})`}
+              </GlassButton>
+            </div>
+            {commit.error && (
+              <p className="mt-2 text-[11px] text-(--color-danger)">
+                {humanizeError(commit.error)}
+              </p>
+            )}
+            {push.error && (
+              <p className="mt-2 text-[11px] text-(--color-danger)">
+                {humanizeError(push.error)}
+              </p>
+            )}
+            {showPushSuccess && (
+              <p className="mt-2 text-[11px] text-(--color-success)">Pushed.</p>
+            )}
+            {showCommitSuccess && !showPushSuccess && (
+              <p className="mt-2 text-[11px] text-(--color-success)">
+                Committed.
+              </p>
+            )}
           </>
         )}
       </div>
@@ -372,7 +535,9 @@ function MergeBanner({
         <AlertTriangle
           size={14}
           className={
-            resolved ? "mt-0.5 text-(--color-success)" : "mt-0.5 text-(--color-warning)"
+            resolved
+              ? "mt-0.5 text-(--color-success)"
+              : "mt-0.5 text-(--color-warning)"
           }
         />
         <div className="min-w-0 flex-1">
@@ -413,12 +578,6 @@ function MergeBanner({
   );
 }
 
-function extractMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === "string") return err;
-  return String(err);
-}
-
 function Section({
   title,
   count,
@@ -433,9 +592,8 @@ function Section({
   return (
     <section className="flex flex-col gap-2">
       <header className="flex items-center justify-between px-1">
-        <span className="text-[10.5px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
-          {title}{" "}
-          <span className="text-(--color-text-secondary)">{count}</span>
+        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
+          {title} <span className="text-(--color-text-secondary)">{count}</span>
         </span>
         {action}
       </header>
@@ -444,8 +602,9 @@ function Section({
   );
 }
 
-function bucketFor(f: DiffCardFile): Bucket {
-  if (f.staged === "conflicted" || f.unstaged === "conflicted") return "conflicts";
+function bucketFor(f: { staged?: FileStatus; unstaged?: FileStatus }): Bucket {
+  if (f.staged === "conflicted" || f.unstaged === "conflicted")
+    return "conflicts";
   const hasStaged = f.staged !== undefined && f.staged !== "other";
   const hasUnstaged = f.unstaged !== undefined && f.unstaged !== "other";
   if (hasStaged && hasUnstaged) return "partial";
@@ -453,7 +612,33 @@ function bucketFor(f: DiffCardFile): Bucket {
   return "unstaged";
 }
 
-function useDiffFiles(workspaceId: string, changes: FileChange[]): DiffCardFile[] {
+/** First `perSection` paths of each bucket — the initial auto-expanded set. */
+function seedExpandedPaths(
+  changes: FileChange[],
+  perSection: number,
+): Set<string> {
+  const seen: Record<Bucket, number> = {
+    conflicts: 0,
+    staged: 0,
+    unstaged: 0,
+    partial: 0,
+  };
+  const out = new Set<string>();
+  for (const c of changes) {
+    const b = bucketFor(c);
+    if (seen[b] < perSection) {
+      out.add(c.path);
+      seen[b] += 1;
+    }
+  }
+  return out;
+}
+
+function useDiffFiles(
+  workspaceId: string,
+  changes: FileChange[],
+  expandedPaths: Set<string>,
+): DiffCardFile[] {
   const scopePerFile = useMemo<DiffScope[]>(
     () => changes.map((c) => pickScope(c)),
     [changes],
@@ -462,8 +647,12 @@ function useDiffFiles(workspaceId: string, changes: FileChange[]): DiffCardFile[
   const results = useQueries({
     queries: changes.map((c, i) => ({
       queryKey: ["git", "diff", workspaceId, scopePerFile[i], c.path],
-      queryFn: () => tauri.gitDiff(workspaceId, scopePerFile[i] as DiffScope, c.path),
-      enabled: !!workspaceId,
+      queryFn: () =>
+        tauri.gitDiff(workspaceId, scopePerFile[i] as DiffScope, c.path),
+      // Fetch the raw diff ONLY for expanded cards. Collapsed cards render
+      // their +N·-N badge from the numstat counts on the FileChange, so
+      // they never hit the backend — the core of the watcher-storm fix.
+      enabled: !!workspaceId && expandedPaths.has(c.path),
     })),
   });
 
@@ -477,6 +666,11 @@ function useDiffFiles(workspaceId: string, changes: FileChange[]): DiffCardFile[
           loading: r?.isLoading ?? false,
           staged: c.staged,
           unstaged: c.unstaged,
+          oldPath: c.oldPath,
+          // Backend numstat counts drive the collapsed badge without a
+          // fetch/parse. `null` = binary/untracked/unmerged.
+          adds: c.adds,
+          removes: c.removes,
         };
         if (r?.error) {
           file.errorMessage = String((r.error as Error).message ?? r.error);

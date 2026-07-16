@@ -2,15 +2,21 @@ import { Link, useParams } from "@tanstack/react-router";
 import {
   ChevronDown,
   ChevronRight,
+  FolderGit2,
   PanelLeft,
   PanelLeftClose,
   Plus,
 } from "lucide-react";
+import { useState } from "react";
 import { RepositorySidebarMenu } from "@/components/RepositorySidebarMenu";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { PanelState } from "@/components/ui/PanelState";
+import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { WorkspaceSidebarMenu } from "@/components/WorkspaceSidebarMenu";
+import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
-import { useUiStore } from "@/lib/store";
+import { SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { StatusDot } from "@/components/ui/StatusDot";
@@ -19,7 +25,11 @@ import type { Workspace, Repository } from "@/lib/types";
 export function AppSidebar() {
   const sidebarMode = useUiStore((s) => s.sidebarMode);
   const toggleSidebarPin = useUiStore((s) => s.toggleSidebarPin);
+  const sidebarWidth = useUiStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
+  const [resizing, setResizing] = useState(false);
   const repositories = useRepositories();
+  const openAddRepositoryPicker = useUiStore((s) => s.openAddRepositoryPicker);
   const params = useParams({ strict: false });
   const activeRepoId =
     (params as { repositoryId?: string }).repositoryId ?? null;
@@ -32,26 +42,75 @@ export function AppSidebar() {
 
   return (
     <aside
+      aria-label="Sidebar"
+      style={isExpanded ? { width: sidebarWidth } : undefined}
       className={cn(
         "relative shrink-0",
         "flex flex-col",
         "bg-(--color-bg-sidebar) border-r border-(--color-border-subtle)",
-        "transition-[width] duration-[220ms]",
+        // Suppress the width animation while actively dragging so the
+        // sidebar tracks the pointer instead of lagging behind it.
+        !resizing && "transition-[width] duration-[220ms]",
         "[transition-timing-function:var(--ease-glass)]",
-        isExpanded ? "w-[var(--layout-sidebar-width)]" : "w-[52px]",
+        !isExpanded && "w-[52px]",
       )}
     >
+      {isExpanded && (
+        <ResizeHandle
+          edge="right"
+          width={sidebarWidth}
+          min={SIDEBAR_WIDTH_MIN}
+          max={SIDEBAR_WIDTH_MAX}
+          onResize={setSidebarWidth}
+          onResizeStart={() => setResizing(true)}
+          onResizeEnd={() => setResizing(false)}
+        />
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto py-2">
-        <nav className="flex flex-col gap-2 px-1.5">
-          {repositories.data?.map((repo) => (
-            <RepoBlock
-              key={repo.id}
-              repo={repo}
-              isExpanded={isExpanded}
-              isActive={repo.id === activeRepoId}
-              activeWorkspaceId={activeWorkspaceId}
-            />
-          ))}
+        <nav aria-label="Repositories" className="flex flex-col gap-2 px-1.5">
+          {repositories.isLoading && !repositories.data ? (
+            isExpanded ? (
+              <PanelState kind="loading" rows={4} className="px-1 pt-1" />
+            ) : null
+          ) : repositories.isError ? (
+            isExpanded ? (
+              <PanelState
+                kind="error"
+                title="Couldn't load repositories"
+                error={repositories.error}
+                onRetry={() => void repositories.refetch()}
+              />
+            ) : null
+          ) : repositories.data && repositories.data.length === 0 ? (
+            isExpanded ? (
+              <PanelState
+                kind="empty"
+                icon={<FolderGit2 />}
+                title="No repositories yet"
+                description="Add a repository to start creating workspaces."
+                action={
+                  <GlassButton
+                    variant="primary"
+                    size="sm"
+                    onClick={openAddRepositoryPicker}
+                  >
+                    <Plus size={12} />
+                    Add repository
+                  </GlassButton>
+                }
+              />
+            ) : null
+          ) : (
+            repositories.data?.map((repo) => (
+              <RepoBlock
+                key={repo.id}
+                repo={repo}
+                isExpanded={isExpanded}
+                isActive={repo.id === activeRepoId}
+                activeWorkspaceId={activeWorkspaceId}
+              />
+            ))
+          )}
         </nav>
       </div>
       <SidebarFooter isExpanded={isExpanded} onToggle={toggleSidebarPin} />
@@ -71,20 +130,33 @@ function RepoBlock({
   activeWorkspaceId: string | null;
 }) {
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
+  const navigateToRepoEntry = useNavigateToRepoEntry();
   const workspaceExpanded = useUiStore(
     (s) => s.repoWorkspaceExpanded[repo.id] ?? true,
   );
   const toggleWorkspaceExpanded = useUiStore(
     (s) => s.toggleRepoWorkspaceExpanded,
   );
-  const initial = repo.name.charAt(0).toUpperCase();
+  // Spread-index so emoji / non-BMP first characters aren't split into a
+  // lone surrogate half.
+  const initial = ([...repo.name][0] ?? "").toUpperCase();
   const ExpandIcon = workspaceExpanded ? ChevronDown : ChevronRight;
 
   return (
     <div className="flex flex-col">
       <RepositorySidebarMenu repository={repo}>
         <div
-          onClick={() => toggleWorkspaceExpanded(repo.id)}
+          role="button"
+          tabIndex={0}
+          aria-label={repo.name}
+          aria-current={isActive ? "page" : undefined}
+          onClick={() => void navigateToRepoEntry(repo.id)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              void navigateToRepoEntry(repo.id);
+            }
+          }}
           className={cn(
             "group/repo flex h-[38px] cursor-pointer items-center rounded-[10px]",
             isExpanded ? "pl-3 pr-1" : "justify-center",
@@ -92,8 +164,7 @@ function RepoBlock({
             "hover:bg-(--color-bg-hover)",
             "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
             "data-[state=open]:bg-(--color-bg-elevated)",
-            isActive &&
-              "bg-[color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]",
+            isActive && "bg-(--color-bg-selected)",
           )}
         >
           <div
@@ -113,7 +184,7 @@ function RepoBlock({
                   "text-[11px] font-semibold leading-none",
                   "transition-colors duration-150",
                   isActive
-                    ? "bg-(--color-accent-500) text-(--color-text-inverse)"
+                    ? "bg-(--color-accent-500) text-(--color-accent-onfill)"
                     : "bg-(--color-bg-hover) text-(--color-text-secondary)",
                 )}
               >
@@ -148,11 +219,8 @@ function RepoBlock({
                     e.preventDefault();
                     toggleWorkspaceExpanded(repo.id);
                   }}
-                  title={
-                    workspaceExpanded ? "Hide workspaces" : "Show workspaces"
-                  }
                   aria-label={`${workspaceExpanded ? "Hide" : "Show"} workspaces in ${repo.name}`}
-                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary)"
+                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
                 >
                   <ExpandIcon size={12} />
                 </button>
@@ -165,9 +233,8 @@ function RepoBlock({
                     e.preventDefault();
                     requestNewWorkspace(repo.id);
                   }}
-                  title="New workspace"
                   aria-label={`New workspace in ${repo.name}`}
-                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary)"
+                  className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-active) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
                 >
                   <Plus size={12} />
                 </button>
@@ -252,7 +319,8 @@ function WorkspaceLink({
             : "h-7 w-7 justify-center",
           "transition-colors duration-150",
           "hover:bg-(--color-bg-elevated)",
-          active && "bg-(--color-bg-elevated)",
+          "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+          active && "bg-(--color-bg-selected)",
         )}
       >
         <GlassTooltip content={ws.name} side="right" disabled={isExpanded}>
@@ -300,16 +368,16 @@ function SidebarFooter({
           <button
             type="button"
             onClick={openAddRepositoryPicker}
-            className="flex h-[34px] min-w-0 flex-1 items-center gap-2 rounded-[8px] px-2.5 text-[13px] font-medium text-(--color-text-secondary) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+            className="flex h-[34px] min-w-0 flex-1 items-center gap-2 rounded-[8px] px-2.5 text-[13px] font-medium text-(--color-text-secondary) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
           >
-            <Plus size={13} className="text-(--color-accent-400)" />
+            <Plus size={13} className="text-(--color-accent-text)" />
             Add repository
           </button>
           <GlassTooltip content="Collapse sidebar (⌘B)" side="right">
             <button
               type="button"
               onClick={onToggle}
-              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <PanelLeftClose size={14} />
             </button>
@@ -322,7 +390,7 @@ function SidebarFooter({
               type="button"
               onClick={openAddRepositoryPicker}
               aria-label="Add repository"
-              className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-accent-400) transition-colors duration-150 hover:bg-(--color-bg-hover)"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-accent-text) transition-colors duration-150 hover:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <Plus size={14} />
             </button>
@@ -331,7 +399,7 @@ function SidebarFooter({
             <button
               type="button"
               onClick={onToggle}
-              className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <PanelLeft size={14} />
             </button>

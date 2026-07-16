@@ -26,7 +26,7 @@ interface RepositorySidebarMenuProps {
  *
  *   1. Open project — navigates to the repository entry route.
  *   2. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
- *      NewWorkspaceModal picks it up and opens.
+ *      NewTaskModal picks it up and opens.
  *   3. Settings — navigate to /repositories/<id>/settings.
  *   4. Remove project — opens a glass confirm dialog; on confirm,
  *      deletes only the DB row (local clone untouched).

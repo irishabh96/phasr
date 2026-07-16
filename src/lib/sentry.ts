@@ -1,10 +1,24 @@
-import * as Sentry from '@sentry/react';
 import type { ErrorInfo } from 'react';
+import type * as SentryReact from '@sentry/react';
 
 export const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined;
 export const SENTRY_RELEASE = import.meta.env.VITE_SENTRY_RELEASE as string | undefined;
 
 export const isSentryConfigured = Boolean(SENTRY_DSN);
+
+// `@sentry/react` is a heavy dependency that is not needed for first
+// paint. We keep it out of the entry chunk by importing it dynamically
+// and only when Sentry is actually configured and something wants to
+// report (or `initSentry` runs post-first-paint from `main.tsx`). The
+// promise is memoised so the SDK is only fetched/evaluated once.
+let sentryModule: Promise<typeof SentryReact> | null = null;
+
+function loadSentry(): Promise<typeof SentryReact> {
+  if (!sentryModule) {
+    sentryModule = import('@sentry/react');
+  }
+  return sentryModule;
+}
 
 function readSampleRate(raw: string | undefined, fallback: number): number {
   if (!raw) {
@@ -31,10 +45,12 @@ function readReplaysOnErrorSampleRate(): number {
   return readSampleRate(import.meta.env.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE, import.meta.env.PROD ? 1 : 0);
 }
 
-export function initSentry(router: unknown) {
+export async function initSentry(router: unknown): Promise<void> {
   if (!SENTRY_DSN) {
     return;
   }
+
+  const Sentry = await loadSentry();
 
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -54,7 +70,11 @@ export function initSentry(router: unknown) {
   });
 }
 
-const handleReactRootError = Sentry.reactErrorHandler();
+// Created lazily from the dynamically-imported SDK so `@sentry/react`
+// stays out of the entry chunk. React invokes these root handlers
+// synchronously; reporting completes fire-and-forget once the SDK import
+// resolves.
+let reactRootErrorHandler: ReturnType<typeof SentryReact.reactErrorHandler> | null = null;
 
 type ReactRootErrorInfo = {
   componentStack?: string | undefined;
@@ -62,11 +82,20 @@ type ReactRootErrorInfo = {
 };
 
 export function sentryReactRootErrorHandler(error: unknown, errorInfo: ReactRootErrorInfo) {
+  if (!isSentryConfigured) {
+    return;
+  }
+
   const normalizedErrorInfo: ErrorInfo = {
     componentStack: errorInfo.componentStack ?? null,
   };
 
-  handleReactRootError(error, normalizedErrorInfo);
+  void loadSentry().then((Sentry) => {
+    if (!reactRootErrorHandler) {
+      reactRootErrorHandler = Sentry.reactErrorHandler();
+    }
+    reactRootErrorHandler(error, normalizedErrorInfo);
+  });
 }
 
 type AuthTelemetryContext = {
@@ -90,7 +119,7 @@ function normalizeError(error: unknown, fallbackMessage: string) {
   return error instanceof Error ? error : new Error(fallbackMessage);
 }
 
-function addP0Context(scope: Sentry.Scope, context: P0TelemetryContext) {
+function addP0Context(scope: SentryReact.Scope, context: P0TelemetryContext) {
   scope.setLevel('error');
   scope.setTag('priority', 'p0');
   scope.setTag('area', context.area);
@@ -112,9 +141,11 @@ export function reportP0Error(
     return;
   }
 
-  Sentry.withScope((scope) => {
-    addP0Context(scope, context);
-    Sentry.captureException(normalizeError(error, message));
+  void loadSentry().then((Sentry) => {
+    Sentry.withScope((scope) => {
+      addP0Context(scope, context);
+      Sentry.captureException(normalizeError(error, message));
+    });
   });
 }
 
@@ -128,16 +159,18 @@ export function reportP0Warning(
     return;
   }
 
-  Sentry.withScope((scope) => {
-    scope.setLevel('warning');
-    scope.setTag('priority', 'p0');
-    scope.setTag('area', context.area);
-    scope.setTag('operation', context.operation);
-    if (typeof context.errorCode === 'string') {
-      scope.setTag('error_code', context.errorCode);
-    }
-    scope.setContext('p0', context);
-    Sentry.captureMessage(message);
+  void loadSentry().then((Sentry) => {
+    Sentry.withScope((scope) => {
+      scope.setLevel('warning');
+      scope.setTag('priority', 'p0');
+      scope.setTag('area', context.area);
+      scope.setTag('operation', context.operation);
+      if (typeof context.errorCode === 'string') {
+        scope.setTag('error_code', context.errorCode);
+      }
+      scope.setContext('p0', context);
+      Sentry.captureMessage(message);
+    });
   });
 }
 

@@ -8,7 +8,7 @@
  *     the dev preview route and the unit tests)
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Columns2, Rows3 } from "lucide-react";
 import { useShiki } from "@/lib/hooks/useShiki";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
@@ -97,7 +97,8 @@ export function DiffView({
       if (target?.isContentEditable) return;
       e.preventDefault();
       setInternalMode((m) => {
-        const next: DiffViewMode = m === "side-by-side" ? "inline" : "side-by-side";
+        const next: DiffViewMode =
+          m === "side-by-side" ? "inline" : "side-by-side";
         try {
           window.localStorage.setItem(VIEW_MODE_KEY, next);
         } catch {
@@ -194,43 +195,62 @@ function DiffHeader({
         {parsed?.isRename && <Pill tone="info">renamed</Pill>}
         {parsed?.isBinary && <Pill tone="muted">binary</Pill>}
         {addCount > 0 && (
-          <span className="font-mono text-[11px] text-(--color-success)">
+          <span className="font-mono text-[11px] text-(--diff-add-fg)">
             +{addCount}
           </span>
         )}
         {removeCount > 0 && (
-          <span className="font-mono text-[11px] text-(--color-danger)">
+          <span className="font-mono text-[11px] text-(--diff-remove-fg)">
             −{removeCount}
           </span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <GlassButton
-          variant={mode === "side-by-side" ? "outline" : "ghost"}
-          size="sm"
-          onClick={() => onChangeMode("side-by-side")}
-          aria-pressed={mode === "side-by-side"}
-          title="Side-by-side  (⌘\)"
-        >
-          <Columns2 size={12} />
-          Split
-        </GlassButton>
-        <GlassButton
-          variant={mode === "inline" ? "outline" : "ghost"}
-          size="sm"
-          onClick={() => onChangeMode("inline")}
-          aria-pressed={mode === "inline"}
-          title="Inline  (⌘\)"
-        >
-          <Rows3 size={12} />
-          Inline
-        </GlassButton>
-      </div>
+      <DiffModeToggle mode={mode} onChange={onChangeMode} />
     </div>
   );
 }
 
-function Pill({
+/**
+ * The shared Split / Inline switch. Rendered by DiffView's own header AND,
+ * in the `noHeader` (Changes-panel) context, hoisted into a single toolbar
+ * by the consumer so the toggle stays visible without ⌘\ being the only
+ * affordance.
+ */
+export function DiffModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: DiffViewMode;
+  onChange: (m: DiffViewMode) => void;
+}) {
+  const shortcut = SHORTCUTS.toggleDiffMode.display.join("");
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <GlassButton
+        variant={mode === "side-by-side" ? "outline" : "ghost"}
+        size="sm"
+        onClick={() => onChange("side-by-side")}
+        aria-pressed={mode === "side-by-side"}
+        title={`Side-by-side (${shortcut})`}
+      >
+        <Columns2 size={12} />
+        Split
+      </GlassButton>
+      <GlassButton
+        variant={mode === "inline" ? "outline" : "ghost"}
+        size="sm"
+        onClick={() => onChange("inline")}
+        aria-pressed={mode === "inline"}
+        title={`Inline (${shortcut})`}
+      >
+        <Rows3 size={12} />
+        Inline
+      </GlassButton>
+    </div>
+  );
+}
+
+export function Pill({
   children,
   tone,
 }: {
@@ -248,7 +268,10 @@ function Pill({
   return (
     <span
       className="rounded-full border px-1.5 py-px text-[10px] uppercase tracking-[0.08em]"
-      style={{ color, borderColor: "color-mix(in oklab, currentColor 35%, transparent)" }}
+      style={{
+        color,
+        borderColor: "color-mix(in oklab, currentColor 35%, transparent)",
+      }}
     >
       {children}
     </span>
@@ -289,9 +312,17 @@ function DiffBody({
     <div className="font-mono text-[11.5px] leading-[1.55]">
       {shown.map((hunk, idx) =>
         mode === "side-by-side" ? (
-          <SideBySideHunk key={hunk.header + idx} hunk={hunk} highlight={shiki.highlight} />
+          <SideBySideHunk
+            key={hunk.header + idx}
+            hunk={hunk}
+            highlight={shiki.highlight}
+          />
         ) : (
-          <InlineHunk key={hunk.header + idx} hunk={hunk} highlight={shiki.highlight} />
+          <InlineHunk
+            key={hunk.header + idx}
+            hunk={hunk}
+            highlight={shiki.highlight}
+          />
         ),
       )}
       {remaining > 0 && (
@@ -299,7 +330,9 @@ function DiffBody({
           <GlassButton variant="ghost" size="sm" onClick={onShowMore}>
             Show {Math.min(remaining, HUNK_BATCH_SIZE)} more hunk
             {Math.min(remaining, HUNK_BATCH_SIZE) === 1 ? "" : "s"}
-            <span className="ml-1 text-(--color-text-muted)">({remaining} hidden)</span>
+            <span className="ml-1 text-(--color-text-muted)">
+              ({remaining} hidden)
+            </span>
           </GlassButton>
         </div>
       )}
@@ -318,7 +351,9 @@ function DiffMessage({
     <div
       className={cn(
         "flex h-full items-center justify-center p-6 text-center text-[12px]",
-        tone === "danger" ? "text-(--color-danger)" : "text-(--color-text-muted)",
+        tone === "danger"
+          ? "text-(--color-danger)"
+          : "text-(--color-text-muted)",
       )}
     >
       {children}
@@ -337,7 +372,13 @@ function HunkHeader({ hunk }: { hunk: DiffHunk }) {
   );
 }
 
-function InlineHunk({ hunk, highlight }: { hunk: DiffHunk; highlight: HighlightFn }) {
+function InlineHunk({
+  hunk,
+  highlight,
+}: {
+  hunk: DiffHunk;
+  highlight: HighlightFn;
+}) {
   return (
     <div>
       <HunkHeader hunk={hunk} />
@@ -352,21 +393,27 @@ function InlineHunk({ hunk, highlight }: { hunk: DiffHunk; highlight: HighlightF
   );
 }
 
-function InlineRow({ line, highlight }: { line: DiffLine; highlight: HighlightFn }) {
+function InlineRow({
+  line,
+  highlight,
+}: {
+  line: DiffLine;
+  highlight: HighlightFn;
+}) {
   const bg = rowBg(line.kind);
   const gutter = gutterColor(line.kind);
   const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "−" : " ";
   return (
     <tr style={{ backgroundColor: bg }}>
       <td
-        className="select-none px-2 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
-        style={{ width: "3.5ch" }}
+        className="select-none px-1 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
+        style={{ width: "6ch" }}
       >
         {line.oldLine ?? ""}
       </td>
       <td
-        className="select-none px-2 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
-        style={{ width: "3.5ch" }}
+        className="select-none px-1 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
+        style={{ width: "6ch" }}
       >
         {line.newLine ?? ""}
       </td>
@@ -376,23 +423,33 @@ function InlineRow({ line, highlight }: { line: DiffLine; highlight: HighlightFn
       >
         {marker}
       </td>
-      <td className="whitespace-pre-wrap break-all px-2 align-top">
-        <HighlightedLine source={line.content} kind={line.kind} highlight={highlight} />
+      <td className="whitespace-pre-wrap break-words px-2 align-top">
+        <HighlightedLine
+          source={line.content}
+          kind={line.kind}
+          highlight={highlight}
+        />
       </td>
     </tr>
   );
 }
 
-function SideBySideHunk({ hunk, highlight }: { hunk: DiffHunk; highlight: HighlightFn }) {
+function SideBySideHunk({
+  hunk,
+  highlight,
+}: {
+  hunk: DiffHunk;
+  highlight: HighlightFn;
+}) {
   const rows = useMemo(() => pairForSideBySide(hunk.lines), [hunk]);
   return (
     <div>
       <HunkHeader hunk={hunk} />
       <table className="w-full border-collapse table-fixed">
         <colgroup>
-          <col style={{ width: "3.5ch" }} />
+          <col style={{ width: "6ch" }} />
           <col />
-          <col style={{ width: "3.5ch" }} />
+          <col style={{ width: "6ch" }} />
           <col />
         </colgroup>
         <tbody>
@@ -428,13 +485,13 @@ function SideCell({
   return (
     <>
       <td
-        className="select-none px-2 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
+        className="select-none px-1 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
         style={{ backgroundColor: bg }}
       >
         {lineNo ?? ""}
       </td>
       <td
-        className="whitespace-pre-wrap break-all px-2 align-top"
+        className="whitespace-pre-wrap break-words px-2 align-top"
         style={{ backgroundColor: bg }}
       >
         {line ? (
@@ -445,7 +502,11 @@ function SideCell({
             >
               {line.kind === "add" ? "+" : line.kind === "remove" ? "−" : " "}
             </span>
-            <HighlightedLine source={line.content} kind={line.kind} highlight={highlight} />
+            <HighlightedLine
+              source={line.content}
+              kind={line.kind}
+              highlight={highlight}
+            />
           </span>
         ) : (
           <span aria-hidden="true">&nbsp;</span>
@@ -455,7 +516,7 @@ function SideCell({
   );
 }
 
-function HighlightedLine({
+const HighlightedLine = memo(function HighlightedLine({
   source,
   kind,
   highlight,
@@ -464,21 +525,31 @@ function HighlightedLine({
   kind: DiffLine["kind"];
   highlight: HighlightFn;
 }) {
+  // Memoise the tokens per `(source, kind, highlight)` so identical lines
+  // aren't re-highlighted on every render. Paired with the module-level
+  // token cache in `useShiki` and a stable `highlight` callback, a
+  // re-render storm no longer re-tokenises visible lines.
+  const tokens = useMemo(
+    () => (kind !== "meta" && source.length > 0 ? highlight(source) : []),
+    [kind, source, highlight],
+  );
   if (kind === "meta") {
     return <span className="text-(--color-text-muted)">{source || "​"}</span>;
   }
   if (source.length === 0) return <span>{"​"}</span>;
-  const tokens = highlight(source);
   return (
     <span>
       {tokens.map((t, i) => (
-        <span key={i} style={t.color !== "currentColor" ? { color: t.color } : undefined}>
+        <span
+          key={i}
+          style={t.color !== "currentColor" ? { color: t.color } : undefined}
+        >
           {t.content}
         </span>
       ))}
     </span>
   );
-}
+});
 
 function rowBg(kind: DiffLine["kind"]): string {
   switch (kind) {
@@ -494,9 +565,9 @@ function rowBg(kind: DiffLine["kind"]): string {
 function gutterColor(kind: DiffLine["kind"]): string {
   switch (kind) {
     case "add":
-      return "var(--color-success)";
+      return "var(--diff-add-fg)";
     case "remove":
-      return "var(--color-danger)";
+      return "var(--diff-remove-fg)";
     default:
       return "var(--color-text-muted)";
   }

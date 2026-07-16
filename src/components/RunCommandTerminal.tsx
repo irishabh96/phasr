@@ -2,11 +2,21 @@ import { Channel } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { tauri } from "@/lib/tauri";
 import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent } from "@/lib/types";
+
+type StartMode = "initial" | "retry" | "restart";
+
+/** Overlay state driven onto <TerminalStatus>. `null` = no overlay. */
+type TermStatus =
+  | { state: "starting" | "retrying" | "restarting" }
+  | { state: "failed"; error: string }
+  | { state: "exited"; exitCode: number | null }
+  | null;
 
 interface RunCommandTerminalProps {
   /** Run command id (NOT a workspace id). */
@@ -33,6 +43,9 @@ export function RunCommandTerminal({
   const onExitRef = useRef(onExit);
   const termRef = useRef<ReturnType<typeof createXtermTerminal> | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const [status, setStatus] = useState<TermStatus>(null);
+  const retryStartRef = useRef<(() => void) | null>(null);
+  const restartRef = useRef<(() => void) | null>(null);
   const { data: settings } = useUserSettings();
   onExitRef.current = onExit;
 
@@ -75,17 +88,20 @@ export function RunCommandTerminal({
       if (event.type === "output") {
         term.write(event.chunk);
       } else if (event.type === "exit") {
-        term.write(
-          `\r\n\x1b[2m── exited${
-            event.exitCode == null ? "" : ` (code ${event.exitCode})`
-          } ──\x1b[0m\r\n`,
-        );
+        setStatus({ state: "exited", exitCode: event.exitCode });
         onExitRef.current?.(event.exitCode);
       }
     };
 
-    const start = async () => {
-      term.write("\x1b[2m── starting ──\x1b[0m\r\n");
+    const start = async (mode: StartMode = "initial") => {
+      setStatus(
+        mode === "retry"
+          ? { state: "retrying" }
+          : mode === "restart"
+            ? { state: "restarting" }
+            : { state: "starting" },
+      );
+      for (const d of disposables.splice(0)) d.dispose();
       try {
         await tauri.startRunCommand(
           runCommandId,
@@ -94,10 +110,14 @@ export function RunCommandTerminal({
           term.cols,
         );
         if (cancelled) return;
+        setStatus(null);
         disposables.push(
           term.onData((data) => {
             if (cancelled) return;
-            void tauri.sendRunCommandInput(runCommandId, data).catch(() => {});
+            void tauri.sendRunCommandInput(runCommandId, data).catch((err) => {
+              if (cancelled) return;
+              setStatus({ state: "failed", error: String(err) });
+            });
           }),
           term.onResize(({ rows, cols }) => {
             if (cancelled) return;
@@ -109,9 +129,11 @@ export function RunCommandTerminal({
         term.focus();
       } catch (err) {
         if (cancelled) return;
-        term.write(`\r\n\x1b[31m✗ Failed to start: ${String(err)}\x1b[0m\r\n`);
+        setStatus({ state: "failed", error: String(err) });
       }
     };
+    retryStartRef.current = () => void start("retry");
+    restartRef.current = () => void start("restart");
 
     void start();
 
@@ -146,14 +168,23 @@ export function RunCommandTerminal({
       }}
       style={{
         display: visible ? "block" : "none",
-        paddingTop: 10,
+        paddingTop: 8,
         paddingRight: 8,
-        paddingBottom: 2,
+        paddingBottom: 4,
         paddingLeft: 16,
       }}
-      className="h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
+      className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
     >
       <div ref={containerRef} className="h-full w-full" />
+      {status && (
+        <TerminalStatus
+          state={status.state}
+          {...(status.state === "failed" ? { error: status.error } : {})}
+          {...(status.state === "exited" ? { exitCode: status.exitCode } : {})}
+          onRetry={() => retryStartRef.current?.()}
+          onRestart={() => restartRef.current?.()}
+        />
+      )}
     </div>
   );
 }

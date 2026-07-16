@@ -36,7 +36,9 @@ export function AddRepositoryPickerModal() {
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
             <header className="flex h-12 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>
-                <h2 className="text-[13.5px] font-semibold leading-none">Add a repository</h2>
+                <h2 className="text-[13.5px] font-semibold leading-none">
+                  Add a repository
+                </h2>
               </Dialog.Title>
               <div className="ml-auto">
                 <GlassButton
@@ -52,13 +54,20 @@ export function AddRepositoryPickerModal() {
             </header>
             <div className="grid grid-cols-2 gap-3 p-5">
               <PickerCard
-                icon={<Sparkles size={18} className="text-(--color-accent-400)" />}
+                icon={
+                  <Sparkles size={18} className="text-(--color-accent-text)" />
+                }
                 title="New project"
                 description="Empty repo, clone from URL, or start from a template."
                 onClick={onNewProject}
               />
               <PickerCard
-                icon={<FolderOpen size={18} className="text-(--color-text-secondary)" />}
+                icon={
+                  <FolderOpen
+                    size={18}
+                    className="text-(--color-text-secondary)"
+                  />
+                }
                 title="Open existing"
                 description="Point Phasr at a folder on disk that's already a git repo."
                 onClick={onOpenExisting}

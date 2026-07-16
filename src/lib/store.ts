@@ -95,6 +95,28 @@ export type SidebarMode = "collapsed" | "pinned" | "hidden";
 
 const SIDEBAR_KEY = "phasr.sidebar";
 const RIGHT_PANEL_KEY = "phasr.rightPanel";
+const SIDEBAR_WIDTH_KEY = "phasr.sidebarWidth";
+const RIGHT_PANEL_WIDTH_KEY = "phasr.rightPanelWidth";
+const LAST_WORKSPACE_KEY = "phasr.lastWorkspace";
+
+export const SIDEBAR_WIDTH_MIN = 200;
+export const SIDEBAR_WIDTH_MAX = 480;
+export const SIDEBAR_WIDTH_DEFAULT = 260;
+export const RIGHT_PANEL_WIDTH_MIN = 300;
+export const RIGHT_PANEL_WIDTH_MAX = 640;
+export const RIGHT_PANEL_WIDTH_DEFAULT = 360;
+
+function clampWidth(value: number, min: number, max: number, fallback: number) {
+  return Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
+}
+
+function readWidth(key: string, min: number, max: number, fallback: number) {
+  if (typeof window === "undefined") return fallback;
+  const parsed = parseInt(window.localStorage.getItem(key) ?? "", 10);
+  return clampWidth(parsed, min, max, fallback);
+}
 
 function readSidebar(): SidebarMode {
   if (typeof window === "undefined") return "pinned";
@@ -107,6 +129,34 @@ function readRightPanel(): boolean {
   return window.localStorage.getItem(RIGHT_PANEL_KEY) === "collapsed";
 }
 
+/**
+ * Rehydrate the last-open workspace from localStorage. Returns null for a
+ * missing/corrupt/malformed value so a bad blob can never dead-end the
+ * re-entry restore — the caller (Home route) additionally validates the
+ * ids against the live repo/workspace lists before navigating.
+ */
+function readStoredLastWorkspace(): ActiveWorkspaceContext | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(LAST_WORKSPACE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<ActiveWorkspaceContext> | null;
+    if (
+      parsed &&
+      typeof parsed.repositoryId === "string" &&
+      typeof parsed.workspaceId === "string"
+    ) {
+      return {
+        repositoryId: parsed.repositoryId,
+        workspaceId: parsed.workspaceId,
+      };
+    }
+  } catch {
+    // Corrupt JSON — treat as "no stored workspace" and fall back cleanly.
+  }
+  return null;
+}
+
 interface UiState {
   theme: Theme;
   setTheme: (theme: Theme) => void;
@@ -115,12 +165,18 @@ interface UiState {
   setSidebarMode: (mode: SidebarMode) => void;
   toggleSidebarPin: () => void;
   toggleSidebarHidden: () => void;
+  /** Pinned left-sidebar width in px. Persisted; drag-resizable. */
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
   repoWorkspaceExpanded: Record<string, boolean>;
   toggleRepoWorkspaceExpanded: (repositoryId: string) => void;
 
   rightPanelCollapsed: boolean;
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
+  /** Workspace right-panel width in px. Persisted; drag-resizable. */
+  rightPanelWidth: number;
+  setRightPanelWidth: (width: number) => void;
 
   /**
    * Active tab inside the workspace right sidebar, keyed by workspace
@@ -169,7 +225,7 @@ interface UiState {
   setActiveRepoInnerTab: (repositoryId: string, tabId: string) => void;
 
   /**
-   * Drives the NewWorkspaceModal mounted in the app shell. Set by:
+   * Drives the NewTaskModal mounted in the app shell. Set by:
    * - sidebar `+` icon per repo row
    * - sidebar repo row click when the repo has no workspaces yet
    * - ⌘N hotkey (resolves to the active workspace's repo)
@@ -200,6 +256,16 @@ interface UiState {
   // ---------- Active workspace context ----------
   activeWorkspaceContext: ActiveWorkspaceContext | null;
   setActiveWorkspaceContext: (ctx: ActiveWorkspaceContext | null) => void;
+
+  /**
+   * The last workspace the user had open, persisted to `phasr.lastWorkspace`
+   * in localStorage so a relaunch can restore it. Written on every workspace
+   * mount and — unlike `activeWorkspaceContext` — never cleared on unmount,
+   * so it survives across sessions. The Home route validates it against the
+   * live repo/workspace lists and falls back gracefully if it's stale.
+   */
+  lastWorkspace: ActiveWorkspaceContext | null;
+  setLastWorkspace: (ctx: ActiveWorkspaceContext) => void;
 
   // ---------- Per-workspace inner tabs ----------
   innerTabs: Record<string, InnerTabState>;
@@ -263,6 +329,23 @@ export const useUiStore = create<UiState>((set, get) => ({
       window.localStorage.setItem(SIDEBAR_KEY, next);
     set({ sidebarMode: next });
   },
+  sidebarWidth: readWidth(
+    SIDEBAR_WIDTH_KEY,
+    SIDEBAR_WIDTH_MIN,
+    SIDEBAR_WIDTH_MAX,
+    SIDEBAR_WIDTH_DEFAULT,
+  ),
+  setSidebarWidth: (width) => {
+    const next = clampWidth(
+      Math.round(width),
+      SIDEBAR_WIDTH_MIN,
+      SIDEBAR_WIDTH_MAX,
+      SIDEBAR_WIDTH_DEFAULT,
+    );
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+    set({ sidebarWidth: next });
+  },
   repoWorkspaceExpanded: {},
   toggleRepoWorkspaceExpanded: (repositoryId) => {
     const current = get().repoWorkspaceExpanded[repositoryId] ?? true;
@@ -291,6 +374,23 @@ export const useUiStore = create<UiState>((set, get) => ({
         collapsed ? "collapsed" : "expanded",
       );
     set({ rightPanelCollapsed: collapsed });
+  },
+  rightPanelWidth: readWidth(
+    RIGHT_PANEL_WIDTH_KEY,
+    RIGHT_PANEL_WIDTH_MIN,
+    RIGHT_PANEL_WIDTH_MAX,
+    RIGHT_PANEL_WIDTH_DEFAULT,
+  ),
+  setRightPanelWidth: (width) => {
+    const next = clampWidth(
+      Math.round(width),
+      RIGHT_PANEL_WIDTH_MIN,
+      RIGHT_PANEL_WIDTH_MAX,
+      RIGHT_PANEL_WIDTH_DEFAULT,
+    );
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(RIGHT_PANEL_WIDTH_KEY, String(next));
+    set({ rightPanelWidth: next });
   },
 
   rightPanelTab: {},
@@ -460,6 +560,13 @@ export const useUiStore = create<UiState>((set, get) => ({
   activeWorkspaceContext: null,
   setActiveWorkspaceContext: (ctx) => set({ activeWorkspaceContext: ctx }),
 
+  lastWorkspace: readStoredLastWorkspace(),
+  setLastWorkspace: (ctx) => {
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(LAST_WORKSPACE_KEY, JSON.stringify(ctx));
+    set({ lastWorkspace: ctx });
+  },
+
   innerTabs: {},
   ensureInnerTabs: (workspaceId, mainTitle) => {
     const state = get().innerTabs[workspaceId];
@@ -587,8 +694,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({
       innerTabs,
       repoInnerTabs,
-      activeWorkspaceContext:
-        ctx?.repositoryId === repositoryId ? null : ctx,
+      activeWorkspaceContext: ctx?.repositoryId === repositoryId ? null : ctx,
     });
   },
 

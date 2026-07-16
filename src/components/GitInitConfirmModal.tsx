@@ -1,8 +1,12 @@
-import * as Dialog from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
+import { useState } from "react";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
-import { useGitInitRepository, useRepositories } from "@/lib/hooks/useRepositories";
+import {
+  useGitInitRepository,
+  useRepositories,
+} from "@/lib/hooks/useRepositories";
+import { humanizeError } from "@/lib/humanizeError";
 import { useUiStore } from "@/lib/store";
+import { Dialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
 
 /**
@@ -12,7 +16,7 @@ import { GlassButton } from "@/components/ui/GlassButton";
  *
  * Initialize Git → runs `git init` on the repo's local path and navigates
  * to the repo home. Cancel → leaves the repo non-git; the repo home shows
- * a banner offering to re-init.
+ * a banner offering to re-init. Built on the shared `Dialog` shell.
  */
 export function GitInitConfirmModal() {
   const pendingId = useUiStore((s) => s.pendingGitInitRepoId);
@@ -20,18 +24,30 @@ export function GitInitConfirmModal() {
   const { data: repositories } = useRepositories();
   const gitInit = useGitInitRepository();
   const navigateToRepoEntry = useNavigateToRepoEntry();
+  const [error, setError] = useState<string | null>(null);
 
   const open = pendingId !== null;
   const repo = pendingId ? repositories?.find((r) => r.id === pendingId) : null;
 
   const handleInitialize = async () => {
     if (!pendingId) return;
-    await gitInit.mutateAsync(pendingId);
-    clear();
-    void navigateToRepoEntry(pendingId);
+    setError(null);
+    try {
+      await gitInit.mutateAsync(pendingId);
+      clear();
+      void navigateToRepoEntry(pendingId);
+    } catch (err) {
+      // Keep the dialog open with an inline banner so the failure isn't
+      // silent and the user can retry or cancel (FORMS-F1).
+      setError(humanizeError(err));
+    }
   };
 
   const handleCancel = () => {
+    // Don't allow escaping (Cancel / Esc / scrim) while an init is in
+    // flight — the button is disabled and this guards the other paths.
+    if (gitInit.isPending) return;
+    setError(null);
     if (!pendingId) {
       clear();
       return;
@@ -44,53 +60,44 @@ export function GitInitConfirmModal() {
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={(o) => !o && handleCancel()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
-        <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 outline-none">
-          <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
-            <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
-              <Dialog.Title asChild>
-                <h2 className="text-[13.5px] font-semibold leading-none">
-                  Initialize Git Repository?
-                </h2>
-              </Dialog.Title>
-              <div className="ml-auto">
-                <GlassButton
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleCancel}
-                  className="h-7 w-7"
-                  title="Close"
-                >
-                  <X size={13} />
-                </GlassButton>
-              </div>
-            </header>
-            <Dialog.Description asChild>
-              <div className="px-4 py-3 text-[13px] text-(--color-text-secondary)">
-                <span className="font-medium text-(--color-text-primary)">
-                  {repo?.name ?? "This folder"}
-                </span>{" "}
-                is not a git repository. Would you like to initialize one?
-              </div>
-            </Dialog.Description>
-            <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="outline" size="sm" onClick={handleCancel}>
-                Cancel
-              </GlassButton>
-              <GlassButton
-                variant="primary"
-                size="sm"
-                onClick={handleInitialize}
-                disabled={gitInit.isPending}
-              >
-                {gitInit.isPending ? "Initializing…" : "Initialize Git"}
-              </GlassButton>
-            </footer>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => !o && handleCancel()}
+      title="Initialize Git repository?"
+      description={
+        <span>
+          <span className="font-medium text-(--color-text-primary)">
+            {repo?.name ?? "This folder"}
+          </span>{" "}
+          is not a git repository. Would you like to initialize one?
+        </span>
+      }
+      footer={
+        <>
+          <GlassButton
+            variant="outline"
+            size="sm"
+            onClick={handleCancel}
+            disabled={gitInit.isPending}
+          >
+            Cancel
+          </GlassButton>
+          <GlassButton
+            variant="primary"
+            size="sm"
+            onClick={handleInitialize}
+            disabled={gitInit.isPending}
+          >
+            {gitInit.isPending ? "Initializing…" : "Initialize Git"}
+          </GlassButton>
+        </>
+      }
+    >
+      {error && (
+        <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-danger)">
+          {error}
+        </p>
+      )}
+    </Dialog>
   );
 }

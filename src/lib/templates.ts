@@ -33,18 +33,9 @@ export const TEMPLATES: Template[] = [
     gitUrl: "https://github.com/satnaing/astro-paper",
     tag: "Astro",
   },
-  {
-    id: "t3",
-    name: "Create-T3",
-    description: "Full-stack TypeScript: Next.js, tRPC, Prisma, NextAuth.",
-    gitUrl: "https://github.com/t3-oss/create-t3-app",
-    tag: "T3",
-  },
-  {
-    id: "tauri-react",
-    name: "Tauri 2 + React",
-    description: "Desktop app starter — what Phasr itself is built on.",
-    gitUrl: "https://github.com/lapce/tauri-react-template",
-    tag: "Tauri",
-  },
 ];
+// NOTE: these gitUrls must be VERIFIED public repos whose ROOT is the starter
+// (subdir templates aren't supported). Removed `lapce/tauri-react-template`
+// (404 — never existed). `t3-oss/create-t3-app` is the create-t3 CLI monorepo,
+// NOT a T3 app starter — cloning its root gives the CLI source; recheck/replace
+// with a real app starter (or a `create-*` CLI flow) when curating this list.

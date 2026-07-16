@@ -7,17 +7,33 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { tauri } from "@/lib/tauri";
-import type { ConflictSide, DiffScope, LogOptions, MergeStrategy } from "@/lib/types";
+import { showToast } from "@/lib/toast";
+import type {
+  ConflictSide,
+  DiffScope,
+  LogOptions,
+  MergeStrategy,
+} from "@/lib/types";
 
 const gitKeys = {
   status: (workspaceId: string) => ["git", "status", workspaceId] as const,
-  branchStatus: (workspaceId: string) => ["git", "branchStatus", workspaceId] as const,
+  branchStatus: (workspaceId: string) =>
+    ["git", "branchStatus", workspaceId] as const,
   mergeInProgress: (workspaceId: string) =>
     ["git", "mergeInProgress", workspaceId] as const,
   diff: (workspaceId: string, scope: DiffScope, path?: string) =>
     ["git", "diff", workspaceId, scope, path ?? null] as const,
-  log: (workspaceId: string, opts: { branchOnly: boolean; messageGrep?: string }) =>
-    ["git", "log", workspaceId, opts.branchOnly, opts.messageGrep ?? ""] as const,
+  log: (
+    workspaceId: string,
+    opts: { branchOnly: boolean; messageGrep?: string },
+  ) =>
+    [
+      "git",
+      "log",
+      workspaceId,
+      opts.branchOnly,
+      opts.messageGrep ?? "",
+    ] as const,
   commitFiles: (workspaceId: string, sha: string) =>
     ["git", "commitFiles", workspaceId, sha] as const,
   commitDiff: (workspaceId: string, sha: string, path: string) =>
@@ -35,24 +51,69 @@ function invalidateWorkspaceGit(
   qc.invalidateQueries({ queryKey: ["git", "log", workspaceId] });
 }
 
-interface WorktreeChangedPayload {
-  workspaceId: string;
+/**
+ * Invalidate git queries in response to an fs-watcher `worktree-changed`
+ * event. Status / branch / merge always refresh (cheap, and a change can
+ * flip any of them). Per-file diffs are the expensive part, so we
+ * invalidate ONLY the diff keys for the paths the watcher actually
+ * reported — instead of blowing away every open file's diff on every
+ * keystroke-debounced burst. When `paths` is empty we don't know what
+ * moved (e.g. a terminal commit only touched `.git`, which the backend
+ * filters out), so we fall back to the full sweep — which also picks up
+ * the commit log.
+ */
+function invalidateForWorktreeChange(
+  qc: ReturnType<typeof useQueryClient>,
+  workspaceId: string,
+  paths: string[],
+) {
+  qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) });
+  qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
+  qc.invalidateQueries({ queryKey: gitKeys.mergeInProgress(workspaceId) });
+  if (paths.length === 0) {
+    qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
+    qc.invalidateQueries({ queryKey: ["git", "log", workspaceId] });
+    return;
+  }
+  const changed = new Set(paths);
+  // Diff keys are ["git","diff",workspaceId,scope,path]; match any scope
+  // for a changed path so both the staged and unstaged views refresh.
+  qc.invalidateQueries({
+    predicate: (q) => {
+      const k = q.queryKey;
+      return (
+        Array.isArray(k) &&
+        k[0] === "git" &&
+        k[1] === "diff" &&
+        k[2] === workspaceId &&
+        typeof k[4] === "string" &&
+        changed.has(k[4])
+      );
+    },
+  });
 }
 
-export function useGitStatus(workspaceId: string | null | undefined) {
-  const qc = useQueryClient();
-  const query = useQuery({
-    queryKey: gitKeys.status(workspaceId ?? ""),
-    queryFn: () => tauri.gitStatus(workspaceId ?? ""),
-    enabled: !!workspaceId,
-  });
+interface WorktreeChangedPayload {
+  workspaceId: string;
+  /**
+   * Worktree-relative paths that changed in this debounced burst. The
+   * backend already filters out `.git`, `node_modules`, `target` and
+   * `dist`. Empty when the change can't be attributed to a worktree file
+   * (e.g. a commit that only moved `.git/HEAD`).
+   */
+  paths: string[];
+}
 
-  // Refetch on fs-watcher events from the backend instead of polling.
-  // The watcher debounces bursts of fs changes server-side, so this
-  // only fires ~300ms after the user actually stops editing.
-  // We tell the backend to start/stop watching as the user navigates
-  // in and out of this workspace so only one OS-level watcher exists
-  // at a time.
+/**
+ * Start the OS-level fs-watcher for a workspace and invalidate its git
+ * queries on `worktree-changed` events. Mount this EXACTLY ONCE per
+ * workspace (at the route level) — `useGitStatus` used to install this
+ * per instance, so with three status consumers a workspace ended up with
+ * three watchers/listeners and an unwatch race. Keeping the lifecycle in
+ * one place gives one watcher for the workspace's whole lifetime.
+ */
+export function useWatchWorkspaceGit(workspaceId: string | null | undefined) {
+  const qc = useQueryClient();
   useEffect(() => {
     if (!workspaceId) return;
     let unlisten: (() => void) | undefined;
@@ -60,11 +121,7 @@ export function useGitStatus(workspaceId: string | null | undefined) {
     tauri.watchWorkspace(workspaceId).catch(() => {});
     listen<WorktreeChangedPayload>("worktree-changed", (e) => {
       if (e.payload.workspaceId !== workspaceId) return;
-      // Local commits (made via the terminal) bump HEAD without
-      // changing the worktree, but `.git/HEAD` is inside the watched
-      // tree, so the same event flushes branch status and merge
-      // progress along with status + diffs.
-      invalidateWorkspaceGit(qc, workspaceId);
+      invalidateForWorktreeChange(qc, workspaceId, e.payload.paths ?? []);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -75,8 +132,20 @@ export function useGitStatus(workspaceId: string | null | undefined) {
       tauri.unwatchWorkspace(workspaceId).catch(() => {});
     };
   }, [workspaceId, qc]);
+}
 
-  return query;
+/**
+ * Working-tree status for a workspace. A pure query — the fs-watcher that
+ * refetches it lives in {@link useWatchWorkspaceGit}, mounted once at the
+ * route level, so this can be read from as many components as needed
+ * without spawning duplicate watchers.
+ */
+export function useGitStatus(workspaceId: string | null | undefined) {
+  return useQuery({
+    queryKey: gitKeys.status(workspaceId ?? ""),
+    queryFn: () => tauri.gitStatus(workspaceId ?? ""),
+    enabled: !!workspaceId,
+  });
 }
 
 export function useGitDiff(
@@ -127,7 +196,22 @@ export function useGitPush(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => tauri.gitPush(workspaceId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) });
+      showToast({
+        title: "Pushed",
+        intent: "success",
+        ...(data.pullRequestUrl
+          ? {
+              action: {
+                label: `Open pull request${data.provider ? ` on ${data.provider}` : ""}`,
+                url: data.pullRequestUrl,
+              },
+            }
+          : {}),
+        timeoutMs: 15000,
+      });
+    },
   });
 }
 
@@ -135,7 +219,8 @@ export function useGitFetch(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => tauri.gitFetch(workspaceId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: gitKeys.branchStatus(workspaceId) }),
   });
 }
 

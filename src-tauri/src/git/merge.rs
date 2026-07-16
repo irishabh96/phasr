@@ -238,9 +238,15 @@ pub fn continue_after_resolution(cwd: &Path) -> Result<MergeOutcome, GitError> {
     }
 }
 
-/// Stages one side of a conflicting file: `--ours` keeps HEAD's
-/// version, `--theirs` keeps the incoming version. Both are equivalent
-/// to `git checkout --ours/--theirs <path> && git add <path>`.
+/// Stages one side of a conflicting file and marks it resolved
+/// (`git checkout --ours/--theirs <path>` then `git add <path>`).
+///
+/// NOTE: git INVERTS `--ours`/`--theirs` between merge and rebase.
+/// In a MERGE, `--ours` = HEAD (the current branch), `--theirs` = the
+/// incoming branch. In a REBASE, HEAD is the branch being replayed onto,
+/// so `--ours` = that base/onto branch and `--theirs` = your own commit.
+/// The raw flag is handed straight to git, so it's correct in both cases;
+/// callers (the UI) must LABEL the sides accordingly per operation.
 pub fn set_resolution(cwd: &Path, path: &str, side: ConflictSide) -> Result<(), GitError> {
     let flag = match side {
         ConflictSide::Ours => "--ours",
@@ -436,6 +442,54 @@ mod tests {
 
         let contents = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
         assert_eq!(contents, "main version\n");
+    }
+
+    /// Sets up a repo mid-`git rebase main` with a conflict on README.md,
+    /// left on the `feature` branch. feature's version is "feature version",
+    /// main's is "main version".
+    fn setup_rebase_conflict(dir: &Path) {
+        init_repo(dir);
+        checkout(dir, "feature", true);
+        add_commit(dir, "README.md", "feature version\n", "feature edit");
+        checkout(dir, "main", false);
+        add_commit(dir, "README.md", "main version\n", "main edit");
+        checkout(dir, "feature", false);
+        // Replays feature's commit onto main → conflicts on README.md.
+        // Non-zero exit (the conflict) is expected.
+        let _ = Command::new("git")
+            .args(["rebase", "main"])
+            .current_dir(dir)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn rebase_conflict_inverts_ours_theirs() {
+        // The whole point: during a rebase git INVERTS ours/theirs, so
+        // `Ours` keeps the base (main) and `Theirs` keeps YOUR work
+        // (feature) — the opposite of a merge. This is what the Changes
+        // panel labels depend on.
+        let a = tempfile::tempdir().unwrap();
+        setup_rebase_conflict(a.path());
+        assert!(matches!(
+            in_progress(a.path()).unwrap(),
+            InProgress::Rebase { .. }
+        ));
+        set_resolution(a.path(), "README.md", ConflictSide::Ours).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(a.path().join("README.md")).unwrap(),
+            "main version\n",
+            "rebase --ours must keep the base (onto) branch's version",
+        );
+
+        let b = tempfile::tempdir().unwrap();
+        setup_rebase_conflict(b.path());
+        set_resolution(b.path(), "README.md", ConflictSide::Theirs).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(b.path().join("README.md")).unwrap(),
+            "feature version\n",
+            "rebase --theirs must keep your own commit's version",
+        );
     }
 
     #[test]

@@ -55,6 +55,13 @@ pub fn diff(cwd: &Path, scope: DiffScope, path: Option<&str>) -> Result<String, 
 
 fn synthesise_new_file_diff(cwd: &Path, rel_path: &str) -> Result<String, GitError> {
     let full = cwd.join(rel_path);
+    if full.is_dir() {
+        // An untracked directory git didn't expand (e.g. a nested git repo /
+        // submodule, which `-uall` won't descend into). There's no single-file
+        // diff to show — return empty so the UI renders a clean "no preview"
+        // state instead of an "Is a directory" IO error.
+        return Ok(String::new());
+    }
     let content = std::fs::read_to_string(&full).map_err(GitError::Io)?;
     let lines: Vec<&str> = content.lines().collect();
     let line_count = lines.len();
@@ -78,4 +85,29 @@ fn synthesise_new_file_diff(cwd: &Path, rel_path: &str) -> Result<String, GitErr
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthesise_returns_empty_for_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        // A directory path must not crash with "Is a directory".
+        let out = synthesise_new_file_diff(dir.path(), "sub").unwrap();
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn synthesise_builds_new_file_diff_for_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x\ny\n").unwrap();
+        let out = synthesise_new_file_diff(dir.path(), "a.txt").unwrap();
+        assert!(out.contains("new file mode 100644"));
+        assert!(out.contains("@@ -0,0 +1,2 @@"));
+        assert!(out.contains("+x"));
+        assert!(out.contains("+y"));
+    }
 }
