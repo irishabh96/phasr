@@ -200,6 +200,65 @@ impl WorkspaceRepo {
         row.as_ref().map(row_to_workspace).transpose()
     }
 
+    /// Find an ACTIVE (pending/running, not soft-deleted) agent workspace
+    /// for `(repository_id, name)`. Backs the orchestrator's `start_task`
+    /// idempotency guard: a rapid duplicate / replayed IPC / second window
+    /// returns this in-flight task instead of minting a second
+    /// worktree/branch/agent. Only `agent`-kind rows count — the always-present
+    /// `local` workspace (name `"local"`) must never be mistaken for a
+    /// duplicate agent task. A task that has since stopped/completed/failed/
+    /// archived or been deleted is NOT active, so a deliberate re-run after
+    /// the first ends still creates fresh state.
+    pub async fn find_active_by_name(
+        &self,
+        repository_id: &str,
+        name: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
+               AND status IN ('pending', 'running') AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(repository_id)
+        .bind(name)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
+    /// Owner-scoped variant of `find_active_by_name` so a second signed-in
+    /// account can't collide with another user's active task.
+    pub async fn find_active_by_name_for_user(
+        &self,
+        repository_id: &str,
+        name: &str,
+        user_id: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
+               AND status IN ('pending', 'running') AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(repository_id)
+        .bind(name)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
     pub async fn update(&self, id: &str, patch: WorkspaceUpdate) -> Result<Workspace, StoreError> {
         let mut current = self.get(id).await?;
 

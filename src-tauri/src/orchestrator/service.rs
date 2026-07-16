@@ -153,6 +153,50 @@ impl TaskOrchestrator {
             ));
         }
 
+        let base_ref = request
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| repository.default_branch.clone());
+
+        // Serialize git ops against the shared `.git` for this repo.
+        // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
+        // and races spectacularly with other adds on the same repo.
+        //
+        // The lock is taken *before* the duplicate check (not just around
+        // `git worktree add`) so the whole check → worktree-add → row-insert
+        // is atomic per repo. That's what makes start_task idempotent (task
+        // #12, the durable server-side twin of the D1 client re-entrancy
+        // guard): a rapid duplicate / replayed IPC / second window blocks
+        // here, then finds the row this call inserted and returns it —
+        // instead of minting a SECOND task_id/branch/worktree/agent.
+        let lock = self.repo_locks.for_repository(&request.repository_id);
+        let guard = lock.lock().await;
+
+        // Idempotency guard: return the existing ACTIVE (pending/running)
+        // task for this `(repository_id, name)` rather than creating a
+        // duplicate. Bounded to *active* tasks so a deliberate re-run after
+        // the first has stopped/completed/been deleted still starts fresh.
+        // Owner-scoped when we have a user_id (production); the unscoped
+        // variant covers the sessionless test path.
+        let existing = match request.user_id.as_deref() {
+            Some(user_id) => {
+                self.workspaces
+                    .find_active_by_name_for_user(&request.repository_id, &request.name, user_id)
+                    .await?
+            }
+            None => {
+                self.workspaces
+                    .find_active_by_name(&request.repository_id, &request.name)
+                    .await?
+            }
+        };
+        if let Some(existing) = existing {
+            return Ok(StartedTask {
+                task_id: existing.id.clone(),
+                workspace: existing,
+            });
+        }
+
         let interpolated = interpolate_for_task(&request.command, request.prompt.as_deref());
 
         let mut workspace = Workspace::new(
@@ -169,19 +213,8 @@ impl TaskOrchestrator {
         let branch =
             git::unique_branch_name(&repository_path, &branch_seed, git::short_id(&task_id));
         let worktree_path = git::default_worktree_base_path().join(&task_id);
-        let base_ref = request
-            .base_branch
-            .clone()
-            .unwrap_or_else(|| repository.default_branch.clone());
 
-        // Serialize git ops against the shared `.git` for this repo.
-        // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
-        // and races spectacularly with other adds on the same repo.
-        let lock = self.repo_locks.for_repository(&request.repository_id);
-        {
-            let _guard = lock.lock().await;
-            git::create_worktree(&repository_path, &worktree_path, &branch, &base_ref)?;
-        }
+        git::create_worktree(&repository_path, &worktree_path, &branch, &base_ref)?;
 
         workspace.branch = Some(branch);
         workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
@@ -192,6 +225,11 @@ impl TaskOrchestrator {
             Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
             None => self.workspaces.insert(&workspace).await?,
         }
+
+        // Release the per-repo lock before the PTY spawn + status update:
+        // those touch only this task's own row/process, not the shared
+        // `.git`, so there's no reason to hold up other repo tasks for them.
+        drop(guard);
 
         let started_at = Utc::now();
         let updated = self
@@ -603,6 +641,33 @@ mod tests {
             .unwrap();
     }
 
+    /// Number of worktrees registered against `repo` (the main checkout
+    /// counts as one).
+    fn count_worktrees(repo: &Path) -> usize {
+        let out = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.starts_with("worktree "))
+            .count()
+    }
+
+    /// Number of local `phasr/*` branches in `repo`.
+    fn count_phasr_branches(repo: &Path) -> usize {
+        let out = Command::new("git")
+            .args(["branch", "--list", "phasr/*"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+    }
+
     #[tokio::test]
     async fn start_task_creates_worktree_and_transitions_through_running_to_completed() {
         let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
@@ -685,6 +750,87 @@ mod tests {
             completion.status,
             WorkspaceStatus::Completed | WorkspaceStatus::Failed
         ));
+    }
+
+    // Task #12: server-side idempotency. A concurrent/rapid duplicate
+    // start_task for the SAME (repository_id, name) must NOT create a
+    // second worktree/branch/agent — it returns the EXISTING task. Fire
+    // two starts concurrently against one repo (the double-fire the guard
+    // defends against), then a third back-to-back, and assert every call
+    // resolves to the same task_id with exactly one worktree + one
+    // `phasr/*` branch created.
+    #[tokio::test]
+    async fn duplicate_start_task_is_idempotent() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+
+        // A long-lived command keeps the agent `running` for the whole
+        // test, so later duplicates deterministically observe an ACTIVE
+        // task regardless of PTY scheduling.
+        let request = StartTaskRequest {
+            repository_id: repo.id.clone(),
+            user_id: None,
+            agent: Agent::Claude,
+            command: "sleep 30".into(),
+            name: "add-feature".into(),
+            prompt: None,
+            base_branch: None,
+            rows: None,
+            cols: None,
+        };
+
+        // Fire both concurrently. The per-repo lock serializes them: one
+        // creates, the other blocks, then finds the freshly-inserted row
+        // and returns it — no second worktree/branch/agent.
+        let other = orchestrator.clone();
+        let (first_res, second_res) = tokio::join!(
+            orchestrator.start_task(request.clone()),
+            other.start_task(request.clone()),
+        );
+        let first = first_res.expect("first start_task should succeed");
+        let second = second_res.expect("second start_task should succeed");
+
+        assert_eq!(
+            first.task_id, second.task_id,
+            "a duplicate start_task must return the existing task_id"
+        );
+        assert_eq!(
+            count_worktrees(&repo_dir),
+            2,
+            "duplicate start_task must not create a second worktree (main + one task)"
+        );
+        assert_eq!(
+            count_phasr_branches(&repo_dir),
+            1,
+            "duplicate start_task must not create a second branch"
+        );
+
+        // A duplicate arriving AFTER the first, back-to-back, is caught by
+        // the same active-task guard.
+        let third = orchestrator
+            .start_task(request.clone())
+            .await
+            .expect("back-to-back duplicate should succeed");
+        assert_eq!(third.task_id, first.task_id);
+        assert_eq!(count_worktrees(&repo_dir), 2);
+        assert_eq!(count_phasr_branches(&repo_dir), 1);
+
+        // Kill the PTY (a single task_id thanks to dedup) and drop its
+        // worktree dir so the `sleep` doesn't linger — the worktree lives
+        // under $HOME/.phasr, outside the test's TempDir.
+        let _ = orchestrator.stop_task(&first.task_id).await;
+        if let Some(path) = first.workspace.worktree_path.as_deref() {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 
     // Regression: workspaces created via the orchestrator must carry the
