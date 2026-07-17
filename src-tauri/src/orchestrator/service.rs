@@ -153,6 +153,50 @@ impl TaskOrchestrator {
             ));
         }
 
+        let base_ref = request
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| repository.default_branch.clone());
+
+        // Serialize git ops against the shared `.git` for this repo.
+        // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
+        // and races spectacularly with other adds on the same repo.
+        //
+        // The lock is taken *before* the duplicate check (not just around
+        // `git worktree add`) so the whole check → worktree-add → row-insert
+        // is atomic per repo. That's what makes start_task idempotent (task
+        // #12, the durable server-side twin of the D1 client re-entrancy
+        // guard): a rapid duplicate / replayed IPC / second window blocks
+        // here, then finds the row this call inserted and returns it —
+        // instead of minting a SECOND task_id/branch/worktree/agent.
+        let lock = self.repo_locks.for_repository(&request.repository_id);
+        let guard = lock.lock().await;
+
+        // Idempotency guard: return the existing ACTIVE (pending/running)
+        // task for this `(repository_id, name)` rather than creating a
+        // duplicate. Bounded to *active* tasks so a deliberate re-run after
+        // the first has stopped/completed/been deleted still starts fresh.
+        // Owner-scoped when we have a user_id (production); the unscoped
+        // variant covers the sessionless test path.
+        let existing = match request.user_id.as_deref() {
+            Some(user_id) => {
+                self.workspaces
+                    .find_active_by_name_for_user(&request.repository_id, &request.name, user_id)
+                    .await?
+            }
+            None => {
+                self.workspaces
+                    .find_active_by_name(&request.repository_id, &request.name)
+                    .await?
+            }
+        };
+        if let Some(existing) = existing {
+            return Ok(StartedTask {
+                task_id: existing.id.clone(),
+                workspace: existing,
+            });
+        }
+
         let interpolated = interpolate_for_task(&request.command, request.prompt.as_deref());
 
         let mut workspace = Workspace::new(
@@ -169,19 +213,8 @@ impl TaskOrchestrator {
         let branch =
             git::unique_branch_name(&repository_path, &branch_seed, git::short_id(&task_id));
         let worktree_path = git::default_worktree_base_path().join(&task_id);
-        let base_ref = request
-            .base_branch
-            .clone()
-            .unwrap_or_else(|| repository.default_branch.clone());
 
-        // Serialize git ops against the shared `.git` for this repo.
-        // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
-        // and races spectacularly with other adds on the same repo.
-        let lock = self.repo_locks.for_repository(&request.repository_id);
-        {
-            let _guard = lock.lock().await;
-            git::create_worktree(&repository_path, &worktree_path, &branch, &base_ref)?;
-        }
+        git::create_worktree(&repository_path, &worktree_path, &branch, &base_ref)?;
 
         workspace.branch = Some(branch);
         workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
@@ -192,6 +225,11 @@ impl TaskOrchestrator {
             Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
             None => self.workspaces.insert(&workspace).await?,
         }
+
+        // Release the per-repo lock before the PTY spawn + status update:
+        // those touch only this task's own row/process, not the shared
+        // `.git`, so there's no reason to hold up other repo tasks for them.
+        drop(guard);
 
         let started_at = Utc::now();
         let updated = self
@@ -553,7 +591,7 @@ fn interpolate_for_task(template: &str, prompt: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Repository;
+    use crate::domain::{Repository, WorkspaceKind};
     use crate::store::{init_pool, RepositoryRepo};
     use std::path::Path;
     use std::process::Command;
@@ -601,6 +639,84 @@ mod tests {
             .current_dir(path)
             .status()
             .unwrap();
+    }
+
+    /// Number of worktrees registered against `repo` (the main checkout
+    /// counts as one).
+    fn count_worktrees(repo: &Path) -> usize {
+        let out = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.starts_with("worktree "))
+            .count()
+    }
+
+    /// Number of local `phasr/*` branches in `repo`.
+    fn count_phasr_branches(repo: &Path) -> usize {
+        let out = Command::new("git")
+            .args(["branch", "--list", "phasr/*"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+    }
+
+    /// Insert a repository whose local path is a fresh, one-commit git repo
+    /// under `tmp/<dir_name>`, so worktree creation actually works.
+    async fn repo_with_git(
+        repositories: &RepositoryRepo,
+        tmp: &tempfile::TempDir,
+        dir_name: &str,
+    ) -> Repository {
+        let repo_dir = tmp.path().join(dir_name);
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+        repo
+    }
+
+    /// A long-lived start request. `sleep 30` keeps the agent `running` for
+    /// the whole test, so a subsequent duplicate deterministically observes
+    /// an ACTIVE task regardless of PTY scheduling. `user_id: None` exercises
+    /// the sessionless (unscoped) dedup path.
+    fn sleep_request(repository_id: &str, name: &str) -> StartTaskRequest {
+        StartTaskRequest {
+            repository_id: repository_id.to_string(),
+            user_id: None,
+            agent: Agent::Claude,
+            command: "sleep 30".into(),
+            name: name.to_string(),
+            prompt: None,
+            base_branch: None,
+            rows: None,
+            cols: None,
+        }
+    }
+
+    /// Kill each task's PTY (SIGINT terminates `sleep`) and drop its worktree
+    /// dir — worktrees live under `$HOME/.phasr`, outside the test TempDir, so
+    /// they'd otherwise linger. Safe to call with deduped tasks that share a
+    /// task_id/worktree (double stop/remove is a no-op).
+    async fn cleanup(orchestrator: &TaskOrchestrator, tasks: &[&StartedTask]) {
+        for t in tasks {
+            let _ = orchestrator.stop_task(&t.task_id).await;
+            if let Some(path) = t.workspace.worktree_path.as_deref() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
     }
 
     #[tokio::test]
@@ -685,6 +801,465 @@ mod tests {
             completion.status,
             WorkspaceStatus::Completed | WorkspaceStatus::Failed
         ));
+    }
+
+    // Task #12: server-side idempotency. A concurrent/rapid duplicate
+    // start_task for the SAME (repository_id, name) must NOT create a
+    // second worktree/branch/agent — it returns the EXISTING task. Fire
+    // two starts concurrently against one repo (the double-fire the guard
+    // defends against), then a third back-to-back, and assert every call
+    // resolves to the same task_id with exactly one worktree + one
+    // `phasr/*` branch created.
+    #[tokio::test]
+    async fn duplicate_start_task_is_idempotent() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+
+        // A long-lived command keeps the agent `running` for the whole
+        // test, so later duplicates deterministically observe an ACTIVE
+        // task regardless of PTY scheduling.
+        let request = StartTaskRequest {
+            repository_id: repo.id.clone(),
+            user_id: None,
+            agent: Agent::Claude,
+            command: "sleep 30".into(),
+            name: "add-feature".into(),
+            prompt: None,
+            base_branch: None,
+            rows: None,
+            cols: None,
+        };
+
+        // Fire both concurrently. The per-repo lock serializes them: one
+        // creates, the other blocks, then finds the freshly-inserted row
+        // and returns it — no second worktree/branch/agent.
+        let other = orchestrator.clone();
+        let (first_res, second_res) = tokio::join!(
+            orchestrator.start_task(request.clone()),
+            other.start_task(request.clone()),
+        );
+        let first = first_res.expect("first start_task should succeed");
+        let second = second_res.expect("second start_task should succeed");
+
+        assert_eq!(
+            first.task_id, second.task_id,
+            "a duplicate start_task must return the existing task_id"
+        );
+        assert_eq!(
+            count_worktrees(&repo_dir),
+            2,
+            "duplicate start_task must not create a second worktree (main + one task)"
+        );
+        assert_eq!(
+            count_phasr_branches(&repo_dir),
+            1,
+            "duplicate start_task must not create a second branch"
+        );
+
+        // A duplicate arriving AFTER the first, back-to-back, is caught by
+        // the same active-task guard.
+        let third = orchestrator
+            .start_task(request.clone())
+            .await
+            .expect("back-to-back duplicate should succeed");
+        assert_eq!(third.task_id, first.task_id);
+        assert_eq!(count_worktrees(&repo_dir), 2);
+        assert_eq!(count_phasr_branches(&repo_dir), 1);
+
+        // Kill the PTY (a single task_id thanks to dedup) and drop its
+        // worktree dir so the `sleep` doesn't linger — the worktree lives
+        // under $HOME/.phasr, outside the test's TempDir.
+        cleanup(&orchestrator, &[&first]).await;
+    }
+
+    // --- Dedup correctness: distinct requests must stay distinct ---
+
+    // Case 1: same repo, DIFFERENT names → two distinct tasks. The guard
+    // must not over-dedup on repository alone.
+    #[tokio::test]
+    async fn distinct_names_same_repo_create_distinct_tasks() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+
+        let a = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        let b = orchestrator
+            .start_task(sleep_request(&repo.id, "fix-bug"))
+            .await
+            .unwrap();
+
+        assert_ne!(a.task_id, b.task_id, "different names must not be deduped");
+        assert_eq!(
+            count_worktrees(repo_path),
+            3,
+            "main checkout + two distinct task worktrees"
+        );
+        assert_eq!(count_phasr_branches(repo_path), 2);
+
+        cleanup(&orchestrator, &[&a, &b]).await;
+    }
+
+    // Case 2: SAME name, DIFFERENT repos → two distinct tasks. The dedup key
+    // is repo-scoped.
+    #[tokio::test]
+    async fn same_name_distinct_repos_create_distinct_tasks() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo1 = repo_with_git(&repositories, &tmp, "repo1").await;
+        let repo2 = repo_with_git(&repositories, &tmp, "repo2").await;
+
+        let a = orchestrator
+            .start_task(sleep_request(&repo1.id, "add-feature"))
+            .await
+            .unwrap();
+        let b = orchestrator
+            .start_task(sleep_request(&repo2.id, "add-feature"))
+            .await
+            .unwrap();
+
+        assert_ne!(
+            a.task_id, b.task_id,
+            "same name in different repos must not be deduped"
+        );
+        assert_eq!(
+            count_worktrees(Path::new(repo1.local_path.as_deref().unwrap())),
+            2
+        );
+        assert_eq!(
+            count_worktrees(Path::new(repo2.local_path.as_deref().unwrap())),
+            2
+        );
+
+        cleanup(&orchestrator, &[&a, &b]).await;
+    }
+
+    // Case 3: N-way concurrency (8 parallel identical starts on a multi-thread
+    // runtime) → EXACTLY one worktree/branch, all calls return the same
+    // task_id. This is the real double-fire, amplified.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn n_way_concurrent_duplicates_create_exactly_one_task() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path_str = repo.local_path.clone().unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let o = orchestrator.clone();
+            let req = sleep_request(&repo.id, "add-feature");
+            handles.push(tokio::spawn(async move { o.start_task(req).await }));
+        }
+        let mut started = Vec::new();
+        for h in handles {
+            started.push(
+                h.await
+                    .unwrap()
+                    .expect("each concurrent start_task must succeed"),
+            );
+        }
+
+        let ids: Vec<&str> = started.iter().map(|s| s.task_id.as_str()).collect();
+        assert!(
+            ids.windows(2).all(|w| w[0] == w[1]),
+            "all concurrent duplicates must resolve to one task_id, got {ids:?}"
+        );
+        let repo_path = Path::new(&repo_path_str);
+        assert_eq!(
+            count_worktrees(repo_path),
+            2,
+            "exactly one task worktree despite the N-way race"
+        );
+        assert_eq!(count_phasr_branches(repo_path), 1);
+
+        cleanup(&orchestrator, &[&started[0]]).await;
+    }
+
+    // --- Active-bounding: a re-run must work once the first is no longer active ---
+
+    // Case 4: after the first reaches each TERMINAL/non-active status
+    // (stopped, completed, failed, archived), a re-run of the same
+    // (repo, name) creates a NEW task — it is NOT deduped to the dead one.
+    #[tokio::test]
+    async fn rerun_after_non_active_status_creates_new_task() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let mut created: Vec<StartedTask> = Vec::new();
+        for status in [
+            WorkspaceStatus::Stopped,
+            WorkspaceStatus::Completed,
+            WorkspaceStatus::Failed,
+            WorkspaceStatus::Archived,
+        ] {
+            // Distinct name per status so the sub-cases don't interfere.
+            let name = format!("task-{}", status.as_str());
+            // Seed a matching agent row already in the terminal status.
+            // `insert` does not validate transitions, so we set it directly.
+            let mut dead = Workspace::new(repo.id.clone(), name.clone(), "cmd".into());
+            dead.status = status;
+            workspaces.insert(&dead).await.unwrap();
+
+            let started = orchestrator
+                .start_task(sleep_request(&repo.id, &name))
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("re-run after `{}` should create a task: {e}", status.as_str())
+                });
+            assert_ne!(
+                started.task_id,
+                dead.id,
+                "re-run after `{}` must not dedup to the inactive task",
+                status.as_str()
+            );
+            assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+            assert!(
+                started
+                    .workspace
+                    .worktree_path
+                    .as_deref()
+                    .map(|p| Path::new(p).exists())
+                    .unwrap_or(false),
+                "the re-run must build a fresh worktree"
+            );
+            created.push(started);
+        }
+
+        let refs: Vec<&StartedTask> = created.iter().collect();
+        cleanup(&orchestrator, &refs).await;
+    }
+
+    // Case 5: after the first is SOFT-DELETED (deleted_at set), a re-run of
+    // the same (repo, name) creates a NEW task.
+    #[tokio::test]
+    async fn rerun_after_soft_delete_creates_new_task() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        // A running agent task, then tombstoned.
+        let mut ghost = Workspace::new(repo.id.clone(), "add-feature".into(), "cmd".into());
+        ghost.status = WorkspaceStatus::Running;
+        workspaces.insert(&ghost).await.unwrap();
+        workspaces.delete(&ghost.id).await.unwrap();
+
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        assert_ne!(
+            started.task_id, ghost.id,
+            "a soft-deleted task must not be deduped against"
+        );
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    // Case 6: PENDING is active. A duplicate arriving while the first row is
+    // still `pending` (the exact state a start_task is in before it flips to
+    // running) is deduped — and the dedup path creates NO worktree/branch.
+    #[tokio::test]
+    async fn pending_task_is_treated_as_active_and_deduped() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+
+        let pending = Workspace::new(repo.id.clone(), "add-feature".into(), "cmd".into());
+        assert_eq!(pending.status, WorkspaceStatus::Pending);
+        workspaces.insert(&pending).await.unwrap();
+
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        assert_eq!(
+            started.task_id, pending.id,
+            "a duplicate while the first is pending must return the existing task"
+        );
+        assert_eq!(
+            count_worktrees(repo_path),
+            1,
+            "the dedup path creates no worktree (only the main checkout)"
+        );
+        assert_eq!(count_phasr_branches(repo_path), 0);
+        // Nothing was spawned by the deduped call — no cleanup needed.
+    }
+
+    // --- Scoping refinements ---
+
+    // Case 7: a LOCAL workspace named X (even a RUNNING one) must never be
+    // treated as a duplicate agent task — the guard is `workspace_kind='agent'`
+    // scoped. A second agent start then dedups to the AGENT task, not the local.
+    #[tokio::test]
+    async fn agent_start_task_ignores_a_local_workspace_of_the_same_name() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+
+        // The ever-present local workspace, forced RUNNING so only the KIND
+        // filter (not status) can keep it out of the dedup lookup.
+        let mut local = Workspace::new(repo.id.clone(), "add-feature".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        local.status = WorkspaceStatus::Running;
+        workspaces.insert(&local).await.unwrap();
+
+        let agent = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        assert_ne!(
+            agent.task_id, local.id,
+            "agent start_task must not dedup against the local workspace"
+        );
+        assert_eq!(agent.workspace.workspace_kind, WorkspaceKind::Agent);
+        assert_eq!(
+            count_worktrees(repo_path),
+            2,
+            "the new agent task got its own worktree"
+        );
+
+        // A second agent start with the same name dedups to the AGENT task.
+        let agent2 = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        assert_eq!(agent2.task_id, agent.task_id);
+        assert_eq!(count_worktrees(repo_path), 2, "still one agent worktree");
+        assert_eq!(count_phasr_branches(repo_path), 1);
+
+        cleanup(&orchestrator, &[&agent]).await;
+    }
+
+    // --- Name / input semantics (decisions documented in-line) ---
+
+    // Case 9: name dedup is a RAW, exact-string match (SQLite BINARY
+    // collation) — no case-folding, no trimming. This is deliberate and
+    // consistent with the frontend: NewTaskForm trims the name (and requires
+    // it non-empty) before invoking start_task, so a genuine double-fire
+    // always sends byte-identical names, while legitimately-different names
+    // ("fix" vs "Fix") remain distinct tasks.
+    #[tokio::test]
+    async fn name_dedup_is_exact_match_case_and_whitespace_sensitive() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+
+        let lower = orchestrator
+            .start_task(sleep_request(&repo.id, "fix"))
+            .await
+            .unwrap();
+        let upper = orchestrator
+            .start_task(sleep_request(&repo.id, "Fix"))
+            .await
+            .unwrap();
+        let trailing = orchestrator
+            .start_task(sleep_request(&repo.id, "fix "))
+            .await
+            .unwrap();
+
+        assert_ne!(
+            lower.task_id, upper.task_id,
+            "case differences must not be folded"
+        );
+        assert_ne!(
+            lower.task_id, trailing.task_id,
+            "trailing whitespace is significant"
+        );
+        assert_ne!(upper.task_id, trailing.task_id);
+
+        cleanup(&orchestrator, &[&lower, &upper, &trailing]).await;
+    }
+
+    // Case 10: empty / whitespace-only names. NewTaskForm requires a non-empty
+    // trimmed name, so these shouldn't reach the backend in practice — but they
+    // must not crash, and two empty-name requests must dedup (idempotent),
+    // never spawn duplicates. `""` and `" "` are DIFFERENT exact strings.
+    #[tokio::test]
+    async fn empty_and_whitespace_names_are_handled_defensively() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+
+        let empty1 = orchestrator
+            .start_task(sleep_request(&repo.id, ""))
+            .await
+            .expect("an empty name must not crash");
+        let empty2 = orchestrator
+            .start_task(sleep_request(&repo.id, ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            empty1.task_id, empty2.task_id,
+            "two empty-name requests must dedup to one task"
+        );
+        // Empty slug falls back to a `phasr/<id>` branch — no crash / no
+        // empty branch name.
+        assert!(empty1
+            .workspace
+            .branch
+            .as_deref()
+            .unwrap()
+            .starts_with("phasr/"));
+
+        let space = orchestrator
+            .start_task(sleep_request(&repo.id, " "))
+            .await
+            .unwrap();
+        assert_ne!(
+            space.task_id, empty1.task_id,
+            "a single-space name is a different exact string from empty"
+        );
+
+        cleanup(&orchestrator, &[&empty1, &space]).await;
+    }
+
+    // Case 11: the dedup key is (repository_id, name) ONLY — base_branch,
+    // agent, and prompt are intentionally ignored, because a genuine
+    // double-fire carries identical fields. KNOWN LIMITATION: a user wanting
+    // two same-named tasks off different base branches within the active
+    // window is blocked (vary the name, or wait for the first to finish);
+    // the frontend never produces this from a single form submission.
+    #[tokio::test]
+    async fn duplicate_with_different_base_agent_prompt_still_dedups() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+
+        let first = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+
+        // Same name, but a different agent, a (non-existent) base branch, and
+        // a prompt. The base branch is never resolved because dedup returns
+        // before any worktree work — proving those fields aren't in the key.
+        let mut variant = sleep_request(&repo.id, "add-feature");
+        variant.agent = Agent::Codex;
+        variant.base_branch = Some("some-other-base".into());
+        variant.prompt = Some("a totally different prompt".into());
+        let second = orchestrator.start_task(variant).await.unwrap();
+
+        assert_eq!(
+            second.task_id, first.task_id,
+            "differing base/agent/prompt must still dedup on (repo, name)"
+        );
+        // The first task wins — the duplicate returns the existing row.
+        assert_eq!(second.workspace.agent, Some(Agent::Claude));
+        assert_eq!(count_worktrees(repo_path), 2, "no second worktree");
+        assert_eq!(count_phasr_branches(repo_path), 1);
+
+        cleanup(&orchestrator, &[&first]).await;
     }
 
     // Regression: workspaces created via the orchestrator must carry the

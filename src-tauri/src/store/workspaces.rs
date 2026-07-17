@@ -200,6 +200,65 @@ impl WorkspaceRepo {
         row.as_ref().map(row_to_workspace).transpose()
     }
 
+    /// Find an ACTIVE (pending/running, not soft-deleted) agent workspace
+    /// for `(repository_id, name)`. Backs the orchestrator's `start_task`
+    /// idempotency guard: a rapid duplicate / replayed IPC / second window
+    /// returns this in-flight task instead of minting a second
+    /// worktree/branch/agent. Only `agent`-kind rows count — the always-present
+    /// `local` workspace (name `"local"`) must never be mistaken for a
+    /// duplicate agent task. A task that has since stopped/completed/failed/
+    /// archived or been deleted is NOT active, so a deliberate re-run after
+    /// the first ends still creates fresh state.
+    pub async fn find_active_by_name(
+        &self,
+        repository_id: &str,
+        name: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
+               AND status IN ('pending', 'running') AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(repository_id)
+        .bind(name)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
+    /// Owner-scoped variant of `find_active_by_name` so a second signed-in
+    /// account can't collide with another user's active task.
+    pub async fn find_active_by_name_for_user(
+        &self,
+        repository_id: &str,
+        name: &str,
+        user_id: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code,
+                    created_at, started_at, finished_at, archived_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
+               AND status IN ('pending', 'running') AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(repository_id)
+        .bind(name)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
     pub async fn update(&self, id: &str, patch: WorkspaceUpdate) -> Result<Workspace, StoreError> {
         let mut current = self.get(id).await?;
 
@@ -450,6 +509,157 @@ mod tests {
         repos.delete(&repo.id).await.unwrap();
         let list = workspaces.list_by_repository(&repo.id).await.unwrap();
         assert!(list.is_empty());
+    }
+
+    // The dedup lookup that backs start_task idempotency must match ONLY
+    // active (pending/running) agent rows — never a terminal/stopped row,
+    // never a `local` workspace (even a running one), never a soft-deleted
+    // tombstone. This locks the SQL predicate down directly.
+    #[tokio::test]
+    async fn find_active_by_name_matches_only_active_agent_rows() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        // A pending agent task is ACTIVE → found.
+        let alpha = Workspace::new(repo.id.clone(), "alpha".into(), "cmd".into());
+        workspaces.insert(&alpha).await.unwrap();
+        assert_eq!(
+            workspaces
+                .find_active_by_name(&repo.id, "alpha")
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(alpha.id.clone()),
+            "a pending agent task must count as active"
+        );
+
+        // Running is still active.
+        workspaces
+            .update(
+                &alpha.id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(workspaces
+            .find_active_by_name(&repo.id, "alpha")
+            .await
+            .unwrap()
+            .is_some());
+
+        // Completed is terminal → no longer active (so a re-run is allowed).
+        workspaces
+            .update(
+                &alpha.id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Completed),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            workspaces
+                .find_active_by_name(&repo.id, "alpha")
+                .await
+                .unwrap()
+                .is_none(),
+            "a completed task must not be treated as active"
+        );
+
+        // A stopped agent task (inserted directly) is not active.
+        let mut beta = Workspace::new(repo.id.clone(), "beta".into(), "cmd".into());
+        beta.status = WorkspaceStatus::Stopped;
+        workspaces.insert(&beta).await.unwrap();
+        assert!(workspaces
+            .find_active_by_name(&repo.id, "beta")
+            .await
+            .unwrap()
+            .is_none());
+
+        // A LOCAL workspace, even when running, is excluded (kind filter):
+        // every repo carries an ever-present `local` row that must never be
+        // mistaken for a duplicate agent task.
+        let mut gamma = Workspace::new(repo.id.clone(), "gamma".into(), String::new());
+        gamma.workspace_kind = WorkspaceKind::Local;
+        gamma.status = WorkspaceStatus::Running;
+        workspaces.insert(&gamma).await.unwrap();
+        assert!(
+            workspaces
+                .find_active_by_name(&repo.id, "gamma")
+                .await
+                .unwrap()
+                .is_none(),
+            "a local workspace must never match the agent dedup lookup"
+        );
+
+        // A soft-deleted agent task is excluded (deleted_at filter).
+        let delta = Workspace::new(repo.id.clone(), "delta".into(), "cmd".into());
+        workspaces.insert(&delta).await.unwrap();
+        workspaces.delete(&delta.id).await.unwrap();
+        assert!(
+            workspaces
+                .find_active_by_name(&repo.id, "delta")
+                .await
+                .unwrap()
+                .is_none(),
+            "a soft-deleted task must not be deduped against"
+        );
+    }
+
+    // Owner-scoping (defense-in-depth): `_for_user` only returns the
+    // querying user's active task, never another account's — even for an
+    // identical `(repository_id, name)`.
+    //
+    // NOTE: in production a `repository_id` is owner-unique (create_repository
+    // stamps `user_id` and the id is a per-user UUID), so two users sharing
+    // one repo isn't a reachable state via the orchestrator. We verify the
+    // scoping directly at the store level instead.
+    #[tokio::test]
+    async fn find_active_by_name_is_scoped_to_owner() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        // workspaces.user_id FKs to users(id); seed two distinct owners.
+        for uid in ["user-a", "user-b"] {
+            sqlx::query(
+                "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+                 VALUES (?, ?, 'n', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            )
+            .bind(uid)
+            .bind(uid)
+            .bind(format!("{uid}@example.com"))
+            .execute(&workspaces.db)
+            .await
+            .unwrap();
+        }
+
+        // Identical (repository_id, name), two different owners.
+        let a = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        workspaces.insert_for_user(&a, "user-a").await.unwrap();
+        let b = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        workspaces.insert_for_user(&b, "user-b").await.unwrap();
+
+        assert_eq!(
+            workspaces
+                .find_active_by_name_for_user(&repo.id, "shared", "user-a")
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(a.id.clone()),
+            "owner A must see only A's task"
+        );
+        assert_eq!(
+            workspaces
+                .find_active_by_name_for_user(&repo.id, "shared", "user-b")
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(b.id.clone()),
+            "owner B must see only B's task"
+        );
+        assert_ne!(a.id, b.id);
     }
 
     #[tokio::test]
