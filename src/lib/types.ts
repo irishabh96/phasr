@@ -38,6 +38,15 @@ export interface Workspace {
   startedAt: string | null;
   finishedAt: string | null;
   archivedAt: string | null;
+  /**
+   * Set only when this `running` row was orphaned by an app relaunch and
+   * swept to `stopped` during startup recovery (`lib.rs::recover_startup_state`).
+   * Mirrors the machine-local `interrupted_at` column (never synced). The
+   * frontend derives the honest "was interrupted" state from
+   * `status === "stopped" && interruptedAt != null` — a calm user `stop_task`
+   * leaves this `null`. ISO-8601 UTC. (Step 0 — Honest Status, E0.)
+   */
+  interruptedAt: string | null;
   updatedAt: string;
 }
 
@@ -90,14 +99,55 @@ export interface RunningTaskInfo {
 }
 
 /**
+ * The honest, *derived* runtime state of an agent, as emitted by the Rust
+ * liveness poller and exit-watcher over `phasr://task-status`. Mirrors
+ * `orchestrator::liveness::DerivedState` (serde `kebab-case`; every variant is
+ * a single word so it renders lowercase). Verified against the Rust source:
+ * `src-tauri/src/orchestrator/liveness.rs` (`DerivedState::as_str`) and
+ * `src-tauri/src/commands/orchestrator.rs` (`TaskStatusPayload::derived_state`).
+ *
+ * - `working` / `idle` / `wedged` — liveness poller, from output recency.
+ * - `done` / `failed` — exit-watcher, from the PTY exit code.
+ *
+ * NOTE (product decision — honest-neutral): a quiet agent is a neutral `idle`
+ * that escalates to `wedged`; there is deliberately no coral "needs-attention"
+ * variant at P0 (the plan's §B `needs-attention` was superseded — see
+ * `liveness.rs` module doc). The frontend adds its own UI-only buckets
+ * (`resolving`, `interrupted`, `stopped`) in `deriveAgentState` — those are
+ * NEVER on the wire.
+ */
+export type DerivedAgentState =
+  | "working"
+  | "idle"
+  | "wedged"
+  | "done"
+  | "failed";
+
+/**
  * Payload broadcast on `phasr://task-status` whenever the orchestrator
  * transitions a task between lifecycle states.
+ *
+ * `derivedState` + `lastActivityAt` are additive (both `null` on plain
+ * lifecycle transitions), so existing consumers keying off `status` are
+ * unaffected (Step 0 — Honest Status, E0 / S0.1).
  */
 export interface TaskStatusPayload {
   taskId: string;
   repositoryId: string;
   status: WorkspaceStatus;
   exitCode: number | null;
+  /**
+   * Honest derived state. `working | idle | wedged` on liveness-poller
+   * transitions, `done | failed` on the exit-watcher, `null` on plain
+   * lifecycle transitions (pending→running, →stopped).
+   */
+  derivedState: DerivedAgentState | null;
+  /**
+   * ISO-8601 UTC timestamp of the agent's last output, carried on poller
+   * transitions so the frontend can count "Ns ago" upward locally between
+   * events. `null` on exit-watcher / plain lifecycle events.
+   */
+  lastActivityAt: string | null;
 }
 
 export interface PathValidation {

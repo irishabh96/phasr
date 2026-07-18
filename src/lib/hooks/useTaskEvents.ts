@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { clearAgentLiveness, setAgentLiveness } from "@/lib/agentLiveness";
 import type { TaskStatusPayload } from "@/lib/types";
 
 /**
@@ -26,7 +27,25 @@ export function useTaskEvents() {
     let cancelled = false;
 
     void listen<TaskStatusPayload>("phasr://task-status", (event) => {
-      const { taskId, repositoryId } = event.payload;
+      const { taskId, repositoryId, status, derivedState, lastActivityAt } =
+        event.payload;
+
+      // Honest-status liveness (Step 0 — S0.1): feed the module store the
+      // running-liveness transitions (working/idle/wedged) so the sidebar +
+      // header can render the derived state without polling. The exit-watcher's
+      // terminal `done`/`failed` (and any exit to stopped/archived) drops the
+      // task from the live set — its state is then derived from the persisted
+      // row's status/exitCode instead.
+      if (
+        derivedState === "working" ||
+        derivedState === "idle" ||
+        derivedState === "wedged"
+      ) {
+        setAgentLiveness(taskId, { derivedState, lastActivityAt });
+      } else if (status !== "running" && status !== "pending") {
+        clearAgentLiveness(taskId);
+      }
+
       queryClient.invalidateQueries({ queryKey: ["workspaces", "detail", taskId] });
       queryClient.invalidateQueries({
         queryKey: ["workspaces", "repository", repositoryId],

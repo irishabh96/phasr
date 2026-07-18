@@ -20,6 +20,14 @@ import { SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { StatusDot } from "@/components/ui/StatusDot";
+import {
+  AgentStatusIndicator,
+  AgentStatusMetaLine,
+} from "@/components/ui/AgentStatusIndicator";
+import { isLiveState } from "@/components/ui/agentStatusMeta";
+import { useAgentLiveness } from "@/lib/agentLiveness";
+import { deriveAgentState } from "@/lib/deriveAgentState";
+import { useNow } from "@/lib/useNow";
 import type { Workspace, Repository } from "@/lib/types";
 
 export function AppSidebar() {
@@ -307,6 +315,18 @@ function WorkspaceLink({
   active: boolean;
   isExpanded: boolean;
 }) {
+  const isAgent = ws.workspaceKind === "agent";
+  // Latest liveness snapshot + a scoped 1 Hz clock so the honest "Ns ago"
+  // counter ticks — only for a running agent, never the whole tree (S0.1).
+  const live = useAgentLiveness(ws.id);
+  const now = useNow(
+    isAgent &&
+      isLiveState(
+        live?.derivedState ?? (ws.status === "running" ? "working" : "stopped"),
+      ),
+  );
+  const derived = isAgent ? deriveAgentState(ws, live, now) : null;
+
   return (
     <WorkspaceSidebarMenu workspace={ws}>
       <Link
@@ -325,7 +345,11 @@ function WorkspaceLink({
       >
         <GlassTooltip content={ws.name} side="right" disabled={isExpanded}>
           <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-            <StatusDot status={ws.status} />
+            {derived ? (
+              <AgentStatusIndicator state={derived.state} />
+            ) : (
+              <StatusDot status={ws.status} />
+            )}
           </span>
         </GlassTooltip>
         {isExpanded && (
@@ -340,10 +364,20 @@ function WorkspaceLink({
             >
               {ws.name}
             </span>
-            {ws.branch && (
-              <code className="truncate text-left text-[10.5px] leading-none text-(--color-text-muted)">
-                {ws.branch}
-              </code>
+            {/* Honest status replaces the branch on agent rows (S0.1-T3); the
+                branch relocated to the workspace header. Local rows keep it. */}
+            {derived ? (
+              <AgentStatusMetaLine
+                state={derived.state}
+                since={derived.since}
+                exitCode={ws.exitCode}
+              />
+            ) : (
+              ws.branch && (
+                <code className="truncate text-left text-[10.5px] leading-none text-(--color-text-muted)">
+                  {ws.branch}
+                </code>
+              )
             )}
           </span>
         )}

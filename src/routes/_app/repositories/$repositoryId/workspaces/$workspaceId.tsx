@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { Loader2, PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { AgentStatusBadge } from "@/components/AgentStatusBadge";
 import { BranchChip } from "@/components/BranchChip";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
@@ -168,6 +169,13 @@ function WorkspaceDetail() {
         <div className="flex h-[var(--layout-header-height)] items-center gap-3 pl-4 pr-2">
           <div className="flex shrink-0 items-center gap-2">
             {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
+            {workspace.workspaceKind !== "local" && (
+              <AgentStatusBadge
+                workspaceId={workspaceId}
+                repositoryId={repositoryId}
+                changeCount={changeCount}
+              />
+            )}
           </div>
           <WorkspaceInnerTabBar workspaceId={workspaceId} />
           <div className="flex shrink-0 items-center gap-1">

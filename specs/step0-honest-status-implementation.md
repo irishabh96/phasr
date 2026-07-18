@@ -91,7 +91,10 @@ pub struct TaskStatusEvent {
 
 // new enum, NOT in domain::workspace (derived state stays out of WorkspaceStatus, validation #1)
 // orchestrator/liveness.rs
-pub enum DerivedState { Working, NeedsAttention, Wedged, Done, Failed }  // #[serde(rename_all="kebab-case")] → "needs-attention"
+// RESOLVED (§F-1 → honest-neutral, SHIPPED): `Idle` replaces the earlier `NeedsAttention`; the coral
+// "needs-attention" P0 treatment is deferred to P1. Wherever this doc still reads "NeedsAttention"/coral
+// below, read `Idle` (neutral grey). Code is authoritative: orchestrator/liveness.rs.
+pub enum DerivedState { Working, Idle, Wedged, Done, Failed }  // #[serde(rename_all="kebab-case")] → single-word lowercase
 
 // commands/orchestrator.rs::event_payload (:198) — add the two fields to TaskStatusPayload (:189)
 ```
@@ -101,12 +104,13 @@ Optional: none.
 
 **3. `types.ts`** — extend `TaskStatusPayload` (`types.ts:96-101`) and `Workspace` (`types.ts:25-42`):
 ```ts
-export type DerivedAgentState =
-  | "resolving" | "working" | "needs-attention" | "wedged" | "done" | "failed" | "stopped";
+// WIRE contract — exactly what the backend emits (single-word, lowercase):
+export type DerivedAgentState = "working" | "idle" | "wedged" | "done" | "failed";
+// FE-only UI states (deriveAgentState adds these; NEVER on the wire): "resolving" | "interrupted" | "stopped"
 
 export interface TaskStatusPayload {
   taskId: string; repositoryId: string; status: WorkspaceStatus; exitCode: number | null;
-  derivedState: DerivedAgentState | null;   // NEW  (backend emits working|needs-attention|wedged)
+  derivedState: DerivedAgentState | null;   // NEW  (poller emits working|idle|wedged; exit-watcher done|failed)
   lastActivityAt: string | null;            // NEW  ISO ts
 }
 

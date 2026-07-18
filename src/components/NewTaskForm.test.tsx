@@ -56,6 +56,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     startedAt: "2026-01-01T00:00:01Z",
     finishedAt: null,
     archivedAt: null,
+    interruptedAt: null,
     updatedAt: "2026-01-01T00:00:01Z",
     ...overrides,
   };

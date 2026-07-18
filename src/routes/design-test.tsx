@@ -8,8 +8,32 @@ import { TerminalStatus } from "@/components/TerminalStatus";
 import { Dialog, ConfirmDialog } from "@/components/ui/Dialog";
 import { DiffList } from "@/components/diff/DiffList";
 import { SAMPLE_DIFF_LIST } from "@/components/diff/sampleDiffs";
+import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
+import {
+  AgentStatusIndicator,
+  AgentStatusMetaLine,
+} from "@/components/ui/AgentStatusIndicator";
+import type { AgentUiState } from "@/lib/deriveAgentState";
 import { showToast } from "@/lib/toast";
 import { useUiStore } from "@/lib/store";
+
+/**
+ * Every honest-status state (Step 0 — S0.1/S0.2), driven by mocked
+ * `{ state, since }` so `/design-test` renders them with no Tauri IPC. Order
+ * follows the escalation the founder chose: quiet grey Idle → amber Wedged,
+ * NO coral (that's a P1 state).
+ */
+const AGENT_STATES: ReadonlyArray<{ state: AgentUiState; since: number | null }> =
+  [
+    { state: "resolving", since: null },
+    { state: "working", since: 2_000 },
+    { state: "idle", since: 180_000 },
+    { state: "wedged", since: 840_000 },
+    { state: "done", since: 360_000 },
+    { state: "failed", since: 60_000 },
+    { state: "interrupted", since: null },
+    { state: "stopped", since: 120_000 },
+  ];
 
 /**
  * Dev-only Playwright harness. Renders the design-fix surfaces with NO Tauri
@@ -188,6 +212,46 @@ function DesignTest() {
           <div className="relative h-32 rounded-(--radius-panel) border border-(--color-border-default) bg-(--color-bg-terminal)">
             <TerminalStatus state="exited" exitCode={1} onRestart={() => {}} />
           </div>
+        </section>
+
+        {/* Agent honest status — Step 0 (S0.1 sidebar indicator + header badge) */}
+        <section data-testid="agentstatus" className="flex flex-col gap-2">
+          {AGENT_STATES.map(({ state, since }) => {
+            const exitCode = state === "failed" ? 1 : null;
+            const changeCount = state === "done" ? 8 : null;
+            return (
+              <div
+                key={state}
+                data-testid={`agent-state-${state}`}
+                data-agent-state={state}
+                className="flex flex-wrap items-center gap-4 rounded-(--radius-panel) border border-(--color-border-default) p-3"
+              >
+                {/* Sidebar mock: indicator + honest meta line */}
+                <div className="flex min-w-[220px] items-center gap-2 rounded-[8px] bg-(--color-bg-sidebar) px-2 py-1">
+                  <AgentStatusIndicator state={state} />
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-[13px] leading-none text-(--color-text-primary)">
+                      migrate-db
+                    </span>
+                    <AgentStatusMetaLine
+                      state={state}
+                      since={since}
+                      exitCode={exitCode}
+                      changeCount={changeCount}
+                    />
+                  </span>
+                </div>
+                {/* Header badge */}
+                <AgentStatusBadgeView
+                  state={state}
+                  since={since}
+                  exitCode={exitCode}
+                  changeCount={changeCount}
+                  onRestart={() => {}}
+                />
+              </div>
+            );
+          })}
         </section>
 
         {/* Diff — Batch 0 T5 palette + diff a11y */}

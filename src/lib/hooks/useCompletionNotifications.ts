@@ -39,6 +39,13 @@ import type {
 
 const COALESCE_WINDOW_MS = 2500;
 
+/**
+ * Anti-flap for the Wedged nudge (S0.2): at most one notification per task per
+ * this window, so an agent that oscillates working→wedged→working→wedged can't
+ * spam. The poller already de-dups per episode; this guards re-wedge flapping.
+ */
+const WEDGED_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000;
+
 type BufferedEvent = {
   taskId: string;
   repositoryId: string;
@@ -150,6 +157,61 @@ export function useCompletionNotifications() {
         to: "/repositories/$repositoryId/workspaces/$workspaceId",
         params: { repositoryId, workspaceId: taskId },
       });
+    };
+
+    // ── Wedged nudge (S0.2) ──────────────────────────────────────────────
+    // A separate, un-buffered path off the same event stream: Wedged is a
+    // running-state transition, not a terminal completion, so it never enters
+    // the completion coalesce buffer below. Calm + focus-aware + deduped, per
+    // the DDR-003 gates it reuses. Live region is POLITE (warning → role=status
+    // in AppToaster), NOT the assertive alert reserved for failures.
+    const wedgedCooldowns = new Map<string, number>();
+
+    const handleWedged = (taskId: string, repositoryId: string) => {
+      const qc = qcRef.current;
+      // Only agent workspaces have a liveness/wedged story; a local shell does
+      // not. Skip only when we can positively confirm local (fail-open).
+      const ws = lookupWorkspace(qc, taskId, repositoryId);
+      if (ws?.workspaceKind === "local") return;
+
+      // Suppress for the workspace you're already watching — the header badge
+      // already tells you it's wedged (DDR-003 viewing gate).
+      const appFocused = appFocusedRef.current;
+      const viewingThis =
+        appFocused &&
+        useUiStore.getState().activeWorkspaceContext?.workspaceId === taskId;
+      if (viewingThis) return;
+
+      // Anti-flap: one nudge per task per cooldown.
+      const nowMs = Date.now();
+      const last = wedgedCooldowns.get(taskId) ?? 0;
+      if (nowMs - last < WEDGED_NOTIFY_COOLDOWN_MS) return;
+      wedgedCooldowns.set(taskId, nowMs);
+
+      const w = workspaceName(qc, taskId, repositoryId);
+      const r = lookupRepositoryName(qc, repositoryId);
+
+      // Persistent (it has an action), warning intent → polite live region.
+      showToast({
+        title: `${w} looks wedged`,
+        message: `No output for a while in ${r}. It may be stuck or waiting.`,
+        intent: "warning",
+        action: {
+          label: "Open workspace",
+          onClick: () => void activateWorkspace(repositoryId, taskId, false),
+        },
+      });
+
+      // OS notification ONLY when unfocused (do-not-disturb while focused),
+      // reusing the DDR-003 gate + activation seam.
+      if (!appFocused && osNotificationsGranted()) {
+        void tauri.registerNotificationRoute({ taskId, repositoryId });
+        sendNotification({
+          title: `${w} looks wedged`,
+          body: `No output for a while in ${r}. Click to check on it.`,
+          extra: { taskId, repositoryId, revealChanges: false },
+        });
+      }
     };
 
     // ── coalescing buffer (DDR-003 §2) ───────────────────────────────────
@@ -289,6 +351,15 @@ export function useCompletionNotifications() {
     // ── the decision function (DDR-003 §1) ───────────────────────────────
     const onTaskStatus = (payload: TaskStatusPayload) => {
       const { taskId, repositoryId, status, exitCode } = payload;
+
+      // Honest-status Wedged nudge (S0.2). A `wedged` derived transition rides
+      // a still-`running` row, so handle it here and return — it is never a
+      // terminal completion.
+      if (payload.derivedState === "wedged") {
+        handleWedged(taskId, repositoryId);
+        return;
+      }
+
       // Only real completed/failed PTY exits. `stopped` is user-initiated;
       // pending/running/archived carry no completion meaning.
       if (!isTerminal(status)) return;
