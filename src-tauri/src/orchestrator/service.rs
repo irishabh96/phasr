@@ -653,9 +653,13 @@ impl TaskOrchestrator {
         let mut still_running: HashSet<String> = HashSet::new();
 
         for workspace in running {
-            // Only agent tasks have a PTY-driven activity story; a `local`
-            // workspace has no liveness model.
-            if workspace.workspace_kind != WorkspaceKind::Agent {
+            // Only PTY-backed agent kinds have an activity story. A `subtask`
+            // is a real agent exactly like a standalone `Agent`, so it MUST be
+            // classified here (spec claim #3 / LANDMINE #1 — the old
+            // `!= Agent` filter silently skipped subtasks, so a wedged subtask
+            // card never showed honest status). A `local` workspace has no
+            // liveness model and a `parent` row has no PTY, so both are skipped.
+            if !workspace.workspace_kind.runs_agent() {
                 continue;
             }
             let task_id = workspace.id.clone();
@@ -1636,6 +1640,39 @@ mod tests {
             try_recv_derived(&mut rx).is_none(),
             "a local workspace must not get a derived liveness state"
         );
+    }
+
+    // LANDMINE #1 regression (spec claim #3): a `subtask` is a real PTY agent,
+    // so the liveness poller MUST classify it — the twin of the name-dedup
+    // landmine. Before the `runs_agent()` widening at the `:658` filter, a
+    // `subtask` row was silently skipped (`!= Agent`), so a wedged subtask card
+    // would never show honest status. A running subtask row with no live PTY
+    // (the orphan shape) must classify as Wedged, exactly like an agent —
+    // this test FAILS on the old `!= Agent` filter (no event) and passes now.
+    #[tokio::test]
+    async fn poller_includes_subtask_rows() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let mut subtask = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        subtask.workspace_kind = WorkspaceKind::Subtask;
+        subtask.parent_id = Some("parent-1".into());
+        subtask.role = Some("backend".into());
+        subtask.status = WorkspaceStatus::Running;
+        workspaces.insert(&subtask).await.unwrap();
+
+        let mut rx = orchestrator.subscribe_status();
+        let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &LivenessThresholds::default())
+            .await;
+
+        let ev = try_recv_derived(&mut rx)
+            .expect("a running subtask must get an honest derived liveness state");
+        assert_eq!(ev.task_id, subtask.id);
+        assert_eq!(ev.derived_state, Some(DerivedState::Wedged));
+        assert_eq!(ev.status, WorkspaceStatus::Running);
     }
 
     // E0-T4 + TOCTOU regression: a user stop must land `stopped`, keep

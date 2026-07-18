@@ -57,10 +57,10 @@ impl WorkspaceRepo {
         sqlx::query(
             "INSERT INTO workspaces (
                 id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                branch, worktree_path, exit_code,
+                branch, worktree_path, exit_code, parent_id, role,
                 created_at, started_at, finished_at, archived_at, interrupted_at, updated_at,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
         )
         .bind(&workspace.id)
         .bind(user_id)
@@ -74,6 +74,8 @@ impl WorkspaceRepo {
         .bind(&workspace.branch)
         .bind(&workspace.worktree_path)
         .bind(workspace.exit_code)
+        .bind(&workspace.parent_id)
+        .bind(&workspace.role)
         .bind(workspace.created_at.to_rfc3339())
         .bind(workspace.started_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
@@ -86,13 +88,66 @@ impl WorkspaceRepo {
         Ok(())
     }
 
+    /// The flat, top-level workspace list that backs the repository sidebar.
+    /// Excludes parented rows (`parent_id IS NULL`): a `subtask` belongs to its
+    /// parent's board, not the loose top-level list, so it must never leak in
+    /// as a stray card (spec B6). Existing standalone `agent`/`local` rows and
+    /// `parent` rows all have `parent_id = NULL`, so they are unaffected. For
+    /// an ALL-rows enumeration (e.g. repository teardown, which must reach every
+    /// subtask's PTY/worktree) use `list_all_by_repository`.
     pub async fn list_by_repository(
         &self,
         repository_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND parent_id IS NULL AND deleted_at IS NULL
+             ORDER BY created_at DESC",
+        )
+        .bind(repository_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
+    /// Owner-scoped variant so a different signed-in account never sees
+    /// another user's workspaces. Also excludes parented (`subtask`) rows —
+    /// same top-level-only semantics as `list_by_repository`.
+    pub async fn list_by_repository_for_user(
+        &self,
+        repository_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+             FROM workspaces
+             WHERE repository_id = ? AND user_id = ? AND parent_id IS NULL AND deleted_at IS NULL
+             ORDER BY created_at DESC",
+        )
+        .bind(repository_id)
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
+    /// EVERY non-deleted workspace in the repo, including parented `subtask`
+    /// rows. Unlike `list_by_repository` (top-level only, for the sidebar) this
+    /// is the internal enumeration used by repository teardown, which must reach
+    /// every subtask's live PTY + worktree to tear them down — silently
+    /// skipping subtasks here would orphan their worktrees on disk.
+    pub async fn list_all_by_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND deleted_at IS NULL
@@ -104,22 +159,38 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
-    /// Owner-scoped variant so a different signed-in account never sees
-    /// another user's workspaces.
-    pub async fn list_by_repository_for_user(
+    /// The subtasks of one `parent`, oldest first. Backs `BoardRepo::get_board`
+    /// and the scheduler's per-parent ready/blocked evaluation.
+    pub async fn list_by_parent(&self, parent_id: &str) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+             FROM workspaces
+             WHERE parent_id = ? AND deleted_at IS NULL
+             ORDER BY created_at ASC",
+        )
+        .bind(parent_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
+    /// Owner-scoped variant of `list_by_parent`.
+    pub async fn list_by_parent_for_user(
         &self,
-        repository_id: &str,
+        parent_id: &str,
         user_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
-             WHERE repository_id = ? AND user_id = ? AND deleted_at IS NULL
-             ORDER BY created_at DESC",
+             WHERE parent_id = ? AND user_id = ? AND deleted_at IS NULL
+             ORDER BY created_at ASC",
         )
-        .bind(repository_id)
+        .bind(parent_id)
         .bind(user_id)
         .fetch_all(&self.db)
         .await?;
@@ -132,7 +203,7 @@ impl WorkspaceRepo {
     ) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE status = ? AND deleted_at IS NULL
@@ -147,7 +218,7 @@ impl WorkspaceRepo {
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE id = ? AND deleted_at IS NULL",
@@ -167,7 +238,7 @@ impl WorkspaceRepo {
     pub async fn get_for_user(&self, id: &str, user_id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
@@ -189,7 +260,7 @@ impl WorkspaceRepo {
     ) -> Result<Option<Workspace>, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND workspace_kind = 'local' AND deleted_at IS NULL
@@ -218,7 +289,7 @@ impl WorkspaceRepo {
     ) -> Result<Option<Workspace>, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
@@ -244,7 +315,7 @@ impl WorkspaceRepo {
     ) -> Result<Option<Workspace>, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
+                    branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
@@ -254,6 +325,63 @@ impl WorkspaceRepo {
         )
         .bind(repository_id)
         .bind(name)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
+    /// Subtask idempotency guard — the sibling of `find_active_by_name` (spec
+    /// claim #2), keyed on `(parent_id, role)` and NEVER on `name`. Two
+    /// different parents can each own a `backend`-role subtask without one
+    /// deduping against the other. Only ACTIVE (`pending`/`running`, not
+    /// soft-deleted) `subtask`-kind rows count, so once a subtask
+    /// stops/completes a deliberate re-run mints fresh state — the exact same
+    /// active/deleted predicate `find_active_by_name` uses. Backs the
+    /// scheduler's "don't double-spawn on a duplicate tick" guard.
+    pub async fn find_active_subtask(
+        &self,
+        parent_id: &str,
+        role: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+             FROM workspaces
+             WHERE parent_id = ? AND role = ? AND workspace_kind = 'subtask'
+               AND status IN ('pending', 'running') AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(parent_id)
+        .bind(role)
+        .fetch_optional(&self.db)
+        .await?;
+
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
+    /// Owner-scoped variant of `find_active_subtask`.
+    pub async fn find_active_subtask_for_user(
+        &self,
+        parent_id: &str,
+        role: &str,
+        user_id: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+             FROM workspaces
+             WHERE parent_id = ? AND role = ? AND user_id = ? AND workspace_kind = 'subtask'
+               AND status IN ('pending', 'running') AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(parent_id)
+        .bind(role)
         .bind(user_id)
         .fetch_optional(&self.db)
         .await?;
@@ -439,6 +567,8 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         branch: row.try_get("branch")?,
         worktree_path: row.try_get("worktree_path")?,
         exit_code: row.try_get("exit_code")?,
+        parent_id: row.try_get("parent_id")?,
+        role: row.try_get("role")?,
         created_at: parse_timestamp(row.try_get::<String, _>("created_at")?, "created_at")?,
         started_at: parse_optional_timestamp(row.try_get("started_at")?, "started_at")?,
         finished_at: parse_optional_timestamp(row.try_get("finished_at")?, "finished_at")?,
@@ -837,5 +967,180 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(dirty, 0);
+    }
+
+    // E1-T1: the new `parent_id`/`role` columns round-trip through the
+    // insert/get SELECT lists, default NULL on a standalone agent, and persist
+    // on a subtask. Locks the column wiring, mirroring
+    // `interrupted_at_column_round_trips`.
+    #[tokio::test]
+    async fn parent_id_and_role_round_trip() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        // A standalone agent leaves both NULL.
+        let agent = Workspace::new(repo.id.clone(), "solo".into(), "cmd".into());
+        workspaces.insert(&agent).await.unwrap();
+        let got = workspaces.get(&agent.id).await.unwrap();
+        assert_eq!(got.parent_id, None);
+        assert_eq!(got.role, None);
+
+        // A subtask persists parent_id + role through the SELECT/INSERT lists.
+        let mut sub = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        sub.workspace_kind = WorkspaceKind::Subtask;
+        sub.parent_id = Some("parent-1".into());
+        sub.role = Some("backend".into());
+        workspaces.insert(&sub).await.unwrap();
+        let got = workspaces.get(&sub.id).await.unwrap();
+        assert_eq!(got.workspace_kind, WorkspaceKind::Subtask);
+        assert_eq!(got.parent_id.as_deref(), Some("parent-1"));
+        assert_eq!(got.role.as_deref(), Some("backend"));
+    }
+
+    // LANDMINE #2 regression (spec claim #2): the name-dedup guard hard-filters
+    // `workspace_kind='agent'`, so a `subtask` row auto-excludes exactly like a
+    // `local` row. Subtasks dedup on (parent_id, role) via `find_active_subtask`
+    // — NEVER by name — so an active subtask must never be returned by
+    // `find_active_by_name`, even sharing a repo + name with a real agent.
+    #[tokio::test]
+    async fn find_active_by_name_excludes_subtask_rows() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        let mut sub = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        sub.workspace_kind = WorkspaceKind::Subtask;
+        sub.parent_id = Some("parent-1".into());
+        sub.role = Some("backend".into());
+        sub.status = WorkspaceStatus::Running;
+        workspaces.insert(&sub).await.unwrap();
+
+        assert!(
+            workspaces
+                .find_active_by_name(&repo.id, "backend")
+                .await
+                .unwrap()
+                .is_none(),
+            "a subtask row must never be matched by the agent name-dedup guard"
+        );
+    }
+
+    // E1-T2: subtask idempotency keys on (parent_id, role), never name. Two
+    // parents each owning a `backend`-role subtask must not hijack each other
+    // (the parent-spec #3 landmine), a different role is a different key, and a
+    // stopped subtask is no longer active so a re-run mints fresh state.
+    #[tokio::test]
+    async fn find_active_subtask_keys_on_parent_and_role() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        // Two DIFFERENT parents, each with a `backend`-role subtask.
+        let mut a = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        a.workspace_kind = WorkspaceKind::Subtask;
+        a.parent_id = Some("parent-a".into());
+        a.role = Some("backend".into());
+        workspaces.insert(&a).await.unwrap();
+
+        let mut b = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        b.workspace_kind = WorkspaceKind::Subtask;
+        b.parent_id = Some("parent-b".into());
+        b.role = Some("backend".into());
+        workspaces.insert(&b).await.unwrap();
+
+        // Each parent finds only its own backend — neither hijacks the other.
+        assert_eq!(
+            workspaces
+                .find_active_subtask("parent-a", "backend")
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(a.id.clone()),
+        );
+        assert_eq!(
+            workspaces
+                .find_active_subtask("parent-b", "backend")
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(b.id.clone()),
+        );
+
+        // A different role under the same parent is a different key → no match.
+        assert!(workspaces
+            .find_active_subtask("parent-a", "frontend")
+            .await
+            .unwrap()
+            .is_none());
+
+        // A stopped subtask (inserted terminal) is not active → re-run allowed.
+        let mut done = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        done.workspace_kind = WorkspaceKind::Subtask;
+        done.parent_id = Some("parent-c".into());
+        done.role = Some("backend".into());
+        done.status = WorkspaceStatus::Stopped;
+        workspaces.insert(&done).await.unwrap();
+        assert!(
+            workspaces
+                .find_active_subtask("parent-c", "backend")
+                .await
+                .unwrap()
+                .is_none(),
+            "a stopped subtask must not be treated as active"
+        );
+
+        // An agent-kind row with a matching name is NOT a subtask → excluded by
+        // the kind filter, so it can't masquerade as a subtask dedup hit.
+        let agent = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        workspaces.insert(&agent).await.unwrap();
+        assert!(workspaces
+            .find_active_subtask("parent-a", "backend")
+            .await
+            .unwrap()
+            .map(|w| w.id)
+            .is_some_and(|id| id == a.id));
+    }
+
+    // E1-T2 leakage guard: the top-level sidebar list excludes parented rows so
+    // a `subtask` never shows up as a loose top-level card (spec B6). A
+    // standalone agent (parent_id NULL) still lists; a subtask (parent_id set)
+    // does not — but `list_all_by_repository` still returns it for teardown.
+    #[tokio::test]
+    async fn list_by_repository_excludes_parented_rows() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        let agent = Workspace::new(repo.id.clone(), "solo".into(), "cmd".into());
+        workspaces.insert(&agent).await.unwrap();
+
+        let mut sub = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        sub.workspace_kind = WorkspaceKind::Subtask;
+        sub.parent_id = Some("parent-1".into());
+        sub.role = Some("backend".into());
+        workspaces.insert(&sub).await.unwrap();
+
+        // Top-level list: agent yes, subtask no.
+        let top: Vec<_> = workspaces
+            .list_by_repository(&repo.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert!(top.contains(&agent.id), "a standalone agent still lists");
+        assert!(
+            !top.contains(&sub.id),
+            "a parented subtask must not leak into the flat top-level list"
+        );
+
+        // All-rows enumeration (teardown): both are present, so subtask
+        // worktrees/PTYs are reachable for cleanup.
+        let all: Vec<_> = workspaces
+            .list_all_by_repository(&repo.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert!(all.contains(&agent.id) && all.contains(&sub.id));
+
+        // list_by_parent returns only the given parent's subtasks.
+        let kids = workspaces.list_by_parent("parent-1").await.unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].id, sub.id);
     }
 }

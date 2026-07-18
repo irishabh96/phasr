@@ -9,6 +9,8 @@
 //!   - `UserSettings` — per-user app settings.
 
 pub mod agent;
+pub mod contract;
+pub mod dependency;
 pub mod repository;
 pub mod run_command;
 pub mod settings;
@@ -16,6 +18,8 @@ pub mod user;
 pub mod workspace;
 
 pub use agent::Agent;
+pub use contract::WorkspaceContract;
+pub use dependency::WorkspaceDependency;
 pub use repository::Repository;
 pub use run_command::RunCommand;
 pub use settings::UserSettings;

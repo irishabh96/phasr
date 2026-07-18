@@ -64,6 +64,13 @@ impl WorkspaceStatus {
 pub enum WorkspaceKind {
     Agent,
     Local,
+    /// A decomposition's integration container. Has no PTY of its own; until
+    /// integration it carries no branch/worktree (at integration it REUSES its
+    /// existing `branch`/`worktree_path`, spec B1). Board state, never synced.
+    Parent,
+    /// One agent run inside a decomposition. A real PTY agent exactly like
+    /// `Agent`, but tied to a `parent_id` + `role`. Board state, never synced.
+    Subtask,
 }
 
 impl WorkspaceKind {
@@ -71,6 +78,8 @@ impl WorkspaceKind {
         match self {
             Self::Agent => "agent",
             Self::Local => "local",
+            Self::Parent => "parent",
+            Self::Subtask => "subtask",
         }
     }
 
@@ -78,12 +87,25 @@ impl WorkspaceKind {
         Some(match s {
             "agent" => Self::Agent,
             "local" => Self::Local,
+            "parent" => Self::Parent,
+            "subtask" => Self::Subtask,
             _ => return None,
         })
     }
 
     pub fn is_local(self) -> bool {
         self == Self::Local
+    }
+
+    /// True for kinds that own a live PTY agent and therefore need honest
+    /// Working/Idle/Wedged liveness. A `Subtask` is a real agent just like a
+    /// standalone `Agent`, so it MUST be classified by the liveness poller —
+    /// this is spec claim #3 / LANDMINE #1: the poller's original `!= Agent`
+    /// filter silently skipped subtasks, so a wedged subtask card never showed
+    /// honest status. `Parent` (no PTY) and `Local` (no liveness model) are
+    /// excluded.
+    pub fn runs_agent(self) -> bool {
+        matches!(self, Self::Agent | Self::Subtask)
     }
 }
 
@@ -101,6 +123,12 @@ pub struct Workspace {
     pub branch: Option<String>,
     pub worktree_path: Option<String>,
     pub exit_code: Option<i64>,
+    /// Set only on a `subtask`: the `parent` workspace it decomposes from.
+    /// NULL for every standalone `agent`/`local` and for a `parent` row itself.
+    pub parent_id: Option<String>,
+    /// Set only on a `subtask`: its slot in the decomposition (e.g. `backend`,
+    /// `frontend`). The subtask dedup key is `(parent_id, role)`, never `name`.
+    pub role: Option<String>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -130,6 +158,8 @@ impl Workspace {
             branch: None,
             worktree_path: None,
             exit_code: None,
+            parent_id: None,
+            role: None,
             created_at: now,
             started_at: None,
             finished_at: None,
@@ -177,10 +207,36 @@ mod tests {
 
     #[test]
     fn workspace_kind_round_trip_str() {
+        for kind in [
+            WorkspaceKind::Agent,
+            WorkspaceKind::Local,
+            WorkspaceKind::Parent,
+            WorkspaceKind::Subtask,
+        ] {
+            assert_eq!(WorkspaceKind::from_str(kind.as_str()), Some(kind));
+        }
         assert_eq!(WorkspaceKind::from_str("agent"), Some(WorkspaceKind::Agent));
         assert_eq!(WorkspaceKind::from_str("local"), Some(WorkspaceKind::Local));
-        assert_eq!(WorkspaceKind::Agent.as_str(), "agent");
-        assert_eq!(WorkspaceKind::Local.as_str(), "local");
+        assert_eq!(WorkspaceKind::from_str("parent"), Some(WorkspaceKind::Parent));
+        assert_eq!(
+            WorkspaceKind::from_str("subtask"),
+            Some(WorkspaceKind::Subtask)
+        );
+        assert_eq!(WorkspaceKind::Parent.as_str(), "parent");
+        assert_eq!(WorkspaceKind::Subtask.as_str(), "subtask");
+        assert_eq!(WorkspaceKind::from_str("nonsense"), None);
         assert!(WorkspaceKind::Local.is_local());
+        assert!(!WorkspaceKind::Subtask.is_local());
+    }
+
+    // LANDMINE #1 (spec claim #3): only kinds that own a live PTY agent get
+    // classified by the liveness poller. A `Subtask` is a real agent, so it
+    // MUST count; `Parent` (no PTY) and `Local` (no liveness model) must not.
+    #[test]
+    fn runs_agent_truth_table() {
+        assert!(WorkspaceKind::Agent.runs_agent());
+        assert!(WorkspaceKind::Subtask.runs_agent());
+        assert!(!WorkspaceKind::Local.runs_agent());
+        assert!(!WorkspaceKind::Parent.runs_agent());
     }
 }

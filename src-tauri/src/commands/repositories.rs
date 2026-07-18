@@ -184,8 +184,11 @@ pub async fn delete_repository(
 
     // 1. Stop running tasks and force-kill any still-live PTYs.
     //    Workspaces are listed BEFORE the soft-delete + child wipe so
-    //    we still have their ids + worktree paths.
-    let owned_workspaces = workspaces.list_by_repository(&id).await?;
+    //    we still have their ids + worktree paths. Use the ALL-rows
+    //    enumeration (not the top-level `list_by_repository`, which now
+    //    hides parented `subtask` rows) so every subtask's PTY + worktree
+    //    is torn down too — otherwise subtask worktrees would be orphaned.
+    let owned_workspaces = workspaces.list_all_by_repository(&id).await?;
     for ws in &owned_workspaces {
         // Silently ignore NotRunning. The task may already have exited.
         let _ = orchestrator.stop_task(&ws.id).await;
