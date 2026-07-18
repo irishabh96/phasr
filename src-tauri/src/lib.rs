@@ -230,6 +230,10 @@ async fn initialize_database_state(
         repo_locks.clone(),
     );
     commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+    // Honest status (E0-T3): one background poller derives Working/Idle/Wedged
+    // from each running agent's in-memory activity stamp and pushes only
+    // transitions onto the same `phasr://task-status` bridge above.
+    orchestrator.spawn_liveness_poller();
 
     handle.manage(repository_repo);
     handle.manage(workspace_repo);
@@ -258,6 +262,12 @@ async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: 
                             status: Some(WorkspaceStatus::Stopped),
                             exit_code: Some(None),
                             finished_at: Some(Some(now)),
+                            // Honest status (E0-T4): mark the relaunch-orphan so
+                            // it reads Wedged/"was interrupted", not a silent
+                            // Stopped or a red Failed. A user `stop_task` leaves
+                            // this None (see orchestrator::stop_task), which is
+                            // what keeps a deliberate stop calm.
+                            interrupted_at: Some(Some(now)),
                             ..Default::default()
                         },
                     )
@@ -292,5 +302,61 @@ async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: 
             }
         }
         Err(err) => eprintln!("failed to list repositories during startup recovery: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Repository, Workspace};
+
+    async fn fresh() -> (WorkspaceRepo, RepositoryRepo, Repository, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = init_pool(&dir.path().join("test.sqlite")).await.unwrap();
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let repositories = RepositoryRepo::new(pool);
+        // No local_path → recovery's prune_worktrees pass skips it (no git needed).
+        let repo = Repository::new("repo".into(), None, None);
+        repositories.insert(&repo).await.unwrap();
+        (workspaces, repositories, repo, dir)
+    }
+
+    // E0-T4: on relaunch, an orphaned `running` row (its in-process child died
+    // with the old process) is swept to `stopped` AND stamped
+    // `interrupted_at`, so the frontend can render an honest "was interrupted"
+    // (Wedged) instead of a silent Stopped or a red Failed.
+    #[tokio::test]
+    async fn orphaned_running_becomes_stopped_with_interrupted() {
+        let (workspaces, repositories, repo, _dir) = fresh().await;
+        let mut ws = Workspace::new(repo.id.clone(), "running-at-boot".into(), "cmd".into());
+        ws.status = WorkspaceStatus::Running;
+        workspaces.insert(&ws).await.unwrap();
+
+        recover_startup_state(&workspaces, &repositories).await;
+
+        let recovered = workspaces.get(&ws.id).await.unwrap();
+        assert_eq!(recovered.status, WorkspaceStatus::Stopped);
+        assert!(
+            recovered.interrupted_at.is_some(),
+            "a relaunch-orphan must be marked interrupted, not silently stopped"
+        );
+        assert!(recovered.finished_at.is_some());
+        assert_eq!(recovered.exit_code, None);
+    }
+
+    // Recovery only touches `running` rows; a row already terminal at boot is
+    // left exactly as-is, so its `interrupted_at` stays NULL.
+    #[tokio::test]
+    async fn recovery_leaves_non_running_rows_untouched() {
+        let (workspaces, repositories, repo, _dir) = fresh().await;
+        let mut done = Workspace::new(repo.id.clone(), "already-done".into(), "cmd".into());
+        done.status = WorkspaceStatus::Completed;
+        workspaces.insert(&done).await.unwrap();
+
+        recover_startup_state(&workspaces, &repositories).await;
+
+        let after = workspaces.get(&done.id).await.unwrap();
+        assert_eq!(after.status, WorkspaceStatus::Completed);
+        assert_eq!(after.interrupted_at, None);
     }
 }

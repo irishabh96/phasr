@@ -193,6 +193,14 @@ struct TaskStatusPayload {
     repository_id: String,
     status: String,
     exit_code: Option<i64>,
+    /// Honest status (E0). Wire values: `"working" | "idle" | "wedged"`
+    /// (liveness poller) or `"done" | "failed"` (exit-watcher); `null` on
+    /// plain lifecycle transitions. Serialized as a plain string to match
+    /// `status` above and the frontend `DerivedAgentState` union.
+    derived_state: Option<String>,
+    /// ISO-8601 UTC timestamp of the agent's last output; the frontend
+    /// counts "Ns ago" upward from it locally between events.
+    last_activity_at: Option<String>,
 }
 
 fn event_payload(event: &TaskStatusEvent) -> TaskStatusPayload {
@@ -201,5 +209,7 @@ fn event_payload(event: &TaskStatusEvent) -> TaskStatusPayload {
         repository_id: event.repository_id.clone(),
         status: event.status.as_str().to_string(),
         exit_code: event.exit_code,
+        derived_state: event.derived_state.map(|d| d.as_str().to_string()),
+        last_activity_at: event.last_activity_at.map(|dt| dt.to_rfc3339()),
     }
 }

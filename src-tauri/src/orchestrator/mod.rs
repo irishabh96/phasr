@@ -7,6 +7,7 @@
 //! in `crate::commands::orchestrator` and forward straight through.
 
 mod error;
+mod liveness;
 mod repo_locks;
 mod service;
 mod templating;

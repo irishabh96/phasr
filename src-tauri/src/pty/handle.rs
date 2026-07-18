@@ -1,7 +1,9 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
+use chrono::Utc;
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -90,6 +92,15 @@ pub struct PtyHandle {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
+    /// Honest status (E0-T1): wall-clock ms of the most recent non-empty
+    /// output chunk. Stamped on the byte-pump's hot path with a single
+    /// relaxed atomic store — no lock, no DB — so the liveness poller can
+    /// read "how long has this agent been silent" without touching the pump.
+    /// Initialised to spawn time so a just-spawned agent reads as `Working`
+    /// even before its first byte. `AtomicI64` because `Utc::now()` can
+    /// legitimately drift; the poller only ever compares two wall-clock
+    /// samples, so a monotonic clock isn't required here.
+    last_activity: Arc<AtomicI64>,
 }
 
 impl PtyHandle {
@@ -187,6 +198,9 @@ impl PtyHandle {
             killer: Mutex::new(killer),
             tx: tx.clone(),
             replay: Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES))),
+            // Spawn time counts as the first "activity" so the agent reads
+            // Working during its startup before any prompt output arrives.
+            last_activity: Arc::new(AtomicI64::new(now_ms())),
         });
 
         // Schedule the agent command + optional prompt as keystrokes
@@ -234,6 +248,7 @@ impl PtyHandle {
         let task_id_for_thread = task_id.clone();
         let tx_for_thread = tx.clone();
         let replay_for_thread = handle.replay.clone();
+        let last_activity_for_thread = handle.last_activity.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-{task_id_for_thread}"))
             .spawn(move || {
@@ -243,6 +258,7 @@ impl PtyHandle {
                     log_file,
                     tx_for_thread,
                     replay_for_thread,
+                    last_activity_for_thread,
                 )
             })
             .map_err(PtyError::from)?;
@@ -311,6 +327,28 @@ impl PtyHandle {
         killer.kill().map_err(|e| PtyError::Pty(e.to_string()))?;
         Ok(())
     }
+
+    /// Wall-clock ms of the most recent output chunk (or spawn time if the
+    /// agent has been silent since launch). Read by the liveness poller to
+    /// derive Working/Idle/Wedged. A single relaxed load — never blocks the
+    /// pump.
+    pub fn last_activity_ms(&self) -> i64 {
+        self.last_activity.load(Ordering::Relaxed)
+    }
+
+    /// Backdate the activity stamp to simulate an agent that has been silent
+    /// for a while — lets the poller tests exercise the Idle→Wedged timer
+    /// transition deterministically without a real 3-minute sleep.
+    #[cfg(test)]
+    pub fn set_last_activity_ms(&self, ms: i64) {
+        self.last_activity.store(ms, Ordering::Relaxed);
+    }
+}
+
+/// Wall-clock milliseconds. Used for the activity stamp; must share the
+/// same clock the liveness poller diffs against (`chrono::Utc`).
+fn now_ms() -> i64 {
+    Utc::now().timestamp_millis()
 }
 
 fn pump_pty_output(
@@ -319,6 +357,7 @@ fn pump_pty_output(
     mut log_file: std::fs::File,
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
+    last_activity: Arc<AtomicI64>,
 ) {
     let mut buf = [0u8; 4096];
     // Holds the trailing bytes of an incomplete UTF-8 codepoint from the
@@ -330,6 +369,10 @@ fn pump_pty_output(
         match reader.read(&mut buf) {
             Ok(0) => {
                 if !pending.is_empty() {
+                    // Honest status (E0-T1): a single relaxed atomic store —
+                    // no lock, no DB — records that this agent just produced
+                    // output. The liveness poller reads it out-of-band.
+                    last_activity.store(now_ms(), Ordering::Relaxed);
                     let chunk = String::from_utf8_lossy(&pending).into_owned();
                     let event = PtyEvent::Output {
                         task_id: task_id.clone(),
@@ -357,6 +400,9 @@ fn pump_pty_output(
                 pending = tail;
 
                 if !chunk.is_empty() {
+                    // Honest status (E0-T1): stamp activity on the hot path
+                    // with one relaxed atomic — no lock, no DB touch.
+                    last_activity.store(now_ms(), Ordering::Relaxed);
                     // If no subscribers, the send fails — that's fine, we still
                     // wrote to the log.
                     let event = PtyEvent::Output {
@@ -441,5 +487,75 @@ fn exit_status_to_code(status: portable_pty::ExitStatus) -> Option<i64> {
             .last()
             .and_then(|tok| tok.parse::<i64>().ok())
             .or(Some(1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn spawn_shell(dir: &std::path::Path) -> Arc<PtyHandle> {
+        PtyHandle::spawn(PtySpawnOptions {
+            task_id: "activity-test".into(),
+            initial_command: None,
+            initial_prompt: None,
+            cwd: std::env::temp_dir(),
+            log_path: dir.join("activity-test.log"),
+            rows: 24,
+            cols: 80,
+        })
+        .expect("spawn a shell")
+    }
+
+    /// Drain output events until `needle` appears (or we time out).
+    fn wait_for_output(rx: &mut broadcast::Receiver<PtyEvent>, needle: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(PtyEvent::Output { chunk, .. }) if chunk.contains(needle) => return true,
+                Ok(_) => {}
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
+    // E0-T1: a byte of output advances `last_activity_ms`. We backdate the
+    // stamp to the epoch, force a fresh line of output via stdin, and assert
+    // the stamp jumped forward to ~now — proving the pump stamps on output
+    // (and only on output). Deterministic: after the backdate the ONLY thing
+    // that can move the stamp off 0 is a new chunk, which the write forces.
+    #[test]
+    fn last_activity_advances_on_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_shell(dir.path());
+        let mut rx = handle.subscribe();
+
+        // Spawn time seeded the stamp to ~now.
+        assert!(
+            handle.last_activity_ms() > 0,
+            "spawn should seed last_activity to a positive wall-clock ms"
+        );
+
+        // Backdate to the epoch, then force output the shell must echo/run.
+        handle.set_last_activity_ms(0);
+        handle.write(b"echo phasr-activity-marker\n").unwrap();
+
+        assert!(
+            wait_for_output(&mut rx, "phasr-activity-marker"),
+            "the forced echo should reach the output pump"
+        );
+
+        let after = handle.last_activity_ms();
+        assert!(
+            after > 1_600_000_000_000,
+            "output must re-stamp last_activity to a recent wall-clock ms, got {after}"
+        );
+
+        handle.kill().unwrap();
     }
 }

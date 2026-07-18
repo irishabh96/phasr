@@ -19,6 +19,7 @@ pub struct WorkspaceUpdate {
     pub started_at: Option<Option<DateTime<Utc>>>,
     pub finished_at: Option<Option<DateTime<Utc>>>,
     pub archived_at: Option<Option<DateTime<Utc>>>,
+    pub interrupted_at: Option<Option<DateTime<Utc>>>,
 }
 
 #[derive(Clone)]
@@ -57,9 +58,9 @@ impl WorkspaceRepo {
             "INSERT INTO workspaces (
                 id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
                 branch, worktree_path, exit_code,
-                created_at, started_at, finished_at, archived_at, updated_at,
+                created_at, started_at, finished_at, archived_at, interrupted_at, updated_at,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
         )
         .bind(&workspace.id)
         .bind(user_id)
@@ -77,6 +78,7 @@ impl WorkspaceRepo {
         .bind(workspace.started_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.archived_at.map(|dt| dt.to_rfc3339()))
+        .bind(workspace.interrupted_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.updated_at.to_rfc3339())
         .bind(dirty)
         .execute(&self.db)
@@ -91,7 +93,7 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -112,7 +114,7 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND user_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -131,7 +133,7 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE status = ? AND deleted_at IS NULL
              ORDER BY updated_at DESC",
@@ -146,7 +148,7 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -166,7 +168,7 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
         )
@@ -188,7 +190,7 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND workspace_kind = 'local' AND deleted_at IS NULL
              LIMIT 1",
@@ -217,7 +219,7 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -243,7 +245,7 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -305,13 +307,16 @@ impl WorkspaceRepo {
         if let Some(archived_at) = patch.archived_at {
             current.archived_at = archived_at;
         }
+        if let Some(interrupted_at) = patch.interrupted_at {
+            current.interrupted_at = interrupted_at;
+        }
         current.updated_at = Utc::now();
 
         sqlx::query(
             "UPDATE workspaces SET
                 name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
-                started_at = ?, finished_at = ?, archived_at = ?, updated_at = ?,
+                started_at = ?, finished_at = ?, archived_at = ?, interrupted_at = ?, updated_at = ?,
                 dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
              WHERE id = ?",
         )
@@ -326,12 +331,51 @@ impl WorkspaceRepo {
         .bind(current.started_at.map(|dt| dt.to_rfc3339()))
         .bind(current.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(current.archived_at.map(|dt| dt.to_rfc3339()))
+        .bind(current.interrupted_at.map(|dt| dt.to_rfc3339()))
         .bind(current.updated_at.to_rfc3339())
         .bind(id)
         .execute(&self.db)
         .await?;
 
         Ok(current)
+    }
+
+    /// Atomically flip a `running` row to a terminal status in a single
+    /// conditional statement (`UPDATE … WHERE status = 'running'`). Returns
+    /// the updated row, or `None` when the row was no longer `running` — e.g.
+    /// a concurrent `stop_task` already moved it to `stopped`. The caller
+    /// (the exit-watcher) then emits nothing, leaving the user-visible status
+    /// exactly as it was set.
+    ///
+    /// This closes the read-then-write TOCTOU the exit-watcher would have if
+    /// it did `get()` + transition-checked `update()`: between the read and
+    /// the write a `stop_task` could commit `stopped`, and the watcher would
+    /// clobber it with `failed` (the SIGINT'd child exits nonzero). The
+    /// single conditional statement makes that impossible.
+    pub async fn finish_if_running(
+        &self,
+        id: &str,
+        status: WorkspaceStatus,
+        exit_code: Option<i64>,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let now = Utc::now().to_rfc3339();
+        let res = sqlx::query(
+            "UPDATE workspaces
+                SET status = ?, exit_code = ?, finished_at = ?, updated_at = ?,
+                    dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
+              WHERE id = ? AND status = 'running' AND deleted_at IS NULL",
+        )
+        .bind(status.as_str())
+        .bind(exit_code)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.get(id).await?))
     }
 
     /// Soft-delete: tombstone the row (mirrors `RepositoryRepo::delete`)
@@ -399,6 +443,7 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         started_at: parse_optional_timestamp(row.try_get("started_at")?, "started_at")?,
         finished_at: parse_optional_timestamp(row.try_get("finished_at")?, "finished_at")?,
         archived_at: parse_optional_timestamp(row.try_get("archived_at")?, "archived_at")?,
+        interrupted_at: parse_optional_timestamp(row.try_get("interrupted_at")?, "interrupted_at")?,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,
     })
 }
@@ -660,6 +705,102 @@ mod tests {
             "owner B must see only B's task"
         );
         assert_ne!(a.id, b.id);
+    }
+
+    // TOCTOU fix: `finish_if_running` is an atomic conditional — it flips a
+    // `running` row to a terminal status and returns it, but is a strict
+    // no-op (returns None, changes nothing) once the row has left `running`.
+    // This is what stops a late exit-watcher from clobbering a user `stop`.
+    #[tokio::test]
+    async fn finish_if_running_only_flips_a_running_row() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        // A genuinely running row flips and comes back with the terminal state.
+        let mut alive = Workspace::new(repo.id.clone(), "alive".into(), "cmd".into());
+        alive.status = WorkspaceStatus::Running;
+        workspaces.insert(&alive).await.unwrap();
+        let flipped = workspaces
+            .finish_if_running(&alive.id, WorkspaceStatus::Completed, Some(0))
+            .await
+            .unwrap()
+            .expect("a running row must flip");
+        assert_eq!(flipped.status, WorkspaceStatus::Completed);
+        assert_eq!(flipped.exit_code, Some(0));
+        assert!(flipped.finished_at.is_some());
+
+        // A row already moved off `running` (as a concurrent stop would leave
+        // it) is untouched — the flip is a no-op.
+        let mut stopped = Workspace::new(repo.id.clone(), "stopped".into(), "cmd".into());
+        stopped.status = WorkspaceStatus::Running;
+        workspaces.insert(&stopped).await.unwrap();
+        workspaces
+            .update(
+                &stopped.id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Stopped),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let noop = workspaces
+            .finish_if_running(&stopped.id, WorkspaceStatus::Failed, Some(130))
+            .await
+            .unwrap();
+        assert!(noop.is_none(), "a non-running row must not be flipped");
+        assert_eq!(
+            workspaces.get(&stopped.id).await.unwrap().status,
+            WorkspaceStatus::Stopped
+        );
+    }
+
+    // E0-T4: the new `interrupted_at` column round-trips through
+    // insert/get, defaults NULL on a fresh row, and is settable via
+    // `WorkspaceUpdate` (the path recovery uses). This locks the column
+    // wiring across every SELECT/INSERT/UPDATE list.
+    #[tokio::test]
+    async fn interrupted_at_column_round_trips() {
+        let (_repos, workspaces, repo) = fresh().await;
+        let ws = Workspace::new(repo.id.clone(), "orphan".into(), "claude".into());
+        workspaces.insert(&ws).await.unwrap();
+
+        // Fresh rows have no interrupted marker.
+        let fetched = workspaces.get(&ws.id).await.unwrap();
+        assert_eq!(fetched.interrupted_at, None);
+
+        // Setting it via update persists and reads back to ~the same ms.
+        let stamp = Utc::now();
+        let updated = workspaces
+            .update(
+                &ws.id,
+                WorkspaceUpdate {
+                    interrupted_at: Some(Some(stamp)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(updated.interrupted_at.is_some());
+
+        let reloaded = workspaces.get(&ws.id).await.unwrap();
+        assert_eq!(
+            reloaded.interrupted_at.map(|dt| dt.timestamp_millis()),
+            Some(stamp.timestamp_millis()),
+            "interrupted_at must survive the SELECT/INSERT/UPDATE column lists"
+        );
+
+        // Clearing it back to NULL also round-trips (a resumed row is calm again).
+        let cleared = workspaces
+            .update(
+                &ws.id,
+                WorkspaceUpdate {
+                    interrupted_at: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.interrupted_at, None);
     }
 
     #[tokio::test]

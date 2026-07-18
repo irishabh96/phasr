@@ -105,6 +105,13 @@ pub struct Workspace {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// Set only when this `running` row was orphaned by an app relaunch
+    /// (recovery sweep in `lib.rs::recover_startup_state`). Distinguishes a
+    /// relaunch-orphan from a calm user `stop_task` — both otherwise land
+    /// `stopped` + `finished_at` with `exit_code = None`. Machine-local:
+    /// never synced (see migration 0012). The frontend derives the honest
+    /// "was interrupted" (Wedged) state from `status = stopped && this`.
+    pub interrupted_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -127,6 +134,7 @@ impl Workspace {
             started_at: None,
             finished_at: None,
             archived_at: None,
+            interrupted_at: None,
             updated_at: now,
         }
     }

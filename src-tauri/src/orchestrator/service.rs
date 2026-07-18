@@ -18,7 +18,7 @@
 //! talking to `WorkspaceRepo` under the hood but expose `task_id` in
 //! the API so the React side can use the same noun everywhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,13 +27,14 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::domain::{Agent, Workspace, WorkspaceStatus};
+use crate::domain::{Agent, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::git;
 use crate::pty::handle::PtyHandle;
 use crate::pty::{PtyEvent, TaskRuntime};
 use crate::store::{RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
 use super::error::OrchestratorError;
+use super::liveness::{classify, DerivedState, LivenessThresholds, LIVENESS_POLL_INTERVAL};
 use super::repo_locks::RepoLockRegistry;
 use super::templating::interpolate_command;
 
@@ -54,8 +55,21 @@ const STATUS_BROADCAST_CAPACITY: usize = 256;
 pub struct TaskStatusEvent {
     pub task_id: String,
     pub repository_id: String,
+    /// The stored lifecycle status — UNCHANGED. There is deliberately no
+    /// `Wedged`/`Idle` stored variant (spec validation #1); those live only
+    /// on `derived_state`.
     pub status: WorkspaceStatus,
     pub exit_code: Option<i64>,
+    /// Honest status (E0). `Some` on liveness-poller transitions
+    /// (`Working`/`Idle`/`Wedged`) and on exit-watcher terminal events
+    /// (`Done`/`Failed`); `None` on the plain lifecycle transitions
+    /// (pending→running, →stopped) so those stay additive and the existing
+    /// frontend keeps working untouched.
+    pub derived_state: Option<DerivedState>,
+    /// Raw wall-clock timestamp of the agent's last output, carried on
+    /// poller transitions so the frontend can count "Ns ago" upward locally
+    /// between events (no per-second bus traffic).
+    pub last_activity_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +272,10 @@ impl TaskOrchestrator {
             repository_id: updated.repository_id.clone(),
             status: WorkspaceStatus::Running,
             exit_code: None,
+            // Lifecycle transition only — the liveness poller emits the first
+            // `Working` derived state on its next tick.
+            derived_state: None,
+            last_activity_at: None,
         });
 
         self.spawn_exit_watcher(task_id.clone(), updated.repository_id.clone(), pty_handle);
@@ -268,16 +286,40 @@ impl TaskOrchestrator {
         })
     }
 
-    /// Stop a running task. Sends SIGINT first (gives the agent a
-    /// chance to exit cleanly — Claude/Codex/Cursor all clean up
-    /// state on SIGINT) and escalates to SIGKILL after `SIGINT_GRACE`
-    /// if the child is still alive. Status flips to `stopped`. The
-    /// worktree is preserved — only `delete_task` removes it.
+    /// Stop a running task. Commits `stopped` **before** signalling the
+    /// child, then sends SIGINT (gives the agent a chance to exit cleanly —
+    /// Claude/Codex/Cursor all clean up state on SIGINT) and escalates to
+    /// SIGKILL after `SIGINT_GRACE` if the child is still alive. The worktree
+    /// is preserved — only `delete_task` removes it.
+    ///
+    /// Ordering matters (a fixed TOCTOU): SIGINT wakes the exit-watcher,
+    /// whose flip is guarded on `status = running`. By committing `stopped`
+    /// first we guarantee the watcher reads a non-running row and leaves the
+    /// user's stop intact — a user-stopped task must **never** flash `failed`
+    /// (the child dies on our SIGINT with a nonzero code), which is exactly
+    /// the dishonest state Step 0 exists to prevent. `spawn_exit_watcher`'s
+    /// atomic conditional flip is the belt to this suspenders.
     pub async fn stop_task(&self, task_id: &str) -> Result<(), OrchestratorError> {
         let handle = self
             .runtime
             .get(task_id)
             .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+
+        // Commit `stopped` FIRST, before any signal that could wake the
+        // exit-watcher. A live handle implies a `running` row (both
+        // `start_task` and `open_terminal` set `running` before the spawn),
+        // so this transition is always valid here.
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Stopped),
+                    finished_at: Some(Some(Utc::now())),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
         // Best-effort SIGINT. Errors are non-fatal — we'll escalate.
         let _ = handle.interrupt();
@@ -297,22 +339,13 @@ impl TaskOrchestrator {
             }
         });
 
-        let updated = self
-            .workspaces
-            .update(
-                task_id,
-                WorkspaceUpdate {
-                    status: Some(WorkspaceStatus::Stopped),
-                    finished_at: Some(Some(Utc::now())),
-                    ..Default::default()
-                },
-            )
-            .await?;
         self.broadcast_status(TaskStatusEvent {
             task_id: task_id.to_string(),
             repository_id: updated.repository_id,
             status: WorkspaceStatus::Stopped,
             exit_code: None,
+            derived_state: None,
+            last_activity_at: None,
         });
         Ok(())
     }
@@ -392,6 +425,8 @@ impl TaskOrchestrator {
             repository_id: updated.repository_id.clone(),
             status: WorkspaceStatus::Running,
             exit_code: None,
+            derived_state: None,
+            last_activity_at: None,
         });
 
         self.spawn_exit_watcher(task_id.to_string(), updated.repository_id, handle.clone());
@@ -535,29 +570,22 @@ impl TaskOrchestrator {
                 match rx.recv().await {
                     Ok(PtyEvent::Output { .. }) => continue,
                     Ok(PtyEvent::Exit { exit_code, .. }) => {
-                        let current = workspaces.get(&task_id).await.ok();
-                        if !current
-                            .as_ref()
-                            .is_some_and(|w| w.status == WorkspaceStatus::Running)
-                        {
-                            runtime.drop_task(&task_id);
-                            break;
-                        }
                         let next = if exit_code == Some(0) {
                             WorkspaceStatus::Completed
                         } else {
                             WorkspaceStatus::Failed
                         };
-                        let update = WorkspaceUpdate {
-                            // Only flip if we're still in `running` —
-                            // if `stop_task` already moved us to
-                            // `stopped`, leave it alone.
-                            status: Some(next),
-                            exit_code: Some(exit_code),
-                            finished_at: Some(Some(Utc::now())),
-                            ..Default::default()
-                        };
-                        let flipped = workspaces.update(&task_id, update).await.ok();
+                        // Atomic conditional flip: only `running` → terminal,
+                        // in one statement. `None` means the row already left
+                        // `running` — a concurrent `stop_task` won the race, so
+                        // leave the user's `stopped` intact and emit nothing.
+                        // This can't clobber a stop the way a read-then-write
+                        // `get()` + `update()` could.
+                        let flipped = workspaces
+                            .finish_if_running(&task_id, next, exit_code)
+                            .await
+                            .ok()
+                            .flatten();
                         runtime.drop_task(&task_id);
                         if flipped.is_some() {
                             let _ = status_tx.send(TaskStatusEvent {
@@ -565,6 +593,11 @@ impl TaskOrchestrator {
                                 repository_id: repository_id.clone(),
                                 status: next,
                                 exit_code,
+                                // Honest status (E0): the terminal derived state
+                                // (Done/Failed) rides the same event. Additive —
+                                // consumers keying off `status` are unaffected.
+                                derived_state: Some(DerivedState::for_exit(exit_code)),
+                                last_activity_at: None,
                             });
                         }
                         break;
@@ -574,6 +607,85 @@ impl TaskOrchestrator {
                 }
             }
         });
+    }
+
+    /// Start the single liveness poller (E0-T3). Mirrors the
+    /// subscribe-never-block shape of `spawn_exit_watcher`: a background
+    /// `tokio::interval` that samples every running agent's in-memory
+    /// `last_activity` stamp and broadcasts derived-state *transitions* over
+    /// the same status channel. One poller per orchestrator; started once at
+    /// app boot from `lib.rs::initialize_database_state`.
+    pub fn spawn_liveness_poller(&self) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let thresholds = LivenessThresholds::default();
+            // Per-task memory of the last derived state so we only emit on a
+            // change — the bus carries transitions, never one event per tick.
+            let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+            let mut interval = tokio::time::interval(LIVENESS_POLL_INTERVAL);
+            loop {
+                interval.tick().await;
+                this.run_liveness_tick(&mut last_derived, &thresholds).await;
+            }
+        });
+    }
+
+    /// One poll pass: classify every running *agent* row and broadcast the
+    /// ones whose derived state changed since last tick. Reads only the
+    /// in-memory activity stamp — **zero writes to the DB from this path**.
+    /// Factored out of the loop so tests can drive it deterministically with
+    /// injected thresholds instead of waiting on the real 5 s / 60 s / 180 s
+    /// clock.
+    async fn run_liveness_tick(
+        &self,
+        last_derived: &mut HashMap<String, DerivedState>,
+        thresholds: &LivenessThresholds,
+    ) {
+        let running = match self.workspaces.list_by_status(WorkspaceStatus::Running).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                eprintln!("liveness poll: failed to list running workspaces: {err}");
+                return;
+            }
+        };
+
+        let now_ms = Utc::now().timestamp_millis();
+        let mut still_running: HashSet<String> = HashSet::new();
+
+        for workspace in running {
+            // Only agent tasks have a PTY-driven activity story; a `local`
+            // workspace has no liveness model.
+            if workspace.workspace_kind != WorkspaceKind::Agent {
+                continue;
+            }
+            let task_id = workspace.id.clone();
+            still_running.insert(task_id.clone());
+
+            // A running row with no live PTY = an orphan → classify() reads it
+            // as Wedged, never a confident Working.
+            let (has_handle, last_activity_ms) = match self.runtime.get(&task_id) {
+                Some(handle) => (true, handle.last_activity_ms()),
+                None => (false, now_ms),
+            };
+            let elapsed = Duration::from_millis((now_ms - last_activity_ms).max(0) as u64);
+            let derived = classify(elapsed, has_handle, thresholds);
+
+            if last_derived.get(&task_id) != Some(&derived) {
+                last_derived.insert(task_id.clone(), derived);
+                self.broadcast_status(TaskStatusEvent {
+                    task_id,
+                    repository_id: workspace.repository_id,
+                    status: WorkspaceStatus::Running, // stored status unchanged
+                    exit_code: None,
+                    derived_state: Some(derived),
+                    last_activity_at: DateTime::<Utc>::from_timestamp_millis(last_activity_ms),
+                });
+            }
+        }
+
+        // Forget tasks that have left `running` (exit/stop) so the map can't
+        // grow without bound and a later re-run of the same id starts fresh.
+        last_derived.retain(|task_id, _| still_running.contains(task_id));
     }
 }
 
@@ -1347,6 +1459,236 @@ mod tests {
         let (orchestrator, _r, _pool, _t) = fresh_orchestrator().await;
         let err = orchestrator.stop_task("missing").await.unwrap_err();
         assert!(matches!(err, OrchestratorError::TaskNotRunning(_)));
+    }
+
+    // --- Honest status (E0-T3 / E0-T4) ---
+
+    /// Return the next status event carrying a derived state, skipping the
+    /// plain lifecycle events (which have `derived_state: None`). `None` when
+    /// the channel is drained.
+    fn try_recv_derived(
+        rx: &mut broadcast::Receiver<TaskStatusEvent>,
+    ) -> Option<TaskStatusEvent> {
+        loop {
+            match rx.try_recv() {
+                Ok(ev) if ev.derived_state.is_some() => return Some(ev),
+                Ok(_) => continue,
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => return None,
+            }
+        }
+    }
+
+    fn drain_pending(rx: &mut broadcast::Receiver<TaskStatusEvent>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    /// Wait for the shell's startup output (prompt + the typed initial
+    /// command) to flush and go quiet, so a backdated activity stamp can't be
+    /// clobbered by a late chunk. Requires stability AND that we're past the
+    /// +300ms initial-command typing window `PtyHandle::spawn` schedules.
+    async fn settle(handle: &Arc<PtyHandle>) {
+        let start = std::time::Instant::now();
+        let mut prev = handle.last_activity_ms();
+        loop {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let cur = handle.last_activity_ms();
+            let stable = cur == prev;
+            prev = cur;
+            if stable && start.elapsed() >= Duration::from_millis(750) {
+                break;
+            }
+            if start.elapsed() >= Duration::from_secs(6) {
+                break; // safety valve — never hang the suite
+            }
+        }
+    }
+
+    // E0-T3: a genuinely silent agent crosses Working→Idle→Wedged purely on
+    // the timer (NO output event drives it), and each transition is emitted
+    // EXACTLY once, not once per tick. Deterministic: we backdate the handle's
+    // in-memory activity stamp and drive `run_liveness_tick` directly with 1s
+    // /2s test thresholds instead of sleeping 60s/180s.
+    #[tokio::test]
+    async fn poller_emits_idle_then_wedged_transition_once() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "quiet"))
+            .await
+            .unwrap();
+        let task_id = started.task_id.clone();
+        let handle = orchestrator
+            .runtime
+            .get(&task_id)
+            .expect("a freshly-started task has a live handle");
+        settle(&handle).await;
+
+        let thresholds = LivenessThresholds {
+            idle: Duration::from_secs(1),
+            wedged: Duration::from_secs(2),
+        };
+        let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        let mut rx = orchestrator.subscribe_status();
+        drain_pending(&mut rx); // the `running` lifecycle event from start_task
+
+        let now = Utc::now().timestamp_millis();
+
+        // Silent ~1.5s → Idle. Two ticks; only the first is a transition.
+        handle.set_last_activity_ms(now - 1_500);
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &thresholds)
+            .await;
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &thresholds)
+            .await;
+        let idle = try_recv_derived(&mut rx).expect("an idle transition");
+        assert_eq!(idle.derived_state, Some(DerivedState::Idle));
+        assert_eq!(idle.status, WorkspaceStatus::Running, "stored status unchanged");
+        assert_eq!(idle.task_id, task_id);
+        assert!(
+            idle.last_activity_at.is_some(),
+            "a derived transition carries the raw last-activity ts"
+        );
+        assert!(
+            try_recv_derived(&mut rx).is_none(),
+            "idle must emit once, not per tick"
+        );
+
+        // Silent ~2.5s → Wedged. Again exactly one transition.
+        handle.set_last_activity_ms(now - 2_500);
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &thresholds)
+            .await;
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &thresholds)
+            .await;
+        let wedged = try_recv_derived(&mut rx).expect("a wedged transition");
+        assert_eq!(wedged.derived_state, Some(DerivedState::Wedged));
+        assert!(
+            try_recv_derived(&mut rx).is_none(),
+            "wedged must emit once, not per tick"
+        );
+
+        // Once the row leaves `running`, the poller drops it and emits nothing.
+        orchestrator.stop_task(&task_id).await.unwrap();
+        drain_pending(&mut rx); // the `stopped` lifecycle event (derived None)
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &thresholds)
+            .await;
+        assert!(
+            try_recv_derived(&mut rx).is_none(),
+            "a stopped task must not emit further derived events"
+        );
+
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    // E0-T3 (the no-handle branch): a row that is `running` in the DB but has
+    // no live PTY in the runtime — the exact shape of a stale/orphaned row —
+    // classifies as Wedged, never a confident Working. Fully deterministic:
+    // no spawn, no sleep.
+    #[tokio::test]
+    async fn poller_marks_running_row_without_handle_as_wedged() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let mut orphan = Workspace::new(repo.id.clone(), "orphan".into(), "cmd".into());
+        orphan.status = WorkspaceStatus::Running;
+        workspaces.insert(&orphan).await.unwrap();
+
+        let mut rx = orchestrator.subscribe_status();
+        let thresholds = LivenessThresholds::default();
+        let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &thresholds)
+            .await;
+
+        let ev = try_recv_derived(&mut rx).expect("a wedged transition for the orphan row");
+        assert_eq!(ev.task_id, orphan.id);
+        assert_eq!(ev.derived_state, Some(DerivedState::Wedged));
+        assert_eq!(ev.status, WorkspaceStatus::Running);
+    }
+
+    // A `local` workspace, even a running one, has no PTY-driven liveness
+    // model and must be ignored by the poller (never emits a derived state).
+    #[tokio::test]
+    async fn poller_ignores_local_workspaces() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let mut local = Workspace::new(repo.id.clone(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        local.status = WorkspaceStatus::Running;
+        workspaces.insert(&local).await.unwrap();
+
+        let mut rx = orchestrator.subscribe_status();
+        let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        orchestrator
+            .run_liveness_tick(&mut last_derived, &LivenessThresholds::default())
+            .await;
+
+        assert!(
+            try_recv_derived(&mut rx).is_none(),
+            "a local workspace must not get a derived liveness state"
+        );
+    }
+
+    // E0-T4 + TOCTOU regression: a user stop must land `stopped`, keep
+    // `interrupted_at` NULL (only relaunch recovery sets that), AND stay
+    // stopped even when the child dies mid-stop and the exit-watcher fires.
+    // Deterministic — no reliance on real SIGINT/exit timing:
+    //  1. `stop_task` commits `stopped` before it signals the child, so we
+    //     assert it the instant the call returns.
+    //  2. We then drive the EXACT write the exit-watcher performs when the
+    //     SIGINT'd child exits nonzero (`finish_if_running(.., Failed, ..)`)
+    //     and prove it is a no-op against the stopped row — so a user stop can
+    //     never flash `failed`.
+    #[tokio::test]
+    async fn user_stop_stays_stopped_even_when_the_child_dies_mid_stop() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "stop-me"))
+            .await
+            .unwrap();
+        let task_id = started.task_id.clone();
+
+        orchestrator.stop_task(&task_id).await.unwrap();
+
+        // (1) stop_task commits `stopped` before returning — and calm.
+        let stopped = workspaces.get(&task_id).await.unwrap();
+        assert_eq!(stopped.status, WorkspaceStatus::Stopped);
+        assert_eq!(
+            stopped.interrupted_at, None,
+            "a user stop must stay calm — never marked interrupted"
+        );
+
+        // (2) Simulate the racing exit-watcher: the SIGINT'd child exits
+        // nonzero and the watcher tries `running → failed`. Against an
+        // already-`stopped` row this MUST be a no-op — the honest `stopped`
+        // stands, never a spurious `failed`.
+        let clobber = workspaces
+            .finish_if_running(&task_id, WorkspaceStatus::Failed, Some(130))
+            .await
+            .unwrap();
+        assert!(
+            clobber.is_none(),
+            "the exit-watcher must not flip a user-stopped task"
+        );
+        assert_eq!(
+            workspaces.get(&task_id).await.unwrap().status,
+            WorkspaceStatus::Stopped,
+            "a user-stopped task must never flash Failed"
+        );
+
+        cleanup(&orchestrator, &[&started]).await;
     }
 
     // F1: opening a workspace whose worktree dir is gone (moved repo,
