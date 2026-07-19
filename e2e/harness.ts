@@ -382,6 +382,41 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { ...f.workspaces[0], id: "ws-created", name: a?.name ?? "new-ws", status: "stopped" };
       case "start_task":
         return { taskId: "task-new", workspace: { ...f.workspaces[0], id: "ws-created", status: "running" } };
+      case "plan_decomposition":
+        // The Planner drafting step (§C): return a canned ProposedPlan the
+        // review surface hydrates into editable tickets + a DAG. Persists
+        // nothing — the single write is still start_decomposition below.
+        return {
+          subtasks: [
+            {
+              role: "backend",
+              agent: "claude",
+              prompt:
+                "Build the task-comments REST endpoints (list, create, delete) with tests. Publish the response schema as the handoff contract.",
+            },
+            {
+              role: "frontend",
+              agent: "claude",
+              prompt:
+                "Wire the comments panel to the API using the published contract. Optimistic add, empty + error states.",
+            },
+            {
+              role: "docs",
+              agent: "gemini",
+              prompt: "Document the comments API in the reference + a short how-to.",
+            },
+            {
+              role: "qa",
+              agent: "codex",
+              prompt: "Write e2e coverage for the comments flow.",
+            },
+          ],
+          edges: [
+            { fromRole: "backend", toRole: "frontend" },
+            { fromRole: "backend", toRole: "docs" },
+            { fromRole: "frontend", toRole: "qa" },
+          ],
+        };
       case "start_decomposition":
         return makeBoard("parent-new");
       case "get_board":

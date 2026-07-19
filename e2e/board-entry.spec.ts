@@ -1,5 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootApp, callNames, clearCalls, makeFixtures } from "./harness";
+import {
+  bootApp,
+  callNames,
+  clearCalls,
+  makeFixtures,
+  waitForCall,
+} from "./harness";
 
 /**
  * The REAL "New epic" entry point (S1 enablement). Unlike board.spec.ts (which
@@ -34,11 +40,19 @@ async function callCount(page: Page, cmd: string) {
   return (await callNames(page)).filter((c) => c === cmd).length;
 }
 
-/** Fill the decompose gate's three required fields inside the given dialog. */
-async function fillGate(dialog: ReturnType<Page["getByRole"]>) {
-  await dialog.getByTestId("decompose-goal").fill("Add task comments");
-  await dialog.getByTestId("decompose-backend").fill("Build the comments API");
-  await dialog.getByTestId("decompose-frontend").fill("Wire the comments UI");
+/**
+ * Drive the Planner review surface to a startable draft: type a goal, run the
+ * planner (mocked `plan_decomposition` → a canned ProposedPlan), and wait for
+ * the editable tickets to render so "Start N agents" un-gates.
+ */
+async function planAndReview(
+  page: Page,
+  dialog: ReturnType<Page["getByRole"]>,
+) {
+  await dialog.getByTestId("decompose-goal").fill("Add task comments to checkout");
+  await dialog.getByTestId("decompose-plan").click();
+  await waitForCall(page, "plan_decomposition");
+  await expect(dialog.getByTestId("decompose-ticket").first()).toBeVisible();
 }
 
 test.describe("New epic entry point (real app)", () => {
@@ -67,10 +81,10 @@ test.describe("New epic entry point (real app)", () => {
     const form = dialog.getByTestId("decompose-form");
     await expect(form).toBeVisible();
 
-    // The gate holds until all three fields are set.
+    // The gate holds until the user has reviewed a plan (nothing to start yet).
     const submit = dialog.getByTestId("decompose-submit");
     await expect(submit).toBeDisabled();
-    await fillGate(dialog);
+    await planAndReview(page, dialog);
     await expect(submit).toBeEnabled();
 
     await clearCalls(page);

@@ -72,6 +72,28 @@ test.describe("task board (/design-test)", () => {
           calls.push({ cmd, args });
           const a = (args ?? {}) as { parentId?: string };
           switch (cmd) {
+            case "list_agents":
+              return Promise.resolve([
+                { agent: "claude", label: "Claude", command: "claude", isDefault: true },
+                { agent: "codex", label: "Codex", command: "codex", isDefault: false },
+                { agent: "gemini", label: "Gemini", command: "gemini", isDefault: false },
+              ]);
+            case "plan_decomposition":
+              // The Planner draft (§C) — a 4-ticket / 3-edge ProposedPlan the
+              // review surface hydrates into editable rows. Persists nothing.
+              return Promise.resolve({
+                subtasks: [
+                  { role: "backend", agent: "claude", prompt: "Build the comments API" },
+                  { role: "frontend", agent: "claude", prompt: "Wire the comments UI" },
+                  { role: "docs", agent: "gemini", prompt: "Document the API" },
+                  { role: "qa", agent: "codex", prompt: "e2e coverage" },
+                ],
+                edges: [
+                  { fromRole: "backend", toRole: "frontend" },
+                  { fromRole: "backend", toRole: "docs" },
+                  { fromRole: "frontend", toRole: "qa" },
+                ],
+              });
             case "start_decomposition":
               return Promise.resolve({
                 parent: { id: "parent-new" },
@@ -154,39 +176,39 @@ test.describe("task board (/design-test)", () => {
     await expect(page.getByTestId("board-fresh")).toBeVisible();
   });
 
-  test("the decompose form gates on both role prompts, then fires the gate once", async ({
+  test("the planner drafts an editable plan, then the gate fires once", async ({
     page,
   }) => {
     const form = page.getByTestId("decompose");
     const submit = form.getByTestId("decompose-submit");
+    const plan = form.getByTestId("decompose-plan");
 
-    // Empty → gated.
+    const count = (cmd: string) =>
+      page.evaluate(
+        (c) =>
+          (
+            window as unknown as { __BOARD_CALLS__: Array<{ cmd: string }> }
+          ).__BOARD_CALLS__.filter((x) => x.cmd === c).length,
+        cmd,
+      );
+
+    // Idle: nothing to start, and an empty goal can't be decomposed.
     await expect(submit).toBeDisabled();
+    await expect(plan).toBeDisabled();
 
     await form.getByTestId("decompose-goal").fill("Add task comments");
-    await form.getByTestId("decompose-backend").fill("Build the comments API");
-    // Only one role prompt filled → STILL gated (nothing persisted yet).
-    await expect(submit).toBeDisabled();
+    await expect(plan).toBeEnabled();
+    await plan.click();
 
-    await form.getByTestId("decompose-frontend").fill("Wire the comments UI");
+    // plan_decomposition fires exactly once and the editable tickets render.
+    await expect.poll(() => count("plan_decomposition")).toBe(1);
+    await expect(form.getByTestId("decompose-ticket")).toHaveCount(4);
+    await expect(form.getByTestId("decompose-edge")).toHaveCount(3);
+
+    // The reviewed plan is startable; one click fires the unchanged gate once.
     await expect(submit).toBeEnabled();
-
     await submit.click();
-
-    // Exactly one start_decomposition — the gate holds; no auto-fan-out.
-    await expect
-      .poll(async () =>
-        page.evaluate(
-          () =>
-            (
-              window as unknown as {
-                __BOARD_CALLS__: Array<{ cmd: string }>;
-              }
-            ).__BOARD_CALLS__.filter((c) => c.cmd === "start_decomposition")
-              .length,
-        ),
-      )
-      .toBe(1);
+    await expect.poll(() => count("start_decomposition")).toBe(1);
   });
 
   test("a subtask card renders honest agent status (reuses the Step 0 badge)", async ({

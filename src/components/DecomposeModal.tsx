@@ -39,9 +39,9 @@ export function DecomposeModal() {
     <Dialog
       open={open}
       onOpenChange={(o) => !o && clearPending()}
-      size="lg"
+      size="720px"
       title={`New epic${repo ? ` · ${repo.name}` : ""}`}
-      description="Split one goal into two agents — a backend and a frontend — that hand off through a published contract. Review the plan, then start both at once."
+      description="Split one goal into agents that hand off through published contracts. Review the plan the planner proposed, edit anything, then start them all at once."
     >
       {repoId && (
         <DecomposeForm

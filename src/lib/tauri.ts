@@ -20,6 +20,7 @@ import type {
   MergeStrategy,
   OpenPullRequestOutcome,
   PathValidation,
+  ProposedPlan,
   PtyEvent,
   Repository,
   RunCommand,
@@ -241,6 +242,14 @@ export const tauri = {
   // ── task board (multi-agent decomposition, P0 slice) ─────────────────
   // Thin wrappers over the FROZEN §C wire contract (`commands/board.rs`).
   // Errors arrive as plain strings. All four return the SAME `BoardState`.
+  //
+  // The Planner drafting step (Phase 1, §C.2). Runs Claude read-only over the
+  // repo and returns a proposed `{ subtasks, edges }` the review surface edits.
+  // Persists NOTHING — the single write is still `startDecomposition` below.
+  // Rejects with `EmptyGoal | NoRepoPath | Auth | Planner(...)` as plain strings
+  // (humanized by the form); on any reject the surface falls back to manual edit.
+  planDecomposition: (repositoryId: string, goal: string) =>
+    invoke<ProposedPlan>("plan_decomposition", { repositoryId, goal }),
   startDecomposition: (input: DecompositionInput) =>
     invoke<BoardState>("start_decomposition", { input }),
   getBoard: (parentId: string) =>

@@ -8,12 +8,18 @@
 
 mod error;
 mod liveness;
+mod planner;
 mod repo_locks;
 mod scheduler;
 mod service;
 mod templating;
 
 pub use error::OrchestratorError;
+// The planner is a captured, read-only `claude` one-shot that drafts a
+// decomposition (goal → validated `{subtasks, edges}`); `commands::planner`
+// wraps it. It persists nothing — the draft lives in the frontend until the
+// `start_decomposition` gate.
+pub use planner::{plan, PlannerConfig, PlannerError};
 pub use repo_locks::RepoLockRegistry;
 // The scheduler owns the single source of truth for a decomposition's contract
 // paths (`<root>/<parent>/contracts/<role>.md`). `commands::board::publish_contract`

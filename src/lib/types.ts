@@ -379,3 +379,16 @@ export interface DecompositionInput {
   subtasks: SubtaskInput[];
   edges: EdgeInput[];
 }
+
+/**
+ * The planner's proposed decomposition — `DecompositionInput` minus
+ * `repositoryId`/`parentPrompt` (the FROZEN §C contract). Returned by
+ * `plan_decomposition`; persists NOTHING. The Planner review surface hydrates
+ * its editable draft from this, then submits the (possibly edited) plan through
+ * the unchanged `startDecomposition` gate. Mirrors the Rust `ProposedPlan`
+ * (`commands/planner.rs`, `#[serde(rename_all = "camelCase")]`).
+ */
+export interface ProposedPlan {
+  subtasks: SubtaskInput[];
+  edges: EdgeInput[];
+}

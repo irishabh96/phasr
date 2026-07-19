@@ -44,7 +44,11 @@ pub struct DecompositionInput {
 
 /// One planned subtask: its DAG slot (`role`, also the dedup key with
 /// `parent_id`), the agent to run, and its seed prompt.
-#[derive(Debug, Deserialize)]
+///
+/// `Serialize` as well as `Deserialize`: the planner (`plan_decomposition`)
+/// returns these to the frontend inside a `ProposedPlan`, so the same struct
+/// travels the wire in BOTH directions (`{ role, agent, prompt }`, camelCase).
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtaskInput {
     pub role: String,
@@ -53,8 +57,9 @@ pub struct SubtaskInput {
 }
 
 /// One directed edge, addressed by role. Resolved to concrete subtask ids at
-/// write time (`backend → frontend` for the PoC).
-#[derive(Debug, Deserialize)]
+/// write time. `Serialize` for the same reason as `SubtaskInput` — the planner
+/// returns edges in a `ProposedPlan` (`{ fromRole, toRole }`, camelCase).
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EdgeInput {
     pub from_role: String,
@@ -96,10 +101,11 @@ pub enum BoardCmdError {
     /// A filesystem op failed while writing the manual "mark done" contract file
     /// (`publish_contract`).
     Io(std::io::Error),
-    /// A malformed plan (empty, duplicate roles, an edge referencing an unknown
-    /// role, a self-edge, or a dependency cycle detected at integration time). A
-    /// clear error beats silently persisting a broken DAG the scheduler could
-    /// deadlock on.
+    /// A malformed plan (empty, over the `MAX_SUBTASKS` cap, duplicate roles, an
+    /// edge referencing an unknown role, a self-edge, or a dependency cycle). The
+    /// gate rejects all of these up front (`validate_decomposition`); a clear
+    /// error beats silently persisting a broken DAG the scheduler could deadlock
+    /// on.
     InvalidDecomposition(String),
     /// `publish_contract` was called on a row that isn't a decomposition subtask
     /// (no `parent_id`/`role`) — nothing to publish a handoff contract for.
@@ -312,8 +318,9 @@ async fn create_decomposition_inner(
     board: &BoardRepo,
 ) -> Result<Board, BoardCmdError> {
     // Reject a malformed plan BEFORE any write, so nothing is persisted for a
-    // bad input (the "no orphan rows" AC holds for invalid plans too).
-    validate_decomposition(input)?;
+    // bad input (the "no orphan rows" AC holds for invalid plans too). The SAME
+    // validator the planner runs, so the gate and the planner never disagree.
+    validate_decomposition(&input.subtasks, &input.edges)?;
 
     // 1. Parent = the integration container: kind=Parent, status=Pending
     //    (Workspace::new default), NO agent, NO branch/worktree, NO PTY. It
@@ -381,20 +388,41 @@ async fn create_decomposition_inner(
     Ok(board.get_board_for_user(workspaces, &parent.id, user_id).await?)
 }
 
+/// The most subtasks a single decomposition may contain (D-OQ1). A sane board
+/// size that rejects a runaway plan (edges are implicitly bounded by the roles).
+/// Shared by the gate AND the planner (`orchestrator::planner`), which embeds it
+/// in the LLM output contract, so both agree on the ceiling.
+pub(crate) const MAX_SUBTASKS: usize = 12;
+
 /// Well-formedness check for the decomposition DAG. Enforces role uniqueness
 /// (the `(parent_id, role)` invariant, checked in-memory because the gate mints
-/// a fresh parent id so a DB `find_active_subtask` lookup can't help), edge
-/// referential integrity, and no self-edges. Kept generic (no hardcoded
-/// backend/frontend topology) per spec §G — the fixed PoC shape is enforced by
-/// the frontend form, not the command.
-fn validate_decomposition(input: &DecompositionInput) -> Result<(), BoardCmdError> {
-    if input.subtasks.is_empty() {
+/// a fresh parent id so a DB `find_active_subtask` lookup can't help), a size cap
+/// (`MAX_SUBTASKS`), edge referential integrity, no self-edges, and — the piece
+/// that closes the deadlock gap — **no dependency cycle**. Kept generic (no
+/// hardcoded backend/frontend topology) per spec §G.
+///
+/// Takes borrowed slices rather than a `&DecompositionInput` so the SAME
+/// validator guards both entry points: the gate (`create_decomposition_inner`,
+/// via `&input.subtasks`/`&input.edges`) and the planner (which validates the
+/// LLM-proposed `{subtasks, edges}` before returning them). One validator, no
+/// drift between "what the planner accepts" and "what the gate accepts".
+pub(crate) fn validate_decomposition(
+    subtasks: &[SubtaskInput],
+    edges: &[EdgeInput],
+) -> Result<(), BoardCmdError> {
+    if subtasks.is_empty() {
         return Err(BoardCmdError::InvalidDecomposition(
             "a decomposition needs at least one subtask".into(),
         ));
     }
+    if subtasks.len() > MAX_SUBTASKS {
+        return Err(BoardCmdError::InvalidDecomposition(format!(
+            "a decomposition can have at most {MAX_SUBTASKS} subtasks (got {})",
+            subtasks.len()
+        )));
+    }
     let mut roles = HashSet::new();
-    for subtask in &input.subtasks {
+    for subtask in subtasks {
         if subtask.role.trim().is_empty() {
             return Err(BoardCmdError::InvalidDecomposition(
                 "every subtask needs a non-empty role".into(),
@@ -407,7 +435,7 @@ fn validate_decomposition(input: &DecompositionInput) -> Result<(), BoardCmdErro
             )));
         }
     }
-    for edge in &input.edges {
+    for edge in edges {
         if edge.from_role == edge.to_role {
             return Err(BoardCmdError::InvalidDecomposition(format!(
                 "self-edge on role `{}`",
@@ -427,6 +455,50 @@ fn validate_decomposition(input: &DecompositionInput) -> Result<(), BoardCmdErro
             )));
         }
     }
+
+    // Role-keyed Kahn cycle check. Roles are unique and every edge is referential
+    // by this point, so the indegree map is built straight over role strings —
+    // structurally identical to the id-keyed `topological_subtask_order`, but run
+    // HERE at the gate so a cyclic plan is rejected before any row is written
+    // (never a DAG the scheduler could deadlock on, claim #1). The id-keyed sort
+    // stays as integration-time defense-in-depth.
+    let mut indegree: HashMap<&str, usize> =
+        subtasks.iter().map(|s| (s.role.as_str(), 0usize)).collect();
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in edges {
+        adjacency
+            .entry(edge.from_role.as_str())
+            .or_default()
+            .push(edge.to_role.as_str());
+        if let Some(d) = indegree.get_mut(edge.to_role.as_str()) {
+            *d += 1;
+        }
+    }
+    let mut queue: VecDeque<&str> = subtasks
+        .iter()
+        .map(|s| s.role.as_str())
+        .filter(|role| indegree.get(*role).copied().unwrap_or(0) == 0)
+        .collect();
+    let mut visited = 0usize;
+    while let Some(role) = queue.pop_front() {
+        visited += 1;
+        if let Some(children) = adjacency.get(role) {
+            for &child in children {
+                if let Some(d) = indegree.get_mut(child) {
+                    *d -= 1;
+                    if *d == 0 {
+                        queue.push_back(child);
+                    }
+                }
+            }
+        }
+    }
+    if visited != subtasks.len() {
+        return Err(BoardCmdError::InvalidDecomposition(
+            "dependency cycle detected among subtasks".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -559,9 +631,9 @@ async fn integrate_parent_inner(
 
     // Topologically order the subtasks so producers merge before consumers, then
     // keep only those that actually produced a branch (a still-blocked/pending
-    // subtask was never spawned, so it has nothing to integrate). A cycle is a
-    // malformed DAG surfaced here (the gate's `validate_decomposition` doesn't
-    // reject cycles).
+    // subtask was never spawned, so it has nothing to integrate). The gate's
+    // `validate_decomposition` already rejects cycles, so this sort's own cycle
+    // guard is integration-time defense-in-depth (e.g. a hand-edited DB).
     let ordered = topological_subtask_order(&subtasks, &deps)?;
 
     // Deterministic per-parent integration branch + worktree (spec F-4):
@@ -959,6 +1031,80 @@ mod tests {
         assert_eq!(parent_title("  \n  Build it\nmore"), "Build it");
         assert_eq!(parent_title("   "), "Decomposition");
         assert_eq!(parent_title(""), "Decomposition");
+    }
+
+    // ── BE-1: the shared, hardened validator ────────────────────────────────
+
+    fn subtask(role: &str) -> SubtaskInput {
+        SubtaskInput {
+            role: role.into(),
+            agent: Agent::Claude,
+            prompt: "do the thing".into(),
+        }
+    }
+
+    fn edge(from: &str, to: &str) -> EdgeInput {
+        EdgeInput {
+            from_role: from.into(),
+            to_role: to.into(),
+        }
+    }
+
+    // The valid-DAG regression: the existing PoC shape (backend → frontend)
+    // still passes the hardened validator unchanged.
+    #[test]
+    fn validate_accepts_valid_dag() {
+        let input = sample_input("r");
+        assert!(validate_decomposition(&input.subtasks, &input.edges).is_ok());
+    }
+
+    // Claim #1 (the gap this story closes): a 2-node cycle a↔b is rejected.
+    #[test]
+    fn validate_rejects_two_node_cycle() {
+        let subtasks = vec![subtask("a"), subtask("b")];
+        let edges = vec![edge("a", "b"), edge("b", "a")];
+        assert!(matches!(
+            validate_decomposition(&subtasks, &edges),
+            Err(BoardCmdError::InvalidDecomposition(_))
+        ));
+    }
+
+    // A multi-hop cycle a → b → c → a is rejected too (not just the trivial pair).
+    #[test]
+    fn validate_rejects_multi_hop_cycle() {
+        let subtasks = vec![subtask("a"), subtask("b"), subtask("c")];
+        let edges = vec![edge("a", "b"), edge("b", "c"), edge("c", "a")];
+        assert!(matches!(
+            validate_decomposition(&subtasks, &edges),
+            Err(BoardCmdError::InvalidDecomposition(_))
+        ));
+    }
+
+    // The size cap: MAX_SUBTASKS + 1 subtasks (no edges — the cap fires first) is
+    // rejected before any DAG work.
+    #[test]
+    fn validate_rejects_over_cap() {
+        let subtasks: Vec<SubtaskInput> = (0..=MAX_SUBTASKS)
+            .map(|i| subtask(&format!("role-{i}")))
+            .collect();
+        assert_eq!(subtasks.len(), MAX_SUBTASKS + 1);
+        assert!(matches!(
+            validate_decomposition(&subtasks, &[]),
+            Err(BoardCmdError::InvalidDecomposition(_))
+        ));
+    }
+
+    // A longer acyclic chain right at the cap still validates — the cycle check
+    // must not false-positive on a legitimate deep DAG.
+    #[test]
+    fn validate_accepts_acyclic_chain_at_cap() {
+        let subtasks: Vec<SubtaskInput> = (0..MAX_SUBTASKS)
+            .map(|i| subtask(&format!("role-{i}")))
+            .collect();
+        let edges: Vec<EdgeInput> = (0..MAX_SUBTASKS - 1)
+            .map(|i| edge(&format!("role-{i}"), &format!("role-{}", i + 1)))
+            .collect();
+        assert!(validate_decomposition(&subtasks, &edges).is_ok());
     }
 
     // ── E2-T4 (publish_contract) + E3-T1 (integrate_parent) ─────────────────
@@ -1406,7 +1552,9 @@ mod tests {
     }
 
     // Pure topo ordering: producers precede consumers regardless of the rows'
-    // stored order, and a cycle is surfaced (the gate doesn't reject cycles).
+    // stored order, and a cycle is surfaced. This is the integration-time
+    // defense-in-depth guard; the GATE now rejects cycles up front too
+    // (see `validate_rejects_*` below).
     #[test]
     fn topological_subtask_order_puts_producers_before_consumers() {
         let repo = "r";

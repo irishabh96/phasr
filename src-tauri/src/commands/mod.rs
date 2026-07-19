@@ -7,6 +7,7 @@ pub mod files;
 pub mod git;
 pub mod notifications;
 pub mod orchestrator;
+pub mod planner;
 pub mod repositories;
 pub mod run_commands;
 pub mod session_terminal;
