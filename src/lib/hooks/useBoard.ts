@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { tauri } from "@/lib/tauri";
@@ -15,6 +15,57 @@ export function useBoard(parentId: string | null | undefined) {
     queryKey: boardKeys.detail(parentId ?? ""),
     queryFn: () => tauri.getBoard(parentId ?? ""),
     enabled: !!parentId,
+  });
+}
+
+/**
+ * True when an `integrateParent` rejection is the "stopped on conflicts" signal
+ * (as opposed to a hard failure). The conflicting files ride the message; the
+ * caller routes this to the interactive conflict surface, not an error toast.
+ */
+export function isIntegrationConflict(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("integration stopped on conflicts");
+}
+
+/**
+ * "Mark done" override (E2-T4): publish a stuck producer's handoff contract so
+ * its blocked dependent unblocks on the scheduler's next tick. Seeds the board
+ * cache with the returned `BoardState` and invalidates so the lanes re-derive.
+ */
+export function usePublishContract(parentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (subtaskId: string) => tauri.publishContract(subtaskId),
+    onSuccess: (board) => {
+      queryClient.setQueryData(boardKeys.detail(parentId), board);
+      queryClient.invalidateQueries({ queryKey: boardKeys.detail(parentId) });
+    },
+  });
+}
+
+/**
+ * Integration (E3-T1). `mutateAsync` RESOLVES with the board whose
+ * `parent.branch`/`worktreePath` now point at the integration worktree on a
+ * clean merge, or REJECTS with the "integration stopped on conflicts…" signal
+ * ({@link isIntegrationConflict}) when a merge conflicts. Either outcome mutated
+ * the parent row (a conflict still recorded the integration branch/worktree
+ * before stopping), so we invalidate the board query in both cases — the caller
+ * handles opening the combined diff vs. the conflict surface.
+ */
+export function useIntegrateParent(parentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => tauri.integrateParent(parentId),
+    onSuccess: (board) => {
+      queryClient.setQueryData(boardKeys.detail(parentId), board);
+      queryClient.invalidateQueries({ queryKey: boardKeys.detail(parentId) });
+    },
+    onError: () => {
+      // A conflict still pointed the parent row at the integration worktree, so
+      // re-read the board (its lanes + the parent's now-set worktree) regardless.
+      queryClient.invalidateQueries({ queryKey: boardKeys.detail(parentId) });
+    },
   });
 }
 

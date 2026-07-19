@@ -1,7 +1,8 @@
 import type { CSSProperties } from "react";
-import { Eye, Lock } from "lucide-react";
+import { Check, Eye, Loader2, Lock } from "lucide-react";
 import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
 import { AgentStatusIndicator } from "@/components/ui/AgentStatusIndicator";
+import { GlassButton } from "@/components/ui/GlassButton";
 import type { BoardCardState } from "@/lib/deriveBoardState";
 import type { AgentUiState } from "@/lib/deriveAgentState";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,15 @@ export interface BoardCardViewProps {
    * chip). Only meaningful when `state === "blocked"`.
    */
   blockedOnRoles?: string[];
+  /**
+   * "Mark done" override (E2-T4). Supplied ONLY for a producer subtask that
+   * hasn't published its handoff contract yet — clicking manually publishes it
+   * so a stuck agent never leaves its dependent silently blocked. Omit to hide
+   * the affordance entirely (blocked consumers, already-published producers).
+   */
+  onMarkDone?: () => void;
+  /** Disables the "Mark done" button + shows a spinner while publishing. */
+  markDonePending?: boolean;
 }
 
 /**
@@ -44,6 +54,8 @@ export function BoardCardView({
   since,
   exitCode,
   blockedOnRoles = [],
+  onMarkDone,
+  markDonePending = false,
 }: BoardCardViewProps) {
   return (
     <article
@@ -67,7 +79,7 @@ export function BoardCardView({
         </span>
       </div>
 
-      <div className="flex items-center">
+      <div className="flex flex-wrap items-center gap-2">
         {isAgentUiState(state) ? (
           <AgentStatusBadgeView
             state={state}
@@ -78,6 +90,24 @@ export function BoardCardView({
           <BlockedChip blockedOnRoles={blockedOnRoles} />
         ) : (
           <ReviewChip />
+        )}
+        {onMarkDone && (
+          <GlassButton
+            variant="ghost"
+            size="sm"
+            data-testid="board-mark-done"
+            className="ml-auto shrink-0 gap-1"
+            disabled={markDonePending}
+            onClick={onMarkDone}
+            title="Publish this subtask's handoff contract so its dependents unblock."
+          >
+            {markDonePending ? (
+              <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+            ) : (
+              <Check className="size-3" aria-hidden="true" />
+            )}
+            {markDonePending ? "Publishing…" : "Mark done"}
+          </GlassButton>
         )}
       </div>
     </article>

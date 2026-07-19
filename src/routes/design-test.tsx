@@ -111,6 +111,62 @@ const BOARD_FRESH: BoardState = {
   contracts: [],
 };
 
+// Integrable: BOTH subtasks published their contracts (→ needs-review), so the
+// board is ready for the human's "Integrate & review". Distinct parent id so the
+// Playwright IPC mock can key the integration/diff responses on it.
+const BOARD_INTEGRABLE: BoardState = {
+  parent: mockWs({
+    id: "parent-clean",
+    workspaceKind: "parent",
+    name: "task-comments",
+    prompt: "Add a task-comments API and wire the comments UI",
+    agent: null,
+    parentId: null,
+    role: null,
+  }),
+  subtasks: [
+    mockWs({
+      id: "sub-backend",
+      parentId: "parent-clean",
+      role: "backend",
+      name: "comments API",
+      status: "completed",
+      startedAt: isoAgo(300_000),
+      finishedAt: isoAgo(30_000),
+    }),
+    mockWs({
+      id: "sub-frontend",
+      parentId: "parent-clean",
+      role: "frontend",
+      name: "comments UI",
+      status: "completed",
+      startedAt: isoAgo(200_000),
+      finishedAt: isoAgo(8_000),
+    }),
+  ],
+  dependencies: [{ ...MOCK_EDGE, parentId: "parent-clean" }],
+  contracts: [
+    {
+      id: "contract-backend-clean",
+      parentId: "parent-clean",
+      subtaskId: "sub-backend",
+      role: "backend",
+      contractPath: "~/.phasr/tasks/parent-clean/contracts/backend.md",
+      publishedAt: isoAgo(25_000),
+      createdAt: isoAgo(30_000),
+    },
+    {
+      id: "contract-frontend-clean",
+      parentId: "parent-clean",
+      subtaskId: "sub-frontend",
+      role: "frontend",
+      contractPath: "~/.phasr/tasks/parent-clean/contracts/frontend.md",
+      publishedAt: isoAgo(6_000),
+      createdAt: isoAgo(10_000),
+    },
+  ],
+};
+
 // Handoff: backend published its contract (→ needs-review), frontend now
 // running (→ working).
 const BOARD_HANDOFF: BoardState = {
@@ -393,6 +449,13 @@ function DesignTest() {
             Board · handoff (backend in review, frontend working)
           </h2>
           <BoardView board={BOARD_HANDOFF} />
+        </section>
+
+        <section data-testid="board-integrable" className="flex flex-col gap-3">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Board · integrable (both subtasks in review → Integrate &amp; review)
+          </h2>
+          <BoardView board={BOARD_INTEGRABLE} />
         </section>
 
         {/* Diff — Batch 0 T5 palette + diff a11y */}

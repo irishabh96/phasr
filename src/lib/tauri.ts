@@ -240,14 +240,27 @@ export const tauri = {
 
   // ── task board (multi-agent decomposition, P0 slice) ─────────────────
   // Thin wrappers over the FROZEN §C wire contract (`commands/board.rs`).
-  // Errors arrive as plain strings. NOTE (deferred): `publish_contract`
-  // ("mark done") and `integrate_parent` (combined-diff integration) belong
-  // to Chunk 3/4 and are intentionally NOT wired here yet — see the TODO in
-  // the board route where the integrate action will hook in.
+  // Errors arrive as plain strings. All four return the SAME `BoardState`.
   startDecomposition: (input: DecompositionInput) =>
     invoke<BoardState>("start_decomposition", { input }),
   getBoard: (parentId: string) =>
     invoke<BoardState>("get_board", { parentId }),
+  // "Mark done" override (E2-T4): publishes one subtask's handoff contract so a
+  // stuck producer never leaves its dependent silently blocked. Returns the
+  // refreshed board so the caller re-renders without a follow-up `get_board`.
+  publishContract: (subtaskId: string) =>
+    invoke<BoardState>("publish_contract", { subtaskId }),
+  // Integrate a completed decomposition (E3-T1): mints the parent's integration
+  // worktree and merges every subtask branch in topological order. A CLEAN run
+  // resolves with the board whose `parent.branch`/`worktreePath` now point at
+  // the integration worktree (review the ONE combined diff against the parent
+  // id). A conflict REJECTS with "integration stopped on conflicts in: <files>"
+  // — the worktree is left mid-merge and the parent row already points at it, so
+  // the frontend drives the EXISTING conflict flow (git_merge_in_progress /
+  // git_resolve_conflict / git_continue_merge / git_abort_merge) keyed on the
+  // parent id (spec claim #6).
+  integrateParent: (parentId: string) =>
+    invoke<BoardState>("integrate_parent", { parentId }),
 
   // ── launchers ────────────────────────────────────────────────────────
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),
