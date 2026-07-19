@@ -213,6 +213,70 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   // first mount) via fixtures.overrides — set before any command fires.
   const overrides: Record<string, unknown> = { ...((f as any).overrides ?? {}) };
 
+  // A minimal but valid multi-agent BoardState (parent + backend→frontend
+  // subtasks + one edge) so the "New epic" entry point renders end-to-end:
+  // start_decomposition resolves with parent id "parent-new"; get_board returns
+  // the same shape keyed on whatever parentId the board route requests, so the
+  // navigation lands on a live board rather than an empty/error state.
+  const boardWs = (over: Record<string, unknown>) => ({
+    repositoryId: "repo-1",
+    workspaceKind: "subtask",
+    name: (over.id as string) ?? "subtask",
+    prompt: null,
+    agent: "claude",
+    command: "claude",
+    status: "pending",
+    branch: null,
+    worktreePath: null,
+    exitCode: null,
+    createdAt: f.now,
+    startedAt: null,
+    finishedAt: null,
+    archivedAt: null,
+    interruptedAt: null,
+    parentId: null,
+    role: null,
+    updatedAt: f.now,
+    ...over,
+  });
+  const makeBoard = (parentId: string) => ({
+    parent: boardWs({
+      id: parentId,
+      workspaceKind: "parent",
+      name: "task-comments",
+      prompt: "Add a task-comments API and wire the comments UI",
+      agent: null,
+      parentId: null,
+    }),
+    subtasks: [
+      boardWs({
+        id: `${parentId}-backend`,
+        parentId,
+        role: "backend",
+        name: "comments API",
+        status: "running",
+        startedAt: f.now,
+      }),
+      boardWs({
+        id: `${parentId}-frontend`,
+        parentId,
+        role: "frontend",
+        name: "comments UI",
+        status: "pending",
+      }),
+    ],
+    dependencies: [
+      {
+        id: `${parentId}-edge`,
+        parentId,
+        fromSubtaskId: `${parentId}-backend`,
+        toSubtaskId: `${parentId}-frontend`,
+        createdAt: f.now,
+      },
+    ],
+    contracts: [],
+  });
+
   const RESP = (cmd: string, a: any): unknown => {
     switch (cmd) {
       case "consume_pending_auth_callback": return null;
@@ -269,6 +333,10 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { ...f.workspaces[0], id: "ws-created", name: a?.name ?? "new-ws", status: "stopped" };
       case "start_task":
         return { taskId: "task-new", workspace: { ...f.workspaces[0], id: "ws-created", status: "running" } };
+      case "start_decomposition":
+        return makeBoard("parent-new");
+      case "get_board":
+        return makeBoard(a?.parentId ?? "parent-new");
       case "open_task_terminal": return { taskId: a?.taskId ?? "ws-agent", startedAt: f.now };
       case "read_task_log": return "$ agent finished\r\nAll done.\r\n";
       case "start_session_terminal": return a?.sessionId ?? "session-1";

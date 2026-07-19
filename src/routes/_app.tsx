@@ -5,6 +5,7 @@ import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal"
 import { AppSidebar } from "@/components/AppSidebar";
 import { BackgroundOrb } from "@/components/BackgroundOrb";
 import { CommandPalette } from "@/components/CommandPalette";
+import { DecomposeModal } from "@/components/DecomposeModal";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { RenameWorkspaceModal } from "@/components/RenameWorkspaceModal";
@@ -170,6 +171,7 @@ function AppShell() {
       </div>
       <CommandPalette />
       <NewTaskModal />
+      <DecomposeModal />
       <RenameWorkspaceModal />
       <AddRepositoryPickerModal />
       <RepoFileSearchModal />

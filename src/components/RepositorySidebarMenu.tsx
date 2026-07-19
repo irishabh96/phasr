@@ -3,6 +3,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useNavigate } from "@tanstack/react-router";
 import {
   FolderOpen,
+  GitFork,
   Plus,
   Settings as SettingsIcon,
   Trash2,
@@ -26,9 +27,11 @@ interface RepositorySidebarMenuProps {
  *
  *   1. Open project — navigates to the repository entry route.
  *   2. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
- *      NewTaskModal picks it up and opens.
- *   3. Settings — navigate to /repositories/<id>/settings.
- *   4. Remove project — opens a glass confirm dialog; on confirm,
+ *      NewTaskModal picks it up and opens (the single-agent path).
+ *   3. New epic (2 agents) — sets `pendingDecomposeRepoId`; the shell-mounted
+ *      DecomposeModal picks it up and opens (the multi-agent decomposition).
+ *   4. Settings — navigate to /repositories/<id>/settings.
+ *   5. Remove project — opens a glass confirm dialog; on confirm,
  *      deletes only the DB row (local clone untouched).
  */
 export function RepositorySidebarMenu({
@@ -38,6 +41,7 @@ export function RepositorySidebarMenu({
   const navigate = useNavigate();
   const navigateToRepoEntry = useNavigateToRepoEntry();
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
+  const requestDecompose = useUiStore((s) => s.requestDecompose);
   const deleteRepo = useDeleteRepository();
   const [confirming, setConfirming] = useState(false);
 
@@ -47,6 +51,10 @@ export function RepositorySidebarMenu({
 
   const onNewWorkspace = () => {
     requestNewWorkspace(repository.id);
+  };
+
+  const onNewEpic = () => {
+    requestDecompose(repository.id);
   };
 
   const onOpenSettings = () => {
@@ -83,6 +91,9 @@ export function RepositorySidebarMenu({
             </Item>
             <Item icon={<Plus size={12} />} onSelect={onNewWorkspace}>
               New workspace
+            </Item>
+            <Item icon={<GitFork size={12} />} onSelect={onNewEpic}>
+              New epic (2 agents)
             </Item>
             <Item icon={<SettingsIcon size={12} />} onSelect={onOpenSettings}>
               Settings

@@ -236,6 +236,18 @@ interface UiState {
   requestNewWorkspace: (repoId: string) => void;
   clearPendingNewWorkspace: () => void;
 
+  /**
+   * Repo id whose "New epic" decomposition dialog is open, or null. Set by the
+   * "New epic" affordances (repo-home pane + sidebar context menu); the
+   * shell-mounted DecomposeModal picks it up and opens. Cleared when the dialog
+   * closes or a decomposition is started. Progressive disclosure: this is a
+   * SEPARATE slice from `pendingNewWorkspaceRepoId` so the single-agent "New
+   * task" flow is untouched.
+   */
+  pendingDecomposeRepoId: string | null;
+  requestDecompose: (repoId: string) => void;
+  clearPendingDecompose: () => void;
+
   /** Drives RenameWorkspaceModal — sidebar right-click → Rename… sets this. */
   pendingRenameWorkspaceId: string | null;
   requestRenameWorkspace: (workspaceId: string) => void;
@@ -541,6 +553,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   pendingNewWorkspaceRepoId: null,
   requestNewWorkspace: (repoId) => set({ pendingNewWorkspaceRepoId: repoId }),
   clearPendingNewWorkspace: () => set({ pendingNewWorkspaceRepoId: null }),
+
+  pendingDecomposeRepoId: null,
+  requestDecompose: (repoId) => set({ pendingDecomposeRepoId: repoId }),
+  clearPendingDecompose: () => set({ pendingDecomposeRepoId: null }),
 
   pendingRenameWorkspaceId: null,
   requestRenameWorkspace: (workspaceId) =>

@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitBranch,
+  GitFork,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgents } from "@/lib/hooks/useAgents";
@@ -43,6 +44,7 @@ export function CreateFirstWorkspacePane({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const requestGitInit = useUiStore((s) => s.requestGitInit);
+  const requestDecompose = useUiStore((s) => s.requestDecompose);
 
   const isGitQuery = useQuery({
     queryKey: ["pathIsGit", repo.localPath ?? ""],
@@ -214,6 +216,37 @@ export function CreateFirstWorkspacePane({
             onBack={() => setStep(1)}
             onStart={handleStart}
           />
+        )}
+
+        {/*
+          Progressive disclosure: a clearly-SEPARATE second path for a bigger
+          job, kept out of the single-agent flow above. Shown only on step 1 so
+          it never interrupts the agent/prompt step. Opens the shell-mounted
+          DecomposeModal (the "Start 2 agents" gate) via `requestDecompose`.
+        */}
+        {step === 1 && (
+          <div className="mt-8 flex items-center justify-between gap-4 border-t border-(--glass-border-hairline) pt-5">
+            <div className="min-w-0">
+              <p className="text-[13px] font-medium text-(--color-text-primary)">
+                Working on something bigger?
+              </p>
+              <p className="mt-0.5 text-[12px] text-(--color-text-secondary)">
+                Split a goal across two agents — a backend and a frontend that
+                hand off through a contract.
+              </p>
+            </div>
+            <GlassButton
+              variant="outline"
+              size="md"
+              type="button"
+              onClick={() => requestDecompose(repo.id)}
+              aria-label={`New epic in ${repo.name}`}
+              className="shrink-0"
+            >
+              <GitFork size={13} />
+              New epic
+            </GlassButton>
+          </div>
         )}
       </div>
     </div>
