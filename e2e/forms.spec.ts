@@ -708,8 +708,12 @@ test.describe("Completion notifications", () => {
     // Wait past the 2.5s flush window; the toast must never appear.
     await page.waitForTimeout(3200);
     await expect(page.getByText("add-feature finished")).toHaveCount(0);
-    await expect(page.getByRole("status")).toHaveCount(0);
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    // Scope to the toaster region: the Step 0 workspace-header status badge
+    // legitimately uses role="status" outside it, so an unscoped count would
+    // catch the badge, not just toasts. The assertion here means "no toast".
+    const toaster = page.getByRole("region", { name: "Notifications" });
+    await expect(toaster.getByRole("status")).toHaveCount(0);
+    await expect(toaster.getByRole("alert")).toHaveCount(0);
   });
 
   test("LEADING-EDGE (D3): first finish shows immediately; stragglers coalesce", async ({
