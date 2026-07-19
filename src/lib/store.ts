@@ -171,6 +171,16 @@ interface UiState {
   repoWorkspaceExpanded: Record<string, boolean>;
   toggleRepoWorkspaceExpanded: (repositoryId: string) => void;
 
+  /**
+   * Per-epic (board `parent`) sidebar expand state, keyed by parent id. Mirrors
+   * `repoWorkspaceExpanded`. When a parent has no explicit entry the caller
+   * falls back to "expanded iff it's the active epic" (computed at the call
+   * site), so drilling into a subtask auto-reveals its siblings with no effect;
+   * an explicit value (the user toggled the chevron) always wins.
+   */
+  epicExpanded: Record<string, boolean>;
+  setEpicExpanded: (parentId: string, expanded: boolean) => void;
+
   rightPanelCollapsed: boolean;
   toggleRightPanel: () => void;
   setRightPanelCollapsed: (collapsed: boolean) => void;
@@ -366,6 +376,13 @@ export const useUiStore = create<UiState>((set, get) => ({
         ...get().repoWorkspaceExpanded,
         [repositoryId]: !current,
       },
+    });
+  },
+
+  epicExpanded: {},
+  setEpicExpanded: (parentId, expanded) => {
+    set({
+      epicExpanded: { ...get().epicExpanded, [parentId]: expanded },
     });
   },
 

@@ -8,6 +8,7 @@ import {
   Plus,
 } from "lucide-react";
 import { useState } from "react";
+import { RepoEpics } from "@/components/EpicSidebarNode";
 import { RepositorySidebarMenu } from "@/components/RepositorySidebarMenu";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { PanelState } from "@/components/ui/PanelState";
@@ -43,6 +44,9 @@ export function AppSidebar() {
     (params as { repositoryId?: string }).repositoryId ?? null;
   const activeWorkspaceId =
     (params as { workspaceId?: string }).workspaceId ?? null;
+  // The board route names its epic via `parentId`; drives the active-epic
+  // highlight + auto-expand in the sidebar's epic group.
+  const activeParentId = (params as { parentId?: string }).parentId ?? null;
 
   if (sidebarMode === "hidden") return null;
 
@@ -116,6 +120,7 @@ export function AppSidebar() {
                 isExpanded={isExpanded}
                 isActive={repo.id === activeRepoId}
                 activeWorkspaceId={activeWorkspaceId}
+                activeParentId={activeParentId}
               />
             ))
           )}
@@ -131,11 +136,13 @@ function RepoBlock({
   isExpanded,
   isActive,
   activeWorkspaceId,
+  activeParentId,
 }: {
   repo: Repository;
   isExpanded: boolean;
   isActive: boolean;
   activeWorkspaceId: string | null;
+  activeParentId: string | null;
 }) {
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const navigateToRepoEntry = useNavigateToRepoEntry();
@@ -252,11 +259,22 @@ function RepoBlock({
         </div>
       </RepositorySidebarMenu>
       {workspaceExpanded && (
-        <RepoWorkspaces
-          repoId={repo.id}
-          activeWorkspaceId={activeWorkspaceId}
-          isExpanded={isExpanded}
-        />
+        <>
+          <RepoWorkspaces
+            repoId={repo.id}
+            activeWorkspaceId={activeWorkspaceId}
+            isExpanded={isExpanded}
+          />
+          {/* Epics (board `parent`s) render as their own collapsible group,
+              peers of the flat workspace list. Returns null when the repo has
+              no epics, so a single-agent repo looks exactly as it does today. */}
+          <RepoEpics
+            repoId={repo.id}
+            activeWorkspaceId={activeWorkspaceId}
+            activeParentId={activeParentId}
+            isExpanded={isExpanded}
+          />
+        </>
       )}
     </div>
   );
@@ -274,16 +292,10 @@ function RepoWorkspaces({
   const workspaces = useWorkspaces(repoId);
   const visibleWorkspaces = [...(workspaces.data ?? [])]
     .filter((ws) => ws.status !== "archived")
-    // Progressive disclosure (S2-T3 / spec §B6): board `parent`/`subtask` rows
-    // live only on the board route, never as loose rows in the flat sidebar.
-    // A single agent on a single task looks EXACTLY as it does today.
-    //
-    // TODO(board re-open): because parent rows are filtered out here, there is
-    // no way to RE-open an existing board once you navigate away (or relaunch) —
-    // the only entry today is creating a new epic. Add a discoverable "Epics" /
-    // boards list here (e.g. a collapsible group of `parent` rows linking to
-    // `/repositories/$repositoryId/board/$parentId`) so decompositions are
-    // re-openable. Deferred: out of scope for the smoke-enablement task.
+    // The flat list holds only the standalone single-task kinds. Board
+    // `parent`/`subtask` rows are routed into the epic group (`RepoEpics`)
+    // instead — the epic node re-opens its board and nests its subtasks — so a
+    // single agent on a single task looks EXACTLY as it does today.
     .filter(
       (ws) => ws.workspaceKind === "agent" || ws.workspaceKind === "local",
     )
@@ -317,7 +329,7 @@ function RepoWorkspaces({
   );
 }
 
-function WorkspaceLink({
+export function WorkspaceLink({
   ws,
   repoId,
   active,

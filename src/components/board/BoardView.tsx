@@ -20,6 +20,7 @@ import {
   usePublishContract,
 } from "@/lib/hooks/useBoard";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { humanizeError } from "@/lib/humanizeError";
 import { showToast } from "@/lib/toast";
 import { useNow } from "@/lib/useNow";
@@ -57,6 +58,7 @@ function isReviewReady(state: BoardCardState): boolean {
 export function BoardView({ board }: { board: BoardState }) {
   const livenessMap = useAllAgentLiveness();
   const publish = usePublishContract(board.parent.id);
+  const navigate = useNavigate();
 
   // Tick the shared clock only while a subtask carries a live counter.
   const anyLive = board.subtasks.some((s) => {
@@ -101,6 +103,15 @@ export function BoardView({ board }: { board: BoardState }) {
           since={since}
           exitCode={subtask.exitCode}
           blockedOnRoles={blockedOnRoles}
+          onOpen={() =>
+            void navigate({
+              to: "/repositories/$repositoryId/workspaces/$workspaceId",
+              params: {
+                repositoryId: subtask.repositoryId,
+                workspaceId: subtask.id,
+              },
+            })
+          }
           {...(canPublish
             ? {
                 onMarkDone: () => publish.mutate(subtask.id),

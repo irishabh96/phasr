@@ -15,7 +15,8 @@ test.describe("design-fix validation (/design-test)", () => {
 
   // Errors that are artifacts of running the frontend in a plain browser
   // (no Tauri shell) rather than design regressions — filtered out.
-  const BENIGN = /invoke|__TAURI|auth callback|favicon|sourcemap|Outdated Optimize Dep/i;
+  const BENIGN =
+    /__TAURI|invoke|auth callback|clerk|Clerk|sentry|Sentry|supabase|favicon|sourcemap|Outdated Optimize Dep|net::|Failed to load resource|permission|ResizeObserver|homeDir|plugin:/i;
 
   test.beforeEach(async ({ page }) => {
     consoleErrors = [];

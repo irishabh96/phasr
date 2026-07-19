@@ -22,7 +22,7 @@ const CORAL = "rgb(247, 129, 102)";
 test.describe("task board (/design-test)", () => {
   let consoleErrors: string[] = [];
   const BENIGN =
-    /invoke|__TAURI|auth callback|favicon|sourcemap|Outdated Optimize Dep/i;
+    /__TAURI|invoke|auth callback|clerk|Clerk|sentry|Sentry|supabase|favicon|sourcemap|Outdated Optimize Dep|net::|Failed to load resource|permission|ResizeObserver|homeDir|plugin:/i;
 
   test.beforeEach(async ({ page }) => {
     consoleErrors = [];

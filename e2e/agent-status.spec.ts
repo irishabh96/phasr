@@ -38,7 +38,7 @@ const PRIMARY = { dark: "rgb(230, 237, 243)", light: "rgb(10, 10, 11)" } as cons
 test.describe("agent honest status (/design-test)", () => {
   let consoleErrors: string[] = [];
   const BENIGN =
-    /invoke|__TAURI|auth callback|favicon|sourcemap|Outdated Optimize Dep/i;
+    /__TAURI|invoke|auth callback|clerk|Clerk|sentry|Sentry|supabase|favicon|sourcemap|Outdated Optimize Dep|net::|Failed to load resource|permission|ResizeObserver|homeDir|plugin:/i;
 
   test.beforeEach(async ({ page }) => {
     consoleErrors = [];

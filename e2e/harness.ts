@@ -90,6 +90,55 @@ export function makeFixtures() {
       branch: "main",
       worktreePath: "/Users/test/code/phasr",
     },
+    // A persisted decomposition on repo-1: the epic `parent` + its two
+    // `subtask` rows. The board (`get_board`/`makeBoard`) keys its subtask ids
+    // as `${parentId}-backend`/`${parentId}-frontend`, so these ids match — the
+    // sidebar epic node, its rollup, and the board stay consistent. `backend`
+    // is running with a worktree (drill-in → the real detail view); `frontend`
+    // is pending with no worktree (drill-in → the honest "waiting" pane).
+    {
+      ...wsBase,
+      id: "epic-1",
+      repositoryId: "repo-1",
+      workspaceKind: "parent",
+      name: "task-comments",
+      prompt: "Add a task-comments API and wire the comments UI",
+      agent: null,
+      status: "pending",
+      branch: null,
+      worktreePath: null,
+      interruptedAt: null,
+      parentId: null,
+      role: null,
+    },
+    {
+      ...wsBase,
+      id: "epic-1-backend",
+      repositoryId: "repo-1",
+      workspaceKind: "subtask",
+      name: "comments API",
+      agent: "claude",
+      status: "running",
+      branch: "phasr/epic-1-backend",
+      worktreePath: "/Users/test/.phasr/worktrees/epic-1-backend",
+      interruptedAt: null,
+      parentId: "epic-1",
+      role: "backend",
+    },
+    {
+      ...wsBase,
+      id: "epic-1-frontend",
+      repositoryId: "repo-1",
+      workspaceKind: "subtask",
+      name: "comments UI",
+      agent: "claude",
+      status: "pending",
+      branch: null,
+      worktreePath: null,
+      interruptedAt: null,
+      parentId: "epic-1",
+      role: "frontend",
+    },
   ];
   const agents = [
     { agent: "claude", label: "Claude", command: "claude", isDefault: true },

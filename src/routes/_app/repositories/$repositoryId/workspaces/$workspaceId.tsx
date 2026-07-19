@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Navigate, createFileRoute } from "@tanstack/react-router";
-import { Loader2, PanelRight, PanelRightClose } from "lucide-react";
+import { Link, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
+import { ChevronLeft, Loader2, PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AgentStatusBadge } from "@/components/AgentStatusBadge";
 import { BranchChip } from "@/components/BranchChip";
@@ -18,6 +18,8 @@ import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
 import { WorkspaceAgentToolbar } from "@/components/WorkspaceAgentToolbar";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
+import { useBoard } from "@/lib/hooks/useBoard";
+import { blockingRoles } from "@/lib/deriveBoardState";
 import { useGitStatus, useWatchWorkspaceGit } from "@/lib/hooks/useGit";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
@@ -36,7 +38,15 @@ function WorkspaceDetail() {
   const { data: repos } = useRepositories();
   const workspaceQuery = useWorkspace(workspaceId);
   const workspace = workspaceQuery.data;
+  const navigate = useNavigate();
   const navigateToRepoEntry = useNavigateToRepoEntry();
+  // A subtask drill-in reuses this route verbatim; its owning epic is
+  // `parentId`. Fetch that parent's board (shared cache with the board route) so
+  // the breadcrumb can show the epic goal and the "waiting" pane can name the
+  // producer this subtask is blocked on. `enabled` gates on a real subtask.
+  const subtaskParentId =
+    workspace?.workspaceKind === "subtask" ? workspace.parentId : null;
+  const { data: parentBoard } = useBoard(subtaskParentId ?? undefined);
   // Own the workspace's fs-watcher here, at the route root, so exactly one
   // watcher/listener exists for the whole workspace lifetime — the many
   // components that read `useGitStatus` (this header, ChangesPanel, the
@@ -163,8 +173,67 @@ function WorkspaceDetail() {
 
   const changeCount = changes?.length ?? 0;
 
+  const isSubtask = workspace.workspaceKind === "subtask";
+  const boardParentId = isSubtask ? workspace.parentId : null;
+  const epicGoal = parentBoard
+    ? parentBoard.parent.prompt?.trim() || parentBoard.parent.name
+    : null;
+
+  // An honest "not started yet" pane for a subtask with no worktree — it hasn't
+  // been spawned yet (blocked upstream / queued). Reuses the existing
+  // no-worktree gating: the row is a real Link that lands here, never a disabled
+  // dead click. The CTA routes back to the board (never a dead end).
+  if (isSubtask && boardParentId && !workspace.worktreePath) {
+    const blocking =
+      parentBoard && workspace.parentId
+        ? blockingRoles(workspace, parentBoard)
+        : [];
+    const waitingDesc = blocking.length
+      ? `Waiting for ${blocking.join(", ")} to publish its contract before this agent starts.`
+      : "This subtask hasn't started yet — it spins up once its upstream work is ready.";
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <SubtaskBreadcrumb
+          repositoryId={repositoryId}
+          parentId={boardParentId}
+          goal={epicGoal}
+          role={workspace.role}
+        />
+        <div className="flex flex-1 items-center justify-center p-6">
+          <PanelState
+            kind="empty"
+            title="Not started yet"
+            description={waitingDesc}
+            action={
+              <GlassButton
+                variant="primary"
+                size="sm"
+                onClick={() =>
+                  void navigate({
+                    to: "/repositories/$repositoryId/board/$parentId",
+                    params: { repositoryId, parentId: boardParentId },
+                  })
+                }
+              >
+                View board
+              </GlassButton>
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {isSubtask && boardParentId && (
+        <SubtaskBreadcrumb
+          repositoryId={repositoryId}
+          parentId={boardParentId}
+          goal={epicGoal}
+          role={workspace.role}
+        />
+      )}
       <header className="flex shrink-0 flex-col border-b border-(--color-border-subtle)">
         <div className="flex h-[var(--layout-header-height)] items-center gap-3 pl-4 pr-2">
           <div className="flex shrink-0 items-center gap-2">
@@ -285,6 +354,51 @@ function ChangesToggle({
         )}
       </button>
     </GlassTooltip>
+  );
+}
+
+/**
+ * The subtask drill-in's back-nav: `‹ {epic goal} / {role}`. The `‹ {goal}`
+ * portion links back to the epic's board; `{role}` is the current page
+ * (`aria-current`). Meaning rides text, not the chevron glyph alone.
+ */
+function SubtaskBreadcrumb({
+  repositoryId,
+  parentId,
+  goal,
+  role,
+}: {
+  repositoryId: string;
+  parentId: string;
+  goal: string | null;
+  role: string | null;
+}) {
+  return (
+    <nav
+      aria-label="Breadcrumb"
+      data-testid="subtask-breadcrumb"
+      className="flex h-9 shrink-0 items-center gap-1.5 border-b border-(--color-border-subtle) px-4 text-[13px]"
+    >
+      <Link
+        to="/repositories/$repositoryId/board/$parentId"
+        params={{ repositoryId, parentId }}
+        data-testid="subtask-breadcrumb-board"
+        className="-mx-1 flex items-center gap-1 rounded-[6px] px-1 py-0.5 text-(--color-text-muted) transition-colors duration-150 hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+      >
+        <ChevronLeft size={13} aria-hidden="true" />
+        <span className="max-w-[32ch] truncate">{goal ?? "Epic"}</span>
+      </Link>
+      {role && (
+        <>
+          <span aria-hidden="true" className="text-(--color-text-muted)">
+            /
+          </span>
+          <span aria-current="page" className="text-(--color-text-secondary)">
+            {role}
+          </span>
+        </>
+      )}
+    </nav>
   );
 }
 

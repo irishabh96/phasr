@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Check, Eye, Loader2, Lock } from "lucide-react";
 import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
 import { AgentStatusIndicator } from "@/components/ui/AgentStatusIndicator";
@@ -33,6 +33,12 @@ export interface BoardCardViewProps {
   onMarkDone?: () => void;
   /** Disables the "Mark done" button + shows a spinner while publishing. */
   markDonePending?: boolean;
+  /**
+   * Open this subtask's detail view (the drill-in — a subtask id IS a workspace
+   * id). When supplied the whole card becomes a keyboard-activatable button;
+   * when omitted (e.g. `/design-test`) the card is static/presentational.
+   */
+  onOpen?: () => void;
 }
 
 /**
@@ -56,13 +62,34 @@ export function BoardCardView({
   blockedOnRoles = [],
   onMarkDone,
   markDonePending = false,
+  onOpen,
 }: BoardCardViewProps) {
+  const interactive = !!onOpen;
+  const activation = interactive
+    ? {
+        role: "button" as const,
+        tabIndex: 0,
+        "aria-label": `Open ${role ? `${role} · ` : ""}${name}`,
+        onClick: onOpen,
+        onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen?.();
+          }
+        },
+      }
+    : {};
   return (
     <article
       data-testid="board-card"
       data-board-state={state}
       data-role={role ?? undefined}
-      className="flex flex-col gap-2 rounded-(--radius-panel) border border-(--color-border-default) bg-(--color-bg-surface) p-3"
+      {...activation}
+      className={cn(
+        "flex flex-col gap-2 rounded-(--radius-panel) border border-(--color-border-default) bg-(--color-bg-surface) p-3",
+        interactive &&
+          "cursor-pointer outline-none transition-colors duration-150 hover:border-(--color-border-strong) hover:bg-(--color-bg-elevated) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+      )}
     >
       <div className="flex items-center gap-2">
         <CardGlyph state={state} />
@@ -98,7 +125,11 @@ export function BoardCardView({
             data-testid="board-mark-done"
             className="ml-auto shrink-0 gap-1"
             disabled={markDonePending}
-            onClick={onMarkDone}
+            onClick={(e) => {
+              // Nested button inside a clickable card — never open the drill-in.
+              e.stopPropagation();
+              onMarkDone();
+            }}
             title="Publish this subtask's handoff contract so its dependents unblock."
           >
             {markDonePending ? (

@@ -1,7 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { DecomposeForm } from "@/components/DecomposeForm";
 import { Dialog } from "@/components/ui/Dialog";
 import { useRepositories } from "@/lib/hooks/useRepositories";
+import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 
 /**
@@ -26,6 +28,7 @@ export function DecomposeModal() {
   const clearPending = useUiStore((s) => s.clearPendingDecompose);
   const repositories = useRepositories();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const open = repoId !== null;
   const repo = repoId
@@ -46,6 +49,11 @@ export function DecomposeModal() {
           repositoryId={repoId}
           onStarted={(board) => {
             clearPending();
+            // Refresh the repo's workspace list so the new `parent` row surfaces
+            // as an epic node in the sidebar immediately (not on next refetch).
+            queryClient.invalidateQueries({
+              queryKey: workspaceKeys.byRepository(repoId),
+            });
             void navigate({
               to: "/repositories/$repositoryId/board/$parentId",
               params: { repositoryId: repoId, parentId: board.parent.id },

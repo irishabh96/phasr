@@ -116,3 +116,134 @@ test.describe("New epic entry point (real app)", () => {
     expect(await callCount(page, "start_decomposition")).toBe(0);
   });
 });
+
+/**
+ * The epic node + subtask drill-in navigation (Direction A). The harness seeds a
+ * persisted decomposition on repo-1 (parent `epic-1` + `backend`/`frontend`
+ * subtasks). Asserts the epic becomes a collapsible sidebar node whose subtasks
+ * nest as the existing workspace rows, that a subtask row drills into the
+ * `/workspaces/$workspaceId` detail verbatim, that the breadcrumbs navigate back,
+ * that a not-started subtask lands on the honest "waiting" pane, and that a repo
+ * with no epics keeps the single-agent sidebar untouched.
+ */
+const EPIC_GOAL = "Add a task-comments API and wire the comments UI";
+
+test.describe("Epic node + subtask drill-in (Direction A)", () => {
+  test("the epic renders as a sidebar node, expands to subtask rows, and is absent for a single-agent repo", async ({
+    page,
+  }) => {
+    const { errors } = await boot(page);
+
+    // The epic is a discoverable node in the sidebar (a peer of the workspace
+    // list); its label carries the epic goal — meaning on text, not glyph alone.
+    const epicNode = page.locator(`[aria-label="Epic: ${EPIC_GOAL}"]`);
+    await expect(epicNode.first()).toBeVisible({ timeout: 15_000 });
+
+    // Progressive disclosure: exactly ONE epic node in the whole tree (repo-1's).
+    // sidecar (repo-2) is a single-agent repo and contributes none.
+    await expect(page.locator('[aria-label^="Epic:"]')).toHaveCount(1);
+
+    // Collapsed by default (not the active epic) → the chevron expands it and
+    // reveals the subtask rows (reused WorkspaceLink rows), no navigation.
+    await page.getByRole("button", { name: new RegExp(`Expand ${EPIC_GOAL}`) }).click();
+    await expect(page.getByText("comments API", { exact: true })).toBeVisible();
+    await expect(page.getByText("comments UI", { exact: true })).toBeVisible();
+    // Expanding must NOT have navigated to the board.
+    await expect(page).toHaveURL(/workspaces\/ws-agent/);
+
+    const bad = realErrors(errors);
+    expect(bad, bad.join("\n---\n")).toHaveLength(0);
+  });
+
+  test("a subtask row drills into the detail view; both breadcrumbs navigate back", async ({
+    page,
+  }) => {
+    await boot(page);
+    await page.getByRole("button", { name: new RegExp(`Expand ${EPIC_GOAL}`) }).click();
+
+    // Click the started backend subtask → the EXISTING detail route verbatim.
+    await page.getByText("comments API", { exact: true }).click();
+    await expect(page).toHaveURL(
+      /repositories\/repo-1\/workspaces\/epic-1-backend/,
+      { timeout: 10_000 },
+    );
+
+    // The subtask breadcrumb links back to the epic's board.
+    const crumb = page.getByTestId("subtask-breadcrumb-board");
+    await expect(crumb).toBeVisible();
+    await crumb.click();
+    await expect(page).toHaveURL(/repositories\/repo-1\/board\/epic-1/, {
+      timeout: 10_000,
+    });
+
+    // The board mounts its breadcrumb; the repo crumb links back to repo home.
+    const repoCrumb = page.getByTestId("board-breadcrumb-repo");
+    await expect(repoCrumb).toBeVisible();
+    await repoCrumb.click();
+    await expect(page).toHaveURL(/repositories\/repo-1$/, { timeout: 10_000 });
+  });
+
+  test("a not-started subtask lands on the honest 'waiting' pane (not a dead click)", async ({
+    page,
+  }) => {
+    await boot(page);
+    await page.getByRole("button", { name: new RegExp(`Expand ${EPIC_GOAL}`) }).click();
+
+    // The pending frontend subtask has no worktree yet.
+    await page.getByText("comments UI", { exact: true }).click();
+    await expect(page).toHaveURL(/workspaces\/epic-1-frontend/, {
+      timeout: 10_000,
+    });
+
+    await expect(page.getByText("Not started yet")).toBeVisible();
+    // Honest: it names the producer it's waiting on, resolved from the DAG.
+    await expect(page.getByText(/Waiting for backend/i)).toBeVisible();
+    // The CTA routes to the board — never a dead end.
+    await page.getByRole("button", { name: "View board" }).click();
+    await expect(page).toHaveURL(/repositories\/repo-1\/board\/epic-1/, {
+      timeout: 10_000,
+    });
+  });
+
+  test("board cards are keyboard-activatable and open the subtask detail", async ({
+    page,
+  }) => {
+    await boot(page);
+    // Open the board directly via the epic node row (click, not the chevron).
+    await page.locator(`[aria-label="Epic: ${EPIC_GOAL}"]`).first().click();
+    await expect(page).toHaveURL(/repositories\/repo-1\/board\/epic-1/, {
+      timeout: 10_000,
+    });
+
+    const backendCard = page.locator(
+      '[data-testid="board-card"][data-role="backend"]',
+    );
+    await expect(backendCard).toBeVisible();
+    // Whole card is a button; Enter activates the drill-in.
+    await backendCard.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/workspaces\/epic-1-backend/, {
+      timeout: 10_000,
+    });
+  });
+
+  test("the single-agent sidebar is unchanged when a repo has no epics", async ({
+    page,
+  }) => {
+    const fixtures = makeFixtures();
+    // Drop the epic + its subtasks → a pure single-agent repo.
+    fixtures.workspaces = fixtures.workspaces.filter(
+      (w) => !w.id.startsWith("epic-"),
+    );
+    const { errors } = await bootApp(page, fixtures);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+
+    // The flat agent/local rows render exactly as before…
+    await expect(page.getByText("add-feature", { exact: true })).toBeVisible();
+    // …and there is NO epic group anywhere in the tree.
+    await expect(page.locator('[aria-label^="Epic:"]')).toHaveCount(0);
+
+    const bad = realErrors(errors);
+    expect(bad, bad.join("\n---\n")).toHaveLength(0);
+  });
+});

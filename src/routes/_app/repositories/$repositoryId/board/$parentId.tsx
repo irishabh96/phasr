@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
+import { BoardBreadcrumb } from "@/components/board/BoardBreadcrumb";
 import { BoardView } from "@/components/board/BoardView";
 import { PanelState } from "@/components/ui/PanelState";
 import { useBoard, useBoardTaskEvents } from "@/lib/hooks/useBoard";
@@ -15,7 +16,7 @@ import { useBoard, useBoardTaskEvents } from "@/lib/hooks/useBoard";
  * kinds (S2-T3), so the single-agent experience is untouched.
  */
 function BoardRoute() {
-  const { parentId } = Route.useParams();
+  const { repositoryId, parentId } = Route.useParams();
   const { data: board, isLoading, error, refetch } = useBoard(parentId);
 
   const subtaskIds = useMemo(
@@ -36,7 +37,13 @@ function BoardRoute() {
           onRetry={() => void refetch()}
         />
       ) : board ? (
-        <BoardView board={board} />
+        <>
+          <BoardBreadcrumb
+            repositoryId={repositoryId}
+            goal={board.parent.prompt?.trim() || board.parent.name}
+          />
+          <BoardView board={board} />
+        </>
       ) : (
         <PanelState
           kind="empty"
