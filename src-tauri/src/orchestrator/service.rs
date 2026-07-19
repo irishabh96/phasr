@@ -923,6 +923,13 @@ impl TaskOrchestrator {
         //   - PRODUCER → append the "write your contract to <path>" instruction.
         //   - CONSUMER → prepend each satisfied predecessor's contract CONTENTS.
         let producer_suffix = if is_producer(&subtask.id, deps) {
+            // Create the contract dir BEFORE the agent runs, so writing the
+            // handoff file is a plain write into an existing directory — a
+            // strict agent that won't `mkdir -p` an absolute out-of-worktree
+            // path still succeeds. Best-effort: publish_contract also
+            // create_dir_all's as a fallback, and Claude's writer auto-creates
+            // parents, so a transient failure here isn't fatal to the spawn.
+            let _ = std::fs::create_dir_all(config.contract_dir(&parent.id));
             Some(producer_prompt_suffix(&config.contract_file(&parent.id, &role)))
         } else {
             None
@@ -2304,6 +2311,14 @@ mod tests {
                 .unwrap()
                 .contains(&expected_path.display().to_string()),
             "the backend (producer) prompt must carry the write-contract instruction"
+        );
+
+        // The contract dir is pre-created at spawn time, so a producer agent
+        // writes the handoff file into an existing directory rather than having
+        // to `mkdir -p` an absolute out-of-worktree path.
+        assert!(
+            config.contract_dir(&parent_id).is_dir(),
+            "the producer's contract dir must exist before the agent runs"
         );
 
         cleanup_board(&orchestrator, &workspaces, &parent_id).await;
