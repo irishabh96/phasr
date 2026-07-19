@@ -3,11 +3,13 @@ import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   Agent,
   AgentOption,
+  BoardState,
   BranchStatus,
   Commit,
   CommitFileChange,
   CommitOutput,
   ConflictSide,
+  DecompositionInput,
   DiffScope,
   FileChange,
   GitPushOutcome,
@@ -235,6 +237,17 @@ export const tauri = {
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>
     invoke<PathValidation>("validate_workspace_path", { path }),
+
+  // ── task board (multi-agent decomposition, P0 slice) ─────────────────
+  // Thin wrappers over the FROZEN §C wire contract (`commands/board.rs`).
+  // Errors arrive as plain strings. NOTE (deferred): `publish_contract`
+  // ("mark done") and `integrate_parent` (combined-diff integration) belong
+  // to Chunk 3/4 and are intentionally NOT wired here yet — see the TODO in
+  // the board route where the integrate action will hook in.
+  startDecomposition: (input: DecompositionInput) =>
+    invoke<BoardState>("start_decomposition", { input }),
+  getBoard: (parentId: string) =>
+    invoke<BoardState>("get_board", { parentId }),
 
   // ── launchers ────────────────────────────────────────────────────────
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),

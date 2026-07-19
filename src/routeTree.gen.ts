@@ -26,6 +26,7 @@ import { Route as AppDevDiffPreviewRouteImport } from './routes/_app/dev.diff-pr
 import { Route as AppRepositoriesRepositoryIdIndexRouteImport } from './routes/_app/repositories/$repositoryId/index'
 import { Route as AppRepositoriesRepositoryIdSettingsRouteImport } from './routes/_app/repositories/$repositoryId/settings'
 import { Route as AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRouteImport } from './routes/_app/repositories/$repositoryId/workspaces/$workspaceId'
+import { Route as AppRepositoriesRepositoryIdBoardParentIdRouteImport } from './routes/_app/repositories/$repositoryId/board/$parentId'
 
 const SignUpRoute = SignUpRouteImport.update({
   id: '/sign-up',
@@ -114,6 +115,12 @@ const AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute =
     path: '/repositories/$repositoryId/workspaces/$workspaceId',
     getParentRoute: () => AppRoute,
   } as any)
+const AppRepositoriesRepositoryIdBoardParentIdRoute =
+  AppRepositoriesRepositoryIdBoardParentIdRouteImport.update({
+    id: '/repositories/$repositoryId/board/$parentId',
+    path: '/repositories/$repositoryId/board/$parentId',
+    getParentRoute: () => AppRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -131,6 +138,7 @@ export interface FileRoutesByFullPath {
   '/settings/': typeof AppSettingsIndexRoute
   '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
+  '/repositories/$repositoryId/board/$parentId': typeof AppRepositoriesRepositoryIdBoardParentIdRoute
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
@@ -148,6 +156,7 @@ export interface FileRoutesByTo {
   '/settings': typeof AppSettingsIndexRoute
   '/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/repositories/$repositoryId': typeof AppRepositoriesRepositoryIdIndexRoute
+  '/repositories/$repositoryId/board/$parentId': typeof AppRepositoriesRepositoryIdBoardParentIdRoute
   '/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesById {
@@ -168,6 +177,7 @@ export interface FileRoutesById {
   '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/repositories/$repositoryId/settings': typeof AppRepositoriesRepositoryIdSettingsRoute
   '/_app/repositories/$repositoryId/': typeof AppRepositoriesRepositoryIdIndexRoute
+  '/_app/repositories/$repositoryId/board/$parentId': typeof AppRepositoriesRepositoryIdBoardParentIdRoute
   '/_app/repositories/$repositoryId/workspaces/$workspaceId': typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 export interface FileRouteTypes {
@@ -188,6 +198,7 @@ export interface FileRouteTypes {
     | '/settings/'
     | '/repositories/$repositoryId/settings'
     | '/repositories/$repositoryId/'
+    | '/repositories/$repositoryId/board/$parentId'
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -205,6 +216,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/repositories/$repositoryId/settings'
     | '/repositories/$repositoryId'
+    | '/repositories/$repositoryId/board/$parentId'
     | '/repositories/$repositoryId/workspaces/$workspaceId'
   id:
     | '__root__'
@@ -224,6 +236,7 @@ export interface FileRouteTypes {
     | '/_app/settings/'
     | '/_app/repositories/$repositoryId/settings'
     | '/_app/repositories/$repositoryId/'
+    | '/_app/repositories/$repositoryId/board/$parentId'
     | '/_app/repositories/$repositoryId/workspaces/$workspaceId'
   fileRoutesById: FileRoutesById
 }
@@ -355,6 +368,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/repositories/$repositoryId/board/$parentId': {
+      id: '/_app/repositories/$repositoryId/board/$parentId'
+      path: '/repositories/$repositoryId/board/$parentId'
+      fullPath: '/repositories/$repositoryId/board/$parentId'
+      preLoaderRoute: typeof AppRepositoriesRepositoryIdBoardParentIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
@@ -383,6 +403,7 @@ interface AppRouteChildren {
   AppDevDiffPreviewRoute: typeof AppDevDiffPreviewRoute
   AppRepositoriesRepositoryIdSettingsRoute: typeof AppRepositoriesRepositoryIdSettingsRoute
   AppRepositoriesRepositoryIdIndexRoute: typeof AppRepositoriesRepositoryIdIndexRoute
+  AppRepositoriesRepositoryIdBoardParentIdRoute: typeof AppRepositoriesRepositoryIdBoardParentIdRoute
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute: typeof AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute
 }
 
@@ -394,6 +415,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppRepositoriesRepositoryIdSettingsRoute:
     AppRepositoriesRepositoryIdSettingsRoute,
   AppRepositoriesRepositoryIdIndexRoute: AppRepositoriesRepositoryIdIndexRoute,
+  AppRepositoriesRepositoryIdBoardParentIdRoute:
+    AppRepositoriesRepositoryIdBoardParentIdRoute,
   AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute:
     AppRepositoriesRepositoryIdWorkspacesWorkspaceIdRoute,
 }

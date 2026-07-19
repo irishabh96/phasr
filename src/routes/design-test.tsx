@@ -13,9 +13,12 @@ import {
   AgentStatusIndicator,
   AgentStatusMetaLine,
 } from "@/components/ui/AgentStatusIndicator";
+import { BoardView } from "@/components/board/BoardView";
+import { DecomposeForm } from "@/components/DecomposeForm";
 import type { AgentUiState } from "@/lib/deriveAgentState";
 import { showToast } from "@/lib/toast";
 import { useUiStore } from "@/lib/store";
+import type { BoardState, Workspace } from "@/lib/types";
 
 /**
  * Every honest-status state (Step 0 — S0.1/S0.2), driven by mocked
@@ -34,6 +37,113 @@ const AGENT_STATES: ReadonlyArray<{ state: AgentUiState; since: number | null }>
     { state: "interrupted", since: null },
     { state: "stopped", since: 120_000 },
   ];
+
+// ── task-board mock fixtures (S1/S2) ────────────────────────────────────────
+// Two board snapshots exercising all four derived lanes: a FRESH board (backend
+// working → In progress, frontend blocked → Backlog) and a post-HANDOFF board
+// (backend contract published → Review, frontend working → In progress). Rows
+// carry a real `startedAt` so `deriveBoardState` renders honest status with no
+// liveness IPC.
+const BOARD_T0 = Date.now();
+const isoAgo = (ms: number) => new Date(BOARD_T0 - ms).toISOString();
+
+function mockWs(overrides: Partial<Workspace> & { id: string }): Workspace {
+  return {
+    repositoryId: "repo-1",
+    workspaceKind: "subtask",
+    name: overrides.id,
+    prompt: null,
+    agent: "claude",
+    command: "claude",
+    status: "pending",
+    branch: null,
+    worktreePath: null,
+    exitCode: null,
+    createdAt: isoAgo(600_000),
+    startedAt: null,
+    finishedAt: null,
+    archivedAt: null,
+    interruptedAt: null,
+    parentId: "parent-1",
+    role: null,
+    updatedAt: isoAgo(0),
+    ...overrides,
+  };
+}
+
+const MOCK_PARENT = mockWs({
+  id: "parent-1",
+  workspaceKind: "parent",
+  name: "task-comments",
+  prompt: "Add a task-comments API and wire the comments UI",
+  agent: null,
+  parentId: null,
+  role: null,
+});
+
+const MOCK_EDGE = {
+  id: "edge-1",
+  parentId: "parent-1",
+  fromSubtaskId: "sub-backend",
+  toSubtaskId: "sub-frontend",
+  createdAt: isoAgo(600_000),
+};
+
+// Fresh: backend running (→ working), frontend pending + unsatisfied edge (→ blocked).
+const BOARD_FRESH: BoardState = {
+  parent: MOCK_PARENT,
+  subtasks: [
+    mockWs({
+      id: "sub-backend",
+      role: "backend",
+      name: "comments API",
+      status: "running",
+      startedAt: isoAgo(60_000),
+    }),
+    mockWs({
+      id: "sub-frontend",
+      role: "frontend",
+      name: "comments UI",
+      status: "pending",
+    }),
+  ],
+  dependencies: [MOCK_EDGE],
+  contracts: [],
+};
+
+// Handoff: backend published its contract (→ needs-review), frontend now
+// running (→ working).
+const BOARD_HANDOFF: BoardState = {
+  parent: MOCK_PARENT,
+  subtasks: [
+    mockWs({
+      id: "sub-backend",
+      role: "backend",
+      name: "comments API",
+      status: "running",
+      startedAt: isoAgo(300_000),
+    }),
+    mockWs({
+      id: "sub-frontend",
+      role: "frontend",
+      name: "comments UI",
+      status: "running",
+      startedAt: isoAgo(45_000),
+    }),
+  ],
+  dependencies: [MOCK_EDGE],
+  contracts: [
+    {
+      id: "contract-backend",
+      parentId: "parent-1",
+      subtaskId: "sub-backend",
+      role: "backend",
+      contractPath: "~/.phasr/tasks/parent-1/contracts/backend.md",
+      publishedAt: isoAgo(20_000),
+      createdAt: isoAgo(25_000),
+    },
+  ],
+};
 
 /**
  * Dev-only Playwright harness. Renders the design-fix surfaces with NO Tauri
@@ -252,6 +362,37 @@ function DesignTest() {
               </div>
             );
           })}
+        </section>
+
+        {/* Task board — decompose form (S1-T2) + read-only board (S2-T1) */}
+        <section data-testid="decompose" className="flex flex-col gap-3">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Decompose form
+          </h2>
+          <DecomposeForm
+            repositoryId="repo-1"
+            onStarted={(board) =>
+              showToast({
+                title: "Started (mock)",
+                intent: "success",
+                message: `parent ${board.parent.id}`,
+              })
+            }
+          />
+        </section>
+
+        <section data-testid="board-fresh" className="flex flex-col gap-3">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Board · fresh (backend working, frontend blocked)
+          </h2>
+          <BoardView board={BOARD_FRESH} />
+        </section>
+
+        <section data-testid="board-handoff" className="flex flex-col gap-3">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Board · handoff (backend in review, frontend working)
+          </h2>
+          <BoardView board={BOARD_HANDOFF} />
         </section>
 
         {/* Diff — Batch 0 T5 palette + diff a11y */}

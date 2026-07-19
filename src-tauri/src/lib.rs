@@ -236,6 +236,12 @@ async fn initialize_database_state(
     // from each running agent's in-memory activity stamp and pushes only
     // transitions onto the same `phasr://task-status` bridge above.
     orchestrator.spawn_liveness_poller();
+    // Dependency-aware scheduler (E2-T2): the fan-out counterpart to the
+    // liveness poller. One background poller that bridges published contract
+    // files into the DB and spawns each decomposition subtask whose incoming
+    // edges are satisfied — the initial ready set (the root `backend`) fans out
+    // within one interval of `start_decomposition` writing the DAG.
+    orchestrator.spawn_scheduler(BoardRepo::new(pool.clone()));
 
     handle.manage(repository_repo);
     handle.manage(workspace_repo);

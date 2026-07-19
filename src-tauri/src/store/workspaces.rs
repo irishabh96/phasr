@@ -184,6 +184,28 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
+    /// Every non-deleted `parent` (decomposition-container) workspace on this
+    /// machine — the scheduler's per-tick enumeration entry point (E2-T2).
+    /// Deliberately UNSCOPED by user, exactly like `list_by_status` backs the
+    /// liveness poller: the scheduler is a machine-wide background consumer, not
+    /// a command, and each parent's subtasks already carry their owner's
+    /// `user_id` (so a spawned subtask stays owned via the row UPDATE). A
+    /// `parent` never runs a PTY and stays `pending`, so there is no status to
+    /// filter on here.
+    pub async fn list_parents(&self) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+             FROM workspaces
+             WHERE workspace_kind = 'parent' AND deleted_at IS NULL
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
@@ -1168,5 +1190,42 @@ mod tests {
         let kids = workspaces.list_by_parent("parent-1").await.unwrap();
         assert_eq!(kids.len(), 1);
         assert_eq!(kids[0].id, sub.id);
+    }
+
+    // E2-T2: `list_parents` returns ONLY `parent`-kind rows (the scheduler's
+    // enumeration), never standalone agents, locals, or subtasks — otherwise
+    // the scheduler would try to fan-out a repo it has no DAG for.
+    #[tokio::test]
+    async fn list_parents_returns_only_parent_kind_rows() {
+        let (_repos, workspaces, repo) = fresh().await;
+
+        let mut parent = Workspace::new(repo.id.clone(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+        workspaces.insert(&parent).await.unwrap();
+
+        let agent = Workspace::new(repo.id.clone(), "solo".into(), "cmd".into());
+        workspaces.insert(&agent).await.unwrap();
+
+        let mut local = Workspace::new(repo.id.clone(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        workspaces.insert(&local).await.unwrap();
+
+        let mut sub = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        sub.workspace_kind = WorkspaceKind::Subtask;
+        sub.parent_id = Some(parent.id.clone());
+        sub.role = Some("backend".into());
+        workspaces.insert(&sub).await.unwrap();
+
+        let parents = workspaces.list_parents().await.unwrap();
+        assert_eq!(parents.len(), 1, "only the one parent row is enumerated");
+        assert_eq!(parents[0].id, parent.id);
+        assert_eq!(parents[0].workspace_kind, WorkspaceKind::Parent);
+
+        // A soft-deleted parent drops out of the enumeration.
+        workspaces.delete(&parent.id).await.unwrap();
+        assert!(
+            workspaces.list_parents().await.unwrap().is_empty(),
+            "a soft-deleted parent must not be scheduled"
+        );
     }
 }

@@ -274,6 +274,12 @@ function RepoWorkspaces({
   const workspaces = useWorkspaces(repoId);
   const visibleWorkspaces = [...(workspaces.data ?? [])]
     .filter((ws) => ws.status !== "archived")
+    // Progressive disclosure (S2-T3 / spec §B6): board `parent`/`subtask` rows
+    // live only on the board route, never as loose rows in the flat sidebar.
+    // A single agent on a single task looks EXACTLY as it does today.
+    .filter(
+      (ws) => ws.workspaceKind === "agent" || ws.workspaceKind === "local",
+    )
     .sort((a, b) => {
       if (a.workspaceKind !== b.workspaceKind)
         return a.workspaceKind === "local" ? -1 : 1;

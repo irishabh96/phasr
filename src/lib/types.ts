@@ -25,7 +25,15 @@ export type Agent = "claude" | "codex" | "copilot" | "gemini" | "opencode";
 export interface Workspace {
   id: string;
   repositoryId: string;
-  workspaceKind: "agent" | "local";
+  /**
+   * `agent`/`local` are the standalone single-task kinds. `parent`/`subtask`
+   * are the multi-agent task-board kinds (P0 slice): a `parent` is the
+   * decomposition container (no PTY until integration), a `subtask` is a real
+   * agent tied to a `parentId` + `role`. Mirrors the Rust `WorkspaceKind`
+   * enum (`domain/workspace.rs`). Progressive disclosure: `parent`/`subtask`
+   * rows never appear in the flat sidebar list — the board is their home.
+   */
+  workspaceKind: "agent" | "local" | "parent" | "subtask";
   name: string;
   prompt: string | null;
   agent: Agent | null;
@@ -47,6 +55,19 @@ export interface Workspace {
    * leaves this `null`. ISO-8601 UTC. (Step 0 — Honest Status, E0.)
    */
   interruptedAt: string | null;
+  /**
+   * Multi-agent board linkage (P0 slice). `null` for standalone `agent`/`local`
+   * workspaces. Set on a `subtask` row to its owning `parent` workspace id;
+   * `null` on the parent itself. Mirrors the additive `parent_id` column
+   * (migration 0013).
+   */
+  parentId: string | null;
+  /**
+   * The subtask's DAG slot (e.g. `"backend"` / `"frontend"`). `null` for
+   * `agent`/`local`/`parent`. The subtask dedup key is `(parentId, role)`,
+   * never `name`. Mirrors the additive `role` column (migration 0013).
+   */
+  role: string | null;
   updatedAt: string;
 }
 
@@ -286,4 +307,75 @@ export interface Launcher {
   name: string;
   kind: LauncherKind;
   available: boolean;
+}
+
+// ── multi-agent task board (P0 slice) ──────────────────────────────────────
+// Mirrors the FROZEN Rust ↔ TS wire contract (§C): `commands/board.rs`
+// (`DecompositionInput`/`BoardState`) + `domain/{dependency,contract}.rs`
+// (both `#[serde(rename_all = "camelCase")]`). Board/DAG state stays OUT of
+// `WorkspaceStatus` — "blocked"/"needs-review" are frontend-DERIVED buckets,
+// never stored (spec claim #10).
+
+/**
+ * A directed edge in a parent's DAG, addressed by concrete subtask ids. The
+ * PoC persists exactly one: `backend → frontend`. `fromSubtaskId` is the
+ * producer (whose published contract unblocks the consumer `toSubtaskId`).
+ */
+export interface WorkspaceDependency {
+  id: string;
+  parentId: string;
+  fromSubtaskId: string;
+  toSubtaskId: string;
+  createdAt: string;
+}
+
+/**
+ * A subtask's published handoff contract. `publishedAt != null` is the
+ * file→DB bridge that satisfies a downstream edge — it drives the frontend
+ * "blocked" derivation. `null` while a row exists but the contract isn't
+ * published yet.
+ */
+export interface WorkspaceContract {
+  id: string;
+  parentId: string;
+  subtaskId: string;
+  role: string;
+  contractPath: string;
+  publishedAt: string | null;
+  createdAt: string;
+}
+
+/** Everything the board route renders — the response of both board commands. */
+export interface BoardState {
+  /** `workspaceKind:"parent"`, `status:"pending"` until integration. */
+  parent: Workspace;
+  /** `workspaceKind:"subtask"`, each with `parentId` + `role` set. */
+  subtasks: Workspace[];
+  dependencies: WorkspaceDependency[];
+  contracts: WorkspaceContract[];
+}
+
+/** One planned subtask in a decomposition draft (frontend-only until approval). */
+export interface SubtaskInput {
+  role: string;
+  agent: Agent;
+  prompt: string;
+}
+
+/** One planned edge in a decomposition draft, addressed by role. */
+export interface EdgeInput {
+  fromRole: string;
+  toRole: string;
+}
+
+/**
+ * The approved decomposition plan submitted by the "Start N agents" gate. The
+ * draft lives entirely in the frontend form until the user clicks — nothing is
+ * persisted before `startDecomposition` fires (B2).
+ */
+export interface DecompositionInput {
+  repositoryId: string;
+  parentPrompt: string;
+  subtasks: SubtaskInput[];
+  edges: EdgeInput[];
 }

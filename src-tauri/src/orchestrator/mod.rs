@@ -9,6 +9,7 @@
 mod error;
 mod liveness;
 mod repo_locks;
+mod scheduler;
 mod service;
 mod templating;
 

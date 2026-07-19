@@ -74,3 +74,18 @@ export function useAgentLiveness(
     () => (taskId ? livenessByTask[taskId] : undefined),
   );
 }
+
+/**
+ * Subscribe to the WHOLE liveness map at once. Used by the task board, which
+ * derives every subtask card's state in one place (no per-card hook in a
+ * variable-length loop). The map reference is stable across no-op events
+ * (`setAgentLiveness`/`clearAgentLiveness` only reassign on a real change), so
+ * this is a safe `useSyncExternalStore` snapshot.
+ */
+export function useAllAgentLiveness(): Record<string, AgentLiveness> {
+  return useSyncExternalStore(
+    subscribe,
+    () => livenessByTask,
+    () => livenessByTask,
+  );
+}

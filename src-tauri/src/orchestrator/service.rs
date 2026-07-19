@@ -25,17 +25,21 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
 
-use crate::domain::{Agent, Workspace, WorkspaceKind, WorkspaceStatus};
+use crate::domain::{Agent, Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceStatus};
 use crate::git;
 use crate::pty::handle::PtyHandle;
 use crate::pty::{PtyEvent, TaskRuntime};
-use crate::store::{RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
+use crate::store::{BoardRepo, RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
 use super::error::OrchestratorError;
 use super::liveness::{classify, DerivedState, LivenessThresholds, LIVENESS_POLL_INTERVAL};
 use super::repo_locks::RepoLockRegistry;
+use super::scheduler::{
+    augment_prompt, consumer_prompt_prefix, contract_file_is_ready, incoming_producer_ids,
+    is_producer, producer_prompt_suffix, ready_subtask_ids, ContractSeed, SchedulerConfig,
+};
 use super::templating::interpolate_command;
 
 /// How long we wait for SIGINT to gracefully shut a process down
@@ -691,6 +695,371 @@ impl TaskOrchestrator {
         // grow without bound and a later re-run of the same id starts fresh.
         last_derived.retain(|task_id, _| still_running.contains(task_id));
     }
+
+    // ===== Scheduler (E2-T2): dependency-aware fan-out =====
+
+    /// Start the single decomposition scheduler. Mirrors
+    /// `spawn_liveness_poller` exactly: ONE background `tokio::interval` task,
+    /// started once at app boot from `lib.rs::initialize_database_state`. It is
+    /// an additive DB/contract-file consumer that spawns ready subtasks — no
+    /// writes to the PTY hot path (spec claim #8). The initial ready set (the
+    /// root `backend`) spawns within one interval of `start_decomposition`
+    /// writing the DAG; no direct nudge is needed (polling picks it up).
+    pub fn spawn_scheduler(&self, board: BoardRepo) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let config = SchedulerConfig::default();
+            let mut interval = tokio::time::interval(config.poll_interval);
+            loop {
+                interval.tick().await;
+                this.run_scheduler_tick(&board, &config).await;
+            }
+        });
+    }
+
+    /// One scheduler pass. For every active decomposition parent:
+    ///   1. Bridge any newly-published contract FILE into a
+    ///      `workspace_contracts` row (the file→DB bridge, B3) — this is what
+    ///      flips a producer's outgoing edges from unsatisfied → satisfied.
+    ///   2. Re-read contracts, derive the READY set (pending + every incoming
+    ///      edge satisfied), and spawn each ready subtask under the per-repo
+    ///      lock with its handoff prompt seeded (B5), capped at `max_concurrent`
+    ///      in-flight via a `tokio::Semaphore`.
+    /// Factored out of the loop so tests drive it directly with an injected
+    /// config (hand-driven tick, tiny cap, a tempdir contract root) instead of
+    /// the 3 s clock — exactly like `run_liveness_tick`.
+    async fn run_scheduler_tick(&self, board: &BoardRepo, config: &SchedulerConfig) {
+        let parents = match self.workspaces.list_parents().await {
+            Ok(parents) => parents,
+            Err(err) => {
+                eprintln!("scheduler: failed to list parents: {err}");
+                return;
+            }
+        };
+        if parents.is_empty() {
+            return;
+        }
+
+        let now = Utc::now();
+        // Gather per-parent state and the GLOBAL count of already-running
+        // subtasks — the concurrency cap is app-wide, not per-parent.
+        let mut plans: Vec<ParentPlan> = Vec::new();
+        let mut running_now = 0usize;
+        for parent in parents {
+            let subtasks = match self.workspaces.list_by_parent(&parent.id).await {
+                Ok(subtasks) => subtasks,
+                Err(err) => {
+                    eprintln!("scheduler: list_by_parent({}) failed: {err}", parent.id);
+                    continue;
+                }
+            };
+            // Skip a parent whose subtasks have all left pending/running — there
+            // is nothing to bridge or spawn (a fully done/dead decomposition).
+            let has_work = subtasks
+                .iter()
+                .any(|s| matches!(s.status, WorkspaceStatus::Pending | WorkspaceStatus::Running));
+            if !has_work {
+                continue;
+            }
+
+            // 1. File→DB bridge FIRST, so a contract published this tick already
+            //    counts toward edge-satisfaction below (same-tick handoff).
+            self.bridge_published_contracts(board, &parent.id, &subtasks, config, now)
+                .await;
+
+            let deps = match board.list_dependencies(&parent.id).await {
+                Ok(deps) => deps,
+                Err(err) => {
+                    eprintln!("scheduler: list_dependencies({}) failed: {err}", parent.id);
+                    continue;
+                }
+            };
+            // Re-read contracts AFTER the bridge — the just-published row is now
+            // visible to the ready derivation.
+            let contracts = match board.list_contracts(&parent.id).await {
+                Ok(contracts) => contracts,
+                Err(err) => {
+                    eprintln!("scheduler: list_contracts({}) failed: {err}", parent.id);
+                    continue;
+                }
+            };
+
+            running_now += subtasks
+                .iter()
+                .filter(|s| s.status == WorkspaceStatus::Running)
+                .count();
+            plans.push(ParentPlan {
+                parent,
+                subtasks,
+                deps,
+                contracts,
+            });
+        }
+
+        // Concurrency cap: only `max_concurrent - already_running` NEW subtasks
+        // may spawn this tick. A `tokio::Semaphore` is the gate (spec §D);
+        // permits are `forget`-ted so the count holds across the tick's
+        // sequential spawns. Zero slots → nothing spawns until a running subtask
+        // frees one (its row leaves `running`), re-derived next tick.
+        let available = config.max_concurrent.saturating_sub(running_now);
+        let slots = Semaphore::new(available);
+
+        for plan in &plans {
+            let ready = ready_subtask_ids(&plan.subtasks, &plan.deps, &plan.contracts);
+            for subtask_id in ready {
+                let Some(subtask) = plan.subtasks.iter().find(|s| s.id == subtask_id) else {
+                    continue;
+                };
+                match slots.try_acquire() {
+                    Ok(permit) => permit.forget(),
+                    // Cap reached for this tick — the rest wait for a free slot.
+                    Err(_) => return,
+                }
+                if let Err(err) = self
+                    .spawn_ready_subtask(&plan.parent, subtask, &plan.deps, &plan.contracts, config)
+                    .await
+                {
+                    eprintln!(
+                        "scheduler: failed to spawn subtask {} ({:?}): {err}",
+                        subtask.id, subtask.role
+                    );
+                }
+            }
+        }
+    }
+
+    /// The file→DB bridge (B3): for each subtask whose contract FILE now exists
+    /// and is non-empty, ensure a *published* `workspace_contracts` row exists.
+    /// This is what satisfies a producer's outgoing edges. Idempotent — an
+    /// already-published contract is skipped; a row that exists but is
+    /// unpublished (e.g. seeded by the manual override before the file settled)
+    /// is stamped. Detection keys off the deterministic
+    /// `<parent>/contracts/<role>.md` path, so no dir scan + reverse-map.
+    async fn bridge_published_contracts(
+        &self,
+        board: &BoardRepo,
+        parent_id: &str,
+        subtasks: &[Workspace],
+        config: &SchedulerConfig,
+        now: DateTime<Utc>,
+    ) {
+        for subtask in subtasks {
+            let Some(role) = subtask.role.as_deref() else {
+                continue;
+            };
+            let path = config.contract_file(parent_id, role);
+            if !contract_file_is_ready(&path, config.min_contract_bytes) {
+                continue;
+            }
+            match board.find_contract(&subtask.id).await {
+                // Already published — the edge is already satisfied, nothing to do.
+                Ok(Some(existing)) if existing.published_at.is_some() => {}
+                // A row exists but isn't published yet — stamp it (bridge firing).
+                Ok(Some(existing)) => {
+                    if let Err(err) = board.mark_contract_published(&existing.id, now).await {
+                        eprintln!("scheduler: mark_contract_published failed: {err}");
+                    }
+                }
+                // No row yet — mirror the file as a freshly-published contract.
+                Ok(None) => {
+                    let mut contract = WorkspaceContract::new(
+                        parent_id.to_string(),
+                        subtask.id.clone(),
+                        role.to_string(),
+                        path.to_string_lossy().into_owned(),
+                    );
+                    contract.published_at = Some(now);
+                    if let Err(err) = board.insert_contract(&contract).await {
+                        eprintln!("scheduler: insert_contract failed: {err}");
+                    }
+                }
+                Err(err) => eprintln!("scheduler: find_contract failed: {err}"),
+            }
+        }
+    }
+
+    /// Spawn one READY subtask: mint its worktree+branch, seed its handoff
+    /// prompt (B5), transition it `Pending → Running`, spawn its PTY, and attach
+    /// the exit-watcher. REUSES `start_task`'s spawn internals verbatim (the
+    /// per-repo F6 lock, `create_worktree`, `runtime.spawn`, `spawn_exit_watcher`,
+    /// the status broadcast). The ONLY deltas: the row already EXISTS (the gate
+    /// wrote it `Pending`), so we UPDATE rather than insert; and the prompt is
+    /// augmented with the contract handoff.
+    async fn spawn_ready_subtask(
+        &self,
+        parent: &Workspace,
+        subtask: &Workspace,
+        deps: &[WorkspaceDependency],
+        contracts: &[WorkspaceContract],
+        config: &SchedulerConfig,
+    ) -> Result<(), OrchestratorError> {
+        // A subtask with no role is malformed — the gate always stamps one, so
+        // this is a defensive skip, never a real path.
+        let Some(role) = subtask.role.clone() else {
+            return Ok(());
+        };
+
+        let repository = self.repositories.get(&subtask.repository_id).await?;
+        let repository_path = repository
+            .local_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or(OrchestratorError::RepositoryHasNoLocalPath)?;
+        if !repository_path.exists() {
+            return Err(OrchestratorError::RepositoryPathMissing(
+                repository_path.to_string_lossy().into_owned(),
+            ));
+        }
+        if !repository_path.join(".git").exists() {
+            return Err(OrchestratorError::RepositoryNotAGitRepo(
+                repository_path.to_string_lossy().into_owned(),
+            ));
+        }
+        let base_ref = repository.default_branch.clone();
+
+        // Build the handoff-seeded prompt (B5) BEFORE taking the lock — it reads
+        // the predecessors' contract files (pure I/O, no shared-`.git`
+        // contention):
+        //   - PRODUCER → append the "write your contract to <path>" instruction.
+        //   - CONSUMER → prepend each satisfied predecessor's contract CONTENTS.
+        let producer_suffix = if is_producer(&subtask.id, deps) {
+            Some(producer_prompt_suffix(&config.contract_file(&parent.id, &role)))
+        } else {
+            None
+        };
+        let seeds = gather_contract_seeds(&subtask.id, deps, contracts);
+        let consumer_prefix = if seeds.is_empty() {
+            None
+        } else {
+            Some(consumer_prompt_prefix(&seeds))
+        };
+        let augmented_prompt = augment_prompt(
+            subtask.prompt.as_deref(),
+            producer_suffix.as_deref(),
+            consumer_prefix.as_deref(),
+        );
+
+        // Interpolate the stored command template with the augmented prompt,
+        // exactly as start_task does (a `{{prompt}}` template gets the prompt
+        // baked in; a seeded-preset template comes back verbatim).
+        let interpolated = interpolate_for_task(&subtask.command, augmented_prompt.as_deref());
+
+        // --- everything that touches the shared `.git` under the per-repo lock ---
+        let lock = self.repo_locks.for_repository(&subtask.repository_id);
+        let guard = lock.lock().await;
+
+        // Idempotency (spec E2-T2): re-read the active subtask for
+        // `(parent, role)` UNDER the lock. If a prior tick already flipped it to
+        // `running`, or it is no longer the same pending row, DO NOTHING — a
+        // re-tick can't mint a second worktree/branch/PTY. This is the
+        // scheduler's twin of start_task's `find_active_by_name` dedup, keyed on
+        // `(parent_id, role)` (never name, spec claim #2).
+        let still_pending = matches!(
+            self.workspaces.find_active_subtask(&parent.id, &role).await?,
+            Some(current) if current.status == WorkspaceStatus::Pending && current.id == subtask.id
+        );
+        if !still_pending {
+            drop(guard);
+            return Ok(());
+        }
+
+        let slug = git::slugify(&subtask.name);
+        let branch_seed = git::default_branch_name(&slug, git::short_id(&subtask.id));
+        let branch =
+            git::unique_branch_name(&repository_path, &branch_seed, git::short_id(&subtask.id));
+        let worktree_path = git::default_worktree_base_path().join(&subtask.id);
+        git::create_worktree(&repository_path, &worktree_path, &branch, &base_ref)?;
+
+        // Persist branch/worktree + the seeded command/prompt and transition to
+        // running — still under the lock, so the idempotency re-check above stays
+        // valid against a concurrent tick.
+        let started_at = Utc::now();
+        let updated = self
+            .workspaces
+            .update(
+                &subtask.id,
+                WorkspaceUpdate {
+                    command: Some(interpolated.clone()),
+                    prompt: Some(augmented_prompt.clone()),
+                    branch: Some(Some(branch)),
+                    worktree_path: Some(Some(worktree_path.to_string_lossy().into_owned())),
+                    status: Some(WorkspaceStatus::Running),
+                    started_at: Some(Some(started_at)),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        // Release before the PTY spawn/broadcast — those touch only this
+        // subtask's own row/process, not the shared `.git` (start_task's order).
+        drop(guard);
+
+        let pty_handle = self.runtime.spawn(
+            subtask.id.clone(),
+            Some(interpolated),
+            augmented_prompt,
+            worktree_path,
+            24,
+            80,
+        )?;
+
+        self.broadcast_status(TaskStatusEvent {
+            task_id: subtask.id.clone(),
+            repository_id: updated.repository_id.clone(),
+            status: WorkspaceStatus::Running,
+            exit_code: None,
+            // Lifecycle transition only — the liveness poller emits the first
+            // `Working` derived state for this subtask on its next tick (it is a
+            // real agent kind, `runs_agent()`).
+            derived_state: None,
+            last_activity_at: None,
+        });
+
+        self.spawn_exit_watcher(subtask.id.clone(), updated.repository_id.clone(), pty_handle);
+        Ok(())
+    }
+}
+
+/// Per-parent state gathered in one scheduler tick: the parent row, its
+/// subtasks, the DAG edges, and the (post-bridge) published contracts. Kept
+/// local to the scheduler so the tick can compute the ready set + seed prompts
+/// without re-querying per subtask.
+struct ParentPlan {
+    parent: Workspace,
+    subtasks: Vec<Workspace>,
+    deps: Vec<WorkspaceDependency>,
+    contracts: Vec<WorkspaceContract>,
+}
+
+/// Read the published contract CONTENTS for each satisfied predecessor of
+/// `subtask_id`, to seed into a consumer's prompt (B5). Skips a predecessor
+/// whose contract row is unpublished or whose file can't be read — a partial
+/// handoff is better than blocking forever on a transient read error.
+fn gather_contract_seeds(
+    subtask_id: &str,
+    deps: &[WorkspaceDependency],
+    contracts: &[WorkspaceContract],
+) -> Vec<ContractSeed> {
+    let mut seeds = Vec::new();
+    for producer_id in incoming_producer_ids(subtask_id, deps) {
+        let Some(contract) = contracts
+            .iter()
+            .find(|c| c.subtask_id == producer_id && c.published_at.is_some())
+        else {
+            continue;
+        };
+        match std::fs::read_to_string(&contract.contract_path) {
+            Ok(content) => seeds.push(ContractSeed {
+                role: contract.role.clone(),
+                content,
+            }),
+            Err(err) => eprintln!(
+                "scheduler: failed to read contract {}: {err}",
+                contract.contract_path
+            ),
+        }
+    }
+    seeds
 }
 
 /// Build the variable map and run the template through. Centralised
@@ -1805,5 +2174,407 @@ mod tests {
     fn interpolate_for_task_handles_missing_prompt_as_empty() {
         let out = interpolate_for_task(r#"agent --p "{{prompt}}""#, None);
         assert_eq!(out, r#"agent --p """#);
+    }
+
+    // ===== Scheduler (E2-T2): dependency-aware fan-out =====
+
+    /// A scheduler config wired for deterministic tests: a hand-driven tick, a
+    /// contract root under the test TempDir (never the real `~/.phasr`), and an
+    /// explicit concurrency cap.
+    fn test_scheduler_config(contract_root: &Path, max_concurrent: usize) -> SchedulerConfig {
+        SchedulerConfig {
+            poll_interval: Duration::from_millis(1),
+            max_concurrent,
+            min_contract_bytes: 1,
+            contract_root: contract_root.to_path_buf(),
+        }
+    }
+
+    /// Persist a Parent + its Subtask rows + role edges, exactly as
+    /// `start_decomposition` would — but with a benign `sleep 30` command so the
+    /// spawned PTY never depends on a real agent binary being installed. Returns
+    /// the parent id and a role → subtask_id map.
+    async fn seed_decomposition(
+        workspaces: &WorkspaceRepo,
+        board: &BoardRepo,
+        repo_id: &str,
+        roles: &[&str],
+        edges: &[(&str, &str)],
+    ) -> (String, HashMap<String, String>) {
+        let mut parent = Workspace::new(repo_id.to_string(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+        workspaces.insert(&parent).await.unwrap();
+
+        let mut role_to_id: HashMap<String, String> = HashMap::new();
+        for role in roles {
+            let mut sub = Workspace::new(repo_id.to_string(), (*role).into(), "sleep 30".into());
+            sub.workspace_kind = WorkspaceKind::Subtask;
+            sub.parent_id = Some(parent.id.clone());
+            sub.role = Some((*role).into());
+            sub.prompt = Some(format!("do the {role}"));
+            workspaces.insert(&sub).await.unwrap();
+            role_to_id.insert((*role).to_string(), sub.id.clone());
+        }
+        for (from, to) in edges {
+            let dep = WorkspaceDependency::new(
+                parent.id.clone(),
+                role_to_id.get(*from).unwrap().clone(),
+                role_to_id.get(*to).unwrap().clone(),
+            );
+            board.insert_dependency(&dep).await.unwrap();
+        }
+        (parent.id, role_to_id)
+    }
+
+    /// Count a parent's subtasks currently in `Running`.
+    async fn running_subtask_count(workspaces: &WorkspaceRepo, parent_id: &str) -> usize {
+        workspaces
+            .list_by_parent(parent_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.status == WorkspaceStatus::Running)
+            .count()
+    }
+
+    /// Stop every running subtask under `parent_id` (SIGINT the `sleep`) and
+    /// remove its worktree dir — worktrees live under `$HOME/.phasr`, outside the
+    /// test TempDir, so they'd otherwise linger.
+    async fn cleanup_board(
+        orchestrator: &TaskOrchestrator,
+        workspaces: &WorkspaceRepo,
+        parent_id: &str,
+    ) {
+        for sub in workspaces.list_by_parent(parent_id).await.unwrap() {
+            let _ = orchestrator.stop_task(&sub.id).await;
+            if let Some(path) = sub.worktree_path.as_deref() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+
+    // E2-T2 AC: on a fresh decomposition, the scheduler spawns the READY root
+    // (`backend`, no incoming edge) in its own worktree+branch and does NOT spawn
+    // the blocked dependent (`frontend`, its edge unsatisfied). The producer's
+    // prompt carries the write-your-contract instruction (B5).
+    #[tokio::test]
+    async fn scheduler_spawns_ready_root_but_not_blocked_dependent() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, roles) = seed_decomposition(
+            &workspaces,
+            &board,
+            &repo.id,
+            &["backend", "frontend"],
+            &[("backend", "frontend")],
+        )
+        .await;
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 4);
+
+        orchestrator.run_scheduler_tick(&board, &config).await;
+
+        let backend = workspaces.get(&roles["backend"]).await.unwrap();
+        let frontend = workspaces.get(&roles["frontend"]).await.unwrap();
+        assert_eq!(
+            backend.status,
+            WorkspaceStatus::Running,
+            "the root subtask (no incoming edge) spawns immediately"
+        );
+        assert!(backend.worktree_path.is_some() && backend.branch.is_some());
+        assert_eq!(
+            frontend.status,
+            WorkspaceStatus::Pending,
+            "the blocked dependent must stay pending (its edge is unsatisfied)"
+        );
+        assert!(frontend.worktree_path.is_none() && frontend.branch.is_none());
+
+        // Exactly one subtask worktree/branch minted (main checkout + backend).
+        assert_eq!(count_worktrees(repo_path), 2);
+        assert_eq!(count_phasr_branches(repo_path), 1);
+
+        // The producer's seeded prompt names the exact contract path to write to.
+        let expected_path = config.contract_file(&parent_id, "backend");
+        assert!(
+            backend
+                .prompt
+                .as_deref()
+                .unwrap()
+                .contains(&expected_path.display().to_string()),
+            "the backend (producer) prompt must carry the write-contract instruction"
+        );
+
+        cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
+
+    // E2-T2 AC (the handoff): writing the backend contract file + ticking →
+    // the file→DB bridge publishes backend's contract AND the now-ready frontend
+    // spawns with the contract CONTENTS seeded into its initial prompt (B5).
+    // Deterministic: the contract file is injected, not waited on.
+    #[tokio::test]
+    async fn scheduler_bridges_contract_file_and_seeds_the_dependent() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, roles) = seed_decomposition(
+            &workspaces,
+            &board,
+            &repo.id,
+            &["backend", "frontend"],
+            &[("backend", "frontend")],
+        )
+        .await;
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 4);
+
+        // Tick 1: backend spawns, frontend blocked, no contract published yet.
+        orchestrator.run_scheduler_tick(&board, &config).await;
+        assert!(board.list_contracts(&parent_id).await.unwrap().is_empty());
+        assert_eq!(
+            workspaces.get(&roles["frontend"]).await.unwrap().status,
+            WorkspaceStatus::Pending
+        );
+
+        // Inject backend's contract file (the deterministic stand-in for the
+        // agent writing it).
+        let contract_body = "## Backend API\nGET /widgets -> [{id, name}]\nPOST /widgets";
+        let backend_contract = config.contract_file(&parent_id, "backend");
+        std::fs::create_dir_all(backend_contract.parent().unwrap()).unwrap();
+        std::fs::write(&backend_contract, contract_body).unwrap();
+
+        // Tick 2: bridge publishes backend's contract AND frontend fans out.
+        orchestrator.run_scheduler_tick(&board, &config).await;
+
+        // A published contract row now mirrors the file.
+        let contracts = board.list_contracts(&parent_id).await.unwrap();
+        assert_eq!(contracts.len(), 1);
+        assert_eq!(contracts[0].subtask_id, roles["backend"]);
+        assert!(
+            contracts[0].published_at.is_some(),
+            "the file→DB bridge must stamp published_at"
+        );
+
+        // Frontend is now running in its own worktree...
+        let frontend = workspaces.get(&roles["frontend"]).await.unwrap();
+        assert_eq!(frontend.status, WorkspaceStatus::Running);
+        assert!(frontend.worktree_path.is_some() && frontend.branch.is_some());
+        // ...with backend's contract CONTENTS seeded into its prompt (B5).
+        let prompt = frontend.prompt.as_deref().unwrap();
+        assert!(
+            prompt.contains("GET /widgets -> [{id, name}]"),
+            "the contract body must be seeded into the consumer prompt: {prompt}"
+        );
+        assert!(prompt.contains("`backend`"), "the seed names the producer role");
+        assert!(prompt.contains("do the frontend"), "the base prompt is preserved");
+
+        // main + backend + frontend worktrees.
+        assert_eq!(count_worktrees(repo_path), 3);
+        assert_eq!(count_phasr_branches(repo_path), 2);
+
+        cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
+
+    // E2-T2 AC (no false unblock, §0.1): with NO contract ever published, the
+    // blocked dependent stays pending across repeated ticks — a producer that
+    // never publishes (e.g. Wedged) never unblocks its consumer.
+    #[tokio::test]
+    async fn blocked_subtask_stays_pending_until_its_edge_is_satisfied() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, roles) = seed_decomposition(
+            &workspaces,
+            &board,
+            &repo.id,
+            &["backend", "frontend"],
+            &[("backend", "frontend")],
+        )
+        .await;
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 4);
+
+        for _ in 0..3 {
+            orchestrator.run_scheduler_tick(&board, &config).await;
+        }
+
+        let frontend = workspaces.get(&roles["frontend"]).await.unwrap();
+        assert_eq!(
+            frontend.status,
+            WorkspaceStatus::Pending,
+            "no published contract → the dependent must never spawn"
+        );
+        assert!(frontend.worktree_path.is_none());
+        // The root did spawn — only the dependent is held back.
+        assert_eq!(
+            workspaces.get(&roles["backend"]).await.unwrap().status,
+            WorkspaceStatus::Running
+        );
+
+        cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
+
+    // E2-T2 AC: the concurrency cap holds. Three INDEPENDENT ready subtasks with
+    // a cap of 2 → only two spawn; a re-tick spawns nothing more; freeing a slot
+    // (stopping one) lets the third spawn on the next tick.
+    #[tokio::test]
+    async fn scheduler_concurrency_cap_holds() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, _roles) =
+            seed_decomposition(&workspaces, &board, &repo.id, &["a", "b", "c"], &[]).await;
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 2);
+
+        // Tick 1: cap 2 → exactly two of the three ready subtasks spawn.
+        orchestrator.run_scheduler_tick(&board, &config).await;
+        assert_eq!(
+            running_subtask_count(&workspaces, &parent_id).await,
+            2,
+            "the cap holds — only 2 of 3 ready subtasks spawn"
+        );
+        assert_eq!(count_worktrees(repo_path), 3, "main + exactly two subtask worktrees");
+
+        // Tick 2: still capped, nothing new spawns.
+        orchestrator.run_scheduler_tick(&board, &config).await;
+        assert_eq!(
+            running_subtask_count(&workspaces, &parent_id).await,
+            2,
+            "a full cap spawns nothing more"
+        );
+
+        // Free a slot by stopping one running subtask, then tick: the third spawns.
+        let running = workspaces
+            .list_by_parent(&parent_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.status == WorkspaceStatus::Running)
+            .unwrap();
+        orchestrator.stop_task(&running.id).await.unwrap();
+        orchestrator.run_scheduler_tick(&board, &config).await;
+        assert_eq!(
+            running_subtask_count(&workspaces, &parent_id).await,
+            2,
+            "a freed slot lets the third spawn (2 running again)"
+        );
+        assert_eq!(
+            count_worktrees(repo_path),
+            4,
+            "all three subtasks have now been spawned (stopped one keeps its worktree)"
+        );
+
+        cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
+
+    // E2-T2 AC: a duplicate tick must NOT double-spawn. After backend is running,
+    // a second back-to-back tick mints no second worktree/branch — enforced by
+    // "ready = only pending" plus the `find_active_subtask(parent, role)` guard.
+    #[tokio::test]
+    async fn re_tick_does_not_double_spawn_a_running_subtask() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, roles) = seed_decomposition(
+            &workspaces,
+            &board,
+            &repo.id,
+            &["backend", "frontend"],
+            &[("backend", "frontend")],
+        )
+        .await;
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 4);
+
+        orchestrator.run_scheduler_tick(&board, &config).await;
+        let first = workspaces.get(&roles["backend"]).await.unwrap();
+        orchestrator.run_scheduler_tick(&board, &config).await;
+        let second = workspaces.get(&roles["backend"]).await.unwrap();
+
+        assert_eq!(
+            first.worktree_path, second.worktree_path,
+            "the re-tick must reuse the same worktree, not mint a fresh one"
+        );
+        assert_eq!(first.branch, second.branch);
+        assert_eq!(
+            count_worktrees(repo_path),
+            2,
+            "exactly one subtask worktree despite the duplicate tick"
+        );
+        assert_eq!(count_phasr_branches(repo_path), 1);
+
+        cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
+
+    // E2-T3 recovery guard: a relaunch-interrupted subtask (Stopped +
+    // interrupted_at, i.e. Wedged) is NEVER auto-restarted by the scheduler
+    // (ready = only pending), and its blocked dependent stays pending. The
+    // scheduler re-derives the DAG from the DB without blind-restarting anything.
+    #[tokio::test]
+    async fn scheduler_does_not_restart_a_relaunch_interrupted_subtask() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, roles) = seed_decomposition(
+            &workspaces,
+            &board,
+            &repo.id,
+            &["backend", "frontend"],
+            &[("backend", "frontend")],
+        )
+        .await;
+
+        // Simulate a mid-fan-out relaunch: backend was Running, recovery swept it
+        // to Stopped + interrupted_at; frontend is still Pending, blocked.
+        workspaces
+            .update(
+                &roles["backend"],
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let now = Utc::now();
+        workspaces
+            .update(
+                &roles["backend"],
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Stopped),
+                    interrupted_at: Some(Some(now)),
+                    finished_at: Some(Some(now)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 4);
+        orchestrator.run_scheduler_tick(&board, &config).await;
+
+        assert_eq!(
+            workspaces.get(&roles["backend"]).await.unwrap().status,
+            WorkspaceStatus::Stopped,
+            "an interrupted subtask must never be blind-restarted"
+        );
+        assert_eq!(
+            workspaces.get(&roles["frontend"]).await.unwrap().status,
+            WorkspaceStatus::Pending,
+            "the dependent stays blocked (backend never published)"
+        );
+        assert_eq!(
+            count_worktrees(repo_path),
+            1,
+            "nothing spawned → only the main checkout"
+        );
+        // Nothing was spawned, so no worktrees/PTYs to clean up.
     }
 }
