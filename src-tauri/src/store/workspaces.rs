@@ -49,43 +49,12 @@ impl WorkspaceRepo {
         workspace: &Workspace,
         user_id: Option<&str>,
     ) -> Result<(), StoreError> {
-        let dirty = if workspace.workspace_kind.is_local() {
-            0
-        } else {
-            1
-        };
-        sqlx::query(
-            "INSERT INTO workspaces (
-                id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                branch, worktree_path, exit_code, parent_id, role,
-                created_at, started_at, finished_at, archived_at, interrupted_at, updated_at,
-                synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
-        )
-        .bind(&workspace.id)
-        .bind(user_id)
-        .bind(&workspace.repository_id)
-        .bind(workspace.workspace_kind.as_str())
-        .bind(&workspace.name)
-        .bind(&workspace.prompt)
-        .bind(workspace.agent.map(Agent::as_str))
-        .bind(&workspace.command)
-        .bind(workspace.status.as_str())
-        .bind(&workspace.branch)
-        .bind(&workspace.worktree_path)
-        .bind(workspace.exit_code)
-        .bind(&workspace.parent_id)
-        .bind(&workspace.role)
-        .bind(workspace.created_at.to_rfc3339())
-        .bind(workspace.started_at.map(|dt| dt.to_rfc3339()))
-        .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
-        .bind(workspace.archived_at.map(|dt| dt.to_rfc3339()))
-        .bind(workspace.interrupted_at.map(|dt| dt.to_rfc3339()))
-        .bind(workspace.updated_at.to_rfc3339())
-        .bind(dirty)
-        .execute(&self.db)
-        .await?;
-        Ok(())
+        // Delegate to the shared row-insert helper so the 22-column list lives
+        // in exactly ONE place. The helper is generic over the executor, which
+        // lets `BoardRepo::create_decomposition` reuse the SAME insert inside a
+        // transaction (the decomposition gate writes a parent + its subtasks +
+        // edges atomically, spec E2-T1).
+        insert_workspace_row(&self.db, workspace, user_id).await
     }
 
     /// The flat, top-level workspace list that backs the repository sidebar.
@@ -530,6 +499,63 @@ impl WorkspaceRepo {
         }
         Ok(())
     }
+}
+
+/// Bind + execute a single `workspaces` INSERT against any executor — the
+/// pool for the normal `insert`/`insert_for_user` path, or a
+/// `&mut Transaction` when the insert must take part in a larger atomic write.
+/// `BoardRepo::create_decomposition` uses the transaction form to persist a
+/// parent + its subtasks + edges in one shot, so a partial failure leaves no
+/// orphan rows. Keeping the column list here (not copied per caller) stops it
+/// from drifting against the SELECT lists.
+pub(super) async fn insert_workspace_row<'e, E>(
+    executor: E,
+    workspace: &Workspace,
+    user_id: Option<&str>,
+) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    // Board rows (`parent`/`subtask`) are non-local, so they follow the same
+    // `dirty = 1` rule as agents; the `workspace_kind = 'agent'` sync PUSH
+    // filter is what actually keeps them machine-local (spec claim #11).
+    let dirty = if workspace.workspace_kind.is_local() {
+        0
+    } else {
+        1
+    };
+    sqlx::query(
+        "INSERT INTO workspaces (
+            id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
+            branch, worktree_path, exit_code, parent_id, role,
+            created_at, started_at, finished_at, archived_at, interrupted_at, updated_at,
+            synced_at, dirty
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+    )
+    .bind(&workspace.id)
+    .bind(user_id)
+    .bind(&workspace.repository_id)
+    .bind(workspace.workspace_kind.as_str())
+    .bind(&workspace.name)
+    .bind(&workspace.prompt)
+    .bind(workspace.agent.map(Agent::as_str))
+    .bind(&workspace.command)
+    .bind(workspace.status.as_str())
+    .bind(&workspace.branch)
+    .bind(&workspace.worktree_path)
+    .bind(workspace.exit_code)
+    .bind(&workspace.parent_id)
+    .bind(&workspace.role)
+    .bind(workspace.created_at.to_rfc3339())
+    .bind(workspace.started_at.map(|dt| dt.to_rfc3339()))
+    .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
+    .bind(workspace.archived_at.map(|dt| dt.to_rfc3339()))
+    .bind(workspace.interrupted_at.map(|dt| dt.to_rfc3339()))
+    .bind(workspace.updated_at.to_rfc3339())
+    .bind(dirty)
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreError> {

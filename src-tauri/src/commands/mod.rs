@@ -2,6 +2,7 @@
 //! repository call.
 
 pub mod agents;
+pub mod board;
 pub mod files;
 pub mod git;
 pub mod notifications;

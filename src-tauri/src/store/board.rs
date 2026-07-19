@@ -5,7 +5,7 @@ use crate::domain::{Workspace, WorkspaceContract, WorkspaceDependency};
 
 use super::error::StoreError;
 use super::pool::Db;
-use super::workspaces::WorkspaceRepo;
+use super::workspaces::{insert_workspace_row, WorkspaceRepo};
 
 /// Everything the board route needs for one `parent` workspace, assembled from
 /// three tables (spec §C `BoardState`): the parent row, its child subtasks, the
@@ -39,19 +39,7 @@ impl BoardRepo {
     // --- dependency edges ---------------------------------------------------
 
     pub async fn insert_dependency(&self, dep: &WorkspaceDependency) -> Result<(), StoreError> {
-        sqlx::query(
-            "INSERT INTO workspace_dependencies
-                (id, parent_id, from_subtask_id, to_subtask_id, created_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&dep.id)
-        .bind(&dep.parent_id)
-        .bind(&dep.from_subtask_id)
-        .bind(&dep.to_subtask_id)
-        .bind(dep.created_at.to_rfc3339())
-        .execute(&self.db)
-        .await?;
-        Ok(())
+        insert_dependency_row(&self.db, dep).await
     }
 
     pub async fn list_dependencies(
@@ -146,6 +134,40 @@ impl BoardRepo {
         row.as_ref().map(row_to_contract).transpose()
     }
 
+    // --- composite write ----------------------------------------------------
+
+    /// Atomically persist a whole decomposition — the parent (integration
+    /// container: no PTY, no branch/worktree yet), its subtasks, and the
+    /// dependency edges — in ONE transaction. Backs
+    /// `commands::board::start_decomposition` (the B2 approval gate). If any
+    /// insert fails the transaction rolls back, so a partial write can never
+    /// leave an orphan parent/subtask/edge (spec E2-T1 AC: "no orphan rows
+    /// remain"). Workspace rows are owner-stamped (`user_id`) so the board is
+    /// scoped to the signed-in account; the edge rows are machine-local and
+    /// carry no `user_id`, inheriting scoping transitively through the parent
+    /// (spec claim #11). Mirrors `RepositoryRepo::delete`'s multi-table
+    /// single-transaction shape, and reuses `WorkspaceRepo`'s insert (via the
+    /// shared `insert_workspace_row` helper) so the column list stays in one
+    /// place. Does NOT spawn agents — that is the scheduler's job (Chunk 3).
+    pub async fn create_decomposition(
+        &self,
+        parent: &Workspace,
+        subtasks: &[Workspace],
+        dependencies: &[WorkspaceDependency],
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.db.begin().await?;
+        insert_workspace_row(&mut *tx, parent, user_id).await?;
+        for subtask in subtasks {
+            insert_workspace_row(&mut *tx, subtask, user_id).await?;
+        }
+        for dependency in dependencies {
+            insert_dependency_row(&mut *tx, dependency).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     // --- composite read -----------------------------------------------------
 
     /// Assemble the whole board for one parent. Workspace rows come from
@@ -181,6 +203,31 @@ impl BoardRepo {
             contracts: self.list_contracts(parent_id).await?,
         })
     }
+}
+
+/// Bind + execute a single `workspace_dependencies` INSERT against any
+/// executor — the pool for `insert_dependency`, or a `&mut Transaction` when
+/// the edge is part of the atomic `create_decomposition` write.
+async fn insert_dependency_row<'e, E>(
+    executor: E,
+    dep: &WorkspaceDependency,
+) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO workspace_dependencies
+            (id, parent_id, from_subtask_id, to_subtask_id, created_at)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&dep.id)
+    .bind(&dep.parent_id)
+    .bind(&dep.from_subtask_id)
+    .bind(&dep.to_subtask_id)
+    .bind(dep.created_at.to_rfc3339())
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 fn row_to_dependency(row: &sqlx::sqlite::SqliteRow) -> Result<WorkspaceDependency, StoreError> {
@@ -351,5 +398,79 @@ mod tests {
 
         assert_eq!(b.contracts.len(), 1);
         assert_eq!(b.contracts[0].subtask_id, backend.id);
+    }
+
+    // E2-T1: the atomic gate write persists the parent + both subtasks + the
+    // edge in one transaction, and `get_board` reads the whole thing back.
+    #[tokio::test]
+    async fn create_decomposition_persists_parent_subtasks_and_edges_atomically() {
+        let (workspaces, board, repo) = fresh().await;
+
+        let mut parent = Workspace::new(repo.id.clone(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+
+        let mut backend = Workspace::new(repo.id.clone(), "backend".into(), "claude".into());
+        backend.workspace_kind = WorkspaceKind::Subtask;
+        backend.parent_id = Some(parent.id.clone());
+        backend.role = Some("backend".into());
+
+        let mut frontend = Workspace::new(repo.id.clone(), "frontend".into(), "claude".into());
+        frontend.workspace_kind = WorkspaceKind::Subtask;
+        frontend.parent_id = Some(parent.id.clone());
+        frontend.role = Some("frontend".into());
+
+        let edge =
+            WorkspaceDependency::new(parent.id.clone(), backend.id.clone(), frontend.id.clone());
+
+        board
+            .create_decomposition(
+                &parent,
+                &[backend.clone(), frontend.clone()],
+                std::slice::from_ref(&edge),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let b = board.get_board(&workspaces, &parent.id).await.unwrap();
+        assert_eq!(b.parent.id, parent.id);
+        assert_eq!(b.parent.workspace_kind, WorkspaceKind::Parent);
+        assert_eq!(b.subtasks.len(), 2);
+        assert_eq!(b.dependencies.len(), 1);
+        assert_eq!(b.dependencies[0].from_subtask_id, backend.id);
+        assert_eq!(b.dependencies[0].to_subtask_id, frontend.id);
+        assert!(b.contracts.is_empty(), "the gate publishes no contracts");
+    }
+
+    // E2-T1 AC ("no orphan rows remain"): a failure partway through the write
+    // rolls the WHOLE transaction back. We force the SECOND insert to fail with
+    // a PRIMARY KEY collision (a subtask reusing the parent's id); the parent
+    // inserted first must NOT survive.
+    #[tokio::test]
+    async fn create_decomposition_rolls_back_on_partial_failure() {
+        let (workspaces, board, repo) = fresh().await;
+
+        let mut parent = Workspace::new(repo.id.clone(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+
+        let mut collides = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        collides.id = parent.id.clone(); // PK collision → second insert fails
+        collides.workspace_kind = WorkspaceKind::Subtask;
+        collides.parent_id = Some(parent.id.clone());
+        collides.role = Some("backend".into());
+
+        let result = board
+            .create_decomposition(&parent, std::slice::from_ref(&collides), &[], None)
+            .await;
+        assert!(
+            result.is_err(),
+            "a PK collision mid-transaction must fail the create"
+        );
+
+        // The parent inserted first is gone — the transaction rolled back.
+        assert!(matches!(
+            workspaces.get(&parent.id).await,
+            Err(StoreError::NotFound)
+        ));
     }
 }
