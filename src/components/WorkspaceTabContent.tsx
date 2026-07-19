@@ -83,6 +83,10 @@ export function WorkspaceTabContent({
               <Terminal
                 workspaceId={workspaceId}
                 status={workspace.status}
+                interrupted={
+                  workspace.status === "stopped" &&
+                  workspace.interruptedAt != null
+                }
                 visible={active}
                 {...(onMainExit ? { onExit: onMainExit } : {})}
               />
