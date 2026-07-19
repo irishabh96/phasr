@@ -163,6 +163,8 @@ pub fn run() {
             commands::orchestrator::interrupt_task,
             commands::board::start_decomposition,
             commands::board::get_board,
+            commands::board::publish_contract,
+            commands::board::integrate_parent,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,
@@ -317,7 +319,7 @@ async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Repository, Workspace};
+    use crate::domain::{Repository, Workspace, WorkspaceKind};
 
     async fn fresh() -> (WorkspaceRepo, RepositoryRepo, Repository, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -367,5 +369,62 @@ mod tests {
         let after = workspaces.get(&done.id).await.unwrap();
         assert_eq!(after.status, WorkspaceStatus::Completed);
         assert_eq!(after.interrupted_at, None);
+    }
+
+    // E2-T3: recovery handles decomposition (parent/subtask) rows sensibly on
+    // relaunch. A `parent` (no PTY, never Running) is NEVER force-stopped — it
+    // stays Pending and calm. A `subtask` that was Running is a real orphaned
+    // agent, so it is swept to Stopped + interrupted (→ Wedged), exactly like a
+    // standalone agent. A blocked/pending subtask stays Pending so the scheduler
+    // can resume it. Recovery is kind-agnostic (it sweeps `running` rows and
+    // prunes worktrees) and needs no board-specific code — the DAG is re-derived
+    // from the DB by the scheduler's first post-boot tick (spec E2-T3, claim #9).
+    #[tokio::test]
+    async fn recovery_handles_decomposition_rows() {
+        let (workspaces, repositories, repo, _dir) = fresh().await;
+
+        // A parent (Pending, kind=Parent) — has no PTY, never Running.
+        let mut parent = Workspace::new(repo.id.clone(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+        workspaces.insert(&parent).await.unwrap();
+
+        // A backend subtask mid-run (Running) when the app died.
+        let mut backend = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        backend.workspace_kind = WorkspaceKind::Subtask;
+        backend.parent_id = Some(parent.id.clone());
+        backend.role = Some("backend".into());
+        backend.status = WorkspaceStatus::Running;
+        workspaces.insert(&backend).await.unwrap();
+
+        // A blocked frontend subtask still Pending (never spawned).
+        let mut frontend = Workspace::new(repo.id.clone(), "frontend".into(), "cmd".into());
+        frontend.workspace_kind = WorkspaceKind::Subtask;
+        frontend.parent_id = Some(parent.id.clone());
+        frontend.role = Some("frontend".into());
+        workspaces.insert(&frontend).await.unwrap();
+
+        recover_startup_state(&workspaces, &repositories).await;
+
+        // Parent: untouched — still Pending, never force-stopped, calm.
+        let parent_after = workspaces.get(&parent.id).await.unwrap();
+        assert_eq!(
+            parent_after.status,
+            WorkspaceStatus::Pending,
+            "a parent must never be force-stopped on relaunch"
+        );
+        assert_eq!(parent_after.interrupted_at, None);
+
+        // Backend: swept to Stopped + interrupted (honest Wedged), like an agent.
+        let backend_after = workspaces.get(&backend.id).await.unwrap();
+        assert_eq!(backend_after.status, WorkspaceStatus::Stopped);
+        assert!(
+            backend_after.interrupted_at.is_some(),
+            "a running subtask orphaned by relaunch must read Wedged, not silently Stopped"
+        );
+
+        // Frontend: still Pending, resumable by the scheduler's first tick.
+        let frontend_after = workspaces.get(&frontend.id).await.unwrap();
+        assert_eq!(frontend_after.status, WorkspaceStatus::Pending);
+        assert_eq!(frontend_after.interrupted_at, None);
     }
 }

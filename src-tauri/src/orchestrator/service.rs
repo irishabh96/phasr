@@ -2577,4 +2577,96 @@ mod tests {
         );
         // Nothing was spawned, so no worktrees/PTYs to clean up.
     }
+
+    // E2-T3 recovery (the resume path): a blocked dependent RESUMES on the first
+    // post-relaunch tick when its predecessor's contract SURVIVED the crash. The
+    // DAG is re-derived purely from the DB — backend is left Stopped+interrupted
+    // (never blind-restarted), but because its published contract row persisted,
+    // frontend's edge is satisfied and the scheduler spawns it (with the surviving
+    // contract seeded into its prompt). This is "pending/blocked subtasks resume
+    // via the scheduler" from the recovery AC.
+    #[tokio::test]
+    async fn scheduler_resumes_dependent_after_relaunch_when_predecessor_contract_survived() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+        let (parent_id, roles) = seed_decomposition(
+            &workspaces,
+            &board,
+            &repo.id,
+            &["backend", "frontend"],
+            &[("backend", "frontend")],
+        )
+        .await;
+        let config = test_scheduler_config(&tmp.path().join("contracts-root"), 4);
+
+        // Simulate the relaunch sweep: backend was Running, recovery moved it to
+        // Stopped + interrupted; frontend is still Pending, blocked.
+        let now = Utc::now();
+        workspaces
+            .update(
+                &roles["backend"],
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .update(
+                &roles["backend"],
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Stopped),
+                    interrupted_at: Some(Some(now)),
+                    finished_at: Some(Some(now)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Backend's contract SURVIVED the crash: a published row + its file both
+        // persisted on disk (the file→DB bridge had already fired before the crash).
+        let contract_path = config.contract_file(&parent_id, "backend");
+        std::fs::create_dir_all(contract_path.parent().unwrap()).unwrap();
+        std::fs::write(&contract_path, "## Backend API\nGET /widgets -> [{id}]").unwrap();
+        let mut contract = WorkspaceContract::new(
+            parent_id.clone(),
+            roles["backend"].clone(),
+            "backend".into(),
+            contract_path.to_string_lossy().into_owned(),
+        );
+        contract.published_at = Some(now);
+        board.insert_contract(&contract).await.unwrap();
+
+        orchestrator.run_scheduler_tick(&board, &config).await;
+
+        // Backend stays interrupted — the scheduler NEVER blind-restarts it.
+        assert_eq!(
+            workspaces.get(&roles["backend"]).await.unwrap().status,
+            WorkspaceStatus::Stopped,
+            "an interrupted predecessor must not be restarted"
+        );
+        // Frontend RESUMES: its edge was satisfied by the surviving contract.
+        let frontend = workspaces.get(&roles["frontend"]).await.unwrap();
+        assert_eq!(
+            frontend.status,
+            WorkspaceStatus::Running,
+            "the dependent must resume once its predecessor's contract survives the crash"
+        );
+        assert!(frontend.worktree_path.is_some() && frontend.branch.is_some());
+        // ...and the surviving contract is seeded into its prompt (handoff intact).
+        assert!(
+            frontend
+                .prompt
+                .as_deref()
+                .unwrap()
+                .contains("GET /widgets -> [{id}]"),
+            "the surviving contract must be seeded into the resumed dependent's prompt"
+        );
+
+        cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
 }

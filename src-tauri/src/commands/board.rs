@@ -11,7 +11,8 @@
 //! state stays OUT of `WorkspaceStatus` (spec claim #10) — "blocked" is derived
 //! frontend-side from edges × contracts, never stored.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,9 @@ use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
 use crate::domain::{Agent, Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceKind};
-use crate::orchestrator::RepoLockRegistry;
-use crate::store::{Board, BoardRepo, StoreError, WorkspaceRepo};
+use crate::git::{self, GitError, MergeOutcome, MergeStrategy};
+use crate::orchestrator::{contract_file_is_ready, RepoLockRegistry, SchedulerConfig};
+use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
 
 // ── request / response shapes (the frozen §C wire contract) ─────────────────
@@ -88,10 +90,28 @@ impl From<Board> for BoardState {
 pub enum BoardCmdError {
     Store(StoreError),
     Auth(AuthError),
+    /// A git op failed while building the integration worktree or merging a
+    /// subtask branch (`integrate_parent`). Serialized to the git error string.
+    Git(GitError),
+    /// A filesystem op failed while writing the manual "mark done" contract file
+    /// (`publish_contract`).
+    Io(std::io::Error),
     /// A malformed plan (empty, duplicate roles, an edge referencing an unknown
-    /// role, or a self-edge). A clear error beats silently persisting a broken
-    /// DAG the scheduler could deadlock on.
+    /// role, a self-edge, or a dependency cycle detected at integration time). A
+    /// clear error beats silently persisting a broken DAG the scheduler could
+    /// deadlock on.
     InvalidDecomposition(String),
+    /// `publish_contract` was called on a row that isn't a decomposition subtask
+    /// (no `parent_id`/`role`) — nothing to publish a handoff contract for.
+    NotASubtask(String),
+    /// Integration stopped on a merge conflict (E3-T1). NOT a failure of the
+    /// command so much as a signal: the integration worktree is left mid-merge
+    /// and the parent row already points at it, so the frontend drives the
+    /// EXISTING interactive conflict flow (`git_merge_in_progress` /
+    /// `git_resolve_conflict` / `git_continue_merge` / `git_abort_merge`) keyed
+    /// on the parent `workspace_id` (spec claim #6). The conflicting files ride
+    /// the serialized error string so the UI can name them.
+    IntegrationConflict { files: Vec<String> },
 }
 
 impl From<StoreError> for BoardCmdError {
@@ -106,12 +126,30 @@ impl From<AuthError> for BoardCmdError {
     }
 }
 
+impl From<GitError> for BoardCmdError {
+    fn from(e: GitError) -> Self {
+        Self::Git(e)
+    }
+}
+
+impl From<std::io::Error> for BoardCmdError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
 impl std::fmt::Display for BoardCmdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(e) => write!(f, "{e}"),
             Self::Auth(e) => write!(f, "{e}"),
+            Self::Git(e) => write!(f, "{e}"),
+            Self::Io(e) => write!(f, "{e}"),
             Self::InvalidDecomposition(msg) => write!(f, "invalid decomposition: {msg}"),
+            Self::NotASubtask(msg) => write!(f, "{msg}"),
+            Self::IntegrationConflict { files } => {
+                write!(f, "integration stopped on conflicts in: {}", files.join(", "))
+            }
         }
     }
 }
@@ -186,6 +224,79 @@ pub async fn get_board(
     let assembled = board
         .get_board_for_user(&workspaces, &parent_id, &current.user_id)
         .await?;
+    Ok(assembled.into())
+}
+
+/// The manual "mark done / publish" override (E2-T4). Publishes one subtask's
+/// handoff contract — writing the contract FILE if the agent never did, then
+/// stamping a `published_at` on its `workspace_contracts` row — so a forgetful
+/// agent or a stuck edge is never a silent dead end (spec §8 risk / F-7). The
+/// dependent unblocks on the scheduler's NEXT tick (its `ready_subtask_ids`
+/// derivation keys off exactly this published row). Also the deterministic test
+/// hook the scheduler tests reference. Returns the refreshed board so the
+/// frontend re-renders without a follow-up `get_board`.
+#[tauri::command]
+pub async fn publish_contract(
+    subtask_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    board: State<'_, BoardRepo>,
+    session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
+) -> Result<BoardState, BoardCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    // Production writes to the real `~/.phasr/tasks/<parent>/contracts/<role>.md`
+    // — the SAME path `SchedulerConfig` polls, so the poller sees this override's
+    // file and the two never disagree on location. Tests inject a tempdir root.
+    let config = SchedulerConfig::default();
+    let assembled =
+        publish_contract_inner(&subtask_id, &current.user_id, &workspaces, &board, &config).await?;
+
+    // The `workspaces`/contract rows are board-machine-local (auto-excluded from
+    // the `workspace_kind='agent'` push filter, spec claim #11), so this is a
+    // no-op for the cloud — but we stay consistent with the sibling mutating
+    // board command (`start_decomposition`).
+    sync_state.request_sync();
+    Ok(assembled.into())
+}
+
+/// Integrate a completed decomposition (E3-T1). Mints a DEDICATED integration
+/// branch + worktree off the parent's base branch (NEVER the user's checkout —
+/// `create_worktree`, not `merge_to`), records them on the PARENT row's existing
+/// `branch`/`worktree_path` (spec B1, no separate column), then merges each
+/// completed subtask's branch into it in TOPOLOGICAL order (producers before
+/// consumers) via `merge_into` under the per-repo lock.
+///
+/// A clean run returns the refreshed `BoardState`: the parent now carries the
+/// integration `branch`/`worktreePath`, so the frontend reviews ONE combined
+/// diff (existing `git_diff`/`git_status` against the parent id) and can merge to
+/// main (existing `git_merge_to_main`). The FIRST conflict STOPS the merge and
+/// returns `IntegrationConflict` — the worktree is left mid-merge and the parent
+/// row already points at it, so the existing interactive conflict flow resolves
+/// against the parent `workspace_id` with zero new commands (spec claim #6).
+#[tauri::command]
+pub async fn integrate_parent(
+    parent_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    board: State<'_, BoardRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
+    session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
+) -> Result<BoardState, BoardCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let assembled = integrate_parent_inner(
+        &parent_id,
+        &current.user_id,
+        &workspaces,
+        &board,
+        &repositories,
+        &repo_locks,
+    )
+    .await?;
+
+    // The parent row's branch/worktree_path just changed; keep the sibling
+    // convention even though board rows never push (spec claim #11).
+    sync_state.request_sync();
     Ok(assembled.into())
 }
 
@@ -346,12 +457,253 @@ fn non_empty_prompt(prompt: &str) -> Option<String> {
     }
 }
 
+/// `publish_contract`'s orchestration, minus session/sync wiring, so it can be
+/// exercised directly against real repos + a tempdir contract root in tests
+/// (the production command uses `SchedulerConfig::default()` = the real
+/// `~/.phasr/tasks`). Owner-scoped: reads the subtask through `get_for_user` so
+/// one account can never publish another's subtask.
+async fn publish_contract_inner(
+    subtask_id: &str,
+    user_id: &str,
+    workspaces: &WorkspaceRepo,
+    board: &BoardRepo,
+    config: &SchedulerConfig,
+) -> Result<Board, BoardCmdError> {
+    let subtask = workspaces.get_for_user(subtask_id, user_id).await?;
+    // A handoff contract only makes sense for a decomposition subtask (it needs a
+    // parent to belong to and a role to name the file). A standalone agent/parent
+    // has neither.
+    let (Some(parent_id), Some(role)) = (subtask.parent_id.clone(), subtask.role.clone()) else {
+        return Err(BoardCmdError::NotASubtask(format!(
+            "workspace `{subtask_id}` is not a decomposition subtask"
+        )));
+    };
+
+    // 1. Ensure the contract FILE exists (the agent may never have written it —
+    //    that is the whole point of the override). Only write a stub if the file
+    //    is missing/empty; a real agent-authored contract is left untouched so
+    //    the consumer seeds against the genuine interface, not our placeholder.
+    //    tmp-then-rename so the scheduler's poller never reads a half-written file
+    //    (spec §F-2 atomic-write hardening).
+    let path = config.contract_file(&parent_id, &role);
+    if !contract_file_is_ready(&path, config.min_contract_bytes) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("md.tmp");
+        std::fs::write(&tmp, marked_done_contract(&role, subtask.branch.as_deref()))?;
+        std::fs::rename(&tmp, &path)?;
+    }
+
+    // 2. Stamp a PUBLISHED `workspace_contracts` row directly (don't wait for the
+    //    poller). Idempotent, mirroring the scheduler's file→DB bridge: publish
+    //    an existing unpublished row, no-op an already-published one, else insert.
+    let now = chrono::Utc::now();
+    match board.find_contract(subtask_id).await? {
+        Some(existing) if existing.published_at.is_some() => {}
+        Some(existing) => board.mark_contract_published(&existing.id, now).await?,
+        None => {
+            let mut contract = WorkspaceContract::new(
+                parent_id.clone(),
+                subtask_id.to_string(),
+                role,
+                path.to_string_lossy().into_owned(),
+            );
+            contract.published_at = Some(now);
+            board.insert_contract(&contract).await?;
+        }
+    }
+
+    Ok(board.get_board_for_user(workspaces, &parent_id, user_id).await?)
+}
+
+/// A minimal freeform-Markdown stub written when the user marks a subtask done
+/// but its agent never authored a contract. Freeform per spec §F-2 — the
+/// "contract" is a handoff note, not a structured schema (that is P1).
+fn marked_done_contract(role: &str, branch: Option<&str>) -> String {
+    let branch_line = branch
+        .map(|b| format!("Its work is on branch `{b}`.\n"))
+        .unwrap_or_default();
+    format!(
+        "# {role} contract\n\nMarked done via the phasr board (no agent-authored \
+         contract was found).\n{branch_line}",
+    )
+}
+
+/// `integrate_parent`'s orchestration, minus session/sync wiring, so it can be
+/// driven directly against a real git repo + real subtask branches in tests.
+/// Owner-scoped throughout (`get_for_user` / `list_by_parent_for_user`).
+async fn integrate_parent_inner(
+    parent_id: &str,
+    user_id: &str,
+    workspaces: &WorkspaceRepo,
+    board: &BoardRepo,
+    repositories: &RepositoryRepo,
+    repo_locks: &RepoLockRegistry,
+) -> Result<Board, BoardCmdError> {
+    let parent = workspaces.get_for_user(parent_id, user_id).await?;
+    let subtasks = workspaces
+        .list_by_parent_for_user(parent_id, user_id)
+        .await?;
+    let deps = board.list_dependencies(parent_id).await?;
+
+    let repository = repositories.get(&parent.repository_id).await?;
+    let repo_path = repository
+        .local_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            BoardCmdError::Git(GitError::CommandFailed("repository has no local path".into()))
+        })?;
+    let base_ref = repository.default_branch.clone();
+
+    // Topologically order the subtasks so producers merge before consumers, then
+    // keep only those that actually produced a branch (a still-blocked/pending
+    // subtask was never spawned, so it has nothing to integrate). A cycle is a
+    // malformed DAG surfaced here (the gate's `validate_decomposition` doesn't
+    // reject cycles).
+    let ordered = topological_subtask_order(&subtasks, &deps)?;
+
+    // Deterministic per-parent integration branch + worktree (spec F-4):
+    //   branch   `phasr/integration/<parent-slug>-<short_id>`
+    //   worktree `~/.phasr/worktrees/<parent_id>`
+    // The worktree lives OUTSIDE the user's checkout, so integration never
+    // touches their working tree (spec B1, the merge_to-vs-merge_into distinction
+    // in claim #5).
+    let parent_slug = git::slugify(&parent.name);
+    let short = git::short_id(&parent.id);
+    let branch = git::default_branch_name(&format!("integration/{parent_slug}-{short}"), short);
+    let worktree_path = git::default_worktree_base_path().join(&parent.id);
+
+    // Everything touching the shared `.git` (worktree add, branch delete, the
+    // merges) serializes against the per-repo lock — same lock start_task uses.
+    let lock = repo_locks.for_repository(&parent.repository_id);
+    let guard = lock.lock().await;
+
+    // Re-integration must start from a clean base: tear down any prior
+    // integration worktree/branch so "Integrate & review" always reflects the
+    // CURRENT subtask branches, never a stale half-merge. Both teardown helpers
+    // are idempotent (no-op when nothing exists).
+    if worktree_path.exists() {
+        git::remove_worktree(&repo_path, &worktree_path)?;
+    }
+    git::branch_delete(&repo_path, &branch)?;
+    git::create_worktree(&repo_path, &worktree_path, &branch, &base_ref)?;
+
+    // Record the integration branch/worktree on the PARENT row BEFORE merging, so
+    // even a conflict leaves the parent pointing at the integration worktree —
+    // that is what lets the frontend drive the conflict flow (git_merge_in_progress
+    // etc.) against the parent id. `update` leaves `status` untouched (the parent
+    // stays Pending — it never runs a PTY).
+    workspaces
+        .update(
+            parent_id,
+            WorkspaceUpdate {
+                branch: Some(Some(branch.clone())),
+                worktree_path: Some(Some(worktree_path.to_string_lossy().into_owned())),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    // Merge each branch-bearing subtask in topological order. STOP on the first
+    // conflict — the worktree is left mid-merge for the interactive resolver; we
+    // never clobber or silently skip a conflict.
+    for subtask in &ordered {
+        let Some(source_branch) = subtask.branch.as_deref() else {
+            continue;
+        };
+        match git::merge_into(&worktree_path, source_branch, MergeStrategy::Merge)? {
+            MergeOutcome::Clean { .. } => {}
+            MergeOutcome::Conflicts { files } => {
+                drop(guard);
+                return Err(BoardCmdError::IntegrationConflict { files });
+            }
+        }
+    }
+    drop(guard);
+
+    // Clean integration — the parent now carries the combined branch/worktree.
+    Ok(board.get_board_for_user(workspaces, parent_id, user_id).await?)
+}
+
+/// Kahn topological sort of a parent's subtasks so every producer precedes its
+/// consumers (`from` before `to`). Indegree-0 nodes keep the subtasks' own
+/// oldest-first order for a deterministic result. Only edges whose BOTH
+/// endpoints are subtasks of this parent count (defensive against a stray edge).
+/// Returns `InvalidDecomposition` if a cycle leaves nodes unvisited.
+fn topological_subtask_order(
+    subtasks: &[Workspace],
+    deps: &[WorkspaceDependency],
+) -> Result<Vec<Workspace>, BoardCmdError> {
+    let ids: HashSet<&str> = subtasks.iter().map(|s| s.id.as_str()).collect();
+    let mut indegree: HashMap<&str, usize> =
+        subtasks.iter().map(|s| (s.id.as_str(), 0usize)).collect();
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in deps {
+        let (from, to) = (edge.from_subtask_id.as_str(), edge.to_subtask_id.as_str());
+        if ids.contains(from) && ids.contains(to) {
+            adjacency.entry(from).or_default().push(to);
+            if let Some(d) = indegree.get_mut(to) {
+                *d += 1;
+            }
+        }
+    }
+
+    let mut queue: VecDeque<&str> = subtasks
+        .iter()
+        .map(|s| s.id.as_str())
+        .filter(|id| indegree[id] == 0)
+        .collect();
+    let mut order: Vec<&str> = Vec::with_capacity(subtasks.len());
+    while let Some(node) = queue.pop_front() {
+        order.push(node);
+        if let Some(children) = adjacency.get(node) {
+            for &child in children {
+                let d = indegree.get_mut(child).expect("child is a known subtask");
+                *d -= 1;
+                if *d == 0 {
+                    queue.push_back(child);
+                }
+            }
+        }
+    }
+
+    if order.len() != subtasks.len() {
+        return Err(BoardCmdError::InvalidDecomposition(
+            "dependency cycle detected among subtasks".into(),
+        ));
+    }
+    let by_id: HashMap<&str, &Workspace> =
+        subtasks.iter().map(|s| (s.id.as_str(), s)).collect();
+    Ok(order.into_iter().map(|id| by_id[id].clone()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::{Repository, WorkspaceStatus};
     use crate::store::{init_pool, Db, RepositoryRepo};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Mirror of the scheduler's edge-satisfaction rule (`ready_subtask_ids` /
+    /// `edge_satisfied`): a subtask is unblocked once EVERY incoming edge's
+    /// producer has a PUBLISHED contract. Kept local to the test so it doesn't
+    /// pull the scheduler's internals into the command layer's public surface.
+    fn is_unblocked(
+        subtask_id: &str,
+        deps: &[WorkspaceDependency],
+        contracts: &[WorkspaceContract],
+    ) -> bool {
+        deps.iter()
+            .filter(|e| e.to_subtask_id == subtask_id)
+            .all(|e| {
+                contracts
+                    .iter()
+                    .any(|c| c.subtask_id == e.from_subtask_id && c.published_at.is_some())
+            })
+    }
 
     async fn seed_user(pool: &Db, uid: &str) {
         sqlx::query(
@@ -607,5 +959,477 @@ mod tests {
         assert_eq!(parent_title("  \n  Build it\nmore"), "Build it");
         assert_eq!(parent_title("   "), "Decomposition");
         assert_eq!(parent_title(""), "Decomposition");
+    }
+
+    // ── E2-T4 (publish_contract) + E3-T1 (integrate_parent) ─────────────────
+
+    /// A scheduler config wired for deterministic tests: a tempdir contract root
+    /// (never the real `~/.phasr`) so `publish_contract` writes under the test
+    /// dir, plus the production min-bytes threshold.
+    fn test_config(contract_root: &Path) -> SchedulerConfig {
+        SchedulerConfig {
+            contract_root: contract_root.to_path_buf(),
+            ..SchedulerConfig::default()
+        }
+    }
+
+    /// One-commit git repo on `main`, with commit signing off so tests never
+    /// block on a key. Mirrors the git test scaffolding in `git/merge.rs`.
+    fn init_repo(path: &Path) {
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "tester"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(path)
+                .status()
+                .unwrap();
+        }
+        std::fs::write(path.join("README.md"), "hi\n").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    /// Branch off `main`, write `file` with `contents`, commit, and return to
+    /// `main` — leaving a real `branch` with one commit for integration to merge.
+    fn commit_on_branch(repo: &Path, branch: &str, file: &str, contents: &str, msg: &str) {
+        Command::new("git")
+            .args(["checkout", "-q", "-b", branch, "main"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        std::fs::write(repo.join(file), contents).unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", msg])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "-q", "main"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+    }
+
+    /// A git-backed board fixture: a real one-commit repo on disk (so worktree +
+    /// merge ops work), the three repos, and a seeded `user-a` owner. The
+    /// returned TempDir keeps the repo + DB alive for the test — but the
+    /// integration worktree lands under `~/.phasr/worktrees/<parent>` (OUTSIDE
+    /// it), so integration tests must `cleanup_integration` at the end.
+    async fn fresh_with_git() -> (
+        WorkspaceRepo,
+        BoardRepo,
+        RepositoryRepo,
+        Repository,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_pool(&tmp.path().join("test.sqlite")).await.unwrap();
+        let repos = RepositoryRepo::new(pool.clone());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board = BoardRepo::new(pool.clone());
+
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut r = Repository::new(
+            "repo".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        r.default_branch = "main".into();
+        repos.insert(&r).await.unwrap();
+        seed_user(&pool, "user-a").await;
+        (workspaces, board, repos, r, tmp)
+    }
+
+    /// Insert a `parent` + two `subtask` rows (owner `user-a`) with the given
+    /// real branches, plus the `backend → frontend` edge. Returns the parent and
+    /// the two subtasks. Branch-bearing = "was spawned and produced work", the
+    /// integration criterion.
+    async fn seed_board_with_branches(
+        workspaces: &WorkspaceRepo,
+        board: &BoardRepo,
+        repo_id: &str,
+        backend_branch: Option<&str>,
+        frontend_branch: Option<&str>,
+    ) -> (Workspace, Workspace, Workspace) {
+        let mut parent = Workspace::new(repo_id.to_string(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+        workspaces.insert_for_user(&parent, "user-a").await.unwrap();
+
+        let mut backend = Workspace::new(repo_id.to_string(), "backend".into(), "cmd".into());
+        backend.workspace_kind = WorkspaceKind::Subtask;
+        backend.parent_id = Some(parent.id.clone());
+        backend.role = Some("backend".into());
+        backend.branch = backend_branch.map(String::from);
+        // Interactive agents rarely exit, so a "done" subtask is typically still
+        // Running — integration keys off having a BRANCH, not a terminal status.
+        backend.status = WorkspaceStatus::Running;
+        workspaces.insert_for_user(&backend, "user-a").await.unwrap();
+
+        let mut frontend = Workspace::new(repo_id.to_string(), "frontend".into(), "cmd".into());
+        frontend.workspace_kind = WorkspaceKind::Subtask;
+        frontend.parent_id = Some(parent.id.clone());
+        frontend.role = Some("frontend".into());
+        frontend.branch = frontend_branch.map(String::from);
+        frontend.status = WorkspaceStatus::Running;
+        workspaces.insert_for_user(&frontend, "user-a").await.unwrap();
+
+        let edge =
+            WorkspaceDependency::new(parent.id.clone(), backend.id.clone(), frontend.id.clone());
+        board.insert_dependency(&edge).await.unwrap();
+        (parent, backend, frontend)
+    }
+
+    /// Tear down the integration worktree + branch a test created under
+    /// `~/.phasr/worktrees/<parent>` (outside the test TempDir).
+    fn cleanup_integration(repo_path: &Path, parent: &Workspace) {
+        let worktree = git::default_worktree_base_path().join(&parent.id);
+        let _ = git::remove_worktree(repo_path, &worktree);
+        let parent_slug = git::slugify(&parent.name);
+        let branch =
+            git::default_branch_name(&format!("integration/{parent_slug}-{}", git::short_id(&parent.id)), git::short_id(&parent.id));
+        let _ = git::branch_delete(repo_path, &branch);
+    }
+
+    // E2-T4 AC: "Mark done" publishes the contract (writes the file + stamps the
+    // row) and the dependent unblocks on the next scheduler tick — proven via the
+    // SAME `ready_subtask_ids` derivation the scheduler spawns from.
+    #[tokio::test]
+    async fn publish_contract_marks_published_and_unblocks_dependent() {
+        let (workspaces, board, _repos, repo, tmp) = fresh_with_git().await;
+        let (parent, backend, frontend) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let config = test_config(&tmp.path().join("contracts-root"));
+
+        // Before: frontend's incoming edge is unsatisfied → still blocked.
+        let deps = board.list_dependencies(&parent.id).await.unwrap();
+        assert!(
+            !is_unblocked(
+                &frontend.id,
+                &deps,
+                &board.list_contracts(&parent.id).await.unwrap()
+            ),
+            "frontend must be blocked before backend publishes"
+        );
+
+        // Mark backend done.
+        publish_contract_inner(&backend.id, "user-a", &workspaces, &board, &config)
+            .await
+            .unwrap();
+
+        // The contract file was written (non-empty) at the polled path...
+        let file = config.contract_file(&parent.id, "backend");
+        assert!(
+            contract_file_is_ready(&file, config.min_contract_bytes),
+            "publish_contract must write a non-empty contract file"
+        );
+        // ...and a PUBLISHED row now mirrors it.
+        let published = board.find_contract(&backend.id).await.unwrap().unwrap();
+        assert!(
+            published.published_at.is_some(),
+            "publish_contract must stamp published_at"
+        );
+
+        // After: the dependent is unblocked (the scheduler's next tick spawns it).
+        let contracts = board.list_contracts(&parent.id).await.unwrap();
+        assert!(
+            is_unblocked(&frontend.id, &deps, &contracts),
+            "publishing backend's contract must unblock frontend for the next tick"
+        );
+    }
+
+    // E2-T4: publishing is idempotent — a second "Mark done" must not create a
+    // duplicate contract row, it re-stamps/keeps the existing one.
+    #[tokio::test]
+    async fn publish_contract_is_idempotent() {
+        let (workspaces, board, _repos, repo, tmp) = fresh_with_git().await;
+        let (parent, backend, _frontend) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let config = test_config(&tmp.path().join("contracts-root"));
+
+        publish_contract_inner(&backend.id, "user-a", &workspaces, &board, &config)
+            .await
+            .unwrap();
+        publish_contract_inner(&backend.id, "user-a", &workspaces, &board, &config)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            board.list_contracts(&parent.id).await.unwrap().len(),
+            1,
+            "a second publish must not create a duplicate contract row"
+        );
+    }
+
+    // E2-T4 guard: publishing a contract only makes sense for a subtask. A
+    // standalone agent (no parent_id/role) is rejected, not silently mishandled.
+    #[tokio::test]
+    async fn publish_contract_rejects_a_non_subtask() {
+        let (workspaces, board, _repos, repo, tmp) = fresh_with_git().await;
+        let agent = Workspace::new(repo.id.clone(), "solo".into(), "cmd".into());
+        workspaces.insert_for_user(&agent, "user-a").await.unwrap();
+        let config = test_config(&tmp.path().join("contracts-root"));
+
+        assert!(matches!(
+            publish_contract_inner(&agent.id, "user-a", &workspaces, &board, &config).await,
+            Err(BoardCmdError::NotASubtask(_))
+        ));
+    }
+
+    // E3-T1 AC: two non-overlapping subtasks (different files) merge cleanly into
+    // a DEDICATED integration worktree (never the user's checkout), the parent row
+    // now points at the integration branch/worktree, and the combined tree carries
+    // BOTH changes.
+    #[tokio::test]
+    async fn integrate_parent_merges_two_subtasks_cleanly() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "backend\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "frontend\n", "frontend work");
+        let (parent, _b, _f) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let repo_locks = RepoLockRegistry::new();
+
+        let integrated = integrate_parent_inner(
+            &parent.id,
+            "user-a",
+            &workspaces,
+            &board,
+            &repos,
+            &repo_locks,
+        )
+        .await
+        .expect("a non-conflicting integration must succeed");
+
+        // The parent now carries the integration branch + worktree (spec B1).
+        let integration_branch = integrated.parent.branch.clone().expect("parent has a branch");
+        assert!(integration_branch.starts_with("phasr/integration/"));
+        let worktree = integrated
+            .parent
+            .worktree_path
+            .clone()
+            .expect("parent has a worktree");
+        let worktree = Path::new(&worktree);
+
+        // A DEDICATED worktree under ~/.phasr/worktrees — NEVER the user's checkout.
+        assert_ne!(
+            worktree,
+            repo_path,
+            "integration must never happen in the user's checkout"
+        );
+        // The combined tree carries BOTH subtasks' changes.
+        assert!(worktree.join("backend.txt").exists(), "backend's change is present");
+        assert!(worktree.join("frontend.txt").exists(), "frontend's change is present");
+        // A clean integration leaves no merge in progress.
+        assert_eq!(git::merge_in_progress(worktree).unwrap(), git::InProgress::None);
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // E3-T1 AC: overlapping edits (both branches change the same lines) STOP on
+    // `Conflicts` and leave the integration worktree mid-merge for the existing
+    // interactive resolver — it must NOT silently succeed or clobber. The parent
+    // row already points at the conflicted worktree so `git_merge_in_progress`
+    // (keyed on the parent id) surfaces it.
+    #[tokio::test]
+    async fn integrate_parent_stops_on_conflict_and_leaves_worktree_conflicted() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        // Both branches rewrite README.md's only line differently → a real conflict.
+        commit_on_branch(repo_path, "phasr/backend", "README.md", "backend version\n", "backend edit");
+        commit_on_branch(repo_path, "phasr/frontend", "README.md", "frontend version\n", "frontend edit");
+        let (parent, _b, _f) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let repo_locks = RepoLockRegistry::new();
+
+        let result = integrate_parent_inner(
+            &parent.id,
+            "user-a",
+            &workspaces,
+            &board,
+            &repos,
+            &repo_locks,
+        )
+        .await;
+
+        // It surfaces Conflicts naming the file — never a silent Ok.
+        match result {
+            Err(BoardCmdError::IntegrationConflict { files }) => {
+                assert!(files.contains(&"README.md".to_string()), "conflict names README.md");
+            }
+            other => panic!("expected an IntegrationConflict, got {other:?}"),
+        }
+
+        // The parent row points at the integration worktree (persisted BEFORE the
+        // merge), so the conflict flow (keyed on the parent id) targets it.
+        let parent_row = workspaces.get_for_user(&parent.id, "user-a").await.unwrap();
+        let worktree = parent_row.worktree_path.clone().expect("parent points at the worktree");
+        let worktree = Path::new(&worktree);
+        assert!(
+            matches!(
+                git::merge_in_progress(worktree).unwrap(),
+                git::InProgress::Merge { .. }
+            ),
+            "the integration worktree must be left mid-merge for the resolver"
+        );
+        // The conflict was not clobbered — the file still carries conflict markers.
+        let readme = std::fs::read_to_string(worktree.join("README.md")).unwrap();
+        assert!(readme.contains("<<<<<<<"), "conflict markers must remain for resolution");
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // E3-T1 AC: the merge is TOPOLOGICAL — the producer (`backend`) merges before
+    // the consumer (`frontend`) even when the rows are stored consumer-first. The
+    // pure ordering is locked by `topological_subtask_order_*`; here we prove it
+    // end-to-end via the integration branch's commit graph (frontend's merge
+    // commit is newer than backend's → backend merged first).
+    #[tokio::test]
+    async fn integrate_parent_merges_in_topological_order() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "backend\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "frontend\n", "frontend work");
+
+        // Insert the parent, then the subtasks CONSUMER-FIRST (frontend before
+        // backend), so a naive insertion-order merge would do frontend first —
+        // topo sort must override that to honor the backend → frontend edge.
+        let mut parent = Workspace::new(repo.id.clone(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+        workspaces.insert_for_user(&parent, "user-a").await.unwrap();
+
+        let mut frontend = Workspace::new(repo.id.clone(), "frontend".into(), "cmd".into());
+        frontend.workspace_kind = WorkspaceKind::Subtask;
+        frontend.parent_id = Some(parent.id.clone());
+        frontend.role = Some("frontend".into());
+        frontend.branch = Some("phasr/frontend".into());
+        frontend.status = WorkspaceStatus::Running;
+        workspaces.insert_for_user(&frontend, "user-a").await.unwrap();
+
+        let mut backend = Workspace::new(repo.id.clone(), "backend".into(), "cmd".into());
+        backend.workspace_kind = WorkspaceKind::Subtask;
+        backend.parent_id = Some(parent.id.clone());
+        backend.role = Some("backend".into());
+        backend.branch = Some("phasr/backend".into());
+        backend.status = WorkspaceStatus::Running;
+        workspaces.insert_for_user(&backend, "user-a").await.unwrap();
+
+        let edge =
+            WorkspaceDependency::new(parent.id.clone(), backend.id.clone(), frontend.id.clone());
+        board.insert_dependency(&edge).await.unwrap();
+
+        let repo_locks = RepoLockRegistry::new();
+        let integrated =
+            integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+                .await
+                .expect("clean topological integration");
+        let worktree = integrated.parent.worktree_path.clone().unwrap();
+
+        // Merge-commit subjects, newest first. git's default is "Merge branch 'X'".
+        let out = Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(&worktree)
+            .output()
+            .unwrap();
+        let subjects: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let frontend_pos = subjects.iter().position(|s| s.contains("frontend"));
+        let backend_pos = subjects.iter().position(|s| s.contains("backend"));
+        let (frontend_pos, backend_pos) = (
+            frontend_pos.expect("a frontend merge commit"),
+            backend_pos.expect("a backend merge commit"),
+        );
+        assert!(
+            frontend_pos < backend_pos,
+            "frontend's merge must be NEWER (smaller index) than backend's — i.e. backend merged first"
+        );
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // E3-T1: a parent whose subtasks have no branches yet (nothing spawned) still
+    // produces a fresh integration worktree off base — an honest EMPTY combined
+    // diff, not an error or a clobbered checkout.
+    #[tokio::test]
+    async fn integrate_parent_with_no_branches_is_an_empty_integration() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let repo_locks = RepoLockRegistry::new();
+
+        let integrated =
+            integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+                .await
+                .expect("an empty integration still builds the worktree");
+        let worktree = integrated.parent.worktree_path.clone().unwrap();
+        // Base tree only (README from init), no subtask changes, no merge pending.
+        assert!(Path::new(&worktree).join("README.md").exists());
+        assert_eq!(
+            git::merge_in_progress(Path::new(&worktree)).unwrap(),
+            git::InProgress::None
+        );
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // Pure topo ordering: producers precede consumers regardless of the rows'
+    // stored order, and a cycle is surfaced (the gate doesn't reject cycles).
+    #[test]
+    fn topological_subtask_order_puts_producers_before_consumers() {
+        let repo = "r";
+        let mut backend = Workspace::new(repo.into(), "backend".into(), "cmd".into());
+        backend.id = "backend".into();
+        let mut frontend = Workspace::new(repo.into(), "frontend".into(), "cmd".into());
+        frontend.id = "frontend".into();
+        let edge = WorkspaceDependency::new("p".into(), "backend".into(), "frontend".into());
+
+        // Stored consumer-first; topo must still yield [backend, frontend].
+        let order =
+            topological_subtask_order(&[frontend.clone(), backend.clone()], &[edge.clone()])
+                .unwrap();
+        assert_eq!(
+            order.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            vec!["backend".to_string(), "frontend".to_string()]
+        );
+
+        // A cycle leaves nodes unvisited → InvalidDecomposition.
+        let back_edge = WorkspaceDependency::new("p".into(), "frontend".into(), "backend".into());
+        assert!(matches!(
+            topological_subtask_order(&[backend, frontend], &[edge, back_edge]),
+            Err(BoardCmdError::InvalidDecomposition(_))
+        ));
     }
 }
