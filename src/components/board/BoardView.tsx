@@ -4,6 +4,7 @@ import { GlassButton } from "@/components/ui/GlassButton";
 import { Dialog } from "@/components/ui/Dialog";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { BoardCardView } from "@/components/board/BoardCard";
+import { IntegrationDiff } from "@/components/board/IntegrationDiff";
 import { useAllAgentLiveness } from "@/lib/agentLiveness";
 import { isLiveState } from "@/components/ui/agentStatusMeta";
 import {
@@ -178,9 +179,15 @@ export function BoardView({ board }: { board: BoardState }) {
  * the parent id (the R7 "legible reward"). A CONFLICT routes into the EXISTING
  * conflict-resolution surface (`ChangesPanel` drives `git_merge_in_progress` /
  * `git_resolve_conflict` / `git_continue_merge` / `git_abort_merge`) keyed on
- * the parent id — never a dead end (DDR-002). Both surfaces are the same
- * `ChangesPanel` pointed at the parent worktree; which one shows is a pure
- * function of the worktree's own state.
+ * the parent id — never a dead end (DDR-002).
+ *
+ * The two review surfaces read DIFFERENT sources (P0-1): a clean integration
+ * already committed everything, so the worktree is clean and a worktree read
+ * would show EMPTY — the clean case renders {@link IntegrationDiff}, which reads
+ * the integration BRANCH against its base. A conflict leaves the worktree
+ * mid-merge (carrying the conflict markers), so the conflict case keeps the
+ * worktree-backed `ChangesPanel`. Which one shows is a pure function of the
+ * integration's outcome (`reviewMode`).
  */
 function BoardParentHeader({
   board,
@@ -294,7 +301,15 @@ function BoardParentHeader({
         }
       >
         <div data-testid="board-combined-diff" className="h-[62vh] min-h-0">
-          <ChangesPanel workspaceId={board.parent.id} />
+          {reviewMode === "conflict" ? (
+            // Mid-merge worktree carries the conflict markers → the existing
+            // worktree-backed conflict flow.
+            <ChangesPanel workspaceId={board.parent.id} />
+          ) : (
+            // Clean integration is already committed (worktree is empty) → the
+            // combined integration branch-vs-base diff.
+            <IntegrationDiff parentId={board.parent.id} />
+          )}
         </div>
       </Dialog>
     </div>

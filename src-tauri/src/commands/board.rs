@@ -20,7 +20,7 @@ use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
 use crate::domain::{Agent, Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceKind};
-use crate::git::{self, GitError, MergeOutcome, MergeStrategy};
+use crate::git::{self, FileChange, GitError, MergeOutcome, MergeStrategy};
 use crate::orchestrator::{contract_file_is_ready, RepoLockRegistry, SchedulerConfig};
 use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
@@ -306,7 +306,110 @@ pub async fn integrate_parent(
     Ok(assembled.into())
 }
 
+/// The combined file LIST for the "Integration review" (P0-1). After a CLEAN
+/// `integrate_parent`, every subtask merge is already committed, so the parent
+/// integration worktree is CLEAN — the worktree-based `git_status` returns
+/// nothing and the review would render empty. This reads the integration BRANCH
+/// vs its base instead (three-dot `base...branch`), so the review shows exactly
+/// what the agents produced regardless of the worktree being committed.
+///
+/// The "status" half of a `git_status`/`git_diff`-style pairing: this returns
+/// the `Vec<FileChange>` (same shape as `git_status`); `board_integration_file_diff`
+/// returns the per-file unified diff (same shape as `git_diff`). The frontend
+/// points the clean-case review at this pair to reuse its existing diff
+/// components. The CONFLICT case keeps the worktree `ChangesPanel` surface (a
+/// mid-merge worktree correctly carries the conflict markers), so it does NOT
+/// use this command. Read-only: no repo lock, no store write, no sync.
+#[tauri::command]
+pub async fn board_integration_diff(
+    parent_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<FileChange>, BoardCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let (worktree, base, branch) =
+        resolve_integration_range(&parent_id, &current.user_id, &workspaces, &repositories).await?;
+    // Off the blocking pool: a whole-integration diff can be large, and blocking
+    // a Tokio worker for the subprocess's full duration starves unrelated IPC
+    // (terminal input, sync) — the same reason `commands::git::blocking_git`
+    // exists. This read holds no lock (unlike `integrate_parent`'s merges).
+    blocking_board_git(move || git::diff_branch_range_status(&worktree, &base, &branch)).await
+}
+
+/// The per-file unified diff for the "Integration review" (P0-1) — the "diff"
+/// half paired with `board_integration_diff`'s file list (mirrors how `git_diff`
+/// pairs with `git_status`). Same `base...branch` three-dot range, scoped to one
+/// `path`. Returns the raw unified-diff string the frontend's `DiffView` already
+/// renders; truncates past the 16 MiB cap via the shared `capture_stdout`.
+#[tauri::command]
+pub async fn board_integration_file_diff(
+    parent_id: String,
+    path: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<String, BoardCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let (worktree, base, branch) =
+        resolve_integration_range(&parent_id, &current.user_id, &workspaces, &repositories).await?;
+    blocking_board_git(move || git::diff_branch_range(&worktree, &base, &branch, Some(&path))).await
+}
+
 // ── internals (testable without Tauri `State`) ──────────────────────────────
+
+/// Run a synchronous git op off the async runtime, mapping failures into
+/// `BoardCmdError::Git`. Mirrors `commands::git::blocking_git` (which returns the
+/// git-command error type) but for the board's aggregate error. Used by the
+/// read-only integration-diff commands, which hold no repo lock — so there is no
+/// tokio guard held across the `spawn_blocking` await.
+async fn blocking_board_git<T, F>(f: F) -> Result<T, BoardCmdError>
+where
+    F: FnOnce() -> Result<T, GitError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        // A JoinError only happens if the blocking task panicked; surface it as a
+        // git failure rather than silently dropping the command.
+        .map_err(|e| BoardCmdError::Git(GitError::CommandFailed(format!("git task failed: {e}"))))?
+        .map_err(BoardCmdError::Git)
+}
+
+/// Resolve the `(integration worktree, base branch, integration branch)` triple
+/// for the integration review, owner-scoped. Shared by both integration-diff
+/// commands. `base` is the repository's default branch (the divergence point
+/// `integrate_parent` branched the integration branch off of); `branch` +
+/// `worktree` are what `integrate_parent` stamped onto the parent row. Errors if
+/// the parent hasn't been integrated yet (no branch/worktree) — the review is
+/// only meaningful after a run populated them.
+async fn resolve_integration_range(
+    parent_id: &str,
+    user_id: &str,
+    workspaces: &WorkspaceRepo,
+    repositories: &RepositoryRepo,
+) -> Result<(PathBuf, String, String), BoardCmdError> {
+    let parent = workspaces.get_for_user(parent_id, user_id).await?;
+    let branch = parent.branch.clone().ok_or_else(|| {
+        BoardCmdError::Git(GitError::CommandFailed(
+            "parent has no integration branch yet — integrate first".into(),
+        ))
+    })?;
+    let worktree = parent
+        .worktree_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            BoardCmdError::Git(GitError::CommandFailed(
+                "parent has no integration worktree yet — integrate first".into(),
+            ))
+        })?;
+    // Not owner-scoped: the repository row is fetched by the (already
+    // owner-scoped) parent's repository_id, mirroring `integrate_parent_inner`.
+    let repository = repositories.get(&parent.repository_id).await?;
+    let base = repository.default_branch.clone();
+    Ok((worktree, base, branch))
+}
 
 /// The gate's orchestration, minus session/lock/sync wiring, so it can be
 /// exercised directly against real repos in tests. Validates, builds the rows,
@@ -1546,6 +1649,101 @@ mod tests {
         assert_eq!(
             git::merge_in_progress(Path::new(&worktree)).unwrap(),
             git::InProgress::None
+        );
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // P0-1 AC: after a CLEAN integration the parent worktree is committed/clean,
+    // so the worktree-based `git_status` is EMPTY — yet the branch-vs-base
+    // combined diff must still list BOTH subtasks' files. This is the exact bug
+    // P0-1 fixes: the reward diff comes from the integration branch, not the
+    // worktree. Exercises the command's real body (`resolve_integration_range`
+    // + `diff_branch_range_status`), minus the `spawn_blocking`/session plumbing.
+    #[tokio::test]
+    async fn board_integration_diff_lists_both_subtasks_after_clean_integration() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "backend\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "frontend\n", "frontend work");
+        let (parent, _b, _f) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .expect("clean integration");
+
+        // The integration worktree is CLEAN (everything committed) — the whole
+        // premise of P0-1: the worktree status shows nothing to review.
+        let (worktree, base, branch) =
+            resolve_integration_range(&parent.id, "user-a", &workspaces, &repos)
+                .await
+                .unwrap();
+        assert!(
+            git::status(&worktree).unwrap().is_empty(),
+            "a clean integration leaves an empty worktree status"
+        );
+
+        // ...yet the branch-vs-base combined diff lists BOTH files.
+        let changes = git::diff_branch_range_status(&worktree, &base, &branch).unwrap();
+        let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+        assert!(paths.contains(&"backend.txt"), "combined diff lists backend.txt: {paths:?}");
+        assert!(paths.contains(&"frontend.txt"), "combined diff lists frontend.txt: {paths:?}");
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // P0-1: an integration with NO subtask branches (nothing produced) yields an
+    // integration branch identical to base → an honest EMPTY combined diff, not
+    // an error and not the base tree.
+    #[tokio::test]
+    async fn board_integration_diff_is_empty_when_nothing_was_merged() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .expect("empty integration still builds the worktree");
+
+        let (worktree, base, branch) =
+            resolve_integration_range(&parent.id, "user-a", &workspaces, &repos)
+                .await
+                .unwrap();
+        let changes = git::diff_branch_range_status(&worktree, &base, &branch).unwrap();
+        assert!(changes.is_empty(), "no merged branches => empty combined diff: {changes:?}");
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // P0-1 owner-scoping: another signed-in account can't resolve the range for
+    // someone else's board (the diff commands read the parent via `get_for_user`).
+    #[tokio::test]
+    async fn board_integration_diff_range_is_scoped_to_the_owner() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .unwrap();
+
+        // `get_for_user` filters on `user_id`, so a non-owner id resolves to
+        // NotFound whether or not that account exists — reads never leak.
+        assert!(
+            matches!(
+                resolve_integration_range(&parent.id, "user-b", &workspaces, &repos).await,
+                Err(BoardCmdError::Store(StoreError::NotFound))
+            ),
+            "a different account must get NotFound resolving another user's integration range"
         );
 
         cleanup_integration(repo_path, &parent);

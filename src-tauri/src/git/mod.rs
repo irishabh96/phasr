@@ -20,7 +20,7 @@ mod worktree;
 pub use branch::{branch_status, BranchStatus};
 pub use clone::clone_repo;
 pub use commit::{commit, discard, push, stage, unstage, CommitOutput};
-pub use diff::{diff, diff_for_commit, DiffScope};
+pub use diff::{diff, diff_branch_range, diff_for_commit, DiffScope};
 pub use error::GitError;
 pub use files::list_files;
 pub use init::init_repo;
@@ -35,6 +35,6 @@ pub use naming::{
 };
 pub use pr::{build_pull_request_target, resolve_base_branch};
 pub use remote::{get_default_branch, get_remote_url, list_local_branches};
-pub use status::{status, FileChange};
+pub use status::{diff_branch_range_status, status, FileChange};
 pub use template::init_from_template;
 pub use worktree::{branch_delete, create_worktree, prune_worktrees, remove_worktree};

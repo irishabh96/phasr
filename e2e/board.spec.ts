@@ -28,10 +28,12 @@ test.describe("task board (/design-test)", () => {
     consoleErrors = [];
     // Tauri mock: records invoke calls and answers the board commands so the
     // gate + integrate flow run without the native shell. `integrate_parent`
-    // resolves clean by default; setting `window.__FORCE_INTEGRATION_CONFLICT__`
-    // makes it REJECT with the frozen conflict string AND flips git_status /
-    // git_merge_in_progress into a mid-merge state (the parent worktree the
-    // conflict surface reads).
+    // resolves clean by default — the clean review then reads the integration
+    // branch via board_integration_diff / board_integration_file_diff (a clean
+    // integrate leaves the worktree empty). Setting
+    // `window.__FORCE_INTEGRATION_CONFLICT__` makes it REJECT with the frozen
+    // conflict string AND flips git_status / git_merge_in_progress into a
+    // mid-merge state (the parent worktree the conflict surface reads).
     await page.addInitScript(() => {
       const calls: Array<{ cmd: string; args: unknown }> = [];
       (window as unknown as { __BOARD_CALLS__: typeof calls }).__BOARD_CALLS__ =
@@ -138,6 +140,25 @@ test.describe("task board (/design-test)", () => {
                     ],
               );
             case "git_diff":
+              return Promise.resolve(SAMPLE_DIFF);
+            // Clean-case combined review (P0-1): the integration branch vs its
+            // base. A clean integrate leaves the worktree empty, so the review
+            // reads these — NOT git_status/git_diff — to show what the agents
+            // produced. The file list mirrors the FileChange shape (status on
+            // `staged`, `unstaged` = "other", numstat counts); the per-file
+            // command returns the raw unified diff DiffView renders.
+            case "board_integration_diff":
+              return Promise.resolve([
+                {
+                  path: "src/comments/api.ts",
+                  oldPath: null,
+                  staged: "added",
+                  unstaged: "other",
+                  adds: 3,
+                  removes: 0,
+                },
+              ]);
+            case "board_integration_file_diff":
               return Promise.resolve(SAMPLE_DIFF);
             case "git_branch_status":
               return Promise.resolve({
@@ -328,10 +349,39 @@ test.describe("task board (/design-test)", () => {
       )
       .toBe(1);
 
-    // The success surface is the ONE combined diff against the parent worktree.
+    // The success surface is the ONE combined branch-vs-base diff, sourced from
+    // board_integration_diff (the file list) — NOT the empty post-integrate
+    // worktree. Assert the command fired and its file renders.
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () =>
+            (
+              window as unknown as { __BOARD_CALLS__: Array<{ cmd: string }> }
+            ).__BOARD_CALLS__.filter(
+              (c) => c.cmd === "board_integration_diff",
+            ).length,
+        ),
+      )
+      .toBeGreaterThanOrEqual(1);
+
     const diff = page.getByTestId("board-combined-diff");
     await expect(diff).toBeVisible();
     await expect(diff).toContainText("src/comments/api.ts");
+
+    // The expanded card lazy-loads its per-file diff via board_integration_file_diff.
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () =>
+            (
+              window as unknown as { __BOARD_CALLS__: Array<{ cmd: string }> }
+            ).__BOARD_CALLS__.filter(
+              (c) => c.cmd === "board_integration_file_diff",
+            ).length,
+        ),
+      )
+      .toBeGreaterThanOrEqual(1);
   });
 
   test("an integration conflict routes into the conflict-resolution surface (not a dead end)", async ({

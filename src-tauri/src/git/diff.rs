@@ -28,6 +28,32 @@ pub fn diff_for_commit(cwd: &Path, sha: &str, path: Option<&str>) -> Result<Stri
     run_git(cwd, &args)
 }
 
+/// Unified diff of everything `branch` added since it diverged from `base`
+/// (symmetric three-dot `git diff <base>...<branch>`), scoped to `path` when
+/// given. Three-dot diffs against the MERGE-BASE, so it shows exactly the
+/// branch's own additions — never drift that landed on `base` after the branch
+/// forked. This is the per-file read the "Integration review" clean-case uses:
+/// after `integrate_parent` commits every subtask merge, the parent worktree is
+/// CLEAN (nothing for the worktree-based `git diff`/`status` to show), so the
+/// reward diff has to come from the integration branch vs its base instead. The
+/// per-file analog of the `git_diff` command; pair it with
+/// `status::diff_branch_range_status` (the file LIST) exactly as `git_diff`
+/// pairs with `git_status`.
+pub fn diff_branch_range(
+    cwd: &Path,
+    base: &str,
+    branch: &str,
+    path: Option<&str>,
+) -> Result<String, GitError> {
+    let range = format!("{base}...{branch}");
+    let mut args: Vec<&str> = vec!["diff", "--no-color", range.as_str()];
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    run_git(cwd, &args)
+}
+
 pub fn diff(cwd: &Path, scope: DiffScope, path: Option<&str>) -> Result<String, GitError> {
     // Untracked files don't show up in `git diff` at all — the diff
     // tools only know about indexed paths. Detect them and synthesise
@@ -109,5 +135,60 @@ mod tests {
         assert!(out.contains("@@ -0,0 +1,2 @@"));
         assert!(out.contains("+x"));
         assert!(out.contains("+y"));
+    }
+
+    // P0-1: three-dot `base...branch` shows ONLY the branch's own additions —
+    // never post-fork drift that landed on `base`. That merge-base semantics is
+    // exactly what makes the integration review honest: it reflects what the
+    // agents produced, not unrelated movement on main.
+    #[test]
+    fn diff_branch_range_shows_only_the_branchs_additions() {
+        use std::process::Command;
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap();
+        };
+        for args in [
+            ["init", "-q", "-b", "main"].as_slice(),
+            ["config", "user.email", "t@example.com"].as_slice(),
+            ["config", "user.name", "tester"].as_slice(),
+            ["config", "commit.gpgsign", "false"].as_slice(),
+        ] {
+            git(args);
+        }
+        std::fs::write(repo.path().join("base.txt"), "base\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        // Branch `feat` off main, add feat.txt.
+        git(&["checkout", "-q", "-b", "feat"]);
+        std::fs::write(repo.path().join("feat.txt"), "feature\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "feat"]);
+
+        // Move `main` FORWARD after the fork — three-dot must exclude this.
+        git(&["checkout", "-q", "main"]);
+        std::fs::write(repo.path().join("base.txt"), "base changed on main\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "main moves on"]);
+
+        let out = diff_branch_range(repo.path(), "main", "feat", None).unwrap();
+        assert!(
+            out.contains("feat.txt") && out.contains("+feature"),
+            "three-dot must include the branch's addition: {out}"
+        );
+        assert!(
+            !out.contains("base changed on main"),
+            "three-dot must EXCLUDE base-side drift after the fork: {out}"
+        );
+
+        // Path scoping returns just that one file's diff.
+        let scoped = diff_branch_range(repo.path(), "main", "feat", Some("feat.txt")).unwrap();
+        assert!(scoped.contains("+feature"));
+        assert!(!scoped.contains("base.txt"), "scoped diff is limited to the path: {scoped}");
     }
 }

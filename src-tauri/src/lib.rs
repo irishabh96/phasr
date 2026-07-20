@@ -165,6 +165,8 @@ pub fn run() {
             commands::board::get_board,
             commands::board::publish_contract,
             commands::board::integrate_parent,
+            commands::board::board_integration_diff,
+            commands::board::board_integration_file_diff,
             commands::planner::plan_decomposition,
             commands::git::git_status,
             commands::git::git_diff,

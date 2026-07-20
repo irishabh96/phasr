@@ -270,6 +270,19 @@ export const tauri = {
   // parent id (spec claim #6).
   integrateParent: (parentId: string) =>
     invoke<BoardState>("integrate_parent", { parentId }),
+  // Combined review for a CLEAN integration (P0-1). After `integrate_parent`
+  // the worktree is clean, so a worktree-based review shows EMPTY — these read
+  // the integration BRANCH against its base instead, so the review shows what
+  // the agents actually produced. `board_integration_diff` returns the combined
+  // file list (the EXISTING `FileChange` shape: status rides `staged`,
+  // `unstaged` is `"other"`, `adds`/`removes` from numstat / null for
+  // binary+renamed); `board_integration_file_diff` returns one file's raw
+  // unified diff (what `DiffView` renders), lazy-loaded per file on expand.
+  // Errors are plain strings (humanized by the surface).
+  boardIntegrationDiff: (parentId: string) =>
+    invoke<FileChange[]>("board_integration_diff", { parentId }),
+  boardIntegrationFileDiff: (parentId: string, path: string) =>
+    invoke<string>("board_integration_file_diff", { parentId, path }),
 
   // ── launchers ────────────────────────────────────────────────────────
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),
