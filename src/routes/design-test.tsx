@@ -15,10 +15,26 @@ import {
 } from "@/components/ui/AgentStatusIndicator";
 import { BoardView } from "@/components/board/BoardView";
 import { DecomposeForm } from "@/components/DecomposeForm";
+import { AgentWorkingBanner } from "@/components/brief/AgentWorkingBanner";
+import { AssetsSection } from "@/components/brief/AssetsSection";
+import { CommentThread } from "@/components/brief/CommentThread";
+import { FigmaSection } from "@/components/brief/FigmaSection";
+import { Markdown } from "@/components/brief/Markdown";
+import { OnDiskChangePrompt } from "@/components/brief/OnDiskChangePrompt";
+import { SectionCard } from "@/components/brief/SectionCard";
+import { SectionEditor } from "@/components/brief/SectionEditor";
+import { GlassTextarea } from "@/components/ui/GlassInput";
 import type { AgentUiState } from "@/lib/deriveAgentState";
 import { showToast } from "@/lib/toast";
 import { useUiStore } from "@/lib/store";
-import type { BoardState, Workspace } from "@/lib/types";
+import type {
+  BoardState,
+  BriefSectionContent,
+  FigmaLink,
+  TicketAsset,
+  TicketComment,
+  Workspace,
+} from "@/lib/types";
 
 /**
  * Every honest-status state (Step 0 — S0.1/S0.2), driven by mocked
@@ -200,6 +216,80 @@ const BOARD_HANDOFF: BoardState = {
     },
   ],
 };
+
+// ── Brief tab fixtures (Phase 2 — mockup Page 04) ───────────────────────────
+// Presentational-only brief pieces, driven by fixtures so `/design-test`
+// exercises every Brief state with NO Tauri IPC (read markdown, editing,
+// on-disk conflict, empty section, assets, figma, comments, agent-live banner).
+const BRIEF_NOW = Date.now();
+const briefSection = (
+  content: string,
+  editedAgoMs: number | null,
+): BriefSectionContent => ({
+  content,
+  mtimeMs: 1000,
+  lastEditedBy: "you",
+  lastEditedAtMs: editedAgoMs == null ? null : BRIEF_NOW - editedAgoMs,
+});
+
+const BRIEF_PRD = briefSection(
+  "## Goal\n\nA collaborator can leave, read, and remove comments on a ticket " +
+    "without leaving the panel.\n\n## Requirements\n\n" +
+    "- Optimistic add; roll back on failure with a humanized error.\n" +
+    "- Empty state: \"No comments yet — leave the first note.\"\n" +
+    "- Delete is author-only; confirm before removing.\n\n" +
+    "See the [safe external link](https://example.com).",
+  1_200_000,
+);
+const BRIEF_EMPTY = briefSection("", null);
+
+const BRIEF_ASSETS: TicketAsset[] = [
+  {
+    id: "panel-mock.png",
+    name: "panel-mock.png",
+    storage: "in-repo",
+    path: "/tmp/panel-mock.png",
+    sizeBytes: 20480,
+    kind: "image",
+    addedAtMs: BRIEF_NOW,
+  },
+  {
+    id: "spec-v2.pdf",
+    name: "spec-v2.pdf",
+    storage: "in-repo",
+    path: "/tmp/spec-v2.pdf",
+    sizeBytes: 51200,
+    kind: "pdf",
+    addedAtMs: BRIEF_NOW,
+  },
+];
+const BRIEF_FIGMA: FigmaLink[] = [
+  {
+    id: "figma-1",
+    url: "https://figma.com/file/checkout-comments",
+    label: "Panel",
+    addedBy: "you",
+    addedAtMs: BRIEF_NOW,
+  },
+];
+const BRIEF_COMMENTS: TicketComment[] = [
+  {
+    id: "c-1",
+    author: "Ronak",
+    authorKind: "you",
+    role: null,
+    body: "Match the login panel spacing — 12px gaps, not 8. Delete needs the confirm dialog.",
+    createdAtMs: BRIEF_NOW - 1_200_000,
+  },
+  {
+    id: "c-2",
+    author: "claude",
+    authorKind: "agent",
+    role: "frontend",
+    body: "Adopted 12px gaps and wired ConfirmDialog on delete. Blocked on the API contract.",
+    createdAtMs: BRIEF_NOW - 360_000,
+  },
+];
 
 /**
  * Dev-only Playwright harness. Renders the design-fix surfaces with NO Tauri
@@ -456,6 +546,74 @@ function DesignTest() {
             Board · integrable (both subtasks in review → Integrate &amp; review)
           </h2>
           <BoardView board={BOARD_INTEGRABLE} />
+        </section>
+
+        {/* Brief tab — Phase 2 (mockup Page 04): banner, sections (read/edit/
+            conflict/empty), assets, figma, comments */}
+        <section data-testid="brief" className="flex flex-col gap-3.5">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Brief tab (Page 04)
+          </h2>
+
+          <AgentWorkingBanner />
+
+          {/* Read-first section with per-section edit (real reducer-backed). */}
+          <SectionEditor
+            repositoryId="repo-1"
+            ticketId="ticket-1"
+            sectionKey="prd"
+            label="PRD"
+            section={BRIEF_PRD}
+            onSaved={() => {}}
+          />
+
+          {/* Editing state + on-disk conflict prompt (static demo). */}
+          <SectionCard
+            title="TRD · editing"
+            editing
+            action={<span className="text-[11px] text-(--color-accent-text)">Markdown</span>}
+          >
+            <GlassTextarea
+              readOnly
+              rows={4}
+              value={"## Data\nGET/POST/DELETE /api/tickets/:id/comments"}
+              className="min-h-[96px] border-(--color-accent-500) font-mono text-[12px]"
+            />
+            <OnDiskChangePrompt onReload={() => {}} onKeepMine={() => {}} />
+          </SectionCard>
+
+          {/* Empty section → "Write …" CTA. */}
+          <SectionEditor
+            repositoryId="repo-1"
+            ticketId="ticket-1"
+            sectionKey="description"
+            label="Description"
+            section={BRIEF_EMPTY}
+            onSaved={() => {}}
+          />
+
+          {/* Markdown must NOT execute raw HTML. */}
+          <div
+            data-testid="brief-md-safe"
+            className="rounded-(--radius-panel) border border-(--color-border-default) p-3"
+          >
+            <Markdown>
+              {'Inline `code`, a [safe link](https://example.com), and an inert ' +
+                '<img src=x onerror="window.__XSS__=1"> tag.'}
+            </Markdown>
+          </div>
+
+          <AssetsSection
+            assets={BRIEF_ASSETS}
+            onPick={() => {}}
+            onRemove={() => {}}
+          />
+
+          <FigmaSection links={BRIEF_FIGMA} onAdd={() => {}} onRemove={() => {}} />
+
+          <SectionCard title="Comments" testId="brief-comments-demo">
+            <CommentThread comments={BRIEF_COMMENTS} now={BRIEF_NOW} />
+          </SectionCard>
         </section>
 
         {/* Diff — Batch 0 T5 palette + diff a11y */}

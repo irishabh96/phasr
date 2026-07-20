@@ -415,3 +415,94 @@ export interface WorklistState {
   /** `agent`/`local` workspaces NOT part of any decomposition (single-agent work). */
   looseAgents: Workspace[];
 }
+
+// ── Rich tickets / versioned brief (Phase 2 — the Brief tab) ────────────────
+// Mirrors the FROZEN §C.1 wire contract (`commands/tickets.rs`). The brief lives
+// in the managed repo at `<repo>/.phasr/tickets/<ticketId>/` (git-versioned);
+// `ticketId == subtask workspace id` (§D2). Field names are camelCase on the wire.
+//
+// Honesty invariant (Architect Stage-1 #1): the agent is READ-ONLY on the brief
+// in Phase 2 (agent writes are Phase 3, via the `phasr` CLI). Every FE-visible
+// edit is attributed to `"you"` or left NEUTRAL (`null`) — the frontend NEVER
+// renders authorship as `"agent"`. The `"agent"` union member is kept only to
+// match the frozen wire type for the Phase-3 forward hook.
+
+/** The three editable brief sections (§B section↔file map). */
+export type BriefSection = "description" | "prd" | "trd";
+
+/** One brief section's content + optimistic-concurrency + authorship sidecar. */
+export interface BriefSectionContent {
+  /** Raw markdown (`""` when the on-disk file is missing — an empty section, never an error). */
+  content: string;
+  /** On-disk mtime for optimistic concurrency; the base a save is checked against. */
+  mtimeMs: number | null;
+  /**
+   * Who last edited this section, from the local `.meta.json` sidecar. Phase 2:
+   * `"you"` or `null` (neutral) only — the FE never renders `"agent"` (Architect #1).
+   */
+  lastEditedBy: "you" | "agent" | null;
+  lastEditedAtMs: number | null;
+}
+
+/** The whole ticket brief — every section + attachments (§C.1). */
+export interface TicketBrief {
+  ticketId: string;
+  /** H1 of `ticket.md` (falls back to the workspace name). */
+  title: string;
+  description: BriefSectionContent;
+  prd: BriefSectionContent;
+  trd: BriefSectionContent;
+  assets: TicketAsset[];
+  figma: FigmaLink[];
+  commentCount: number;
+}
+
+/**
+ * Result of `write_ticket_section`. `saved` returns the freshly-written section
+ * (its new `mtimeMs` becomes the next optimistic base); `conflict` means the
+ * `baseMtimeMs` was stale — the FE shows Reload (take `onDisk`) / Keep-mine
+ * (re-save against `onDisk.mtimeMs`) and NOTHING was overwritten.
+ */
+export type WriteSectionResult =
+  | { kind: "saved"; section: BriefSectionContent }
+  | { kind: "conflict"; onDisk: BriefSectionContent };
+
+/** An attachment on a ticket — an in-repo copy or an app-data large binary (§B). */
+export interface TicketAsset {
+  /** Stable id (sanitised filename). */
+  id: string;
+  name: string;
+  storage: "in-repo" | "app-data";
+  /** Absolute, resolvable path (`convertFileSrc` for image preview). */
+  path: string;
+  sizeBytes: number;
+  kind: "image" | "pdf" | "binary";
+  addedAtMs: number;
+}
+
+/** A linked Figma file (link-only v1 — URL + label + placeholder thumb, §B). */
+export interface FigmaLink {
+  id: string;
+  url: string;
+  label: string | null;
+  addedBy: "you" | "agent";
+  addedAtMs: number;
+}
+
+/** One thread comment (human or — Phase 3 — agent, read-only in Phase 2). */
+export interface TicketComment {
+  id: string;
+  /** Display name (signed-in user or agent label). */
+  author: string;
+  authorKind: "you" | "agent";
+  /** Persona/role for agent comments; `null` for human comments. */
+  role: string | null;
+  body: string;
+  createdAtMs: number;
+}
+
+/** Payload of `phasr://ticket-changed` — which sections changed on disk (§C.1 / F4). */
+export interface TicketChangedPayload {
+  ticketId: string;
+  sections: BriefSection[];
+}

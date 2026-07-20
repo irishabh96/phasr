@@ -31,6 +31,12 @@ import type {
   WorkspaceDeleteCheck,
   WorkspaceStatus,
   WorklistState,
+  BriefSection,
+  FigmaLink,
+  TicketAsset,
+  TicketBrief,
+  TicketComment,
+  WriteSectionResult,
 } from "./types";
 
 interface CreateRepositoryInput {
@@ -290,6 +296,75 @@ export const tauri = {
   // signed-in user, so the worklist buckets everything without N round-trips.
   // Computes NO state — the frontend derives buckets (`deriveWorklist.ts`).
   listWorklist: () => invoke<WorklistState>("list_worklist"),
+
+  // ── tickets / versioned brief (Phase 2 §C.1) ──────────────────────────
+  // The tickets file-service over `<repo>/.phasr/tickets/<ticketId>/`. Thin
+  // wrappers over the FROZEN §C.1 wire contract (`commands/tickets.rs`); errors
+  // arrive as plain strings (humanized by the surface).
+  //
+  // REAL (backend chunk A, shipped): read the whole brief + write one section
+  // with optimistic-concurrency conflict detection.
+  readTicketBrief: (repositoryId: string, ticketId: string) =>
+    invoke<TicketBrief>("read_ticket_brief", { repositoryId, ticketId }),
+  // `baseMtimeMs` is the section's last-known on-disk mtime (`null` for a
+  // never-loaded/empty section). A stale base resolves `{ kind:"conflict" }`
+  // and overwrites NOTHING (Architect #2 hash-assist happens server-side).
+  writeTicketSection: (
+    repositoryId: string,
+    ticketId: string,
+    section: BriefSection,
+    content: string,
+    baseMtimeMs: number | null,
+  ) =>
+    invoke<WriteSectionResult>("write_ticket_section", {
+      repositoryId,
+      ticketId,
+      section,
+      content,
+      baseMtimeMs,
+    }),
+
+  // MOCKED in the e2e harness (backend chunk B is building these — spec §C).
+  // Assets: list/add/remove; add routes small↔large storage server-side.
+  listTicketAssets: (repositoryId: string, ticketId: string) =>
+    invoke<TicketAsset[]>("list_ticket_assets", { repositoryId, ticketId }),
+  addTicketAsset: (repositoryId: string, ticketId: string, sourcePath: string) =>
+    invoke<TicketAsset>("add_ticket_asset", {
+      repositoryId,
+      ticketId,
+      sourcePath,
+    }),
+  removeTicketAsset: (repositoryId: string, ticketId: string, assetId: string) =>
+    invoke<void>("remove_ticket_asset", { repositoryId, ticketId, assetId }),
+  // Figma links (link-only v1).
+  addTicketFigmaLink: (
+    repositoryId: string,
+    ticketId: string,
+    url: string,
+    label: string | null,
+  ) =>
+    invoke<FigmaLink>("add_ticket_figma_link", {
+      repositoryId,
+      ticketId,
+      url,
+      label,
+    }),
+  removeTicketFigmaLink: (
+    repositoryId: string,
+    ticketId: string,
+    linkId: string,
+  ) =>
+    invoke<void>("remove_ticket_figma_link", { repositoryId, ticketId, linkId }),
+  // Comments (append-only; author = the signed-in user, `authorKind:"you"`).
+  listTicketComments: (repositoryId: string, ticketId: string) =>
+    invoke<TicketComment[]>("list_ticket_comments", { repositoryId, ticketId }),
+  addTicketComment: (repositoryId: string, ticketId: string, body: string) =>
+    invoke<TicketComment>("add_ticket_comment", { repositoryId, ticketId, body }),
+  // The ticket-dir fs-watcher → emits `phasr://ticket-changed` (F4).
+  watchTicket: (repositoryId: string, ticketId: string) =>
+    invoke<void>("watch_ticket", { repositoryId, ticketId }),
+  unwatchTicket: (repositoryId: string, ticketId: string) =>
+    invoke<void>("unwatch_ticket", { repositoryId, ticketId }),
 
   // ── launchers ────────────────────────────────────────────────────────
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),

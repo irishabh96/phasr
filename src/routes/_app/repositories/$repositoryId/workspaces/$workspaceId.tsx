@@ -24,6 +24,7 @@ import { useGitStatus, useWatchWorkspaceGit } from "@/lib/hooks/useGit";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
+import { useTicketBrief } from "@/lib/hooks/useTicketBrief";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import {
@@ -47,6 +48,14 @@ function WorkspaceDetail() {
   const subtaskParentId =
     workspace?.workspaceKind === "subtask" ? workspace.parentId : null;
   const { data: parentBoard } = useBoard(subtaskParentId ?? undefined);
+  // A subtask owns a versioned brief (Phase 2). Read it here — shared cache with
+  // the Brief tab — so the Comments inner-tab badge shows its `commentCount`.
+  const isSubtaskWorkspace = workspace?.workspaceKind === "subtask";
+  const { data: ticketBrief } = useTicketBrief(
+    repositoryId,
+    workspaceId,
+    isSubtaskWorkspace,
+  );
   // Own the workspace's fs-watcher here, at the route root, so exactly one
   // watcher/listener exists for the whole workspace lifetime — the many
   // components that read `useGitStatus` (this header, ChangesPanel, the
@@ -81,7 +90,13 @@ function WorkspaceDetail() {
   // `command` for the title). ensureInnerTabs is a no-op if already set.
   useEffect(() => {
     if (!workspace) return;
-    ensureInnerTabs(workspaceId, workspace.command || workspace.name || "Main");
+    // A subtask seeds [brief, main, comments] with brief active by default
+    // (mockup Page 04); agent/local seeds stay the single "main" tab.
+    ensureInnerTabs(
+      workspaceId,
+      workspace.command || workspace.name || "Main",
+      workspace.workspaceKind === "subtask",
+    );
   }, [workspace, workspaceId, ensureInnerTabs]);
 
   // ⌘1..⌘9 launch pinned run commands (ordered by sortOrder), matching
@@ -246,7 +261,10 @@ function WorkspaceDetail() {
               />
             )}
           </div>
-          <WorkspaceInnerTabBar workspaceId={workspaceId} />
+          <WorkspaceInnerTabBar
+            workspaceId={workspaceId}
+            {...(ticketBrief ? { commentCount: ticketBrief.commentCount } : {})}
+          />
           <div className="flex shrink-0 items-center gap-1">
             <PinnedRunCommandsToolbar repositoryId={repositoryId} />
             <RunCommandPicker repositoryId={repositoryId} />

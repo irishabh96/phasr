@@ -264,6 +264,91 @@ export function makeFixtures() {
       workspaces.find((w) => w.id === "ws-done"),
     ],
   };
+  // ── Ticket brief (Phase 2 §C.1 — the Brief tab) ──────────────────────────
+  // A canned brief for any subtask ticket. `read_ticket_brief` returns it keyed
+  // to the requested id; `write_ticket_section` echoes a `saved` result with a
+  // bumped mtime (the FE adopts it). The PRD deliberately carries a raw-HTML +
+  // `javascript:` injection so the markdown-sanitization test can prove neither
+  // executes (react-markdown ignores raw HTML; rehype-sanitize drops the proto).
+  const nowMs = Date.parse(NOW);
+  const section = (content: string, mtimeMs: number) => ({
+    content,
+    mtimeMs,
+    lastEditedBy: "you" as const,
+    lastEditedAtMs: nowMs - 1_200_000,
+  });
+  const ticketBrief = {
+    ticketId: "epic-1-backend",
+    title: "comments UI",
+    description: section(
+      "Add a comments panel to the checkout ticket view. Reads and writes " +
+        "through the task-comments API and reuses the app's honest empty/error " +
+        "states. Ships behind the `comments` flag.",
+      1000,
+    ),
+    prd: section(
+      "## Goal\n\nA collaborator can leave, read, and remove comments.\n\n" +
+        "## Requirements\n\n- Optimistic add; roll back on failure.\n" +
+        "- Empty state copy.\n\n" +
+        // Injection payloads — MUST render inert (no raw HTML, no javascript:).
+        '<img src=x onerror="window.__XSS__=1">\n\n' +
+        "[danger](javascript:alert(1)) and a [safe link](https://example.com).",
+      2000,
+    ),
+    trd: section(
+      "## Data\n\n`GET/POST/DELETE /api/tickets/:id/comments`\n\n" +
+        "## Component\n\nCommentsPanel — reuse GlassTextarea + PanelState.",
+      3000,
+    ),
+    assets: [
+      {
+        id: "panel-mock.png",
+        name: "panel-mock.png",
+        storage: "in-repo" as const,
+        path: "/Users/test/code/phasr/.phasr/tickets/epic-1-backend/assets/panel-mock.png",
+        sizeBytes: 20480,
+        kind: "image" as const,
+        addedAtMs: nowMs,
+      },
+      {
+        id: "spec-v2.pdf",
+        name: "spec-v2.pdf",
+        storage: "in-repo" as const,
+        path: "/Users/test/code/phasr/.phasr/tickets/epic-1-backend/assets/spec-v2.pdf",
+        sizeBytes: 51200,
+        kind: "pdf" as const,
+        addedAtMs: nowMs,
+      },
+    ],
+    figma: [
+      {
+        id: "figma-1",
+        url: "https://figma.com/file/checkout-comments",
+        label: "Panel",
+        addedBy: "you" as const,
+        addedAtMs: nowMs,
+      },
+    ],
+    commentCount: 2,
+  };
+  const ticketComments = [
+    {
+      id: "c-1",
+      author: "Ronak",
+      authorKind: "you" as const,
+      role: null,
+      body: "Match the login panel spacing — 12px gaps, not 8.",
+      createdAtMs: nowMs - 1_200_000,
+    },
+    {
+      id: "c-2",
+      author: "claude",
+      authorKind: "agent" as const,
+      role: "frontend",
+      body: "Adopted 12px gaps and wired ConfirmDialog on delete.",
+      createdAtMs: nowMs - 360_000,
+    },
+  ];
   const agents = [
     { agent: "claude", label: "Claude", command: "claude", isDefault: true },
     { agent: "codex", label: "Codex", command: "codex", isDefault: false },
@@ -371,6 +456,8 @@ export function makeFixtures() {
     repositories,
     workspaces,
     worklist,
+    ticketBrief,
+    ticketComments,
     agents,
     userSettings,
     runCommands,
@@ -473,6 +560,56 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "get_repository": return f.repositories.find((r) => r.id === a?.id) ?? null;
       case "list_workspaces": return f.workspaces.filter((w) => w.repositoryId === a?.repositoryId);
       case "list_worklist": return f.worklist;
+      // ── Phase 2 tickets / brief (§C.1) ─────────────────────────────────
+      case "read_ticket_brief":
+        return { ...f.ticketBrief, ticketId: a?.ticketId ?? f.ticketBrief.ticketId };
+      case "write_ticket_section":
+        // Echo a `saved` result with a bumped mtime (the FE adopts it as the new
+        // base). The conflict path is exercised by a test via `setResponse`.
+        return {
+          kind: "saved",
+          section: {
+            content: a?.content ?? "",
+            mtimeMs: Date.parse(f.now) + 5000,
+            lastEditedBy: "you",
+            lastEditedAtMs: Date.parse(f.now),
+          },
+        };
+      case "list_ticket_assets": return f.ticketBrief.assets;
+      case "add_ticket_asset": {
+        const name = String(a?.sourcePath ?? "dropped.png").split(/[/\\]/).pop();
+        return {
+          id: `asset-${name}`,
+          name,
+          storage: "in-repo",
+          path: a?.sourcePath ?? "/tmp/dropped.png",
+          sizeBytes: 2048,
+          kind: /\.pdf$/i.test(name ?? "") ? "pdf" : "image",
+          addedAtMs: Date.parse(f.now),
+        };
+      }
+      case "remove_ticket_asset": return null;
+      case "add_ticket_figma_link":
+        return {
+          id: "figma-new",
+          url: a?.url ?? "https://figma.com/file/new",
+          label: a?.label ?? null,
+          addedBy: "you",
+          addedAtMs: Date.parse(f.now),
+        };
+      case "remove_ticket_figma_link": return null;
+      case "list_ticket_comments": return f.ticketComments;
+      case "add_ticket_comment":
+        return {
+          id: "comment-new",
+          author: "Ronak",
+          authorKind: "you",
+          role: null,
+          body: a?.body ?? "",
+          createdAtMs: Date.parse(f.now),
+        };
+      case "watch_ticket":
+      case "unwatch_ticket": return null;
       case "get_workspace": {
         const w = f.workspaces.find((x) => x.id === a?.id);
         return w ?? { __reject: "not found" };

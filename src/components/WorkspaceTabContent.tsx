@@ -1,9 +1,12 @@
 import { Plus, Zap } from "lucide-react";
+import { BriefPanel } from "@/components/brief/BriefPanel";
+import { CommentsPanel } from "@/components/brief/CommentsPanel";
 import { FilePreviewTab } from "@/components/FilePreviewTab";
 import { SessionTerminalTab } from "@/components/SessionTerminalTab";
 import { Terminal } from "@/components/Terminal";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { useUiStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import type { Workspace } from "@/lib/types";
 
 interface WorkspaceTabContentProps {
@@ -18,9 +21,11 @@ interface WorkspaceTabContentProps {
  * session shells) survive switching to/from a tab.
  *
  * Kind dispatch:
+ *  - "brief"    → <BriefPanel> (subtask ticket brief — Description/PRD/TRD + assets)
  *  - "main"     → <Terminal> bound to the workspace's primary PTY
  *  - "terminal" → <SessionTerminalTab> (ad-hoc shell with worktree as cwd)
  *  - "preview"  → <FilePreviewTab> (read-only file viewer)
+ *  - "comments" → <CommentsPanel> (subtask ticket discussion thread)
  *
  * If the user closes every tab, an empty state offers the two ways
  * to re-populate the workspace area.
@@ -77,9 +82,43 @@ export function WorkspaceTabContent({
     <div className="relative min-h-0 flex-1">
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
+        if (tab.kind === "brief") {
+          return (
+            <div
+              key={tab.id}
+              className="absolute inset-0"
+              style={active ? undefined : { display: "none" }}
+            >
+              <BriefPanel
+                repositoryId={workspace.repositoryId}
+                ticketId={workspaceId}
+                workspace={workspace}
+                visible={active}
+              />
+            </div>
+          );
+        }
+        if (tab.kind === "comments") {
+          return (
+            <div
+              key={tab.id}
+              className="absolute inset-0"
+              style={active ? undefined : { display: "none" }}
+            >
+              <CommentsPanel
+                repositoryId={workspace.repositoryId}
+                ticketId={workspaceId}
+                visible={active}
+              />
+            </div>
+          );
+        }
         if (tab.kind === "main") {
           return (
-            <div key={tab.id} className="absolute inset-0">
+            <div
+              key={tab.id}
+              className={cn("absolute inset-0", !active && "pointer-events-none")}
+            >
               <Terminal
                 workspaceId={workspaceId}
                 status={workspace.status}
@@ -95,7 +134,10 @@ export function WorkspaceTabContent({
         }
         if (tab.kind === "terminal") {
           return (
-            <div key={tab.id} className="absolute inset-0">
+            <div
+              key={tab.id}
+              className={cn("absolute inset-0", !active && "pointer-events-none")}
+            >
               <SessionTerminalTab
                 workspaceId={workspaceId}
                 tabId={tab.id}
@@ -111,7 +153,10 @@ export function WorkspaceTabContent({
         }
         if (tab.kind === "preview" && tab.filePath) {
           return (
-            <div key={tab.id} className="absolute inset-0">
+            <div
+              key={tab.id}
+              className={cn("absolute inset-0", !active && "pointer-events-none")}
+            >
               <FilePreviewTab
                 repoPath={worktreePath}
                 filePath={tab.filePath}

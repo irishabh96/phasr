@@ -1,5 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useEffect } from "react";
+import { getAssetDropTarget } from "@/lib/assetDropTarget";
 import { getPromptInsertTarget } from "@/lib/promptInsertTarget";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -17,6 +18,8 @@ function shellQuote(path: string): string {
  * events and routes dropped file paths to whichever agent input is
  * active:
  *   - a focused prompt textarea → inserted at the caret (raw path); else
+ *   - the visible Brief tab's Assets zone → attached via `add_ticket_asset`
+ *     (Phase 2, `assetDropTarget`); else
  *   - the active workspace's running-agent terminal → typed via
  *     `send_input_to_task` (shell-quoted).
  *
@@ -40,6 +43,14 @@ export function useFileDrop() {
         const insert = getPromptInsertTarget();
         if (insert) {
           insert(paths.join(" "));
+          return;
+        }
+        // Precedence #2: the visible Brief tab's Assets zone (Phase 2, F5).
+        // Registered only while a Brief tab is active, so it never steals a
+        // drop meant for the terminal on a non-brief surface.
+        const asset = getAssetDropTarget();
+        if (asset) {
+          asset(paths);
           return;
         }
         const ctx = useUiStore.getState().activeWorkspaceContext;

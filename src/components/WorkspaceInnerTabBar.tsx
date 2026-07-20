@@ -1,6 +1,8 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
   FileCode2,
+  FileText,
+  MessageSquare,
   Plus,
   Terminal as TerminalIcon,
   X,
@@ -17,6 +19,8 @@ import type { InnerTab } from "@/lib/store";
 
 interface WorkspaceInnerTabBarProps {
   workspaceId: string;
+  /** Subtask brief's comment count → the muted badge on the Comments pill (Page 04). */
+  commentCount?: number;
 }
 
 /**
@@ -32,6 +36,7 @@ interface WorkspaceInnerTabBarProps {
  */
 export function WorkspaceInnerTabBar({
   workspaceId,
+  commentCount,
 }: WorkspaceInnerTabBarProps) {
   const state = useUiStore((s) => s.innerTabs[workspaceId]);
   const setActiveInnerTab = useUiStore((s) => s.setActiveInnerTab);
@@ -82,6 +87,9 @@ export function WorkspaceInnerTabBar({
             key={tab.id}
             tab={tab}
             active={tab.id === activeTabId}
+            {...(tab.kind === "comments" && commentCount != null
+              ? { count: commentCount }
+              : {})}
             onActivate={() => setActiveInnerTab(workspaceId, tab.id)}
             onClose={() => {
               const closed = closeInnerTab(workspaceId, tab.id);
@@ -129,11 +137,13 @@ export function WorkspaceInnerTabBar({
 function TabPill({
   tab,
   active,
+  count,
   onActivate,
   onClose,
 }: {
   tab: InnerTab;
   active: boolean;
+  count?: number;
   onActivate: () => void;
   onClose: () => void;
 }) {
@@ -159,6 +169,14 @@ function TabPill({
         >
           <TabIcon kind={tab.kind} active={active} />
           <span className="max-w-[140px] truncate">{tab.title}</span>
+          {count != null && count > 0 ? (
+            <span
+              data-testid="comments-tab-count"
+              className="text-[11px] text-(--color-text-muted)"
+            >
+              {count}
+            </span>
+          ) : null}
         </button>
       </GlassTooltip>
       {tab.closable && (
@@ -190,6 +208,8 @@ function TabIcon({
   const cls = active
     ? "text-(--color-accent-text)"
     : "text-(--color-text-muted)";
+  if (kind === "brief") return <FileText size={11} className={cls} />;
+  if (kind === "comments") return <MessageSquare size={11} className={cls} />;
   if (kind === "terminal") return <TerminalIcon size={11} className={cls} />;
   if (kind === "preview") return <FileCode2 size={11} className={cls} />;
   return <Zap size={11} className={cls} />;

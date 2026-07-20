@@ -21,7 +21,11 @@ export interface ActiveWorkspaceContext {
 
 // ---------- Per-workspace inner tab strip ----------
 
-export type InnerTabKind = "main" | "terminal" | "preview";
+export type InnerTabKind = "main" | "terminal" | "preview" | "brief" | "comments";
+
+/** Fixed tab ids for the non-closable subtask tabs (Phase 2 — Brief tab). */
+export const BRIEF_TAB_ID = "brief";
+export const COMMENTS_TAB_ID = "comments";
 
 export interface InnerTab {
   id: string;
@@ -291,7 +295,18 @@ interface UiState {
 
   // ---------- Per-workspace inner tabs ----------
   innerTabs: Record<string, InnerTabState>;
-  ensureInnerTabs: (workspaceId: string, mainTitle: string) => void;
+  /**
+   * Seed the workspace's inner tabs on first mount. For a `subtask` (pass
+   * `seedBrief: true`) the seed is `[brief, main(Terminal), comments]` with
+   * **brief active by default** and brief/comments non-closable (mockup Page
+   * 04, spec A2/F3). For every other kind it's the byte-identical single `main`
+   * tab — the standalone agent/local flow is untouched. No-op if already set.
+   */
+  ensureInnerTabs: (
+    workspaceId: string,
+    mainTitle: string,
+    seedBrief?: boolean,
+  ) => void;
   /** Focus existing "main" tab or create one (used by "+ Open agent" + empty state). */
   openInnerAgentTab: (workspaceId: string, title: string) => InnerTab;
   openInnerTerminalTab: (
@@ -601,15 +616,41 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   innerTabs: {},
-  ensureInnerTabs: (workspaceId, mainTitle) => {
+  ensureInnerTabs: (workspaceId, mainTitle, seedBrief = false) => {
     const state = get().innerTabs[workspaceId];
     if (state) return;
     const mainTab: InnerTab = {
       id: uuidv4(),
       kind: "main",
-      title: mainTitle,
+      // A subtask's primary process reads as "Terminal" (mockup Page 04);
+      // standalone agent/local tabs keep their command/name title.
+      title: seedBrief ? "Terminal" : mainTitle,
       closable: true,
     };
+    if (seedBrief) {
+      const briefTab: InnerTab = {
+        id: BRIEF_TAB_ID,
+        kind: "brief",
+        title: "Brief",
+        closable: false,
+      };
+      const commentsTab: InnerTab = {
+        id: COMMENTS_TAB_ID,
+        kind: "comments",
+        title: "Comments",
+        closable: false,
+      };
+      set({
+        innerTabs: {
+          ...get().innerTabs,
+          [workspaceId]: {
+            tabs: [briefTab, mainTab, commentsTab],
+            activeTabId: briefTab.id,
+          },
+        },
+      });
+      return;
+    }
     set({
       innerTabs: {
         ...get().innerTabs,
