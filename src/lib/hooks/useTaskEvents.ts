@@ -50,6 +50,12 @@ export function useTaskEvents() {
       queryClient.invalidateQueries({
         queryKey: ["workspaces", "repository", repositoryId],
       });
+      // Keep the cross-repo Worklist honest on terminal transitions (a finished
+      // agent's row comes from the persisted board/looseAgent snapshot, which
+      // the liveness store can't refresh). Reuses THIS listener — no new
+      // subscription (spec §F1). Between refetches, `useAllAgentLiveness`
+      // re-buckets the live rows in place.
+      queryClient.invalidateQueries({ queryKey: ["worklist"] });
     }).then((fn) => {
       if (cancelled) {
         fn();

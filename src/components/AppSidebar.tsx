@@ -1,8 +1,9 @@
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useParams, useRouterState } from "@tanstack/react-router";
 import {
   ChevronDown,
   ChevronRight,
   FolderGit2,
+  House,
   PanelLeft,
   PanelLeftClose,
   Plus,
@@ -26,8 +27,10 @@ import {
   AgentStatusMetaLine,
 } from "@/components/ui/AgentStatusIndicator";
 import { isLiveState } from "@/components/ui/agentStatusMeta";
-import { useAgentLiveness } from "@/lib/agentLiveness";
+import { useAgentLiveness, useAllAgentLiveness } from "@/lib/agentLiveness";
 import { deriveAgentState } from "@/lib/deriveAgentState";
+import { buildWorklistItems, needsYouCount } from "@/lib/deriveWorklist";
+import { useWorklist } from "@/lib/hooks/useWorklist";
 import { useNow } from "@/lib/useNow";
 import type { Workspace, Repository } from "@/lib/types";
 
@@ -79,6 +82,9 @@ export function AppSidebar() {
         />
       )}
       <div className="min-h-0 flex-1 overflow-y-auto py-2">
+        <div className="px-1.5 pb-2">
+          <HomeEntry isExpanded={isExpanded} />
+        </div>
         <nav aria-label="Repositories" className="flex flex-col gap-2 px-1.5">
           {repositories.isLoading && !repositories.data ? (
             isExpanded ? (
@@ -128,6 +134,80 @@ export function AppSidebar() {
       </div>
       <SidebarFooter isExpanded={isExpanded} onToggle={toggleSidebarPin} />
     </aside>
+  );
+}
+
+/**
+ * The permanent Home entry (story F2) — a peer above the Repositories nav that
+ * always jumps to the cross-repo Worklist (`/worklist`; `⌘⇧H`). Its count badge
+ * is the live Needs-you count, derived from the same `useWorklist` +
+ * `useAllAgentLiveness` the surface uses (one shared query). Coral on the badge
+ * is the single sanctioned attention accent (the mockup's `.count`); a fresh
+ * `Date.now()` (no `useNow` subscription) keeps the whole sidebar from ticking.
+ */
+function HomeEntry({ isExpanded }: { isExpanded: boolean }) {
+  const isActive = useRouterState({
+    select: (s) => s.location.pathname === "/worklist",
+  });
+  const { data: worklist } = useWorklist();
+  const liveness = useAllAgentLiveness();
+  const count = worklist
+    ? needsYouCount(buildWorklistItems(worklist, liveness, Date.now()))
+    : 0;
+
+  return (
+    <Link
+      to="/worklist"
+      aria-label="Home"
+      aria-current={isActive ? "page" : undefined}
+      className={cn(
+        "group/home flex items-center rounded-[10px]",
+        isExpanded ? "h-[38px] gap-2.5 pl-2.5 pr-2" : "h-[38px] w-full justify-center",
+        "outline-none transition-colors duration-150",
+        "hover:bg-(--color-bg-hover)",
+        "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
+        isActive && "bg-(--color-bg-selected)",
+      )}
+    >
+      <GlassTooltip content="Home (⌘⇧H)" side="right" disabled={isExpanded}>
+        <span className="relative flex size-5 shrink-0 items-center justify-center">
+          <House
+            size={16}
+            className={cn(
+              isActive
+                ? "text-(--color-text-primary)"
+                : "text-(--color-text-secondary)",
+            )}
+          />
+          {!isExpanded && count > 0 ? (
+            <span className="absolute -right-1.5 -top-1.5 size-2 rounded-full bg-(--color-accent-500)" />
+          ) : null}
+        </span>
+      </GlassTooltip>
+      {isExpanded && (
+        <>
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-[13.5px] font-medium leading-none",
+              isActive
+                ? "text-(--color-text-primary)"
+                : "text-(--color-text-secondary)",
+            )}
+          >
+            Home
+          </span>
+          {count > 0 ? (
+            <span
+              data-testid="home-needs-you-count"
+              aria-label={`${count} needs you`}
+              className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-(--color-accent-500) px-1 text-[10px] font-semibold leading-none text-(--color-accent-onfill)"
+            >
+              {count}
+            </span>
+          ) : null}
+        </>
+      )}
+    </Link>
   );
 }
 

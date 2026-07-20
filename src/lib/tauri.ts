@@ -30,6 +30,7 @@ import type {
   Workspace,
   WorkspaceDeleteCheck,
   WorkspaceStatus,
+  WorklistState,
 } from "./types";
 
 interface CreateRepositoryInput {
@@ -283,6 +284,12 @@ export const tauri = {
     invoke<FileChange[]>("board_integration_diff", { parentId }),
   boardIntegrationFileDiff: (parentId: string, path: string) =>
     invoke<string>("board_integration_file_diff", { parentId, path }),
+
+  // ── worklist (cross-repo attention home, Phase 2 §C.3) ────────────────
+  // One call returns every repo, every epic's board, and loose agents for the
+  // signed-in user, so the worklist buckets everything without N round-trips.
+  // Computes NO state — the frontend derives buckets (`deriveWorklist.ts`).
+  listWorklist: () => invoke<WorklistState>("list_worklist"),
 
   // ── launchers ────────────────────────────────────────────────────────
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),

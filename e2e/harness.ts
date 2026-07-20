@@ -140,6 +140,130 @@ export function makeFixtures() {
       role: "frontend",
     },
   ];
+  // ── Worklist / Home (Phase 2 §C.3) ───────────────────────────────────────
+  // A cross-repo attention snapshot exercising ALL FOUR buckets exactly as the
+  // mockup Page 01 shows (Needs you 2 · Running 2 · Waiting 1 · Recent 2). A
+  // dedicated epic board (repo-1) plus two loose agents. The FE derives every
+  // bucket from these raw rows — the mock computes NO state (spec §A4).
+  const sub = (over: Record<string, unknown>) => ({
+    ...wsBase,
+    repositoryId: "repo-1",
+    workspaceKind: "subtask",
+    agent: "claude",
+    status: "pending",
+    branch: null,
+    worktreePath: null,
+    interruptedAt: null,
+    parentId: "epic-w",
+    role: null,
+    name: (over.name as string) ?? (over.id as string),
+    ...over,
+  });
+  const worklist = {
+    repositories: repositories.map((r) => ({ id: r.id, name: r.name })),
+    boards: [
+      {
+        parent: sub({
+          id: "epic-w",
+          workspaceKind: "parent",
+          name: "checkout",
+          prompt: "Add task-comments to checkout: API, web UI, docs, QA",
+          agent: null,
+          parentId: null,
+          role: null,
+          status: "pending",
+          startedAt: null,
+        }),
+        subtasks: [
+          // running (no liveness, old startedAt) → working → Running
+          sub({
+            id: "w-backend",
+            role: "backend",
+            name: "task-comments-api",
+            status: "running",
+            startedAt: NOW,
+            branch: "phasr/comments-api",
+          }),
+          // pending consumer of an unpublished producer → blocked → Waiting
+          sub({
+            id: "w-frontend",
+            role: "frontend",
+            name: "web-integration",
+            status: "pending",
+            startedAt: null,
+            branch: "phasr/web-integration",
+          }),
+          // failed → Needs you
+          sub({
+            id: "w-failed",
+            role: "backend",
+            name: "login-api",
+            agent: "codex",
+            status: "failed",
+            exitCode: 1,
+            startedAt: NOW,
+            finishedAt: NOW,
+            branch: "phasr/login-api",
+          }),
+          // published contract → needs-review → Needs you
+          sub({
+            id: "w-review",
+            role: "frontend",
+            name: "web-ui",
+            status: "running",
+            startedAt: NOW,
+            branch: "phasr/web-ui",
+          }),
+        ],
+        dependencies: [
+          {
+            id: "edge-w",
+            parentId: "epic-w",
+            fromSubtaskId: "w-backend",
+            toSubtaskId: "w-frontend",
+            createdAt: NOW,
+          },
+        ],
+        contracts: [
+          {
+            id: "contract-w-review",
+            parentId: "epic-w",
+            subtaskId: "w-review",
+            role: "frontend",
+            contractPath: "/contracts/w-review.json",
+            publishedAt: NOW,
+            createdAt: NOW,
+          },
+        ],
+      },
+    ],
+    // Standalone single-agent work (not part of any decomposition). Only LOOSE
+    // agents reach the Recent bucket (`done`/`stopped`) — a clean-exit subtask
+    // becomes `needs-review` (Needs you) instead.
+    looseAgents: [
+      // ws-agent (running → Running)
+      workspaces.find((w) => w.id === "ws-agent"),
+      // a calm user-stopped standalone spike → stopped → Recent
+      {
+        ...wsBase,
+        id: "loose-spike",
+        repositoryId: "repo-2",
+        workspaceKind: "agent",
+        name: "spike-rate-limit",
+        agent: "opencode",
+        status: "stopped",
+        branch: "phasr/spike-rate-limit",
+        worktreePath: null,
+        interruptedAt: null,
+        parentId: null,
+        role: null,
+        startedAt: NOW,
+        finishedAt: NOW,
+      },
+      // ws-done (completed clean → done → Recent, "merged into main")
+      workspaces.find((w) => w.id === "ws-done"),
+    ],
+  };
   const agents = [
     { agent: "claude", label: "Claude", command: "claude", isDefault: true },
     { agent: "codex", label: "Codex", command: "codex", isDefault: false },
@@ -238,8 +362,15 @@ export function makeFixtures() {
         profile: { name: "Ronak", email: "ronak@tamasha.live", imageUrl: null },
       },
     },
+    // Returning-user restore: seed the last-open workspace so `/` restores it
+    // (the muscle-memory path, open decision #5). A worklist test that wants the
+    // new-user `/worklist` fallback sets `fixtures.lastWorkspace = null`.
+    lastWorkspace: { repositoryId: "repo-1", workspaceId: "ws-agent" } as
+      | { repositoryId: string; workspaceId: string }
+      | null,
     repositories,
     workspaces,
+    worklist,
     agents,
     userSettings,
     runCommands,
@@ -254,6 +385,11 @@ export function makeFixtures() {
 function installMock(cfg: ReturnType<typeof makeFixtures>) {
   const f = cfg;
   localStorage.setItem("phasr.auth.desktopSession", JSON.stringify(f.session.desktopSession));
+  // Seed the last-open workspace so `/` restores it on boot (returning-user
+  // path). Cleared to `null` by tests that exercise the `/worklist` fallback.
+  if (f.lastWorkspace) {
+    localStorage.setItem("phasr.lastWorkspace", JSON.stringify(f.lastWorkspace));
+  }
 
   const listeners: Record<string, Array<(e: unknown) => void>> = {};
   const channels: Record<string, { onmessage?: (m: unknown) => void }> = {};
@@ -336,6 +472,7 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "list_repositories": return f.repositories;
       case "get_repository": return f.repositories.find((r) => r.id === a?.id) ?? null;
       case "list_workspaces": return f.workspaces.filter((w) => w.repositoryId === a?.repositoryId);
+      case "list_worklist": return f.worklist;
       case "get_workspace": {
         const w = f.workspaces.find((x) => x.id === a?.id);
         return w ?? { __reject: "not found" };

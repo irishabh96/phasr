@@ -75,6 +75,13 @@ function AppShell() {
         void navigate({ to: "/settings/account" });
         return;
       }
+      if (matchShortcut(e, SHORTCUTS.home)) {
+        // Explicit intent → always jump to the cross-repo Worklist home,
+        // from anywhere (launch still auto-restores the last workspace).
+        e.preventDefault();
+        void navigate({ to: "/worklist" });
+        return;
+      }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarHide)) {
         e.preventDefault();
         toggleSidebarHidden();

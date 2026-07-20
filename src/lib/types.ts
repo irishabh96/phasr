@@ -392,3 +392,26 @@ export interface ProposedPlan {
   subtasks: SubtaskInput[];
   edges: EdgeInput[];
 }
+
+// ── Worklist / Home (Phase 2 — the cross-repo attention home) ───────────────
+// Mirrors the FROZEN §C.3 wire contract (`commands/worklist.rs` → `WorklistState`).
+// `list_worklist()` does the cross-repo JOIN once (repos × boards × loose agents)
+// and computes NO state — the frontend derives every bucket in one place
+// (`deriveWorklist.ts::worklistBucket`), identical to how the board derives lanes
+// (spec §A4). All user-scoped server-side; a different account never sees another's.
+
+/** A repository trimmed to what the worklist needs — filter chips + name labels. */
+export interface RepoBrief {
+  id: string;
+  name: string;
+}
+
+/** Everything the worklist buckets: every repo, every epic board, and loose agents. */
+export interface WorklistState {
+  /** For the filter chips + repo-name labels on each row. */
+  repositories: RepoBrief[];
+  /** Every epic (`parent`) for the signed-in user, cross-repo, WITH subtasks/deps/contracts. */
+  boards: BoardState[];
+  /** `agent`/`local` workspaces NOT part of any decomposition (single-agent work). */
+  looseAgents: Workspace[];
+}

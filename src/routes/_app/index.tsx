@@ -1,6 +1,5 @@
 import { Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FolderOpen, Sparkles } from "lucide-react";
-import { RepoHomeShell } from "@/components/RepoHomeShell";
 import {
   desktopSessionGreetingName,
   readDesktopSession,
@@ -9,29 +8,27 @@ import { useOpenExistingFlow } from "@/lib/hooks/useOpenExistingFlow";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
-import type { Repository } from "@/lib/types";
 
 function Home() {
   const { data: repositories, isLoading } = useRepositories();
   const lastWorkspace = useUiStore((s) => s.lastWorkspace);
-  const mostRecentRepo = repositories?.[0];
 
-  // Re-entry restore: prefer the *actual* last-open workspace over the
-  // newest one. Only trust the stored repo if it still exists in the live
-  // list (guards stale/cross-account values); otherwise fall back to the
-  // most-recent repo. We load whichever repo's workspaces we might redirect
-  // into, so the query key is stable regardless of which path we take.
+  // Re-entry restore (open decision #5): prefer the *actual* last-open
+  // workspace so returning users' muscle memory is preserved. Only trust the
+  // stored repo if it still exists in the live list (guards stale/cross-account
+  // values). We load ONLY the restore repo's workspaces — a no-restore boot
+  // falls through to the Worklist home (below) without needing that fetch.
   const storedRepoValid =
     !!lastWorkspace &&
     !!repositories?.some((r) => r.id === lastWorkspace.repositoryId);
-  const targetRepo = storedRepoValid
+  const restoreRepo = storedRepoValid
     ? repositories!.find((r) => r.id === lastWorkspace!.repositoryId)
-    : mostRecentRepo;
+    : undefined;
   const { data: workspaces, isLoading: wsLoading } = useWorkspaces(
-    targetRepo?.id,
+    restoreRepo?.id,
   );
 
-  if (isLoading || (targetRepo && wsLoading)) {
+  if (isLoading || (restoreRepo && wsLoading)) {
     return (
       <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
         Loading…
@@ -43,12 +40,10 @@ function Home() {
     return <WelcomeState />;
   }
 
-  const repo = targetRepo ?? mostRecentRepo!;
-
-  // Restore the real last-open workspace when it still resolves in its
-  // repo's list. A stale workspace id (deleted since last session) simply
-  // falls through to the newest-workspace behavior below — never a dead-end.
-  if (storedRepoValid) {
+  // Restore the real last-open workspace when it still resolves in its repo's
+  // list. A stale/deleted id simply falls through to the Worklist — never a
+  // dead-end.
+  if (restoreRepo) {
     const restored = workspaces?.find(
       (w) => w.id === lastWorkspace!.workspaceId,
     );
@@ -56,30 +51,17 @@ function Home() {
       return (
         <Navigate
           to="/repositories/$repositoryId/workspaces/$workspaceId"
-          params={{ repositoryId: repo.id, workspaceId: restored.id }}
+          params={{ repositoryId: restoreRepo.id, workspaceId: restored.id }}
           replace
         />
       );
     }
   }
 
-  const ws = workspaces?.[0];
-
-  if (ws) {
-    return (
-      <Navigate
-        to="/repositories/$repositoryId/workspaces/$workspaceId"
-        params={{ repositoryId: repo.id, workspaceId: ws.id }}
-        replace
-      />
-    );
-  }
-
-  return <RepoEmptyState repo={repo} />;
-}
-
-function RepoEmptyState({ repo }: { repo: Repository }) {
-  return <RepoHomeShell repo={repo} />;
+  // No valid last-workspace but ≥1 repo → the cross-repo Worklist home (story
+  // F2). New users land here instead of a bare repo empty-state; returning
+  // users kept their restore above.
+  return <Navigate to="/worklist" replace />;
 }
 
 function WelcomeState() {

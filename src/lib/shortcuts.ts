@@ -63,6 +63,13 @@ export const SHORTCUTS = {
     display: ["⌘", "J"],
     label: "Toggle right panel",
   },
+  home: {
+    key: "h",
+    meta: true,
+    shift: true,
+    display: ["⌘", "⇧", "H"],
+    label: "Go to Home (Worklist)",
+  },
 
   // Workspace / repo
   newWorkspace: {
