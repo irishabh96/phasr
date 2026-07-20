@@ -11,6 +11,7 @@ mod cli_tokens;
 mod error;
 pub mod ipc_server;
 mod liveness;
+mod personas;
 mod planner;
 mod repo_locks;
 mod scheduler;
@@ -32,6 +33,12 @@ pub use board_events::{BoardChangedEvent, BoardEventBus};
 #[allow(unused_imports)]
 pub use cli_tokens::{CliGrant, CliSpawnConfig, CliTokenRegistry};
 pub use error::OrchestratorError;
+// Role personas (Phase 4): the fuzzy `role -> persona` matcher that seeds a
+// subtask's spawn prompt, plus the canonical role table the planner presents.
+// Re-exported so the seam is discoverable alongside the other orchestrator
+// surface; `service`/`planner` reach it directly via `super::personas`.
+#[allow(unused_imports)]
+pub use personas::{persona_for_role, CANONICAL_ROLES};
 // The captured, per-worktree Validate runner (V1) + its DTOs. Reused by
 // `commands::validate`; the DTOs round-trip through `validate.json`. `ValidateCheck`
 // is re-exported so `ValidateResult.checks`'s element type stays publicly nameable.

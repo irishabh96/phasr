@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use super::personas::CANONICAL_ROLES;
 use crate::commands::board::{validate_decomposition, EdgeInput, SubtaskInput, MAX_SUBTASKS};
 use crate::domain::Agent;
 
@@ -321,6 +322,20 @@ fn build_prompt(goal: &str, repo_name: &str, branch: &str) -> String {
         ));
     }
 
+    // The canonical persona roles (S4). Sourced from `personas::CANONICAL_ROLES`
+    // — the SAME table the `role -> persona` matcher uses — so the advisory menu
+    // and the matcher can never drift. Each line names a role, what it owns, and a
+    // suggested default agent (advisory: the planner still assigns freely).
+    let mut roles = String::new();
+    for (role, description, suggested) in CANONICAL_ROLES {
+        roles.push_str(&format!(
+            "- {}: {} (suggested agent: {})\n",
+            role,
+            description,
+            suggested.as_str()
+        ));
+    }
+
     format!(
         "You are the planning agent (a BSA — Business Systems Analyst) for phasr, a tool that \
 runs multiple AI coding agents in parallel, each in its own isolated git worktree.\n\n\
@@ -334,10 +349,15 @@ You are running READ-ONLY inside this repository — inspect the codebase (file 
 stack, existing patterns) to inform the decomposition. Do NOT modify any files.\n\n\
 ## Agents available (pick the best fit per ticket)\n{agents}\n\
 ## Roles\n\
-Each ticket has a unique, kebab-case `role` naming the persona/slice of work (e.g. \
-`backend-api`, `frontend-ui`, `db-migration`, `qa`). Roles are the nodes of the DAG. An \
-edge `{{\"fromRole\": \"a\", \"toRole\": \"b\"}}` means ticket `b` depends on (waits for the \
-handoff from) ticket `a`.\n\n\
+Each ticket has a unique, kebab-case `role` naming the slice of work; roles are the \
+nodes of the DAG. PREFER a role that maps to one of phasr's built-in personas below — a \
+mapped role gets stack-aware persona guidance seeded into its agent; an off-menu role \
+simply gets none. Kebab variants that include a canonical word map fine (the matcher is \
+fuzzy): `backend-api`->backend, `frontend-ui`->frontend, `db-migration`->data, \
+`qa-e2e`->qa.\n\
+{roles}\n\
+An edge `{{\"fromRole\": \"a\", \"toRole\": \"b\"}}` means ticket `b` depends on (waits \
+for the handoff from) ticket `a`.\n\n\
 ## Output contract (STRICT)\n\
 Reply with ONLY a single fenced ```json code block and nothing else — no prose before or \
 after. Shape:\n\
@@ -355,6 +375,7 @@ Constraints:\n\
         repo_name = repo_name,
         branch = branch,
         agents = agents,
+        roles = roles,
         MAX_SUBTASKS = MAX_SUBTASKS,
         agent_ids = Agent::ALL
             .iter()
@@ -546,6 +567,11 @@ mod tests {
         // Every agent id appears in the capability menu.
         for agent in Agent::ALL {
             assert!(prompt.contains(agent.as_str()), "menu lists {}", agent.as_str());
+        }
+        // Every canonical persona role appears in the role menu (S4) so the
+        // planner is nudged toward roles that map to a persona.
+        for (role, _desc, _agent) in CANONICAL_ROLES {
+            assert!(prompt.contains(*role), "role menu lists {role}");
         }
         assert!(prompt.contains(&MAX_SUBTASKS.to_string()));
         assert!(prompt.contains("NO cycles"));

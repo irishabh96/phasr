@@ -228,20 +228,26 @@ pub fn cli_commands_prompt_segment() -> String {
 }
 
 /// Assemble a subtask's spawn-time prompt from its base prompt plus (optional)
-/// brief pointer, producer suffix, and consumer prefix. Composition order is
-/// `[consumer_prefix (contracts)] [brief] [base] [producer_suffix]` (§C.2) —
-/// Phase 4's persona segment will prepend before `consumer_prefix`, keeping the
-/// documented final order `[persona][contracts][brief][base][producer]`. Returns
-/// `None` only when everything is empty (no base, no brief, not a producer, no
-/// seeds) so an all-empty prompt stays NULL — matching how the decomposition
-/// gate's `non_empty_prompt` treats a blank.
+/// role `persona`, brief pointer, producer suffix, and consumer prefix. The
+/// documented final order is
+/// `[persona] [consumer_prefix (contracts)] [brief] [base] [producer_suffix]`
+/// (§C.2 / Phase 4): the persona segment leads so the agent reads its role
+/// guidance first, ahead of any contract/brief/base. Returns `None` only when
+/// everything is empty (no persona, no base, no brief, not a producer, no seeds)
+/// so an all-empty prompt stays NULL — matching how the decomposition gate's
+/// `non_empty_prompt` treats a blank. When `persona` is `None` the output is
+/// byte-identical to the pre-Phase-4 4-arg behaviour.
 pub fn augment_prompt(
     base: Option<&str>,
     brief: Option<&str>,
     producer_suffix: Option<&str>,
     consumer_prefix: Option<&str>,
+    persona: Option<&str>,
 ) -> Option<String> {
     let mut out = String::new();
+    if let Some(persona) = persona {
+        out.push_str(persona);
+    }
     if let Some(prefix) = consumer_prefix {
         out.push_str(prefix);
     }
@@ -402,24 +408,32 @@ mod tests {
         assert!(prefix.contains("GET /widgets -> [{id, name}]"));
     }
 
+    // Regression guard (Phase 4): with `persona: None` the composition is
+    // BYTE-IDENTICAL to the pre-Phase-4 4-arg behaviour.
     #[test]
     fn augment_prompt_composes_prefix_base_suffix_and_collapses_empty() {
         // Producer: base + suffix (no brief).
-        let out =
-            augment_prompt(Some("do the backend"), None, Some(" [WRITE CONTRACT]"), None).unwrap();
+        let out = augment_prompt(
+            Some("do the backend"),
+            None,
+            Some(" [WRITE CONTRACT]"),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(out, "do the backend [WRITE CONTRACT]");
 
         // Consumer: prefix + base (no brief).
         let out =
-            augment_prompt(Some("do the frontend"), None, None, Some("[CONTRACT] ")).unwrap();
+            augment_prompt(Some("do the frontend"), None, None, Some("[CONTRACT] "), None).unwrap();
         assert_eq!(out, "[CONTRACT] do the frontend");
 
         // Nothing at all → NULL (not an empty string).
-        assert_eq!(augment_prompt(None, None, None, None), None);
-        assert_eq!(augment_prompt(Some("   "), None, None, None), None);
+        assert_eq!(augment_prompt(None, None, None, None, None), None);
+        assert_eq!(augment_prompt(Some("   "), None, None, None, None), None);
     }
 
-    // T3: the 4-arg composition order is exactly
+    // T3: with `persona: None` the composition order is exactly
     // `[consumer_prefix (contracts)] [brief] [base] [producer_suffix]`.
     #[test]
     fn augment_prompt_places_brief_between_contracts_and_base() {
@@ -428,18 +442,43 @@ mod tests {
             Some("BRIEF "),
             Some(" SUFFIX"),
             Some("PREFIX "),
+            None,
         )
         .unwrap();
         assert_eq!(out, "PREFIX BRIEF BASE SUFFIX");
 
         // Brief-only (an empty-prompt subtask with no edges) still produces a
         // prompt — an empty brief is not an error, the pointer is still useful.
-        let out = augment_prompt(None, Some("BRIEF"), None, None).unwrap();
+        let out = augment_prompt(None, Some("BRIEF"), None, None, None).unwrap();
         assert_eq!(out, "BRIEF");
 
         // Brief + base, no contracts/producer (the common single-consumer case).
-        let out = augment_prompt(Some("BASE"), Some("BRIEF "), None, None).unwrap();
+        let out = augment_prompt(Some("BASE"), Some("BRIEF "), None, None, None).unwrap();
         assert_eq!(out, "BRIEF BASE");
+    }
+
+    // Phase 4: the persona segment LEADS, giving the full documented order
+    // `[persona][consumer_prefix][brief][base][producer_suffix]`.
+    #[test]
+    fn augment_prompt_prepends_persona_ahead_of_every_segment() {
+        let out = augment_prompt(
+            Some("BASE"),
+            Some("BRIEF "),
+            Some(" SUFFIX"),
+            Some("PREFIX "),
+            Some("PERSONA "),
+        )
+        .unwrap();
+        assert_eq!(out, "PERSONA PREFIX BRIEF BASE SUFFIX");
+
+        // A persona alone (matched role, empty base/brief/edges) is a valid
+        // prompt — it does NOT collapse to `None`.
+        let out = augment_prompt(None, None, None, None, Some("PERSONA")).unwrap();
+        assert_eq!(out, "PERSONA");
+
+        // Persona + base, nothing else (the common single-node case).
+        let out = augment_prompt(Some("BASE"), None, None, None, Some("PERSONA ")).unwrap();
+        assert_eq!(out, "PERSONA BASE");
     }
 
     // T3: the pointer names the absolute main-repo ticket files (NOT the

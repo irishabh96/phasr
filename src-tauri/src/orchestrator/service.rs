@@ -37,6 +37,7 @@ use super::cli_tokens::{CliSpawnConfig, CliTokenRegistry};
 use super::error::OrchestratorError;
 use super::liveness::{classify, DerivedState, LivenessThresholds, LIVENESS_POLL_INTERVAL};
 use super::repo_locks::RepoLockRegistry;
+use super::personas;
 use super::scheduler::{
     augment_prompt, brief_prompt_pointer, cli_commands_prompt_segment, consumer_prompt_prefix,
     contract_file_is_ready, incoming_producer_ids, is_producer, producer_prompt_suffix,
@@ -1010,11 +1011,20 @@ impl TaskOrchestrator {
             (None, b) => b,
         };
 
+        // Role persona (Phase 4): the LEADING segment. Derived purely from
+        // `role` (independent of the owner/CLI gate above), so a persona rides
+        // even for an ownerless/test spawn. An unmatched role → `None` → no
+        // segment → byte-identical to a pre-Phase-4 spawn. Trim + the shared
+        // `\n\n---\n\n` separator so it composes exactly like the sibling seeds.
+        let persona =
+            personas::persona_for_role(&role).map(|p| format!("{}\n\n---\n\n", p.trim()));
+
         let augmented_prompt = augment_prompt(
             subtask.prompt.as_deref(),
             brief.as_deref(),
             producer_suffix.as_deref(),
             consumer_prefix.as_deref(),
+            persona.as_deref(),
         );
 
         // Interpolate the stored command template with the augmented prompt,
