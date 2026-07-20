@@ -33,7 +33,7 @@
 //! `ticketId` (`..`, absolute, containing a separator) is rejected BEFORE any fs
 //! touch. `section` is a typed enum on the wire, so it can never carry traversal.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -57,6 +57,20 @@ pub enum TicketError {
     /// brief; writes surface this.
     #[error("repository has no local checkout to store the ticket brief")]
     RepositoryHasNoLocalPath,
+    /// An `assetId` that would escape the ticket's asset dirs (`..`, a path
+    /// separator, or an absolute path). Rejected before any fs access (A1) — the
+    /// sibling of `InvalidTicketId` for the T5 asset surface.
+    #[error("invalid asset id `{0}`")]
+    InvalidAssetId(String),
+    /// The source path handed to `add_ticket_asset` is not a readable regular
+    /// file (missing, a directory, a broken symlink).
+    #[error("asset source is not a file: {0}")]
+    AssetSourceNotAFile(String),
+    /// A Figma link URL that isn't a well-formed `http(s)://…` link. Figma is
+    /// link-only in v1 (open decision #5), but we still reject a malformed URL up
+    /// front so the FE surfaces a humanizable error, not a broken chip.
+    #[error("invalid figma url `{0}` — expected an http(s):// link")]
+    InvalidFigmaUrl(String),
     #[error("serialization error: {0}")]
     Serde(String),
 }
@@ -96,6 +110,19 @@ impl BriefSection {
             BriefSection::Description => "description",
             BriefSection::Prd => "prd",
             BriefSection::Trd => "trd",
+        }
+    }
+
+    /// Map an on-disk file name back to its section, if any. T7's watcher uses
+    /// this to translate a changed file into the `sections` it emits; a file that
+    /// is NOT a text section (`figma.json`, `comments.jsonl`, `.meta.json`, or
+    /// anything under `assets/`) returns `None`.
+    pub fn from_file_name(name: &str) -> Option<Self> {
+        match name {
+            "ticket.md" => Some(BriefSection::Description),
+            "prd.md" => Some(BriefSection::Prd),
+            "trd.md" => Some(BriefSection::Trd),
+            _ => None,
         }
     }
 }
@@ -157,13 +184,13 @@ pub enum WriteSectionResult {
     },
 }
 
-/// An attached asset. Constructed by Story T5-BE (`add_ticket_asset` /
-/// `list_ticket_assets`); defined here because it is a field of `TicketBrief`
-/// (the §C shape is frozen).
-#[allow(dead_code)] // populated by T5-BE
+/// An attached asset (Story T5-BE). A field of `TicketBrief`; also the return of
+/// `add_ticket_asset` / `list_ticket_assets`. `path` is absolute + resolvable so
+/// the FE can preview it directly, whichever store holds it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TicketAsset {
+    /// Stable id = the on-disk file name (unique per ticket across both stores).
     pub id: String,
     pub name: String,
     pub storage: AssetStorage,
@@ -173,7 +200,9 @@ pub struct TicketAsset {
     pub added_at_ms: i64,
 }
 
-#[allow(dead_code)] // constructed by T5-BE
+/// Where an asset physically lives: versioned in the repo, or in app-data for a
+/// large binary kept out of git (open decision #1 / §B). Both surface identically
+/// in `TicketAsset` with a resolvable `path`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssetStorage {
@@ -181,7 +210,6 @@ pub enum AssetStorage {
     AppData,
 }
 
-#[allow(dead_code)] // constructed by T5-BE
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AssetKind {
@@ -190,10 +218,11 @@ pub enum AssetKind {
     Binary,
 }
 
-/// A linked Figma design. Constructed by Story T5-BE (`add_ticket_figma_link`);
-/// defined here because it is a field of `TicketBrief`.
-#[allow(dead_code)] // populated by T5-BE
-#[derive(Debug, Clone, Serialize)]
+/// A linked Figma design (open decision #5: link-only v1). Persisted in
+/// `figma.json` (so it rides in the PR) and read back into `TicketBrief.figma`;
+/// `Deserialize` too, since we round-trip the exact shape through disk. Phase 2
+/// only ever writes `addedBy: "you"` (honesty #1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FigmaLink {
     pub id: String,
@@ -201,6 +230,24 @@ pub struct FigmaLink {
     pub label: Option<String>,
     pub added_by: LastEditedBy,
     pub added_at_ms: i64,
+}
+
+/// One comment on a ticket — one JSON object per line in `comments.jsonl`. Phase
+/// 2 only ever APPENDS `authorKind: "you"` (the agent is read-only on the brief
+/// until the Phase-3 CLI, architect #1); an `agent` comment carrying a `role` can
+/// be read back but is never written here. `Deserialize` too — we parse the same
+/// shape back off disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketComment {
+    pub id: String,
+    /// Display name: the signed-in user, or an agent label in Phase 3.
+    pub author: String,
+    pub author_kind: LastEditedBy,
+    /// Persona/role for an agent comment; `None` for a human ("you") comment.
+    pub role: Option<String>,
+    pub body: String,
+    pub created_at_ms: i64,
 }
 
 // ── own-write registry (architect #2 hash-assist; exposes what T7 needs) ──────
@@ -376,6 +423,7 @@ pub fn read_brief(
     repo_local_path: Option<&Path>,
     ticket_id: &str,
     title_fallback: Option<&str>,
+    assets_app_data_root: &Path,
 ) -> Result<TicketBrief, TicketError> {
     let fallback_title = title_fallback
         .map(str::to_string)
@@ -389,6 +437,7 @@ pub fn read_brief(
     // A traversal id errors here (before any read); a valid-but-missing dir just
     // reads back as empty sections below.
     let dir = ticket_dir(repo_root, ticket_id)?;
+    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
     let meta = read_meta(&dir);
 
     // Read ticket.md once: the H1 is the title, the body is the description.
@@ -408,10 +457,11 @@ pub fn read_brief(
         description,
         prd: read_section(&dir, BriefSection::Prd, &meta)?,
         trd: read_section(&dir, BriefSection::Trd, &meta)?,
-        // T5-BE wires the on-disk asset/figma listing (it owns the storage split
-        // + the figma.json schema); T4 returns the text brief + a cheap count.
-        assets: Vec::new(),
-        figma: Vec::new(),
+        // T5-BE: merge the in-repo `assets/` dir + the app-data store, and read
+        // the linked designs back from `figma.json`. Comments stay a cheap count
+        // here (the FE fetches the thread via `list_ticket_comments`).
+        assets: list_assets_in(&dir, &app_data_dir)?,
+        figma: read_figma(&dir)?,
         comment_count: count_comments(&dir),
     })
 }
@@ -529,6 +579,377 @@ pub fn write_section(
     Ok(WriteSectionResult::Saved {
         section: read_section(&dir, section, &meta)?,
     })
+}
+
+// ── T5-BE: app-data root for large assets ────────────────────────────────────
+
+/// `~/.phasr/ticket-assets`, the app-data home for LARGE ticket binaries kept
+/// OUT of the git-versioned repo (open decision #1 / §B). Per-ticket dirs hang
+/// off `<root>/<ticketId>/`. Falls back to `/tmp` when `$HOME` is unset (CI
+/// sandboxes), matching `git::default_worktree_base_path` /
+/// `scheduler::default_contract_root`. The command layer passes this; tests
+/// inject a tempdir so a run never writes to the developer's real home.
+pub fn default_ticket_assets_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".phasr")
+        .join("ticket-assets")
+}
+
+/// The per-ticket app-data dir `<root>/<sanitised id>` for large binaries.
+/// Sanitises the id (traversal-safe) exactly like `ticket_dir` does for the
+/// in-repo tree, so a crafted id can't escape the app-data root either (A1).
+fn app_data_ticket_dir(
+    assets_app_data_root: &Path,
+    ticket_id: &str,
+) -> Result<PathBuf, TicketError> {
+    let id = sanitize_ticket_id(ticket_id)?;
+    Ok(assets_app_data_root.join(id))
+}
+
+// ── T5-BE: assets (in-repo vs app-data storage split) ────────────────────────
+
+/// Assets at/above this size go to app-data instead of into the versioned repo,
+/// so a large binary never bloats git history (open decision #1 / §B).
+pub const LARGE_ASSET_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+
+/// Extensions that ALWAYS route to app-data regardless of size: design sources,
+/// video, and archives — none belong in git history (§B).
+const LARGE_ASSET_EXTS: &[&str] = &["fig", "mp4", "mov", "zip"];
+
+/// Extensions rendered inline as an image thumbnail on the Brief tab.
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif", "heic", "heif", "tiff",
+];
+
+/// Lower-cased extension of a file name, if any.
+fn ext_lower(name: &str) -> Option<String> {
+    Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+}
+
+fn asset_kind_for(name: &str) -> AssetKind {
+    match ext_lower(name).as_deref() {
+        Some(e) if IMAGE_EXTS.contains(&e) => AssetKind::Image,
+        Some("pdf") => AssetKind::Pdf,
+        _ => AssetKind::Binary,
+    }
+}
+
+/// A file routes to app-data when it is large OR one of the always-app-data
+/// extensions (§B storage split).
+fn is_large_asset(name: &str, size: u64) -> bool {
+    size > LARGE_ASSET_BYTES
+        || ext_lower(name)
+            .map(|e| LARGE_ASSET_EXTS.contains(&e.as_str()))
+            .unwrap_or(false)
+}
+
+/// Reject an `assetId` (or a source file's basename) that could escape the
+/// ticket's asset dirs. Asset ids are on-disk file names (no separators), so this
+/// is the belt-and-suspenders guard against a crafted id reaching the fs
+/// (A1 / `#EXPORT_CRITICAL`).
+fn sanitize_asset_id(id: &str) -> Result<&str, TicketError> {
+    let trimmed = id.trim();
+    let escapes = trimmed.is_empty()
+        || trimmed == "."
+        || trimmed.contains("..")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || Path::new(trimmed).is_absolute();
+    if escapes {
+        return Err(TicketError::InvalidAssetId(id.to_string()));
+    }
+    Ok(trimmed)
+}
+
+/// Pick a collision-free file name: `foo.png` → `foo-1.png` → `foo-2.png` … The
+/// candidate is de-duped against the union of ids already present in BOTH stores,
+/// so an asset id is unique per ticket and `remove_asset` is unambiguous.
+fn unique_asset_name(existing: &HashSet<String>, original: &str) -> String {
+    if !existing.contains(original) {
+        return original.to_string();
+    }
+    let path = Path::new(original);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mut n = 1;
+    loop {
+        let candidate = format!("{stem}-{n}{ext}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Every asset id already present for a ticket, across BOTH stores — the de-dupe
+/// universe for `unique_asset_name`.
+fn existing_asset_ids(ticket_dir: &Path, app_data_dir: &Path) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for dir in [ticket_dir.join("assets"), app_data_dir.to_path_buf()] {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_file() {
+                    ids.insert(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Copy `source_path` into the ticket, routing small text/images/PDF into the
+/// versioned `assets/` dir and large binaries into app-data (§B). Name
+/// collisions are de-duped. Returns the `TicketAsset` with an absolute,
+/// resolvable `path`. `#EXPORT_CRITICAL`: the ticket id + the source basename are
+/// sanitised (traversal-safe) before any fs touch.
+pub fn add_asset(
+    repo_root: &Path,
+    ticket_id: &str,
+    source_path: &Path,
+    assets_app_data_root: &Path,
+) -> Result<TicketAsset, TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+
+    let meta = std::fs::metadata(source_path)?;
+    if !meta.is_file() {
+        return Err(TicketError::AssetSourceNotAFile(
+            source_path.display().to_string(),
+        ));
+    }
+    let size = meta.len();
+    let original = source_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| TicketError::AssetSourceNotAFile(source_path.display().to_string()))?;
+    // A source basename could still be odd — run it through the same guard used
+    // for asset ids so the destination can never escape the ticket.
+    let base = sanitize_asset_id(original)?.to_string();
+
+    let existing = existing_asset_ids(&dir, &app_data_dir);
+    let name = unique_asset_name(&existing, &base);
+
+    let (dest_dir, storage) = if is_large_asset(&name, size) {
+        (app_data_dir, AssetStorage::AppData)
+    } else {
+        (dir.join("assets"), AssetStorage::InRepo)
+    };
+    std::fs::create_dir_all(&dest_dir)?;
+    let dest = dest_dir.join(&name);
+    std::fs::copy(source_path, &dest)?;
+
+    Ok(TicketAsset {
+        id: name.clone(),
+        kind: asset_kind_for(&name),
+        name,
+        storage,
+        path: dest.to_string_lossy().into_owned(),
+        size_bytes: size as i64,
+        added_at_ms: Utc::now().timestamp_millis(),
+    })
+}
+
+/// List every asset for a ticket, merging the in-repo `assets/` dir and the
+/// app-data store. Missing dirs read as empty (a not-yet-populated ticket is not
+/// an error). Ordered by name for a stable render.
+pub fn list_assets(
+    repo_root: &Path,
+    ticket_id: &str,
+    assets_app_data_root: &Path,
+) -> Result<Vec<TicketAsset>, TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+    list_assets_in(&dir, &app_data_dir)
+}
+
+/// Shared asset lister over already-resolved dirs (so `read_brief` doesn't
+/// re-resolve/re-sanitise the ticket id). Both dirs missing → an empty list.
+fn list_assets_in(ticket_dir: &Path, app_data_dir: &Path) -> Result<Vec<TicketAsset>, TicketError> {
+    let mut out = Vec::new();
+    read_asset_dir(&ticket_dir.join("assets"), AssetStorage::InRepo, &mut out);
+    read_asset_dir(app_data_dir, AssetStorage::AppData, &mut out);
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Push every regular file in `dir` as a `TicketAsset` (the on-disk file name IS
+/// the stable id). A missing dir is a no-op, never an error.
+fn read_asset_dir(dir: &Path, storage: AssetStorage, out: &mut Vec<TicketAsset>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        out.push(TicketAsset {
+            id: name.clone(),
+            kind: asset_kind_for(&name),
+            name,
+            storage,
+            path: entry.path().to_string_lossy().into_owned(),
+            size_bytes: meta.len() as i64,
+            added_at_ms: mtime_ms(&meta).unwrap_or(0),
+        });
+    }
+}
+
+/// Remove an asset by id from whichever store holds it. Idempotent: removing an
+/// already-gone asset is not an error (safe against a double-click). A traversal
+/// id is rejected before any fs touch.
+pub fn remove_asset(
+    repo_root: &Path,
+    ticket_id: &str,
+    asset_id: &str,
+    assets_app_data_root: &Path,
+) -> Result<(), TicketError> {
+    let id = sanitize_asset_id(asset_id)?;
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+    for candidate in [dir.join("assets").join(id), app_data_dir.join(id)] {
+        if candidate.is_file() {
+            std::fs::remove_file(&candidate)?;
+        }
+    }
+    Ok(())
+}
+
+// ── T5-BE: figma links (link-only v1, persisted in figma.json) ───────────────
+
+/// Read `figma.json` → `Vec<FigmaLink>`. Tolerant: a missing or malformed file
+/// reads as no links (never an error), mirroring `.meta.json`.
+fn read_figma(dir: &Path) -> Result<Vec<FigmaLink>, TicketError> {
+    Ok(std::fs::read_to_string(dir.join("figma.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<FigmaLink>>(&raw).ok())
+        .unwrap_or_default())
+}
+
+fn write_figma(dir: &Path, links: &[FigmaLink]) -> Result<(), TicketError> {
+    let raw = serde_json::to_string_pretty(links).map_err(|e| TicketError::Serde(e.to_string()))?;
+    write_atomic(&dir.join("figma.json"), raw.as_bytes())?;
+    Ok(())
+}
+
+/// A minimal well-formedness check: a Figma link is a plain `http(s)://…` URL
+/// with a dotted host. We never touch the network (link-only v1) but reject a
+/// malformed URL up front so the FE gets a humanizable error.
+fn validate_figma_url(url: &str) -> Result<(), TicketError> {
+    let u = url.trim();
+    let host_and_path = u
+        .strip_prefix("https://")
+        .or_else(|| u.strip_prefix("http://"));
+    match host_and_path {
+        Some(rest) if rest.contains('.') && !rest.starts_with('.') => Ok(()),
+        _ => Err(TicketError::InvalidFigmaUrl(url.to_string())),
+    }
+}
+
+/// Append a Figma link to `figma.json`. Author is always `You` in Phase 2
+/// (honesty #1 — the agent never writes the brief). A malformed URL is rejected
+/// before any write.
+pub fn add_figma_link(
+    repo_root: &Path,
+    ticket_id: &str,
+    url: &str,
+    label: Option<&str>,
+) -> Result<FigmaLink, TicketError> {
+    validate_figma_url(url)?;
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    std::fs::create_dir_all(&dir)?; // create-on-write for an unscaffolded ticket
+    let mut links = read_figma(&dir)?;
+    let link = FigmaLink {
+        id: uuid::Uuid::new_v4().to_string(),
+        url: url.trim().to_string(),
+        label: label
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string),
+        added_by: LastEditedBy::You,
+        added_at_ms: Utc::now().timestamp_millis(),
+    };
+    links.push(link.clone());
+    write_figma(&dir, &links)?;
+    Ok(link)
+}
+
+/// Remove a Figma link by id. Idempotent: an unknown id is a no-op rewrite.
+pub fn remove_figma_link(
+    repo_root: &Path,
+    ticket_id: &str,
+    link_id: &str,
+) -> Result<(), TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    let mut links = read_figma(&dir)?;
+    links.retain(|l| l.id != link_id);
+    write_figma(&dir, &links)?;
+    Ok(())
+}
+
+// ── T5-BE: comments (append-only comments.jsonl) ─────────────────────────────
+
+/// Read `comments.jsonl` → `Vec<TicketComment>`, one object per line. Tolerant:
+/// a blank line is skipped and a malformed line is skipped (never fatal), so one
+/// bad append can't sink the whole thread (T5 AC).
+pub fn list_comments(repo_root: &Path, ticket_id: &str) -> Result<Vec<TicketComment>, TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    let raw = std::fs::read_to_string(dir.join("comments.jsonl")).unwrap_or_default();
+    Ok(raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<TicketComment>(l).ok())
+        .collect())
+}
+
+/// Append one comment to `comments.jsonl`. Phase 2 only ever appends `You`
+/// (honesty #1); `author` is the signed-in user's display name. Returns the
+/// created comment so the FE can render it optimistically.
+pub fn add_comment(
+    repo_root: &Path,
+    ticket_id: &str,
+    author: &str,
+    body: &str,
+) -> Result<TicketComment, TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    std::fs::create_dir_all(&dir)?; // create-on-write for an unscaffolded ticket
+    let comment = TicketComment {
+        id: uuid::Uuid::new_v4().to_string(),
+        author: author.to_string(),
+        author_kind: LastEditedBy::You,
+        role: None,
+        body: body.to_string(),
+        created_at_ms: Utc::now().timestamp_millis(),
+    };
+    let line = serde_json::to_string(&comment).map_err(|e| TicketError::Serde(e.to_string()))?;
+    append_jsonl_line(&dir.join("comments.jsonl"), &line)?;
+    Ok(comment)
+}
+
+/// Append a single line (+ newline) to a jsonl file, creating it if absent. A
+/// single-line append is the natural atomic unit for jsonl — unlike the
+/// whole-file text sections, which use tmp-then-rename.
+fn append_jsonl_line(path: &Path, line: &str) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")
 }
 
 // ── ticket.md H1/body split ──────────────────────────────────────────────────
@@ -693,7 +1114,7 @@ mod tests {
                 "scaffold accepted a traversal id `{bad}`"
             );
             assert!(matches!(
-                read_brief(Some(&root), bad, None),
+                read_brief(Some(&root), bad, None, Path::new("/tmp")),
                 Err(TicketError::InvalidTicketId(_))
             ));
             let reg = TicketWriteRegistry::default();
@@ -712,7 +1133,7 @@ mod tests {
     fn read_missing_ticket_is_an_empty_brief_not_an_error() {
         let (_tmp, root) = repo();
         // Never scaffolded — a graceful empty brief keyed by the id.
-        let brief = read_brief(Some(&root), "never-made", Some("Fallback Name")).unwrap();
+        let brief = read_brief(Some(&root), "never-made", Some("Fallback Name"), Path::new("/tmp")).unwrap();
         assert_eq!(brief.ticket_id, "never-made");
         assert_eq!(brief.title, "Fallback Name");
         assert_eq!(brief.description.content, "");
@@ -723,7 +1144,7 @@ mod tests {
 
     #[test]
     fn read_with_no_local_path_is_an_empty_brief() {
-        let brief = read_brief(None, "t", None).unwrap();
+        let brief = read_brief(None, "t", None, Path::new("/tmp")).unwrap();
         assert_eq!(brief.title, "t"); // falls back to the id when no name given
         assert_eq!(brief.prd.content, "");
     }
@@ -735,7 +1156,7 @@ mod tests {
         let reg = TicketWriteRegistry::default();
         write_section(&reg, &root, "t", BriefSection::Prd, "PRD content", None).unwrap();
 
-        let brief = read_brief(Some(&root), "t", Some("workspace name")).unwrap();
+        let brief = read_brief(Some(&root), "t", Some("workspace name"), Path::new("/tmp")).unwrap();
         // Title from the H1, NOT the fallback.
         assert_eq!(brief.title, "My Ticket");
         // Description is the body only (H1 stripped).
@@ -766,7 +1187,7 @@ mod tests {
                 other => panic!("expected Saved, got {other:?}"),
             }
         }
-        let brief = read_brief(Some(&root), "t", None).unwrap();
+        let brief = read_brief(Some(&root), "t", None, Path::new("/tmp")).unwrap();
         assert_eq!(brief.description.content, "new description");
         assert_eq!(brief.prd.content, "new prd");
         assert_eq!(brief.trd.content, "new trd");
@@ -841,7 +1262,7 @@ mod tests {
         // Save again with the fresh mtime as the base → not stale → saved.
         let second = write_section(&reg, &root, "t", BriefSection::Prd, "v2", mtime).unwrap();
         assert!(matches!(second, WriteSectionResult::Saved { .. }));
-        assert_eq!(read_brief(Some(&root), "t", None).unwrap().prd.content, "v2");
+        assert_eq!(read_brief(Some(&root), "t", None, Path::new("/tmp")).unwrap().prd.content, "v2");
     }
 
     #[test]
@@ -887,6 +1308,244 @@ mod tests {
         let conflict = serde_json::to_value(WriteSectionResult::Conflict { on_disk: sc }).unwrap();
         assert_eq!(conflict["kind"], "conflict");
         assert!(conflict["onDisk"].is_object());
+    }
+
+    // ── T5-BE: assets ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn assets_route_small_in_repo_and_large_or_special_to_app_data() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+        let app_data = root.join("app-data-assets");
+
+        // Small PNG → in-repo, kind=image.
+        let small = root.join("logo.png");
+        std::fs::write(&small, vec![1u8; 1024]).unwrap();
+        let a = add_asset(&root, "t", &small, &app_data).unwrap();
+        assert!(matches!(a.storage, AssetStorage::InRepo));
+        assert!(matches!(a.kind, AssetKind::Image));
+        assert!(root.join(".phasr/tickets/t/assets/logo.png").is_file());
+
+        // Small .mp4 → app-data BY EXTENSION (not size), kind=binary.
+        let vid = root.join("clip.mp4");
+        std::fs::write(&vid, vec![2u8; 1024]).unwrap();
+        let v = add_asset(&root, "t", &vid, &app_data).unwrap();
+        assert!(matches!(v.storage, AssetStorage::AppData));
+        assert!(matches!(v.kind, AssetKind::Binary));
+        assert!(app_data.join("t").join("clip.mp4").is_file());
+        assert!(!root.join(".phasr/tickets/t/assets/clip.mp4").exists());
+
+        // Large text (> 5 MiB) → app-data BY SIZE — the storage-split boundary.
+        let big = root.join("dump.txt");
+        std::fs::write(&big, vec![3u8; (LARGE_ASSET_BYTES + 1) as usize]).unwrap();
+        assert!(matches!(
+            add_asset(&root, "t", &big, &app_data).unwrap().storage,
+            AssetStorage::AppData
+        ));
+
+        // A PDF just under the cap → in-repo, kind=pdf.
+        let pdf = root.join("spec.pdf");
+        std::fs::write(&pdf, vec![4u8; 2048]).unwrap();
+        let p = add_asset(&root, "t", &pdf, &app_data).unwrap();
+        assert!(matches!(p.storage, AssetStorage::InRepo));
+        assert!(matches!(p.kind, AssetKind::Pdf));
+
+        // list_assets merges both stores.
+        let names: Vec<_> = list_assets(&root, "t", &app_data)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(names.len(), 4);
+        for expected in ["logo.png", "clip.mp4", "dump.txt", "spec.pdf"] {
+            assert!(names.contains(&expected.to_string()), "missing {expected}");
+        }
+
+        // remove the app-data one; the listing drops it, the in-repo ones remain.
+        remove_asset(&root, "t", "clip.mp4", &app_data).unwrap();
+        assert!(!app_data.join("t").join("clip.mp4").exists());
+        let after = list_assets(&root, "t", &app_data).unwrap();
+        assert_eq!(after.len(), 3);
+        assert!(after.iter().all(|a| a.name != "clip.mp4"));
+
+        // Removing an already-gone asset is idempotent (no error).
+        assert!(remove_asset(&root, "t", "clip.mp4", &app_data).is_ok());
+    }
+
+    #[test]
+    fn asset_name_collisions_are_de_duped_across_stores() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+        let app_data = root.join("app-data-assets");
+        let src = root.join("photo.png");
+        std::fs::write(&src, vec![9u8; 512]).unwrap();
+
+        let a1 = add_asset(&root, "t", &src, &app_data).unwrap();
+        let a2 = add_asset(&root, "t", &src, &app_data).unwrap();
+        let a3 = add_asset(&root, "t", &src, &app_data).unwrap();
+        assert_eq!(a1.id, "photo.png");
+        assert_eq!(a2.id, "photo-1.png", "a colliding name is suffixed");
+        assert_eq!(a3.id, "photo-2.png");
+        assert_eq!(list_assets(&root, "t", &app_data).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn asset_source_must_be_a_file_and_ids_are_traversal_safe() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+        let app_data = root.join("app-data-assets");
+
+        // A missing / non-file source is a clear error, not a panic.
+        assert!(add_asset(&root, "t", &root.join("nope.png"), &app_data).is_err());
+
+        // A crafted asset id can never reach the fs (remove path).
+        for bad in ["../evil", "a/b", "/abs", "..", ""] {
+            assert!(
+                matches!(
+                    remove_asset(&root, "t", bad, &app_data),
+                    Err(TicketError::InvalidAssetId(_))
+                ),
+                "remove accepted a traversal asset id `{bad}`"
+            );
+        }
+    }
+
+    #[test]
+    fn read_brief_includes_assets_and_figma() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+        let app_data = root.join("app-data-assets");
+        let src = root.join("a.png");
+        std::fs::write(&src, vec![1u8; 100]).unwrap();
+        add_asset(&root, "t", &src, &app_data).unwrap();
+        add_figma_link(&root, "t", "https://www.figma.com/file/abc", Some("Home")).unwrap();
+
+        let brief = read_brief(Some(&root), "t", None, &app_data).unwrap();
+        assert_eq!(brief.assets.len(), 1);
+        assert_eq!(brief.assets[0].name, "a.png");
+        assert_eq!(brief.figma.len(), 1);
+        assert_eq!(brief.figma[0].label.as_deref(), Some("Home"));
+        assert!(matches!(brief.figma[0].added_by, LastEditedBy::You));
+    }
+
+    // ── T5-BE: figma ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn figma_add_remove_and_reject_malformed() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+        let dir = root.join(".phasr/tickets/t");
+
+        let l1 = add_figma_link(&root, "t", "https://www.figma.com/file/abc", Some("Flow")).unwrap();
+        let l2 = add_figma_link(&root, "t", "https://figma.com/file/xyz", None).unwrap();
+        assert_eq!(read_figma(&dir).unwrap().len(), 2);
+        assert_eq!(l1.label.as_deref(), Some("Flow"));
+        assert!(l2.label.is_none(), "a blank label persists as None");
+        assert!(matches!(l1.added_by, LastEditedBy::You)); // honesty #1
+
+        // Remove by id.
+        remove_figma_link(&root, "t", &l1.id).unwrap();
+        let left = read_figma(&dir).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, l2.id);
+
+        // A malformed URL is rejected and nothing is appended.
+        for bad in ["not a url", "ftp://x.com/f", "https://", "javascript:alert(1)"] {
+            assert!(
+                matches!(
+                    add_figma_link(&root, "t", bad, None),
+                    Err(TicketError::InvalidFigmaUrl(_))
+                ),
+                "figma accepted a malformed url `{bad}`"
+            );
+        }
+        assert_eq!(read_figma(&dir).unwrap().len(), 1, "no malformed link was appended");
+    }
+
+    // ── T5-BE: comments ───────────────────────────────────────────────────────
+
+    #[test]
+    fn comments_append_and_list_authored_you() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+
+        let c1 = add_comment(&root, "t", "Rishabh", "first note").unwrap();
+        let c2 = add_comment(&root, "t", "Rishabh", "second note").unwrap();
+        // Phase 2 only ever appends "you" (honesty #1) — never "agent", no role.
+        assert!(matches!(c1.author_kind, LastEditedBy::You));
+        assert_eq!(c1.author, "Rishabh");
+        assert!(c1.role.is_none());
+
+        let all = list_comments(&root, "t").unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].body, "first note");
+        assert_eq!(all[1].body, "second note");
+        assert_eq!(all[1].id, c2.id);
+
+        // A malformed line is skipped, not fatal (T5 AC).
+        let jsonl = root.join(".phasr/tickets/t/comments.jsonl");
+        let mut content = std::fs::read_to_string(&jsonl).unwrap();
+        content.push_str("this is not json\n");
+        std::fs::write(&jsonl, content).unwrap();
+        assert_eq!(
+            list_comments(&root, "t").unwrap().len(),
+            2,
+            "a malformed jsonl line must be skipped, not fatal"
+        );
+    }
+
+    // Pins the FROZEN §C wire shapes for the T5 DTOs: TicketAsset (kebab
+    // `storage`, lowercase `kind`, camelCase fields), FigmaLink, TicketComment.
+    #[test]
+    fn wire_shapes_for_asset_figma_comment() {
+        let asset = TicketAsset {
+            id: "a.png".into(),
+            name: "a.png".into(),
+            storage: AssetStorage::AppData,
+            path: "/x/a.png".into(),
+            size_bytes: 10,
+            kind: AssetKind::Image,
+            added_at_ms: 5,
+        };
+        let j = serde_json::to_value(&asset).unwrap();
+        assert_eq!(j["storage"], "app-data");
+        assert_eq!(j["kind"], "image");
+        assert_eq!(j["sizeBytes"], 10);
+        assert_eq!(j["addedAtMs"], 5);
+        assert_eq!(
+            serde_json::to_value(AssetStorage::InRepo).unwrap(),
+            serde_json::json!("in-repo")
+        );
+
+        let fl = FigmaLink {
+            id: "1".into(),
+            url: "https://figma.com/f".into(),
+            label: None,
+            added_by: LastEditedBy::You,
+            added_at_ms: 7,
+        };
+        let jf = serde_json::to_value(&fl).unwrap();
+        assert_eq!(jf["addedBy"], "you");
+        assert_eq!(jf["addedAtMs"], 7);
+        assert!(jf["label"].is_null());
+        // Round-trips through disk (persisted then read back).
+        assert_eq!(
+            serde_json::from_value::<FigmaLink>(jf).unwrap().url,
+            "https://figma.com/f"
+        );
+
+        let tc = TicketComment {
+            id: "1".into(),
+            author: "R".into(),
+            author_kind: LastEditedBy::Agent,
+            role: Some("backend".into()),
+            body: "hi".into(),
+            created_at_ms: 9,
+        };
+        let jc = serde_json::to_value(&tc).unwrap();
+        assert_eq!(jc["authorKind"], "agent");
+        assert_eq!(jc["role"], "backend");
+        assert_eq!(jc["createdAtMs"], 9);
     }
 
     #[test]

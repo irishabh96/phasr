@@ -118,6 +118,20 @@ pub fn run() {
                 Arc::new(fswatch::WorktreeWatchRegistry::new(app.handle().clone()));
             app.manage(watch_registry.clone());
 
+            // The ticket-dir watcher (T7) shares the SAME TicketWriteRegistry as
+            // `write_ticket_section` (managed above) so it can suppress its own
+            // writes by hash — a save never round-trips as a phantom "changed on
+            // disk" (architect #2). Fetch the managed instance and hand it a clone.
+            let ticket_write_registry = app
+                .state::<Arc<tickets::TicketWriteRegistry>>()
+                .inner()
+                .clone();
+            let ticket_watch_registry = Arc::new(fswatch::TicketWatchRegistry::new(
+                app.handle().clone(),
+                ticket_write_registry,
+            ));
+            app.manage(ticket_watch_registry);
+
             tauri::async_runtime::block_on(initialize_database_state(
                 app.handle(),
                 &db_path,
@@ -175,6 +189,16 @@ pub fn run() {
             commands::board::board_integration_file_diff,
             commands::tickets::read_ticket_brief,
             commands::tickets::write_ticket_section,
+            commands::tickets::list_ticket_assets,
+            commands::tickets::add_ticket_asset,
+            commands::tickets::remove_ticket_asset,
+            commands::tickets::add_ticket_figma_link,
+            commands::tickets::remove_ticket_figma_link,
+            commands::tickets::list_ticket_comments,
+            commands::tickets::add_ticket_comment,
+            commands::tickets::watch_ticket,
+            commands::tickets::unwatch_ticket,
+            commands::worklist::list_worklist,
             commands::planner::plan_decomposition,
             commands::git::git_status,
             commands::git::git_diff,

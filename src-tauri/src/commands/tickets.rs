@@ -1,15 +1,23 @@
-//! Rich-ticket brief command surface (Phase 2, story T4).
+//! Rich-ticket brief command surface (Phase 2, stories T4/T5-BE/T7).
 //!
-//! Two thin `#[tauri::command]` handlers over the `crate::tickets` file-service:
-//!   - `read_ticket_brief` — the whole brief (text sections + mtime + local
-//!     authorship) for one ticket.
-//!   - `write_ticket_section` — write one section with conflict detection.
+//! Thin `#[tauri::command]` handlers over the `crate::tickets` file-service:
+//!   - `read_ticket_brief` / `write_ticket_section` (T4) — the whole brief, and
+//!     one section written with conflict detection.
+//!   - `list_ticket_assets` / `add_ticket_asset` / `remove_ticket_asset` (T5-BE)
+//!     — the storage-split attachments (small → in-repo, large → app-data).
+//!   - `add_ticket_figma_link` / `remove_ticket_figma_link` (T5-BE) — link-only
+//!     Figma refs persisted in `figma.json`.
+//!   - `list_ticket_comments` / `add_ticket_comment` (T5-BE) — the append-only
+//!     `comments.jsonl` thread (Phase 2 only ever appends "you", honesty #1).
+//!   - `watch_ticket` / `unwatch_ticket` (T7) — the co-editing fs-watcher that
+//!     emits `phasr://ticket-changed` on an EXTERNAL section edit (own writes are
+//!     hash-suppressed, architect #2).
 //!
-//! Both are owner-scoped through the SYNCABLE repositories table
+//! Every handler is owner-scoped through the SYNCABLE repositories table
 //! (`get_for_user`): the brief files live inside `repository.local_path`, so
 //! owning the repo is the access boundary — a different account can never read
-//! or write another user's ticket briefs. Ticket data is on-disk (not a DB
-//! table), so there is NO `request_sync()` and NO migration (architect #7).
+//! or write another user's ticket data. Ticket data is on-disk (not a DB table),
+//! so there is NO `request_sync()` and NO migration (architect #7).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,10 +25,12 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
+use crate::fswatch::TicketWatchRegistry;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 use crate::tickets::{
-    read_brief, write_section, BriefSection, TicketBrief, TicketError, TicketWriteRegistry,
-    WriteSectionResult,
+    add_asset, add_comment, add_figma_link, default_ticket_assets_root, list_assets, list_comments,
+    read_brief, remove_asset, remove_figma_link, ticket_dir, write_section, BriefSection, FigmaLink,
+    TicketAsset, TicketBrief, TicketComment, TicketError, TicketWriteRegistry, WriteSectionResult,
 };
 
 // ── error ────────────────────────────────────────────────────────────────────
@@ -80,8 +90,15 @@ pub async fn read_ticket_brief(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<TicketBrief, TicketCmdError> {
     let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
-    read_ticket_brief_inner(&repository_id, &ticket_id, &current.user_id, &workspaces, &repositories)
-        .await
+    read_ticket_brief_inner(
+        &repository_id,
+        &ticket_id,
+        &current.user_id,
+        &workspaces,
+        &repositories,
+        &default_ticket_assets_root(),
+    )
+    .await
 }
 
 /// Write one section, with optimistic-concurrency conflict detection. Owner-
@@ -114,7 +131,201 @@ pub async fn write_ticket_section(
     // No `request_sync()`: ticket briefs live on-disk, not in a syncable table.
 }
 
+// ── T5-BE: assets ────────────────────────────────────────────────────────────
+
+/// List every asset for a ticket (in-repo + app-data), owner-scoped. A repo with
+/// no checkout on this machine → an empty list (never an error).
+#[tauri::command]
+pub async fn list_ticket_assets(
+    repository_id: String,
+    ticket_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<TicketAsset>, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let Some(repo_root) =
+        owned_repo_root(&repositories, &repository_id, &current.user_id).await?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(list_assets(&repo_root, &ticket_id, &default_ticket_assets_root())?)
+}
+
+/// Copy a picked/dropped file into the ticket, routing small → in-repo and large
+/// → app-data (§B). Owner-scoped; a repo with no checkout has nowhere to store
+/// the in-repo copy, so it surfaces `RepositoryHasNoLocalPath`.
+#[tauri::command]
+pub async fn add_ticket_asset(
+    repository_id: String,
+    ticket_id: String,
+    source_path: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<TicketAsset, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let repo_root = owned_repo_root(&repositories, &repository_id, &current.user_id)
+        .await?
+        .ok_or(TicketError::RepositoryHasNoLocalPath)?;
+    Ok(add_asset(
+        &repo_root,
+        &ticket_id,
+        Path::new(&source_path),
+        &default_ticket_assets_root(),
+    )?)
+}
+
+/// Remove one asset by id from whichever store holds it. Owner-scoped; idempotent
+/// (a gone asset / no checkout is a no-op, never an error).
+#[tauri::command]
+pub async fn remove_ticket_asset(
+    repository_id: String,
+    ticket_id: String,
+    asset_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let Some(repo_root) =
+        owned_repo_root(&repositories, &repository_id, &current.user_id).await?
+    else {
+        return Ok(());
+    };
+    remove_asset(&repo_root, &ticket_id, &asset_id, &default_ticket_assets_root())?;
+    Ok(())
+}
+
+// ── T5-BE: figma links ───────────────────────────────────────────────────────
+
+/// Append a Figma link (link-only v1) to `figma.json`. Author is always "you"
+/// (honesty #1). A malformed URL is rejected. Owner-scoped.
+#[tauri::command]
+pub async fn add_ticket_figma_link(
+    repository_id: String,
+    ticket_id: String,
+    url: String,
+    label: Option<String>,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<FigmaLink, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let repo_root = owned_repo_root(&repositories, &repository_id, &current.user_id)
+        .await?
+        .ok_or(TicketError::RepositoryHasNoLocalPath)?;
+    Ok(add_figma_link(&repo_root, &ticket_id, &url, label.as_deref())?)
+}
+
+/// Remove a Figma link by id. Owner-scoped; idempotent.
+#[tauri::command]
+pub async fn remove_ticket_figma_link(
+    repository_id: String,
+    ticket_id: String,
+    link_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let Some(repo_root) =
+        owned_repo_root(&repositories, &repository_id, &current.user_id).await?
+    else {
+        return Ok(());
+    };
+    remove_figma_link(&repo_root, &ticket_id, &link_id)?;
+    Ok(())
+}
+
+// ── T5-BE: comments ──────────────────────────────────────────────────────────
+
+/// List a ticket's comment thread from `comments.jsonl`, owner-scoped. No
+/// checkout → an empty thread.
+#[tauri::command]
+pub async fn list_ticket_comments(
+    repository_id: String,
+    ticket_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<TicketComment>, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let Some(repo_root) =
+        owned_repo_root(&repositories, &repository_id, &current.user_id).await?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(list_comments(&repo_root, &ticket_id)?)
+}
+
+/// Append the signed-in user's comment (`authorKind: "you"`, honesty #1) to
+/// `comments.jsonl`. The author display name is the session's name. Owner-scoped.
+#[tauri::command]
+pub async fn add_ticket_comment(
+    repository_id: String,
+    ticket_id: String,
+    body: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<TicketComment, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let repo_root = owned_repo_root(&repositories, &repository_id, &current.user_id)
+        .await?
+        .ok_or(TicketError::RepositoryHasNoLocalPath)?;
+    Ok(add_comment(&repo_root, &ticket_id, &current.name, &body)?)
+}
+
+// ── T7: co-editing fs-watcher ────────────────────────────────────────────────
+
+/// Start watching a ticket's dir for EXTERNAL section edits (T7). Owner-scoped;
+/// a repo with no checkout has nothing on disk to watch (no-op). Pairs with
+/// `unwatch_ticket` on unmount so only the open ticket is watched at a time
+/// (mirror `watch_workspace`).
+#[tauri::command]
+pub async fn watch_ticket(
+    repository_id: String,
+    ticket_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    watchers: State<'_, Arc<TicketWatchRegistry>>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let Some(repo_root) =
+        owned_repo_root(&repositories, &repository_id, &current.user_id).await?
+    else {
+        return Ok(());
+    };
+    // Traversal-safe dir resolution (rejects a crafted ticket id before watching).
+    let dir = ticket_dir(&repo_root, &ticket_id)?;
+    watchers.start(ticket_id, dir);
+    Ok(())
+}
+
+/// Stop watching a ticket (mirror `unwatch_workspace`). Sync — no fs/DB work.
+#[tauri::command]
+pub fn unwatch_ticket(
+    repository_id: String,
+    ticket_id: String,
+    watchers: State<'_, Arc<TicketWatchRegistry>>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), TicketCmdError> {
+    session.require()?;
+    // `repositoryId` rides the frozen §C.1 signature; the watcher is keyed by the
+    // globally-unique ticket id, so teardown needs only that.
+    let _ = &repository_id;
+    watchers.stop(&ticket_id);
+    Ok(())
+}
+
 // ── internals (testable without Tauri `State`) ───────────────────────────────
+
+/// Owner-scoped resolution of a repo's local checkout path. `get_for_user` is
+/// the access boundary (`NotFound` for a non-owner). Returns `None` when the repo
+/// exists but has no checkout on this machine — reads degrade to empty, writes
+/// surface `RepositoryHasNoLocalPath`.
+async fn owned_repo_root(
+    repositories: &RepositoryRepo,
+    repository_id: &str,
+    user_id: &str,
+) -> Result<Option<std::path::PathBuf>, TicketCmdError> {
+    let repository = repositories.get_for_user(repository_id, user_id).await?;
+    Ok(repository.local_path.map(std::path::PathBuf::from))
+}
 
 /// `read_ticket_brief` minus session/State wiring. Owner-scopes on the
 /// repository (`get_for_user`), then reads the on-disk brief; the workspace-name
@@ -125,6 +336,7 @@ async fn read_ticket_brief_inner(
     user_id: &str,
     workspaces: &WorkspaceRepo,
     repositories: &RepositoryRepo,
+    assets_app_data_root: &Path,
 ) -> Result<TicketBrief, TicketCmdError> {
     let repository = repositories.get_for_user(repository_id, user_id).await?;
     let title_fallback = workspaces
@@ -136,6 +348,7 @@ async fn read_ticket_brief_inner(
         repository.local_path.as_deref().map(Path::new),
         ticket_id,
         title_fallback.as_deref(),
+        assets_app_data_root,
     )?)
 }
 
@@ -231,7 +444,7 @@ mod tests {
         .unwrap();
         assert!(matches!(saved, WriteSectionResult::Saved { .. }));
 
-        let brief = read_ticket_brief_inner(&repo.id, "ticket-1", "user-a", &workspaces, &repos)
+        let brief = read_ticket_brief_inner(&repo.id, "ticket-1", "user-a", &workspaces, &repos, &_dir.path().join("app-data"))
             .await
             .unwrap();
         assert_eq!(brief.title, "My Ticket");
@@ -252,14 +465,14 @@ mod tests {
 
         // Owner: OK.
         assert!(
-            read_ticket_brief_inner(&repo.id, "ticket-1", "user-a", &workspaces, &repos)
+            read_ticket_brief_inner(&repo.id, "ticket-1", "user-a", &workspaces, &repos, &_dir.path().join("app-data"))
                 .await
                 .is_ok()
         );
 
         // Non-owner: NotFound on the repo gate for both read and write.
         assert!(matches!(
-            read_ticket_brief_inner(&repo.id, "ticket-1", "user-b", &workspaces, &repos).await,
+            read_ticket_brief_inner(&repo.id, "ticket-1", "user-b", &workspaces, &repos, &_dir.path().join("app-data")).await,
             Err(TicketCmdError::Store(StoreError::NotFound))
         ));
         assert!(matches!(
@@ -283,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_ticket_under_owned_repo_is_an_empty_brief() {
         let (repos, workspaces, repo, _dir) = setup().await;
-        let brief = read_ticket_brief_inner(&repo.id, "never-scaffolded", "user-a", &workspaces, &repos)
+        let brief = read_ticket_brief_inner(&repo.id, "never-scaffolded", "user-a", &workspaces, &repos, &_dir.path().join("app-data"))
             .await
             .unwrap();
         assert_eq!(brief.ticket_id, "never-scaffolded");

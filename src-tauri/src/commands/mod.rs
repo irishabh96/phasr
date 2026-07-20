@@ -13,4 +13,5 @@ pub mod run_commands;
 pub mod session_terminal;
 pub mod settings;
 pub mod tickets;
+pub mod worklist;
 pub mod workspaces;
