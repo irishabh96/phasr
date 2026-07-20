@@ -1,16 +1,26 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
+  Check,
+  Eye,
   FolderGit2,
+  GitMerge,
   LogOut,
   Palette,
   Plus,
+  Rocket,
   Search,
   Settings,
+  ShieldCheck,
+  Undo2,
   UserCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useGateCommands, type GateCommand } from "@/components/board/useGateCommands";
 import { StatusDot } from "@/components/ui/StatusDot";
+import { useWorkspace } from "@/lib/hooks/useWorkspaces";
+import type { GateVerb } from "@/lib/deriveNextGate";
+import { cn } from "@/lib/utils";
 import {
   ITEM_CLS,
   PALETTE_DIALOG_CLS,
@@ -47,8 +57,12 @@ export function CommandPalette() {
   const { setTheme } = useUiStore();
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const navigateToRepoEntry = useNavigateToRepoEntry();
+  const activeContext = useUiStore((s) => s.activeWorkspaceContext);
 
   const { data: repositories } = useRepositories();
+  // The contextual ticket/epic for the Commands group — deduped with the
+  // workspace detail route's own `useWorkspace`, so this adds no extra IPC.
+  const { data: contextWorkspace } = useWorkspace(activeContext?.workspaceId);
 
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
 
@@ -100,6 +114,17 @@ export function CommandPalette() {
     fn();
   };
 
+  // The gate Commands group (G2) — the human mirror of the `phasr` CLI verbs for
+  // the contextual ticket/epic. Reuses the SAME `deriveNextGate` ladder + the
+  // SAME `tauri.ts` mutations as the NextGateButton; owns its own confirm/
+  // comment/merge dialogs (rendered at a STABLE mount below, outside the palette
+  // dialog, so they survive the palette closing on select).
+  const gate = useGateCommands({
+    workspace: contextWorkspace,
+    active: open,
+    onDispatch: close,
+  });
+
   const recentWorkspaces = useMemo(
     () =>
       workspaces.slice().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
@@ -107,6 +132,7 @@ export function CommandPalette() {
   );
 
   return (
+    <>
     <Command.Dialog
       open={open}
       onOpenChange={(o) => (o ? openPalette() : close())}
@@ -131,6 +157,17 @@ export function CommandPalette() {
             <Command.Empty className="px-3 py-6 text-center text-[13px] text-(--color-text-muted)">
               No matches.
             </Command.Empty>
+
+            {gate.hasContext && gate.commands.length > 0 && (
+              <PaletteGroup heading="Commands">
+                {gate.commands.map((cmd) => (
+                  <GateCommandItem
+                    key={`${cmd.scope}-${cmd.verb}`}
+                    cmd={cmd}
+                  />
+                ))}
+              </PaletteGroup>
+            )}
 
             {recentWorkspaces.length > 0 && (
               <PaletteGroup heading="Workspaces">
@@ -261,6 +298,54 @@ export function CommandPalette() {
         </div>
       </div>
     </Command.Dialog>
+    {gate.dialogs}
+    </>
+  );
+}
+
+const GATE_ICON: Record<GateVerb, typeof Check> = {
+  start: ShieldCheck,
+  validate: ShieldCheck,
+  "request-review": Eye,
+  approve: Check,
+  bounce: Undo2,
+  integrate: GitMerge,
+  ship: Rocket,
+};
+
+/**
+ * One gate command row (G2). Neutral by doctrine — only honest status carries
+ * semantic color, never a verb. A disabled command is NEVER hidden: it renders
+ * muted with its `reason` inline + as `title` (+ `aria-disabled`), the ⌘K mirror
+ * of the NextGateButton's disabled-with-reason gate.
+ */
+function GateCommandItem({ cmd }: { cmd: GateCommand }) {
+  const Icon = GATE_ICON[cmd.verb];
+  return (
+    <Command.Item
+      data-testid={`gate-command-${cmd.verb}`}
+      data-gate-enabled={cmd.enabled}
+      value={`command gate ${cmd.label} ${cmd.keywords}`}
+      disabled={!cmd.enabled}
+      onSelect={() => {
+        if (cmd.enabled) cmd.select();
+      }}
+      className={cn(ITEM_CLS, !cmd.enabled && "opacity-55")}
+      {...(cmd.reason ? { title: cmd.reason } : {})}
+    >
+      <Icon size={15} className="shrink-0 text-(--color-text-secondary)" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[15px]">{cmd.label}</div>
+        <div className="truncate text-[11.5px] text-(--color-text-muted)">
+          {cmd.enabled ? cmd.description : cmd.reason}
+        </div>
+      </div>
+      {cmd.confirm && cmd.enabled ? (
+        <span className="shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-(--color-text-muted)">
+          Confirm
+        </span>
+      ) : null}
+    </Command.Item>
   );
 }
 

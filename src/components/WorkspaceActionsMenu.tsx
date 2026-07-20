@@ -2,16 +2,23 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Archive,
+  Check,
   ChevronDown,
+  Eye,
   GitMerge,
   GitPullRequest,
   MoreHorizontal,
+  Rocket,
+  ShieldCheck,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
+import { useGateCommands } from "@/components/board/useGateCommands";
 import { ConfirmDialog, ErrorDialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
+import type { GateVerb } from "@/lib/deriveNextGate";
 import { useGitBranchStatus } from "@/lib/hooks/useGit";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import {
@@ -59,6 +66,17 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // The gate verbs as context-menu items (G3) — the same `deriveNextGate` ladder
+  // + `tauri.ts` mutations as the ⌘K Commands group and the NextGateButton.
+  // Promotes Ship out of the overflow into a first-class, ConfirmDialog-guarded
+  // action (R7). `dialogs` (confirm / bounce / MergeToMainDialog) render at this
+  // component's stable mount, so they survive the menu closing on select.
+  const gate = useGateCommands({
+    workspace,
+    active: open,
+    onDispatch: () => setOpen(false),
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -179,6 +197,24 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         {open && (
           <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
             <ul className="p-1 text-[12.5px]">
+              {gate.hasContext && gate.commands.length > 0 && (
+                <>
+                  {gate.commands.map((cmd) => (
+                    <MenuItem
+                      key={`${cmd.scope}-${cmd.verb}`}
+                      icon={<GateMenuIcon verb={cmd.verb} />}
+                      label={cmd.label}
+                      onClick={cmd.select}
+                      disabled={!cmd.enabled}
+                      {...(cmd.reason ? { title: cmd.reason } : {})}
+                    />
+                  ))}
+                  <li
+                    className="my-1 h-px bg-(--glass-border-hairline)"
+                    aria-hidden
+                  />
+                </>
+              )}
               {canMergeToMain && (
                 <MenuItem
                   icon={<GitMerge size={12} />}
@@ -251,8 +287,26 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         open={mergeOpen}
         onClose={() => setMergeOpen(false)}
       />
+
+      {gate.dialogs}
     </>
   );
+}
+
+const GATE_MENU_ICON: Record<GateVerb, typeof Check> = {
+  start: ShieldCheck,
+  validate: ShieldCheck,
+  "request-review": Eye,
+  approve: Check,
+  bounce: Undo2,
+  integrate: GitMerge,
+  ship: Rocket,
+};
+
+/** Neutral gate glyph for the ⋯ menu (only status carries color, never a verb). */
+function GateMenuIcon({ verb }: { verb: GateVerb }) {
+  const Icon = GATE_MENU_ICON[verb];
+  return <Icon size={12} />;
 }
 
 function MenuItem({

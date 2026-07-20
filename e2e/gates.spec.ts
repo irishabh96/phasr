@@ -392,4 +392,40 @@ test.describe("gate flows + live invalidation (real app)", () => {
     expect(await countCalls(page, "get_board")).toBe(0);
     expect(await countCalls(page, "get_board_gates")).toBe(0);
   });
+
+  // ── G2: the ⌘K Commands group mirrors the CLI verbs for the open ticket ────
+  test("⌘K Commands group advances a selected ticket's gate (Validate → validate_ticket)", async ({
+    page,
+  }) => {
+    // Sit on a subtask detail page so the palette has a ticket/epic context
+    // (activeWorkspaceContext = the open subtask → deriveNextGate ladder).
+    await bootApp(page);
+    await page.goto("/repositories/repo-1/workspaces/epic-1-backend");
+    await expect(page).toHaveURL(/epic-1-backend/, { timeout: 20_000 });
+    // Let the route + global ⌘K handler mount before driving the keyboard
+    // (mirrors ops.spec's palette-open test).
+    await page.waitForTimeout(800);
+
+    await page.keyboard.press("Meta+k");
+    await expect(page.locator("[cmdk-root]").first()).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // The backend ticket (running, checks configured, not yet validated) → the
+    // one enabled gate is Validate; Request review is disabled-with-reason,
+    // never hidden — the ⌘K mirror of the NextGateButton's ladder.
+    const validate = page.getByTestId("gate-command-validate");
+    await expect(validate).toBeVisible({ timeout: 5_000 });
+    await expect(validate).toHaveAttribute("data-gate-enabled", "true");
+    await expect(page.getByTestId("gate-command-request-review")).toHaveAttribute(
+      "data-gate-enabled",
+      "false",
+    );
+
+    // Selecting it fires the SAME validate_ticket mutation the board card does.
+    await validate.click();
+    await expect
+      .poll(() => countCalls(page, "validate_ticket"))
+      .toBeGreaterThanOrEqual(1);
+  });
 });
