@@ -952,6 +952,63 @@ fn append_jsonl_line(path: &Path, line: &str) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
+// ── Phase 3 gate files (validate.json / review.json) ─────────────────────────
+
+/// The two Phase-3 gate files that live in the ticket folder. A typed enum on the
+/// call side (never a caller-supplied file name), so — exactly like `BriefSection`
+/// — a traversal string can never reach the fs. Both are docs-as-files: versioned,
+/// agent-readable, and they ride in the PR once committed (spec D7 / §R6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateFile {
+    /// `validate.json` — the captured Validate run result (V1).
+    Validate,
+    /// `review.json` — the Review/QAS decision (R1).
+    Review,
+}
+
+impl GateFile {
+    fn file_name(self) -> &'static str {
+        match self {
+            GateFile::Validate => "validate.json",
+            GateFile::Review => "review.json",
+        }
+    }
+}
+
+/// Write a gate file into `<repo>/.phasr/tickets/<ticketId>/`, atomically
+/// (tmp-then-rename, so a reader/watcher never sees a partial file) AND recording
+/// the bytes in the shared `TicketWriteRegistry` so T7's watcher suppresses the
+/// own-write echo (architect #2 — mirrors `write_section`). Creates the ticket dir
+/// on write for a not-yet-scaffolded ticket. Traversal-safe via `ticket_dir`.
+pub fn write_gate_file(
+    registry: &TicketWriteRegistry,
+    repo_root: &Path,
+    ticket_id: &str,
+    gate: GateFile,
+    bytes: &[u8],
+) -> Result<(), TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(gate.file_name());
+    // Record BEFORE the rename: the watcher can fire the instant the rename lands,
+    // so the hash must already be recorded to drop the phantom "changed on disk".
+    registry.record(&path, bytes);
+    write_atomic(&path, bytes)?;
+    Ok(())
+}
+
+/// Read a gate file's raw JSON, or `None` when it does not exist yet (never an
+/// error for a missing file — a ticket that was never validated/reviewed simply
+/// has no gate). Traversal-safe. The caller deserializes into the typed record.
+pub fn read_gate_file(
+    repo_root: &Path,
+    ticket_id: &str,
+    gate: GateFile,
+) -> Result<Option<String>, TicketError> {
+    let dir = ticket_dir(repo_root, ticket_id)?;
+    Ok(read_file_opt(&dir.join(gate.file_name()))?.map(|(content, _)| content))
+}
+
 // ── ticket.md H1/body split ──────────────────────────────────────────────────
 
 /// Split `ticket.md` into `(title, body)`: the first `# ` line is the title, the

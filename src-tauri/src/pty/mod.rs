@@ -22,3 +22,8 @@ mod shell;
 
 pub use handle::PtyEvent;
 pub use runtime::TaskRuntime;
+// The captured Validate runner (orchestrator::validate) reuses the terminal's
+// macOS PATH-augmentation logic so a Finder-launched `.app` — which inherits a
+// minimal PATH — can still resolve `pnpm`/`node`/etc. in a `sh -c` check
+// (architect §R3). Same shaping the interactive terminal already uses.
+pub(crate) use shell::terminal_env;

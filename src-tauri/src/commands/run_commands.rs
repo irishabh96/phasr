@@ -54,6 +54,7 @@ pub struct CreateRunCommandInput {
     pub command: String,
     pub shortcut: Option<String>,
     pub pinned: Option<bool>,
+    pub run_in_validate: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -63,6 +64,7 @@ pub struct UpdateRunCommandInput {
     pub command: Option<String>,
     pub shortcut: Option<String>,
     pub pinned: Option<bool>,
+    pub run_in_validate: Option<bool>,
     pub sort_order: Option<i64>,
 }
 
@@ -93,6 +95,7 @@ pub async fn create_run_command(
     let mut rc = RunCommand::new(input.repository_id, input.name, input.command);
     rc.shortcut = input.shortcut;
     rc.pinned = input.pinned.unwrap_or(false);
+    rc.run_in_validate = input.run_in_validate.unwrap_or(false);
     repo.insert_for_user(&rc, &current_session.user_id).await?;
     sync_state.request_sync();
     Ok(rc)
@@ -124,6 +127,7 @@ pub async fn update_run_command(
         command: input.command,
         shortcut: input.shortcut.map(Some),
         pinned: input.pinned,
+        run_in_validate: input.run_in_validate,
         sort_order: input.sort_order,
     };
     let run_command = repo.update(&id, patch).await?;
@@ -165,6 +169,10 @@ pub async fn upsert_run_command_from_cloud(
         command: input.command,
         shortcut: input.shortcut,
         pinned: input.pinned,
+        // `run_in_validate` is a LOCAL-only flag (never in the cloud column set),
+        // so a cloud upsert can't carry or reset it — default off; the store's
+        // `upsert_from_cloud` omits the column so a local toggle is preserved.
+        run_in_validate: false,
         sort_order: input.sort_order,
         created_at: input.created_at,
         updated_at: input.updated_at,

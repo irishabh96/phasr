@@ -6,6 +6,7 @@
 //! errors and a handful of value types. Tauri command handlers live
 //! in `crate::commands::orchestrator` and forward straight through.
 
+mod board_events;
 mod error;
 mod liveness;
 mod planner;
@@ -13,8 +14,21 @@ mod repo_locks;
 mod scheduler;
 mod service;
 mod templating;
+mod validate;
 
+// The board-refresh seam (architect §R1/§R2): a Tauri-agnostic broadcast a board
+// mutation calls `notify(parent_id)` on; the command layer bridges it to
+// `phasr://board-changed`. Shared so the future CLI IPC server emits through the
+// same channel. `BoardChangedEvent` is re-exported so `BoardEventBus::subscribe`'s
+// return type stays publicly nameable (not yet named internally).
+#[allow(unused_imports)]
+pub use board_events::{BoardChangedEvent, BoardEventBus};
 pub use error::OrchestratorError;
+// The captured, per-worktree Validate runner (V1) + its DTOs. Reused by
+// `commands::validate`; the DTOs round-trip through `validate.json`. `ValidateCheck`
+// is re-exported so `ValidateResult.checks`'s element type stays publicly nameable.
+#[allow(unused_imports)]
+pub use validate::{run_validate, ValidateCheck, ValidateConfig, ValidateResult};
 // The planner is a captured, read-only `claude` one-shot that drafts a
 // decomposition (goal → validated `{subtasks, edges}`); `commands::planner`
 // wraps it. It persists nothing — the draft lives in the frontend until the

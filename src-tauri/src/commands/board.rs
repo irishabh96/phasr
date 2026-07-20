@@ -16,14 +16,55 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::broadcast;
 
 use crate::auth::{AuthError, SessionState};
 use crate::domain::{Agent, Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceKind};
 use crate::git::{self, FileChange, GitError, MergeOutcome, MergeStrategy};
-use crate::orchestrator::{contract_file_is_ready, RepoLockRegistry, SchedulerConfig};
+use crate::orchestrator::{
+    contract_file_is_ready, BoardEventBus, RepoLockRegistry, SchedulerConfig,
+};
 use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
+
+/// Tauri event name on which a board/gate mutation announces the affected board
+/// (architect §R1/§R2). The FE invalidates the board query for `{ parentId }`,
+/// which surfaces a lane move — and a brand-NEW sibling — live, without a manual
+/// refresh. Mirror of `commands::orchestrator::TASK_STATUS_EVENT`.
+pub const BOARD_CHANGED_EVENT: &str = "phasr://board-changed";
+
+/// The `phasr://board-changed` wire payload: just the parent id (camelCase).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardChangedPayload {
+    parent_id: String,
+}
+
+/// Subscribe to the board-refresh bus and re-emit each event onto the Tauri bus
+/// as `phasr://board-changed`. Call once at app startup (mirror of
+/// `commands::orchestrator::spawn_status_bridge`). The bus is shared managed
+/// state, so the future CLI IPC server emits through the SAME channel and its
+/// mutations reach the open board identically.
+pub fn spawn_board_event_bridge(bus: std::sync::Arc<BoardEventBus>, app: AppHandle) {
+    let mut rx = bus.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let _ = app.emit(
+                        BOARD_CHANGED_EVENT,
+                        BoardChangedPayload {
+                            parent_id: event.parent_id,
+                        },
+                    );
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
 
 // ── request / response shapes (the frozen §C wire contract) ─────────────────
 
@@ -251,6 +292,7 @@ pub async fn publish_contract(
     board: State<'_, BoardRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
+    board_events: State<'_, Arc<BoardEventBus>>,
 ) -> Result<BoardState, BoardCmdError> {
     let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
     // Production writes to the real `~/.phasr/tasks/<parent>/contracts/<role>.md`
@@ -265,6 +307,10 @@ pub async fn publish_contract(
     // no-op for the cloud — but we stay consistent with the sibling mutating
     // board command (`start_decomposition`).
     sync_state.request_sync();
+    // Announce the change so an open board moves live even when the mutation was
+    // driven from elsewhere (architect §R1): the dependent unblocks on the next
+    // scheduler tick, and the FE re-fetches on this event.
+    board_events.notify(&assembled.parent.id);
     Ok(assembled.into())
 }
 
@@ -291,6 +337,7 @@ pub async fn integrate_parent(
     repo_locks: State<'_, Arc<RepoLockRegistry>>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
+    board_events: State<'_, Arc<BoardEventBus>>,
 ) -> Result<BoardState, BoardCmdError> {
     let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
     let assembled = integrate_parent_inner(
@@ -306,6 +353,8 @@ pub async fn integrate_parent(
     // The parent row's branch/worktree_path just changed; keep the sibling
     // convention even though board rows never push (spec claim #11).
     sync_state.request_sync();
+    // Move the open board live on a clean integration (architect §R1).
+    board_events.notify(&parent_id);
     Ok(assembled.into())
 }
 
@@ -417,7 +466,11 @@ async fn resolve_integration_range(
 /// The gate's orchestration, minus session/lock/sync wiring, so it can be
 /// exercised directly against real repos in tests. Validates, builds the rows,
 /// writes them atomically, and reads the board back owner-scoped.
-async fn create_decomposition_inner(
+///
+/// `pub(crate)` so sibling command tests (e.g. `commands::review`) can stand up a
+/// real board to exercise the gate writers against; also the `_inner` the CLI IPC
+/// server's `new-ticket` verb will reuse (architect).
+pub(crate) async fn create_decomposition_inner(
     input: &DecompositionInput,
     user_id: &str,
     workspaces: &WorkspaceRepo,
@@ -682,7 +735,12 @@ fn non_empty_prompt(prompt: &str) -> Option<String> {
 /// (the production command uses `SchedulerConfig::default()` = the real
 /// `~/.phasr/tasks`). Owner-scoped: reads the subtask through `get_for_user` so
 /// one account can never publish another's subtask.
-async fn publish_contract_inner(
+///
+/// `pub(crate)` so `commands::review::request_review` can COMPOSE it: for a
+/// producer subtask, requesting review must ALSO publish the handoff contract so
+/// dependents still unblock (spec A5). Same `_inner` the CLI IPC server will
+/// reuse (architect: "_inner handlers need only pub(crate)").
+pub(crate) async fn publish_contract_inner(
     subtask_id: &str,
     user_id: &str,
     workspaces: &WorkspaceRepo,

@@ -12,6 +12,7 @@ pub struct RunCommandUpdate {
     pub command: Option<String>,
     pub shortcut: Option<Option<String>>,
     pub pinned: Option<bool>,
+    pub run_in_validate: Option<bool>,
     pub sort_order: Option<i64>,
 }
 
@@ -41,9 +42,9 @@ impl RunCommandRepo {
     ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO run_commands (
-                id, user_id, repository_id, name, command, shortcut, pinned, sort_order,
-                created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+                id, user_id, repository_id, name, command, shortcut, pinned, run_in_validate,
+                sort_order, created_at, updated_at, synced_at, dirty
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&rc.id)
         .bind(user_id)
@@ -52,6 +53,7 @@ impl RunCommandRepo {
         .bind(&rc.command)
         .bind(&rc.shortcut)
         .bind(rc.pinned as i64)
+        .bind(rc.run_in_validate as i64)
         .bind(rc.sort_order)
         .bind(rc.created_at.to_rfc3339())
         .bind(rc.updated_at.to_rfc3339())
@@ -119,8 +121,8 @@ impl RunCommandRepo {
         repository_id: &str,
     ) -> Result<Vec<RunCommand>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
-                    created_at, updated_at
+            "SELECT id, repository_id, name, command, shortcut, pinned, run_in_validate,
+                    sort_order, created_at, updated_at
              FROM run_commands
              WHERE repository_id = ?
              ORDER BY sort_order ASC, name ASC",
@@ -139,8 +141,8 @@ impl RunCommandRepo {
         user_id: &str,
     ) -> Result<Vec<RunCommand>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
-                    created_at, updated_at
+            "SELECT id, repository_id, name, command, shortcut, pinned, run_in_validate,
+                    sort_order, created_at, updated_at
              FROM run_commands
              WHERE repository_id = ? AND user_id = ?
              ORDER BY sort_order ASC, name ASC",
@@ -154,8 +156,8 @@ impl RunCommandRepo {
 
     pub async fn get(&self, id: &str) -> Result<RunCommand, StoreError> {
         let row = sqlx::query(
-            "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
-                    created_at, updated_at
+            "SELECT id, repository_id, name, command, shortcut, pinned, run_in_validate,
+                    sort_order, created_at, updated_at
              FROM run_commands
              WHERE id = ?",
         )
@@ -186,6 +188,9 @@ impl RunCommandRepo {
         if let Some(pinned) = patch.pinned {
             current.pinned = pinned;
         }
+        if let Some(run_in_validate) = patch.run_in_validate {
+            current.run_in_validate = run_in_validate;
+        }
         if let Some(sort_order) = patch.sort_order {
             current.sort_order = sort_order;
         }
@@ -193,14 +198,15 @@ impl RunCommandRepo {
 
         sqlx::query(
             "UPDATE run_commands SET
-                name = ?, command = ?, shortcut = ?, pinned = ?, sort_order = ?,
-                updated_at = ?, dirty = 1
+                name = ?, command = ?, shortcut = ?, pinned = ?, run_in_validate = ?,
+                sort_order = ?, updated_at = ?, dirty = 1
              WHERE id = ?",
         )
         .bind(&current.name)
         .bind(&current.command)
         .bind(&current.shortcut)
         .bind(current.pinned as i64)
+        .bind(current.run_in_validate as i64)
         .bind(current.sort_order)
         .bind(current.updated_at.to_rfc3339())
         .bind(id)
@@ -229,6 +235,7 @@ fn row_to_run_command(row: &sqlx::sqlite::SqliteRow) -> Result<RunCommand, Store
         command: row.try_get("command")?,
         shortcut: row.try_get("shortcut")?,
         pinned: row.try_get::<i64, _>("pinned")? != 0,
+        run_in_validate: row.try_get::<i64, _>("run_in_validate")? != 0,
         sort_order: row.try_get("sort_order")?,
         created_at: parse_timestamp(row.try_get::<String, _>("created_at")?, "created_at")?,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,

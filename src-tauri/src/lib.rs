@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use auth::SessionState;
 use domain::WorkspaceStatus;
-use orchestrator::{RepoLockRegistry, TaskOrchestrator};
+use orchestrator::{BoardEventBus, RepoLockRegistry, TaskOrchestrator};
 use pty::TaskRuntime;
 use store::{
     default_db_path, init_pool, BoardRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
@@ -187,6 +187,12 @@ pub fn run() {
             commands::board::integrate_parent,
             commands::board::board_integration_diff,
             commands::board::board_integration_file_diff,
+            commands::validate::validate_ticket,
+            commands::validate::get_validate_result,
+            commands::review::request_review,
+            commands::review::resolve_review,
+            commands::review::get_review,
+            commands::review::get_board_gates,
             commands::tickets::read_ticket_brief,
             commands::tickets::write_ticket_section,
             commands::tickets::list_ticket_assets,
@@ -269,6 +275,13 @@ async fn initialize_database_state(
         repo_locks.clone(),
     );
     commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+    // Board-refresh seam (architect §R1/§R2): a board/gate mutation calls
+    // `notify(parent_id)` on this bus; the bridge re-emits `phasr://board-changed`
+    // so an open board moves live — even when the mutation was driven from
+    // elsewhere (a gate writer, or the future `phasr` CLI IPC server, which gets a
+    // clone of this same bus).
+    let board_events = Arc::new(BoardEventBus::new());
+    commands::board::spawn_board_event_bridge(board_events.clone(), handle.clone());
     // Honest status (E0-T3): one background poller derives Working/Idle/Wedged
     // from each running agent's in-memory activity stamp and pushes only
     // transitions onto the same `phasr://task-status` bridge above.
@@ -289,6 +302,7 @@ async fn initialize_database_state(
     handle.manage(pool);
     handle.manage(repo_locks);
     handle.manage(orchestrator);
+    handle.manage(board_events);
 
     Ok(())
 }

@@ -1,0 +1,12 @@
+-- Phase 3 (V1): opt a run command into the captured Validate runner.
+--
+-- A `RunCommand` marked `run_in_validate` is executed as a captured, per-worktree
+-- subprocess by `validate_ticket` (exit code + tail output), NOT the interactive
+-- PTY run-command executor. Default 0 (off) — running EVERY pinned command as a
+-- check is wrong (a dev server never exits), so the user opts specific
+-- lint/test/typecheck commands in explicitly (spec J2).
+--
+-- Local-only: the cloud sync push/pull column set is untouched, so this flag
+-- never leaves the machine and a cloud pull never resets a locally-toggled check
+-- (the Validate gate is a local, on-disk concern — architect §R5/gates-as-files).
+ALTER TABLE run_commands ADD COLUMN run_in_validate INTEGER NOT NULL DEFAULT 0;
