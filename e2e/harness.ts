@@ -424,6 +424,7 @@ export function makeFixtures() {
       command: "pnpm dev",
       shortcut: "1",
       pinned: true,
+      runInValidate: false,
       sortOrder: 0,
       createdAt: NOW,
       updatedAt: NOW,
@@ -435,15 +436,38 @@ export function makeFixtures() {
       command: "pnpm test",
       shortcut: null,
       pinned: false,
+      // A Validate check (Phase 3) — so `checksConfigured` is true for repo-1.
+      runInValidate: true,
       sortOrder: 1,
       createdAt: NOW,
       updatedAt: NOW,
     },
   ];
   const gitStatus = [
-    { path: "src/app.ts", oldPath: null, staged: "other", unstaged: "modified", adds: 12, removes: 3 },
-    { path: "src/new.ts", oldPath: null, staged: "added", unstaged: "other", adds: 40, removes: 0 },
-    { path: "README.md", oldPath: null, staged: "other", unstaged: "modified", adds: 1, removes: 1 },
+    {
+      path: "src/app.ts",
+      oldPath: null,
+      staged: "other",
+      unstaged: "modified",
+      adds: 12,
+      removes: 3,
+    },
+    {
+      path: "src/new.ts",
+      oldPath: null,
+      staged: "added",
+      unstaged: "other",
+      adds: 40,
+      removes: 0,
+    },
+    {
+      path: "README.md",
+      oldPath: null,
+      staged: "other",
+      unstaged: "modified",
+      adds: 1,
+      removes: 1,
+    },
   ];
   const branchStatus = {
     branch: "phasr/add-feature",
@@ -492,9 +516,10 @@ export function makeFixtures() {
     // Returning-user restore: seed the last-open workspace so `/` restores it
     // (the muscle-memory path, open decision #5). A worklist test that wants the
     // new-user `/worklist` fallback sets `fixtures.lastWorkspace = null`.
-    lastWorkspace: { repositoryId: "repo-1", workspaceId: "ws-agent" } as
-      | { repositoryId: string; workspaceId: string }
-      | null,
+    lastWorkspace: { repositoryId: "repo-1", workspaceId: "ws-agent" } as {
+      repositoryId: string;
+      workspaceId: string;
+    } | null,
     repositories,
     workspaces,
     worklist,
@@ -513,11 +538,17 @@ export function makeFixtures() {
 // Runs INSIDE the browser (serialized) — must be self-contained.
 function installMock(cfg: ReturnType<typeof makeFixtures>) {
   const f = cfg;
-  localStorage.setItem("phasr.auth.desktopSession", JSON.stringify(f.session.desktopSession));
+  localStorage.setItem(
+    "phasr.auth.desktopSession",
+    JSON.stringify(f.session.desktopSession),
+  );
   // Seed the last-open workspace so `/` restores it on boot (returning-user
   // path). Cleared to `null` by tests that exercise the `/worklist` fallback.
   if (f.lastWorkspace) {
-    localStorage.setItem("phasr.lastWorkspace", JSON.stringify(f.lastWorkspace));
+    localStorage.setItem(
+      "phasr.lastWorkspace",
+      JSON.stringify(f.lastWorkspace),
+    );
   }
 
   const listeners: Record<string, Array<(e: unknown) => void>> = {};
@@ -525,7 +556,9 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   const calls: Array<{ cmd: string; args: unknown }> = [];
   // Seed overrides at boot (e.g. make open_task_terminal reject from the very
   // first mount) via fixtures.overrides — set before any command fires.
-  const overrides: Record<string, unknown> = { ...((f as any).overrides ?? {}) };
+  const overrides: Record<string, unknown> = {
+    ...((f as any).overrides ?? {}),
+  };
 
   // A minimal but valid multi-agent BoardState (parent + backend→frontend
   // subtasks + one edge) so the "New epic" entry point renders end-to-end:
@@ -553,6 +586,16 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     updatedAt: f.now,
     ...over,
   });
+  // ── Phase 3 gate state (mutable) ─────────────────────────────────────────
+  // `review.json` / `validate.json` per subtask, mutated by the gate commands
+  // so a subsequent get_board_gates reflects a live change (the FE invalidates
+  // the gate side-load after each mutation). Keyed by subtask id; the parent id
+  // is the subtask id minus its trailing role segment (makeBoard's convention).
+  const reviewsBySubtask: Record<string, unknown> = {};
+  const validationsBySubtask: Record<string, unknown> = {};
+  const parentOf = (subtaskId: string) =>
+    subtaskId.replace(/-(backend|frontend|docs|qa)$/, "");
+
   const makeBoard = (parentId: string) => ({
     parent: boardWs({
       id: parentId,
@@ -593,18 +636,28 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
 
   const RESP = (cmd: string, a: any): unknown => {
     switch (cmd) {
-      case "consume_pending_auth_callback": return null;
-      case "set_session": return f.session.userId;
+      case "consume_pending_auth_callback":
+        return null;
+      case "set_session":
+        return f.session.userId;
       case "start_cloud_sync":
       case "stop_cloud_sync":
-      case "clear_session": return null;
-      case "list_repositories": return f.repositories;
-      case "get_repository": return f.repositories.find((r) => r.id === a?.id) ?? null;
-      case "list_workspaces": return f.workspaces.filter((w) => w.repositoryId === a?.repositoryId);
-      case "list_worklist": return f.worklist;
+      case "clear_session":
+        return null;
+      case "list_repositories":
+        return f.repositories;
+      case "get_repository":
+        return f.repositories.find((r) => r.id === a?.id) ?? null;
+      case "list_workspaces":
+        return f.workspaces.filter((w) => w.repositoryId === a?.repositoryId);
+      case "list_worklist":
+        return f.worklist;
       // ── Phase 2 tickets / brief (§C.1) ─────────────────────────────────
       case "read_ticket_brief":
-        return { ...f.ticketBrief, ticketId: a?.ticketId ?? f.ticketBrief.ticketId };
+        return {
+          ...f.ticketBrief,
+          ticketId: a?.ticketId ?? f.ticketBrief.ticketId,
+        };
       case "write_ticket_section":
         // Echo a `saved` result with a bumped mtime (the FE adopts it as the new
         // base). The conflict path is exercised by a test via `setResponse`.
@@ -617,9 +670,12 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
             lastEditedAtMs: Date.parse(f.now),
           },
         };
-      case "list_ticket_assets": return f.ticketBrief.assets;
+      case "list_ticket_assets":
+        return f.ticketBrief.assets;
       case "add_ticket_asset": {
-        const name = String(a?.sourcePath ?? "dropped.png").split(/[/\\]/).pop();
+        const name = String(a?.sourcePath ?? "dropped.png")
+          .split(/[/\\]/)
+          .pop();
         return {
           id: `asset-${name}`,
           name,
@@ -630,7 +686,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
           addedAtMs: Date.parse(f.now),
         };
       }
-      case "remove_ticket_asset": return null;
+      case "remove_ticket_asset":
+        return null;
       case "add_ticket_figma_link":
         return {
           id: "figma-new",
@@ -639,8 +696,10 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
           addedBy: "you",
           addedAtMs: Date.parse(f.now),
         };
-      case "remove_ticket_figma_link": return null;
-      case "list_ticket_comments": return f.ticketComments;
+      case "remove_ticket_figma_link":
+        return null;
+      case "list_ticket_comments":
+        return f.ticketComments;
       case "add_ticket_comment":
         return {
           id: "comment-new",
@@ -651,43 +710,75 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
           createdAtMs: Date.parse(f.now),
         };
       case "watch_ticket":
-      case "unwatch_ticket": return null;
+      case "unwatch_ticket":
+        return null;
       case "get_workspace": {
         const w = f.workspaces.find((x) => x.id === a?.id);
         return w ?? { __reject: "not found" };
       }
-      case "list_agents": return f.agents;
-      case "get_user_settings": return f.userSettings;
-      case "update_user_settings": return f.userSettings;
-      case "list_run_commands": return f.runCommands.filter((r) => r.repositoryId === a?.repositoryId);
+      case "list_agents":
+        return f.agents;
+      case "get_user_settings":
+        return f.userSettings;
+      case "update_user_settings":
+        return f.userSettings;
+      case "list_run_commands":
+        return f.runCommands.filter((r) => r.repositoryId === a?.repositoryId);
       case "create_run_command":
-      case "update_run_command": return { ...f.runCommands[0], ...a, id: a?.id ?? "rc-new" };
-      case "delete_run_command": return null;
-      case "git_status": return f.gitStatus;
-      case "git_branch_status": return f.branchStatus;
-      case "git_merge_in_progress": return { kind: "none" };
-      case "git_diff": return f.sampleDiff;
-      case "git_log": return f.commits;
-      case "git_commit_files": return [{ path: "src/app.ts", oldPath: null, status: "modified" }];
-      case "git_commit_diff": return f.sampleDiff;
+      case "update_run_command":
+        return { ...f.runCommands[0], ...a, id: a?.id ?? "rc-new" };
+      case "delete_run_command":
+        return null;
+      case "git_status":
+        return f.gitStatus;
+      case "git_branch_status":
+        return f.branchStatus;
+      case "git_merge_in_progress":
+        return { kind: "none" };
+      case "git_diff":
+        return f.sampleDiff;
+      case "git_log":
+        return f.commits;
+      case "git_commit_files":
+        return [{ path: "src/app.ts", oldPath: null, status: "modified" }];
+      case "git_commit_diff":
+        return f.sampleDiff;
       case "watch_workspace":
-      case "unwatch_workspace": return null;
+      case "unwatch_workspace":
+        return null;
       case "git_stage":
       case "git_unstage":
       case "git_discard":
       case "git_resolve_conflict":
       case "git_continue_merge":
       case "git_abort_merge":
-      case "git_fetch": return null;
-      case "git_commit": return { sha: "c".repeat(40), message: a?.message ?? "commit" };
-      case "git_push": return { branch: f.branchStatus.branch, pullRequestUrl: "https://github.com/acme/phasr/compare/main...phasr/add-feature", provider: "github" };
+      case "git_fetch":
+        return null;
+      case "git_commit":
+        return { sha: "c".repeat(40), message: a?.message ?? "commit" };
+      case "git_push":
+        return {
+          branch: f.branchStatus.branch,
+          pullRequestUrl:
+            "https://github.com/acme/phasr/compare/main...phasr/add-feature",
+          provider: "github",
+        };
       case "git_merge_to_main":
-      case "git_sync_with_main": return { kind: "clean", message: "Merged cleanly" };
-      case "open_pull_request": return { url: "https://github.com/acme/phasr/pull/1", provider: "github", headBranch: "phasr/add-feature", baseBranch: "main" };
-      case "check_workspace_delete": return { hasUnpushedCommits: false };
+      case "git_sync_with_main":
+        return { kind: "clean", message: "Merged cleanly" };
+      case "open_pull_request":
+        return {
+          url: "https://github.com/acme/phasr/pull/1",
+          provider: "github",
+          headBranch: "phasr/add-feature",
+          baseBranch: "main",
+        };
+      case "check_workspace_delete":
+        return { hasUnpushedCommits: false };
       case "archive_workspace":
       case "delete_workspace":
-      case "delete_repository": return null;
+      case "delete_repository":
+        return null;
       case "update_workspace": {
         // Real backend returns the updated Workspace row; the rename hook's
         // onSuccess reads workspace.repositoryId, so null would throw.
@@ -695,9 +786,21 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { ...w, ...(a?.name ? { name: a.name } : {}) };
       }
       case "create_workspace":
-        return { ...f.workspaces[0], id: "ws-created", name: a?.name ?? "new-ws", status: "stopped" };
+        return {
+          ...f.workspaces[0],
+          id: "ws-created",
+          name: a?.name ?? "new-ws",
+          status: "stopped",
+        };
       case "start_task":
-        return { taskId: "task-new", workspace: { ...f.workspaces[0], id: "ws-created", status: "running" } };
+        return {
+          taskId: "task-new",
+          workspace: {
+            ...f.workspaces[0],
+            id: "ws-created",
+            status: "running",
+          },
+        };
       case "plan_decomposition":
         // The Planner drafting step (§C): return a canned ProposedPlan the
         // review surface hydrates into editable tickets + a DAG. Persists
@@ -719,7 +822,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
             {
               role: "docs",
               agent: "gemini",
-              prompt: "Document the comments API in the reference + a short how-to.",
+              prompt:
+                "Document the comments API in the reference + a short how-to.",
             },
             {
               role: "qa",
@@ -737,10 +841,71 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return makeBoard("parent-new");
       case "get_board":
         return makeBoard(a?.parentId ?? "parent-new");
-      case "open_task_terminal": return { taskId: a?.taskId ?? "ws-agent", startedAt: f.now };
-      case "read_task_log": return "$ agent finished\r\nAll done.\r\n";
-      case "start_session_terminal": return a?.sessionId ?? "session-1";
-      case "attach_session_terminal": return null;
+      // ── Phase 3 gates (Validate + Review/QAS) ──────────────────────────
+      case "validate_ticket": {
+        const result = {
+          subtaskId: a?.subtaskId,
+          checks: [
+            {
+              name: "test",
+              command: "pnpm test",
+              passed: true,
+              exitCode: 0,
+              tailOutput: "ok",
+            },
+          ],
+          passed: true,
+          ranAtMs: Date.parse(f.now),
+        };
+        validationsBySubtask[a?.subtaskId] = result;
+        return result;
+      }
+      case "get_validate_result":
+        return validationsBySubtask[a?.subtaskId] ?? null;
+      case "request_review": {
+        reviewsBySubtask[a?.subtaskId] = {
+          subtaskId: a?.subtaskId,
+          state: "requested",
+          by: "you",
+          comment: null,
+          atMs: Date.parse(f.now),
+          validatePassed: true,
+        };
+        return makeBoard(parentOf(a?.subtaskId ?? "parent-new"));
+      }
+      case "resolve_review": {
+        reviewsBySubtask[a?.subtaskId] = {
+          subtaskId: a?.subtaskId,
+          state: a?.decision === "approve" ? "approved" : "changes-requested",
+          by: "you",
+          comment: a?.comment ?? null,
+          atMs: Date.parse(f.now),
+          validatePassed: true,
+        };
+        return makeBoard(parentOf(a?.subtaskId ?? "parent-new"));
+      }
+      case "get_review":
+        return reviewsBySubtask[a?.subtaskId] ?? null;
+      case "get_board_gates": {
+        const pid = a?.parentId ?? "parent-new";
+        const belongs = (id: string) => id.startsWith(pid);
+        return {
+          reviews: Object.entries(reviewsBySubtask)
+            .filter(([id]) => belongs(id))
+            .map(([, v]) => v),
+          validations: Object.entries(validationsBySubtask)
+            .filter(([id]) => belongs(id))
+            .map(([, v]) => v),
+        };
+      }
+      case "open_task_terminal":
+        return { taskId: a?.taskId ?? "ws-agent", startedAt: f.now };
+      case "read_task_log":
+        return "$ agent finished\r\nAll done.\r\n";
+      case "start_session_terminal":
+        return a?.sessionId ?? "session-1";
+      case "attach_session_terminal":
+        return null;
       case "send_input_to_task":
       case "send_session_input":
       case "send_run_command_input":
@@ -749,28 +914,55 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "resize_run_command":
       case "stop_session_terminal":
       case "stop_run_command":
-      case "start_run_command": return null;
-      case "list_launchers": return [
-        { id: "vscode", name: "VS Code", kind: "editor", available: true },
-        { id: "terminal", name: "Terminal", kind: "terminal", available: true },
-      ];
-      case "launch_app": return null;
-      case "list_repo_files": return ["src/app.ts", "src/new.ts", "README.md"];
-      case "list_local_branches": return ["main", "dev"];
+      case "start_run_command":
+        return null;
+      case "list_launchers":
+        return [
+          { id: "vscode", name: "VS Code", kind: "editor", available: true },
+          {
+            id: "terminal",
+            name: "Terminal",
+            kind: "terminal",
+            available: true,
+          },
+        ];
+      case "launch_app":
+        return null;
+      case "list_repo_files":
+        return ["src/app.ts", "src/new.ts", "README.md"];
+      case "list_local_branches":
+        return ["main", "dev"];
       case "validate_workspace_path":
-        return { path: a?.path ?? "/x", absolutePath: a?.path ?? "/x", exists: true, isDir: true, isGitRepo: true, message: null };
-      case "create_repository": return { ...f.repositories[0], id: "repo-new", name: a?.name ?? "new-repo" };
+        return {
+          path: a?.path ?? "/x",
+          absolutePath: a?.path ?? "/x",
+          exists: true,
+          isDir: true,
+          isGitRepo: true,
+          message: null,
+        };
+      case "create_repository":
+        return {
+          ...f.repositories[0],
+          id: "repo-new",
+          name: a?.name ?? "new-repo",
+        };
       case "git_init_repository":
       case "git_init_empty_repository":
       case "git_clone_repository":
-      case "git_init_from_template": return { ...f.repositories[0], id: "repo-new" };
+      case "git_init_from_template":
+        return { ...f.repositories[0], id: "repo-new" };
       case "register_notification_route":
-      case "activate_notification": return null;
-      default: return null;
+      case "activate_notification":
+        return null;
+      default:
+        return null;
     }
   };
 
-  (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+  (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: () => {},
+  };
   (window as any).__E2E__ = {
     calls,
     names: () => calls.map((c) => c.cmd),
@@ -778,12 +970,19 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       (listeners[event] ?? []).forEach((h) => h({ event, id: 1, payload })),
     pty: (key: string, msg: unknown) => channels[key]?.onmessage?.(msg),
     channelKeys: () => Object.keys(channels),
-    setResponse: (cmd: string, val: unknown) => { overrides[cmd] = val; },
-    clearCalls: () => { calls.length = 0; },
+    setResponse: (cmd: string, val: unknown) => {
+      overrides[cmd] = val;
+    },
+    clearCalls: () => {
+      calls.length = 0;
+    },
   };
 
   (window as any).__TAURI_INTERNALS__ = {
-    metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+    metadata: {
+      currentWindow: { label: "main" },
+      currentWebview: { label: "main" },
+    },
     transformCallback: (cb: unknown) => cb,
     convertFileSrc: (s: string) => s,
     unregisterCallback: () => {},
@@ -795,7 +994,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       if (cmd === "plugin:event|unlisten") return Promise.resolve();
       if (cmd.startsWith("plugin:")) {
         // opener/dialog/notification/etc — benign, resolve falsy
-        if (cmd.includes("is_permission_granted")) return Promise.resolve("granted");
+        if (cmd.includes("is_permission_granted"))
+          return Promise.resolve("granted");
         return Promise.resolve(null);
       }
       const chKey = args?.taskId ?? args?.id ?? args?.sessionId;
@@ -823,17 +1023,28 @@ export async function bootApp(page: Page, fixtures = makeFixtures()) {
 }
 
 export const calls = (page: Page) =>
-  page.evaluate(() => (window as any).__E2E__.calls as Array<{ cmd: string; args: any }>);
+  page.evaluate(
+    () => (window as any).__E2E__.calls as Array<{ cmd: string; args: any }>,
+  );
 export const callNames = (page: Page) =>
   page.evaluate(() => (window as any).__E2E__.names() as string[]);
 export const clearCalls = (page: Page) =>
   page.evaluate(() => (window as any).__E2E__.clearCalls());
 export const emit = (page: Page, event: string, payload: unknown) =>
-  page.evaluate(([e, p]) => (window as any).__E2E__.emit(e, p), [event, payload] as const);
+  page.evaluate(([e, p]) => (window as any).__E2E__.emit(e, p), [
+    event,
+    payload,
+  ] as const);
 export const pty = (page: Page, key: string, msg: unknown) =>
-  page.evaluate(([k, m]) => (window as any).__E2E__.pty(k, m), [key, msg] as const);
+  page.evaluate(([k, m]) => (window as any).__E2E__.pty(k, m), [
+    key,
+    msg,
+  ] as const);
 export const setResponse = (page: Page, cmd: string, val: unknown) =>
-  page.evaluate(([c, v]) => (window as any).__E2E__.setResponse(c, v), [cmd, val] as const);
+  page.evaluate(([c, v]) => (window as any).__E2E__.setResponse(c, v), [
+    cmd,
+    val,
+  ] as const);
 
 /** Wait until an invoke with the given command name has been recorded. */
 export async function waitForCall(page: Page, cmd: string, timeout = 5000) {

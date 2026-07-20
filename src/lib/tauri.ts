@@ -3,8 +3,12 @@ import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   Agent,
   AgentOption,
+  BoardGates,
   BoardState,
   BranchStatus,
+  ReviewDecision,
+  ReviewRecord,
+  ValidateResult,
   Commit,
   CommitFileChange,
   CommitOutput,
@@ -259,8 +263,7 @@ export const tauri = {
     invoke<ProposedPlan>("plan_decomposition", { repositoryId, goal }),
   startDecomposition: (input: DecompositionInput) =>
     invoke<BoardState>("start_decomposition", { input }),
-  getBoard: (parentId: string) =>
-    invoke<BoardState>("get_board", { parentId }),
+  getBoard: (parentId: string) => invoke<BoardState>("get_board", { parentId }),
   // "Mark done" override (E2-T4): publishes one subtask's handoff contract so a
   // stuck producer never leaves its dependent silently blocked. Returns the
   // refreshed board so the caller re-renders without a follow-up `get_board`.
@@ -290,6 +293,32 @@ export const tauri = {
     invoke<FileChange[]>("board_integration_diff", { parentId }),
   boardIntegrationFileDiff: (parentId: string, path: string) =>
     invoke<string>("board_integration_file_diff", { parentId, path }),
+
+  // ── Phase 3 gates: Validate + Review/QAS (§C.1/§C.2) ─────────────────────
+  // Thin wrappers over the FROZEN Phase-3 wire contract. `validate_ticket` runs
+  // every opted-in RunCommand as a captured per-worktree subprocess and writes
+  // `validate.json`; `get_validate_result` reads the cache (no execution).
+  // `request_review`/`resolve_review` write `review.json` (and compose
+  // `publish_contract` for a producer / append a bounce comment) and return the
+  // refreshed board. `get_board_gates` batches every ticket's review+validate
+  // for the board render (§J8). Errors arrive as plain strings (humanized by the
+  // surface). Each successful mutation emits `phasr://board-changed { parentId }`
+  // so the open board moves live (Architect Stage-1 §R2).
+  validateTicket: (subtaskId: string) =>
+    invoke<ValidateResult>("validate_ticket", { subtaskId }),
+  getValidateResult: (subtaskId: string) =>
+    invoke<ValidateResult | null>("get_validate_result", { subtaskId }),
+  requestReview: (subtaskId: string) =>
+    invoke<BoardState>("request_review", { subtaskId }),
+  resolveReview: (
+    subtaskId: string,
+    decision: ReviewDecision,
+    comment?: string,
+  ) => invoke<BoardState>("resolve_review", { subtaskId, decision, comment }),
+  getReview: (subtaskId: string) =>
+    invoke<ReviewRecord | null>("get_review", { subtaskId }),
+  getBoardGates: (parentId: string) =>
+    invoke<BoardGates>("get_board_gates", { parentId }),
 
   // ── worklist (cross-repo attention home, Phase 2 §C.3) ────────────────
   // One call returns every repo, every epic's board, and loose agents for the
@@ -328,14 +357,21 @@ export const tauri = {
   // Assets: list/add/remove; add routes small↔large storage server-side.
   listTicketAssets: (repositoryId: string, ticketId: string) =>
     invoke<TicketAsset[]>("list_ticket_assets", { repositoryId, ticketId }),
-  addTicketAsset: (repositoryId: string, ticketId: string, sourcePath: string) =>
+  addTicketAsset: (
+    repositoryId: string,
+    ticketId: string,
+    sourcePath: string,
+  ) =>
     invoke<TicketAsset>("add_ticket_asset", {
       repositoryId,
       ticketId,
       sourcePath,
     }),
-  removeTicketAsset: (repositoryId: string, ticketId: string, assetId: string) =>
-    invoke<void>("remove_ticket_asset", { repositoryId, ticketId, assetId }),
+  removeTicketAsset: (
+    repositoryId: string,
+    ticketId: string,
+    assetId: string,
+  ) => invoke<void>("remove_ticket_asset", { repositoryId, ticketId, assetId }),
   // Figma links (link-only v1).
   addTicketFigmaLink: (
     repositoryId: string,
@@ -354,12 +390,20 @@ export const tauri = {
     ticketId: string,
     linkId: string,
   ) =>
-    invoke<void>("remove_ticket_figma_link", { repositoryId, ticketId, linkId }),
+    invoke<void>("remove_ticket_figma_link", {
+      repositoryId,
+      ticketId,
+      linkId,
+    }),
   // Comments (append-only; author = the signed-in user, `authorKind:"you"`).
   listTicketComments: (repositoryId: string, ticketId: string) =>
     invoke<TicketComment[]>("list_ticket_comments", { repositoryId, ticketId }),
   addTicketComment: (repositoryId: string, ticketId: string, body: string) =>
-    invoke<TicketComment>("add_ticket_comment", { repositoryId, ticketId, body }),
+    invoke<TicketComment>("add_ticket_comment", {
+      repositoryId,
+      ticketId,
+      body,
+    }),
   // The ticket-dir fs-watcher → emits `phasr://ticket-changed` (F4).
   watchTicket: (repositoryId: string, ticketId: string) =>
     invoke<void>("watch_ticket", { repositoryId, ticketId }),
@@ -380,6 +424,7 @@ export const tauri = {
     command: string;
     shortcut?: string;
     pinned?: boolean;
+    runInValidate?: boolean;
   }) => invoke<RunCommand>("create_run_command", { input }),
   updateRunCommand: (
     id: string,
@@ -388,6 +433,7 @@ export const tauri = {
       command?: string;
       shortcut?: string;
       pinned?: boolean;
+      runInValidate?: boolean;
       sortOrder?: number;
     },
   ) => invoke<RunCommand>("update_run_command", { id, input }),

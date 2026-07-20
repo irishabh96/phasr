@@ -29,10 +29,15 @@ export type WorklistBucket = "needs-you" | "running" | "waiting" | "recent";
  * itself is honest and time-independent.
  *
  * Bucket map (spec §F1 AC):
- *   wedged | failed | interrupted | needs-review → needs-you
- *   working | idle | resolving                   → running
- *   blocked                                       → waiting
- *   done | stopped                                → recent
+ *   wedged | failed | interrupted | needs-review | in-review |
+ *     qas-changes-requested                       → needs-you
+ *   working | idle | resolving                    → running
+ *   blocked                                        → waiting
+ *   done | stopped                                 → recent
+ *
+ * The Phase 3 review buckets both surface to the human: `in-review` awaits the
+ * reviewer's Approve/Bounce, and `qas-changes-requested` was bounced back and
+ * needs re-work — both belong in "needs-you".
  */
 export function worklistBucket(state: BoardCardState): WorklistBucket {
   switch (state) {
@@ -40,6 +45,8 @@ export function worklistBucket(state: BoardCardState): WorklistBucket {
     case "failed":
     case "interrupted":
     case "needs-review":
+    case "in-review":
+    case "qas-changes-requested":
       return "needs-you";
     case "working":
     case "idle":

@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { GitMerge, Loader2 } from "lucide-react";
-import { GlassButton } from "@/components/ui/GlassButton";
 import { Dialog } from "@/components/ui/Dialog";
 import { ChangesPanel } from "@/components/ChangesPanel";
+import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { BoardCardView } from "@/components/board/BoardCard";
+import { NextGateButton } from "@/components/board/NextGateButton";
 import { IntegrationDiff } from "@/components/board/IntegrationDiff";
 import { useAllAgentLiveness } from "@/lib/agentLiveness";
 import { isLiveState } from "@/components/ui/agentStatusMeta";
@@ -15,17 +15,31 @@ import {
   type BoardColumn,
 } from "@/lib/deriveBoardState";
 import {
+  deriveNextGate,
+  isIntegrateEligible,
+  type NextGate,
+} from "@/lib/deriveNextGate";
+import {
   boardKeys,
   isIntegrationConflict,
   useIntegrateParent,
-  usePublishContract,
+  useRequestReview,
+  useResolveReview,
+  useValidateTicket,
 } from "@/lib/hooks/useBoard";
+import { useRepository } from "@/lib/hooks/useRepositories";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { humanizeError } from "@/lib/humanizeError";
 import { showToast } from "@/lib/toast";
 import { useNow } from "@/lib/useNow";
-import type { BoardState, Workspace } from "@/lib/types";
+import type {
+  BoardGates,
+  BoardState,
+  ReviewRecord,
+  ValidateResult,
+  Workspace,
+} from "@/lib/types";
 
 const COLUMNS: ReadonlyArray<{ key: BoardColumn; label: string }> = [
   { key: "backlog", label: "Backlog" },
@@ -41,55 +55,95 @@ interface DerivedCard {
   render: React.ReactNode;
 }
 
-/** A subtask is "review-ready" once its contract is published or it exited clean. */
-function isReviewReady(state: BoardCardState): boolean {
-  return state === "needs-review" || state === "done";
-}
-
 /**
- * The read-only task board (S2-T1). Places the parent + its subtask cards into
- * four DERIVED lanes (Backlog → In progress → Review → Done) via
- * `deriveBoardState` — the lanes are NOT draggable; a card's column is a pure
- * function of its honest state (edges × contracts × liveness).
+ * The read-only task board (S2-T1, extended for Phase 3 gates). Places the
+ * parent + its subtask cards into four DERIVED lanes (Backlog → In progress →
+ * Review → Done) via `deriveBoardState` — the lanes are NOT draggable; a card's
+ * column is a pure function of its honest state (edges × contracts × liveness),
+ * now layered with the review decision (`review.json`) from {@link BoardGates}.
  *
- * Liveness is read once from the module store (`useAllAgentLiveness`) so there
- * is no per-card hook in a variable-length loop; the "Ns ago" clock ticks only
- * while at least one subtask is actually live.
+ * Each card + the epic header render the shared {@link NextGateButton} off the
+ * pure `deriveNextGate` ladder (G1), and each card shows the Validate chip (V2)
+ * + the review chips (R2). Gates are fed in via `gates`/`checksConfigured`/
+ * `shipped` (the route fetches them; `/design-test` passes fixtures) so this
+ * component performs no IPC of its own.
  */
-export function BoardView({ board }: { board: BoardState }) {
+export function BoardView({
+  board,
+  gates,
+  checksConfigured = false,
+  shipped = false,
+}: {
+  board: BoardState;
+  gates?: BoardGates;
+  checksConfigured?: boolean;
+  shipped?: boolean;
+}) {
   const livenessMap = useAllAgentLiveness();
-  const publish = usePublishContract(board.parent.id);
   const navigate = useNavigate();
+
+  const validate = useValidateTicket(board.parent.id);
+  const requestReview = useRequestReview(board.parent.id);
+  const resolveReview = useResolveReview(board.parent.id);
+
+  const reviewFor = (id: string): ReviewRecord | undefined =>
+    gates?.reviews.find((r) => r.subtaskId === id);
+  const validateFor = (id: string): ValidateResult | null =>
+    gates?.validations.find((v) => v.subtaskId === id) ?? null;
+
+  // Map a ticket card's gate verb → its mutation. Bounce is separate (it needs a
+  // comment); the button surfaces it as a paired secondary.
+  const runTicketGate = (verb: string, subtaskId: string): Promise<unknown> => {
+    switch (verb) {
+      case "validate":
+        return validate.mutateAsync(subtaskId);
+      case "request-review":
+        return requestReview.mutateAsync(subtaskId);
+      case "approve":
+        return resolveReview.mutateAsync({ subtaskId, decision: "approve" });
+      default:
+        return Promise.resolve();
+    }
+  };
 
   // Tick the shared clock only while a subtask carries a live counter.
   const anyLive = board.subtasks.some((s) => {
     const snapshot = livenessMap[s.id];
     return isLiveState(
-      snapshot?.derivedState ?? (s.status === "running" ? "working" : "stopped"),
+      snapshot?.derivedState ??
+        (s.status === "running" ? "working" : "stopped"),
     );
   });
   const now = useNow(anyLive);
 
   const cards: DerivedCard[] = board.subtasks.map((subtask) => {
+    const review = reviewFor(subtask.id);
+    const validateResult = validateFor(subtask.id);
     const { state, since } = deriveBoardState(
       subtask,
       board,
       livenessMap[subtask.id],
       now,
+      review,
     );
-    const blockedOnRoles = state === "blocked" ? blockingRoles(subtask, board) : [];
+    const blockedOnRoles =
+      state === "blocked" ? blockingRoles(subtask, board) : [];
 
-    // The "Mark done" affordance rides ONLY on a producer subtask (the `from`
-    // side of an edge) that hasn't published its contract — publishing it is
-    // what unblocks the downstream consumer. A blocked consumer or an
-    // already-published producer never shows it (nothing to publish).
-    const isProducer = board.dependencies.some(
-      (d) => d.fromSubtaskId === subtask.id,
-    );
-    const hasPublished = board.contracts.some(
-      (c) => c.subtaskId === subtask.id && c.publishedAt != null,
-    );
-    const canPublish = isProducer && !hasPublished;
+    const gate = deriveNextGate({
+      kind: "ticket",
+      state,
+      validate: validateResult,
+      review: review ?? null,
+      checksConfigured,
+      blockedOn: blockedOnRoles,
+    });
+
+    // A card's gate is in flight while its underlying mutation targets THIS id.
+    const gatePending =
+      (validate.isPending && validate.variables === subtask.id) ||
+      (requestReview.isPending && requestReview.variables === subtask.id) ||
+      (resolveReview.isPending &&
+        resolveReview.variables?.subtaskId === subtask.id);
 
     return {
       subtask,
@@ -104,6 +158,19 @@ export function BoardView({ board }: { board: BoardState }) {
           since={since}
           exitCode={subtask.exitCode}
           blockedOnRoles={blockedOnRoles}
+          review={review ?? null}
+          validate={validateResult}
+          checksConfigured={checksConfigured}
+          gate={gate}
+          gatePending={gatePending}
+          onRunGate={(verb) => runTicketGate(verb, subtask.id)}
+          onBounceGate={(comment) =>
+            resolveReview.mutateAsync({
+              subtaskId: subtask.id,
+              decision: "bounce",
+              comment,
+            })
+          }
           onOpen={() =>
             void navigate({
               to: "/repositories/$repositoryId/workspaces/$workspaceId",
@@ -113,26 +180,23 @@ export function BoardView({ board }: { board: BoardState }) {
               },
             })
           }
-          {...(canPublish
-            ? {
-                onMarkDone: () => publish.mutate(subtask.id),
-                markDonePending:
-                  publish.isPending && publish.variables === subtask.id,
-              }
-            : {})}
         />
       ),
     };
   });
 
-  // Integrable once EVERY subtask reached a review-ready state (published a
-  // contract or exited clean) — the honest "the parallel work is done, it's the
-  // human's turn to integrate" moment. Deliberately not over-gated on liveness.
-  const integrable = cards.length > 0 && cards.every((c) => isReviewReady(c.state));
+  // Every ticket integrate-eligible (§B) → the epic can integrate. Derived
+  // purely off the (review-layered) card states, so approval is respected.
+  const integrable =
+    cards.length > 0 && cards.every((c) => isIntegrateEligible(c.state));
 
   return (
     <div className="flex min-h-0 flex-col gap-4" data-testid="board-view">
-      <BoardParentHeader board={board} integrable={integrable} />
+      <BoardParentHeader
+        board={board}
+        integrable={integrable}
+        shipped={shipped}
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {COLUMNS.map(({ key, label }) => {
@@ -169,56 +233,61 @@ export function BoardView({ board }: { board: BoardState }) {
 }
 
 /**
- * The parent (the decomposition itself). Rendered as a summary header, NOT a
- * lane card — a parent has no PTY and no agent status, so forcing it into a
- * status lane would make it lie. It shows the goal + progress and hosts the
- * "Integrate & review" action.
- *
- * Integration (E3-T1) mints the parent's integration worktree and merges every
- * subtask branch topologically. A CLEAN run opens the ONE combined diff against
- * the parent id (the R7 "legible reward"). A CONFLICT routes into the EXISTING
- * conflict-resolution surface (`ChangesPanel` drives `git_merge_in_progress` /
- * `git_resolve_conflict` / `git_continue_merge` / `git_abort_merge`) keyed on
- * the parent id — never a dead end (DDR-002).
- *
- * The two review surfaces read DIFFERENT sources (P0-1): a clean integration
- * already committed everything, so the worktree is clean and a worktree read
- * would show EMPTY — the clean case renders {@link IntegrationDiff}, which reads
- * the integration BRANCH against its base. A conflict leaves the worktree
- * mid-merge (carrying the conflict markers), so the conflict case keeps the
- * worktree-backed `ChangesPanel`. Which one shows is a pure function of the
- * integration's outcome (`reviewMode`).
+ * The parent (the decomposition itself). Rendered as a summary header hosting
+ * the epic's single derived next gate (Integrate → Ship, §G1/R7) via the shared
+ * {@link NextGateButton}. A CLEAN integrate opens the ONE combined diff against
+ * the parent id (the R7 "legible reward"); a CONFLICT routes into the EXISTING
+ * conflict-resolution surface (`ChangesPanel`) keyed on the parent id — never a
+ * dead end (DDR-002). Ship (once integrated) reuses `MergeToMainDialog`'s
+ * existing merge + conflict flow verbatim.
  */
 function BoardParentHeader({
   board,
   integrable,
+  shipped,
 }: {
   board: BoardState;
   integrable: boolean;
+  shipped: boolean;
 }) {
   const queryClient = useQueryClient();
   const integrate = useIntegrateParent(board.parent.id);
+  const { data: repository } = useRepository(board.parent.repositoryId);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewMode, setReviewMode] = useState<"clean" | "conflict">("clean");
+  const [shipOpen, setShipOpen] = useState(false);
 
   const done = board.contracts.filter((c) => c.publishedAt != null).length;
   const goal = board.parent.prompt?.trim() || board.parent.name;
 
+  // The parent carries an integration branch/worktree once integrated.
+  const integrated = !!board.parent.branch;
+
+  const epicGate = deriveNextGate({
+    kind: "epic",
+    ticketCount: board.subtasks.length,
+    integrable,
+    integrated,
+    shipped,
+    ...(repository?.defaultBranch
+      ? { baseBranch: repository.defaultBranch }
+      : {}),
+  });
+
+  // Ship's confirm IS the MergeToMainDialog (strategy + conflict flow), so the
+  // NextGateButton must not layer its own ConfirmDialog on top of it.
+  const headerGate: NextGate =
+    epicGate.verb === "ship" ? { ...epicGate, confirm: false } : epicGate;
+
   const handleIntegrate = async () => {
-    // D1 in-flight guard — also enforced by the button's `disabled`, but belt +
-    // braces so a queued keypress can't fan out a second integration.
+    // D1 in-flight guard — belt + braces on top of the button's own pending.
     if (integrate.isPending) return;
     try {
       await integrate.mutateAsync();
-      // CLEAN: the parent now carries the integration branch/worktree; open the
-      // combined diff against the parent id.
       setReviewMode("clean");
       setReviewOpen(true);
     } catch (err) {
       if (isIntegrationConflict(err)) {
-        // CONFLICT: integration stopped mid-merge but already pointed the parent
-        // row at the integration worktree. Re-read the board, then route into the
-        // interactive conflict surface keyed on the parent id.
         queryClient.invalidateQueries({
           queryKey: boardKeys.detail(board.parent.id),
         });
@@ -239,6 +308,14 @@ function BoardParentHeader({
     }
   };
 
+  const runEpicGate = (verb: string): Promise<void> | void => {
+    if (verb === "integrate") return handleIntegrate();
+    if (verb === "ship") {
+      setShipOpen(true);
+      return;
+    }
+  };
+
   return (
     <div
       data-testid="board-parent-card"
@@ -246,7 +323,7 @@ function BoardParentHeader({
     >
       <div className="flex min-w-0 flex-col gap-1">
         <span className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)">
-          Parent · {board.subtasks.length} subtasks
+          Epic · {board.subtasks.length} tickets
         </span>
         <h2 className="truncate text-[15px] font-semibold text-(--color-text-primary)">
           {goal}
@@ -256,34 +333,12 @@ function BoardParentHeader({
         </span>
       </div>
 
-      {integrable ? (
-        <GlassButton
-          variant="primary"
-          size="sm"
-          data-testid="board-integrate"
-          className="gap-1.5"
-          disabled={integrate.isPending}
-          onClick={handleIntegrate}
-        >
-          {integrate.isPending ? (
-            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-          ) : (
-            <GitMerge className="size-3.5" aria-hidden="true" />
-          )}
-          {integrate.isPending ? "Integrating…" : "Integrate & review"}
-        </GlassButton>
-      ) : (
-        // Present but calm until every subtask is review-ready, so the action is
-        // never a dead end and its unlock condition is legible.
-        <span
-          data-testid="board-integrate-pending"
-          title="Integration unlocks once every subtask is ready for review."
-          className="inline-flex items-center gap-1.5 rounded-(--radius-control) px-2 py-1 text-[11px] text-(--color-text-muted)"
-        >
-          <GitMerge className="size-3.5" aria-hidden="true" />
-          Integrate when ready
-        </span>
-      )}
+      <NextGateButton
+        gate={headerGate}
+        size="sm"
+        pending={integrate.isPending}
+        onRun={runEpicGate}
+      />
 
       <Dialog
         open={reviewOpen}
@@ -297,21 +352,23 @@ function BoardParentHeader({
         description={
           reviewMode === "conflict"
             ? "Integration paused on a merge conflict in the parent's integration worktree. Resolve each file, then continue the merge — or abort to unwind it."
-            : "The combined diff of every subtask merged into the parent's integration worktree. Review it here before merging to your main branch."
+            : "The combined diff of every ticket merged into the parent's integration worktree. Review it here before merging to your main branch."
         }
       >
         <div data-testid="board-combined-diff" className="h-[62vh] min-h-0">
           {reviewMode === "conflict" ? (
-            // Mid-merge worktree carries the conflict markers → the existing
-            // worktree-backed conflict flow.
             <ChangesPanel workspaceId={board.parent.id} />
           ) : (
-            // Clean integration is already committed (worktree is empty) → the
-            // combined integration branch-vs-base diff.
             <IntegrationDiff parentId={board.parent.id} />
           )}
         </div>
       </Dialog>
+
+      <MergeToMainDialog
+        workspace={board.parent}
+        open={shipOpen}
+        onClose={() => setShipOpen(false)}
+      />
     </div>
   );
 }

@@ -3,7 +3,13 @@ import { useMemo } from "react";
 import { BoardBreadcrumb } from "@/components/board/BoardBreadcrumb";
 import { BoardView } from "@/components/board/BoardView";
 import { PanelState } from "@/components/ui/PanelState";
-import { useBoard, useBoardTaskEvents } from "@/lib/hooks/useBoard";
+import {
+  useBoard,
+  useBoardGates,
+  useBoardTaskEvents,
+} from "@/lib/hooks/useBoard";
+import { useGitBranchStatus } from "@/lib/hooks/useGit";
+import { useRunCommands } from "@/lib/hooks/useRunCommands";
 
 /**
  * The read-only task board (S2-T1). Fetches one parent's board via `get_board`
@@ -18,6 +24,19 @@ import { useBoard, useBoardTaskEvents } from "@/lib/hooks/useBoard";
 function BoardRoute() {
   const { repositoryId, parentId } = Route.useParams();
   const { data: board, isLoading, error, refetch } = useBoard(parentId);
+  // Batched gate side-load (§J8) + the repo's run commands (to know whether
+  // Validate can run at all) + the parent's branch status (to derive "shipped").
+  const { data: gates } = useBoardGates(parentId);
+  const { data: runCommands } = useRunCommands(repositoryId);
+  const checksConfigured = (runCommands ?? []).some((c) => c.runInValidate);
+
+  // "Shipped" = the parent carries an integration branch AND that branch is
+  // merged into base (§R6 — no new column). Only read once integrated.
+  const integrated = !!board?.parent.branch;
+  const { data: parentBranch } = useGitBranchStatus(
+    integrated ? parentId : undefined,
+  );
+  const shipped = integrated && parentBranch?.aheadOfTarget === 0;
 
   const subtaskIds = useMemo(
     () => board?.subtasks.map((s) => s.id) ?? [],
@@ -42,7 +61,12 @@ function BoardRoute() {
             repositoryId={repositoryId}
             goal={board.parent.prompt?.trim() || board.parent.name}
           />
-          <BoardView board={board} />
+          <BoardView
+            board={board}
+            {...(gates ? { gates } : {})}
+            checksConfigured={checksConfigured}
+            shipped={!!shipped}
+          />
         </>
       ) : (
         <PanelState

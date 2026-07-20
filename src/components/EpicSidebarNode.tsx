@@ -2,16 +2,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import { WorkspaceLink } from "@/components/AppSidebar";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
-import {
-  agentStatusMeta,
-  isLiveState,
-} from "@/components/ui/agentStatusMeta";
+import { agentStatusMeta, isLiveState } from "@/components/ui/agentStatusMeta";
 import { useAllAgentLiveness } from "@/lib/agentLiveness";
 import { deriveAgentState } from "@/lib/deriveAgentState";
-import {
-  deriveBoardState,
-  type BoardCardState,
-} from "@/lib/deriveBoardState";
+import { deriveBoardState, type BoardCardState } from "@/lib/deriveBoardState";
 import { useBoard } from "@/lib/hooks/useBoard";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
@@ -276,8 +270,10 @@ function EpicRollup({
 
 /** The dot color for a board-card state (reuses the honest status palette). */
 function boardDotColor(state: BoardCardState): string {
-  if (state === "blocked") return "var(--color-text-muted)";
-  if (state === "needs-review") return "var(--color-info)";
+  if (state === "blocked" || state === "qas-changes-requested")
+    return "var(--color-text-muted)";
+  if (state === "needs-review" || state === "in-review")
+    return "var(--color-info)";
   return agentStatusMeta(state).colorVar;
 }
 
@@ -285,5 +281,7 @@ function boardDotColor(state: BoardCardState): string {
 function boardStateLabel(state: BoardCardState): string {
   if (state === "blocked") return "Blocked";
   if (state === "needs-review") return "Ready for review";
+  if (state === "in-review") return "In review";
+  if (state === "qas-changes-requested") return "Changes requested";
   return agentStatusMeta(state).label;
 }

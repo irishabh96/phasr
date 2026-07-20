@@ -76,17 +76,40 @@ test.describe("task board (/design-test)", () => {
           switch (cmd) {
             case "list_agents":
               return Promise.resolve([
-                { agent: "claude", label: "Claude", command: "claude", isDefault: true },
-                { agent: "codex", label: "Codex", command: "codex", isDefault: false },
-                { agent: "gemini", label: "Gemini", command: "gemini", isDefault: false },
+                {
+                  agent: "claude",
+                  label: "Claude",
+                  command: "claude",
+                  isDefault: true,
+                },
+                {
+                  agent: "codex",
+                  label: "Codex",
+                  command: "codex",
+                  isDefault: false,
+                },
+                {
+                  agent: "gemini",
+                  label: "Gemini",
+                  command: "gemini",
+                  isDefault: false,
+                },
               ]);
             case "plan_decomposition":
               // The Planner draft (§C) — a 4-ticket / 3-edge ProposedPlan the
               // review surface hydrates into editable rows. Persists nothing.
               return Promise.resolve({
                 subtasks: [
-                  { role: "backend", agent: "claude", prompt: "Build the comments API" },
-                  { role: "frontend", agent: "claude", prompt: "Wire the comments UI" },
+                  {
+                    role: "backend",
+                    agent: "claude",
+                    prompt: "Build the comments API",
+                  },
+                  {
+                    role: "frontend",
+                    agent: "claude",
+                    prompt: "Wire the comments UI",
+                  },
                   { role: "docs", agent: "gemini", prompt: "Document the API" },
                   { role: "qa", agent: "codex", prompt: "e2e coverage" },
                 ],
@@ -108,9 +131,26 @@ test.describe("task board (/design-test)", () => {
                 ? Promise.reject(
                     "integration stopped on conflicts in: src/comments/api.ts",
                   )
-                : Promise.resolve(integratedBoard(a.parentId ?? "parent-clean"));
+                : Promise.resolve(
+                    integratedBoard(a.parentId ?? "parent-clean"),
+                  );
             case "publish_contract":
               return Promise.resolve(integratedBoard("parent-1"));
+            // Phase 3 gate commands — the static design-test boards don't
+            // refetch, so these just need to resolve so the gate buttons don't
+            // error; the tests assert the CALL fired.
+            case "request_review":
+            case "resolve_review":
+              return Promise.resolve(integratedBoard("parent-1"));
+            case "validate_ticket":
+              return Promise.resolve({
+                subtaskId: (a as { subtaskId?: string }).subtaskId,
+                checks: [],
+                passed: false,
+                ranAtMs: 0,
+              });
+            case "get_board_gates":
+              return Promise.resolve({ reviews: [], validations: [] });
             case "get_board":
               return Promise.resolve(
                 integratedBoard(a.parentId ?? "parent-clean"),
@@ -306,36 +346,42 @@ test.describe("task board (/design-test)", () => {
     );
   });
 
-  test("the Integrate action appears only when the board is integrable", async ({
+  test("the Integrate gate is disabled-with-reason until the board is integrable", async ({
     page,
   }) => {
-    // Fresh (frontend blocked) + handoff (frontend still working) are NOT
-    // integrable — the action is absent, replaced by a calm "when ready" hint.
+    // The epic gate is NEVER hidden (§G1): fresh (frontend blocked) + handoff
+    // (frontend still working) show a DISABLED integrate gate with its reason.
+    const freshGate = page
+      .getByTestId("board-fresh")
+      .locator('[data-testid="next-gate"][data-gate-verb="integrate"]');
+    await expect(freshGate).toHaveAttribute("data-gate-enabled", "false");
+    await expect(freshGate).toHaveAttribute(
+      "title",
+      /Integration unlocks once every ticket/i,
+    );
     await expect(
-      page.getByTestId("board-fresh").getByTestId("board-integrate"),
-    ).toHaveCount(0);
-    await expect(
-      page.getByTestId("board-fresh").getByTestId("board-integrate-pending"),
-    ).toBeVisible();
-    await expect(
-      page.getByTestId("board-handoff").getByTestId("board-integrate"),
-    ).toHaveCount(0);
+      page
+        .getByTestId("board-handoff")
+        .locator('[data-testid="next-gate"][data-gate-verb="integrate"]'),
+    ).toHaveAttribute("data-gate-enabled", "false");
 
-    // Integrable board (both subtasks in review) → the action is present + enabled.
+    // Integrable board (both subtasks in review) → the gate is enabled.
     const integrate = page
       .getByTestId("board-integrable")
-      .getByTestId("board-integrate");
-    await expect(integrate).toBeVisible();
+      .locator('[data-testid="next-gate"][data-gate-verb="integrate"]');
+    await expect(integrate).toHaveAttribute("data-gate-enabled", "true");
     await expect(integrate).toBeEnabled();
   });
 
-  test("clicking Integrate fires integrate_parent once and renders the combined diff", async ({
+  test("clicking Integrate confirms, fires integrate_parent once, renders the combined diff", async ({
     page,
   }) => {
     await page
       .getByTestId("board-integrable")
-      .getByTestId("board-integrate")
+      .locator('[data-testid="next-gate"][data-gate-verb="integrate"]')
       .click();
+    // Outward mutation → a ConfirmDialog gates it (§D2).
+    await page.getByRole("button", { name: "Integrate", exact: true }).click();
 
     // Exactly one integrate_parent — the D1 in-flight guard holds.
     await expect
@@ -344,7 +390,8 @@ test.describe("task board (/design-test)", () => {
           () =>
             (
               window as unknown as { __BOARD_CALLS__: Array<{ cmd: string }> }
-            ).__BOARD_CALLS__.filter((c) => c.cmd === "integrate_parent").length,
+            ).__BOARD_CALLS__.filter((c) => c.cmd === "integrate_parent")
+              .length,
         ),
       )
       .toBe(1);
@@ -358,9 +405,8 @@ test.describe("task board (/design-test)", () => {
           () =>
             (
               window as unknown as { __BOARD_CALLS__: Array<{ cmd: string }> }
-            ).__BOARD_CALLS__.filter(
-              (c) => c.cmd === "board_integration_diff",
-            ).length,
+            ).__BOARD_CALLS__.filter((c) => c.cmd === "board_integration_diff")
+              .length,
         ),
       )
       .toBeGreaterThanOrEqual(1);
@@ -396,8 +442,9 @@ test.describe("task board (/design-test)", () => {
 
     await page
       .getByTestId("board-integrable")
-      .getByTestId("board-integrate")
+      .locator('[data-testid="next-gate"][data-gate-verb="integrate"]')
       .click();
+    await page.getByRole("button", { name: "Integrate", exact: true }).click();
 
     // Still fires integrate_parent exactly once (the reject is not a retry loop).
     await expect
@@ -406,7 +453,8 @@ test.describe("task board (/design-test)", () => {
           () =>
             (
               window as unknown as { __BOARD_CALLS__: Array<{ cmd: string }> }
-            ).__BOARD_CALLS__.filter((c) => c.cmd === "integrate_parent").length,
+            ).__BOARD_CALLS__.filter((c) => c.cmd === "integrate_parent")
+              .length,
         ),
       )
       .toBe(1);
@@ -416,18 +464,25 @@ test.describe("task board (/design-test)", () => {
     const surface = page.getByTestId("board-combined-diff");
     await expect(surface).toBeVisible();
     await expect(surface).toContainText("Merge in progress");
-    await expect(surface.getByRole("button", { name: /abort merge/i })).toBeVisible();
+    await expect(
+      surface.getByRole("button", { name: /abort merge/i }),
+    ).toBeVisible();
   });
 
-  test("Mark done publishes a stuck producer's contract (publish_contract)", async ({
+  test("the card's next gate fires request_review for a producer (generalizes Mark done)", async ({
     page,
   }) => {
-    // The fresh board's backend is a producer with no published contract yet, so
-    // it carries the "Mark done" override; the blocked frontend consumer does not.
+    // The fresh board's backend (working, no checks configured) has "Request
+    // review" as its enabled next gate — the generalized Mark-done. The blocked
+    // frontend consumer's gate is disabled ("Waiting for backend"), never coral.
     const backend = page
       .getByTestId("board-fresh")
       .locator('[data-testid="board-card"][data-role="backend"]');
-    await backend.getByTestId("board-mark-done").click();
+    const gate = backend.locator(
+      '[data-testid="next-gate"][data-gate-verb="request-review"]',
+    );
+    await expect(gate).toHaveAttribute("data-gate-enabled", "true");
+    await gate.click();
 
     await expect
       .poll(async () =>
@@ -439,12 +494,20 @@ test.describe("task board (/design-test)", () => {
               }
             ).__BOARD_CALLS__.filter(
               (c) =>
-                c.cmd === "publish_contract" &&
+                c.cmd === "request_review" &&
                 (c.args as { subtaskId?: string }).subtaskId === "sub-backend",
             ).length,
         ),
       )
       .toBe(1);
+
+    // The blocked consumer's gate is present but disabled with its reason.
+    const blockedGate = page
+      .getByTestId("board-fresh")
+      .locator('[data-testid="board-card"][data-role="frontend"]')
+      .locator('[data-testid="next-gate"]');
+    await expect(blockedGate).toHaveAttribute("data-gate-enabled", "false");
+    await expect(blockedGate).toHaveAttribute("title", /Waiting for backend/i);
   });
 
   test("the board harness renders with no console errors", async () => {

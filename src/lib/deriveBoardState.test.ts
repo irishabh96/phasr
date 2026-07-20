@@ -7,6 +7,7 @@ import {
 import type { AgentLiveness } from "./deriveAgentState";
 import type {
   BoardState,
+  ReviewRecord,
   Workspace,
   WorkspaceContract,
   WorkspaceDependency,
@@ -82,7 +83,11 @@ const EDGE = edge(BACKEND, FRONTEND);
 describe("deriveBoardState", () => {
   describe("blocked — a pending consumer whose producer hasn't published", () => {
     it("marks a pending consumer blocked when the producer has no contract", () => {
-      const frontend = subtask({ id: FRONTEND, role: "frontend", status: "pending" });
+      const frontend = subtask({
+        id: FRONTEND,
+        role: "frontend",
+        status: "pending",
+      });
       const r = deriveBoardState(
         frontend,
         { dependencies: [EDGE], contracts: [] },
@@ -97,7 +102,10 @@ describe("deriveBoardState", () => {
       const frontend = subtask({ id: FRONTEND, status: "pending" });
       const r = deriveBoardState(
         frontend,
-        { dependencies: [EDGE], contracts: [contract(BACKEND, "backend", false)] },
+        {
+          dependencies: [EDGE],
+          contracts: [contract(BACKEND, "backend", false)],
+        },
         undefined,
         NOW,
       );
@@ -105,10 +113,17 @@ describe("deriveBoardState", () => {
     });
 
     it("unblocks once the producer publishes its contract", () => {
-      const frontend = subtask({ id: FRONTEND, status: "pending", startedAt: null });
+      const frontend = subtask({
+        id: FRONTEND,
+        status: "pending",
+        startedAt: null,
+      });
       const r = deriveBoardState(
         frontend,
-        { dependencies: [EDGE], contracts: [contract(BACKEND, "backend", true)] },
+        {
+          dependencies: [EDGE],
+          contracts: [contract(BACKEND, "backend", true)],
+        },
         undefined,
         NOW,
       );
@@ -118,7 +133,11 @@ describe("deriveBoardState", () => {
     });
 
     it("the ROOT subtask (no incoming edge) is never blocked", () => {
-      const backend = subtask({ id: BACKEND, role: "backend", status: "pending" });
+      const backend = subtask({
+        id: BACKEND,
+        role: "backend",
+        status: "pending",
+      });
       const r = deriveBoardState(
         backend,
         { dependencies: [EDGE], contracts: [] },
@@ -154,7 +173,10 @@ describe("deriveBoardState", () => {
       });
       const r = deriveBoardState(
         backend,
-        { dependencies: [EDGE], contracts: [contract(BACKEND, "backend", true)] },
+        {
+          dependencies: [EDGE],
+          contracts: [contract(BACKEND, "backend", true)],
+        },
         live("working", 2_000),
         NOW,
       );
@@ -181,7 +203,11 @@ describe("deriveBoardState", () => {
 
   describe("honest liveness passthrough (Step 0 reuse)", () => {
     it("reuses working from the live snapshot", () => {
-      const backend = subtask({ id: BACKEND, status: "running", startedAt: iso(1_000) });
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(1_000),
+      });
       const r = deriveBoardState(
         backend,
         { dependencies: [], contracts: [] },
@@ -193,7 +219,11 @@ describe("deriveBoardState", () => {
     });
 
     it("reuses idle (neutral, never coral)", () => {
-      const backend = subtask({ id: BACKEND, status: "running", startedAt: iso(1_000) });
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(1_000),
+      });
       const r = deriveBoardState(
         backend,
         { dependencies: [], contracts: [] },
@@ -204,7 +234,11 @@ describe("deriveBoardState", () => {
     });
 
     it("reuses wedged (a frozen agent stays honest on the board)", () => {
-      const backend = subtask({ id: BACKEND, status: "running", startedAt: iso(1_000) });
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(1_000),
+      });
       const r = deriveBoardState(
         backend,
         { dependencies: [], contracts: [] },
@@ -231,6 +265,81 @@ describe("deriveBoardState", () => {
     });
   });
 
+  describe("review buckets (Phase 3 §R2 — derived, never a stored status)", () => {
+    const rec = (state: ReviewRecord["state"]): ReviewRecord => ({
+      subtaskId: BACKEND,
+      state,
+      by: "you",
+      comment: state === "changes-requested" ? "spacing off" : null,
+      atMs: NOW - 1_000,
+      validatePassed: true,
+    });
+
+    it("review 'requested' → in-review (supersedes needs-review)", () => {
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(5_000),
+      });
+      const r = deriveBoardState(
+        backend,
+        { dependencies: [], contracts: [contract(BACKEND, "backend", true)] },
+        live("working", 2_000),
+        NOW,
+        rec("requested"),
+      );
+      expect(r.state).toBe("in-review");
+    });
+
+    it("review 'changes-requested' → qas-changes-requested (re-opened)", () => {
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(5_000),
+      });
+      const r = deriveBoardState(
+        backend,
+        { dependencies: [], contracts: [] },
+        live("idle", 90_000),
+        NOW,
+        rec("changes-requested"),
+      );
+      expect(r.state).toBe("qas-changes-requested");
+    });
+
+    it("review 'approved' → needs-review (integrate-eligible)", () => {
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(5_000),
+      });
+      const r = deriveBoardState(
+        backend,
+        { dependencies: [], contracts: [] },
+        live("working", 2_000),
+        NOW,
+        rec("approved"),
+      );
+      expect(r.state).toBe("needs-review");
+    });
+
+    it("no review passed → unchanged P0 behavior (backward compatible)", () => {
+      const backend = subtask({
+        id: BACKEND,
+        status: "running",
+        startedAt: iso(5_000),
+      });
+      const r = deriveBoardState(
+        backend,
+        { dependencies: [], contracts: [contract(BACKEND, "backend", true)] },
+        live("working", 2_000),
+        NOW,
+        // no review arg
+      );
+      expect(r.state).toBe("needs-review");
+    });
+  });
+
   describe("precedence", () => {
     it("published contract beats a still-blocked-looking pending edge", () => {
       // Contrived: this subtask both consumes an unsatisfied edge AND has its
@@ -240,7 +349,9 @@ describe("deriveBoardState", () => {
         dependencies: [edge("sub-upstream", "sub-mid")],
         contracts: [contract("sub-mid", "middle", true)],
       };
-      expect(deriveBoardState(mid, board, undefined, NOW).state).toBe("needs-review");
+      expect(deriveBoardState(mid, board, undefined, NOW).state).toBe(
+        "needs-review",
+      );
     });
   });
 });
@@ -282,7 +393,13 @@ describe("boardColumn", () => {
   });
 
   it("working / idle / wedged / failed / interrupted → in-progress", () => {
-    for (const s of ["working", "idle", "wedged", "failed", "interrupted"] as const) {
+    for (const s of [
+      "working",
+      "idle",
+      "wedged",
+      "failed",
+      "interrupted",
+    ] as const) {
       expect(boardColumn(s)).toBe("in-progress");
     }
   });
@@ -290,5 +407,10 @@ describe("boardColumn", () => {
   it("needs-review → review, done → done", () => {
     expect(boardColumn("needs-review")).toBe("review");
     expect(boardColumn("done")).toBe("done");
+  });
+
+  it("in-review → review; qas-changes-requested → in-progress (Phase 3)", () => {
+    expect(boardColumn("in-review")).toBe("review");
+    expect(boardColumn("qas-changes-requested")).toBe("in-progress");
   });
 });

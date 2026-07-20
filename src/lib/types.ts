@@ -214,6 +214,14 @@ export interface RunCommand {
   command: string;
   shortcut: string | null;
   pinned: boolean;
+  /**
+   * Opt-in flag (Phase 3 §A4 / C.1): this command is a Validate CHECK — run as a
+   * captured, non-interactive subprocess in the ticket's worktree with a
+   * pass/fail exit code, NOT the interactive dev-server PTY. Default `false`
+   * (running every pinned command would hang on a dev server). ≥1 command with
+   * this flag set means Validate is available for the repo's tickets.
+   */
+  runInValidate: boolean;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -505,4 +513,80 @@ export interface TicketComment {
 export interface TicketChangedPayload {
   ticketId: string;
   sections: BriefSection[];
+}
+
+// ── Phase 3 — the command layer + QAS gates (§C.1/§C.2) ─────────────────────
+// Mirrors the FROZEN Rust ↔ TS wire contract for the two new gates (Validate,
+// Review). Both gate records live as files in the ticket folder
+// (`validate.json` / `review.json`, §D7 docs-as-files) and are read alongside
+// the board via a single `get_board_gates(parentId)` batch (§J8). The lane
+// derivation stays DERIVED — `WorkspaceStatus` is never touched (invariant #10).
+
+/** One check inside a Validate run (a captured `RunCommand` subprocess). */
+export interface ValidateCheck {
+  name: string;
+  command: string;
+  passed: boolean;
+  /** Process exit code; `null` on timeout / spawn failure. */
+  exitCode: number | null;
+  /** Tail of captured stdout+stderr, for the "expand to output" affordance. */
+  tailOutput: string;
+}
+
+/**
+ * The aggregate result of `validate_ticket` (also cached to `validate.json`).
+ * `passed` is true iff EVERY check exited 0. A ticket with no checks configured
+ * returns `{ checks: [], passed: false }` — a legible empty result, NOT an error
+ * (the FE renders an "Add a check" affordance, never a dead end).
+ */
+export interface ValidateResult {
+  subtaskId: string;
+  checks: ValidateCheck[];
+  passed: boolean;
+  ranAtMs: number;
+}
+
+/** The three review states a ticket's `review.json` can hold (§A5). */
+export type ReviewState = "requested" | "approved" | "changes-requested";
+
+/**
+ * A ticket's review decision (`review.json`). `state` layers over the honest
+ * board state to derive the Review lane; it is NEVER a stored `WorkspaceStatus`.
+ * `comment` is required for `changes-requested` (a bounce reason, also appended
+ * to the comment thread). `validatePassed` snapshots the last Validate at the
+ * moment review was requested.
+ */
+export interface ReviewRecord {
+  subtaskId: string;
+  state: ReviewState;
+  by: string;
+  comment: string | null;
+  atMs: number;
+  validatePassed: boolean;
+}
+
+/**
+ * The batched gate side-load for a whole board (§J8): one `get_board_gates`
+ * read returns every ticket's `review.json` + `validate.json`, so the board
+ * renders lanes + chips in one round-trip instead of N per-ticket reads. Absent
+ * entries just mean "no gate file yet" (a ticket never validated / never
+ * reviewed).
+ */
+export interface BoardGates {
+  reviews: ReviewRecord[];
+  validations: ValidateResult[];
+}
+
+/** The review decision passed to `resolve_review`. */
+export type ReviewDecision = "approve" | "bounce";
+
+/**
+ * Payload of the NEW `phasr://board-changed` event (Architect Stage-1 §R2): the
+ * app emits this after any successful gate mutation (from a Tauri command OR the
+ * `phasr` CLI IPC server) so an open board invalidates + refetches keyed on
+ * `parentId`. Unlike `phasr://task-status` (keyed on a KNOWN subtask id), this
+ * surfaces lane moves AND brand-new sibling tickets live.
+ */
+export interface BoardChangedPayload {
+  parentId: string;
 }

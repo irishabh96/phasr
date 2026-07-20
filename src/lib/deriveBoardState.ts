@@ -5,6 +5,7 @@ import {
 } from "@/lib/deriveAgentState";
 import type {
   BoardState,
+  ReviewRecord,
   WorkspaceContract,
   WorkspaceDependency,
   Workspace,
@@ -21,8 +22,22 @@ import type {
  *                     Rendered NEUTRAL/MUTED, never coral — "it is not on you".
  * - `needs-review`  — this subtask finished its job (its contract is published,
  *                     or it exited cleanly / `done`) and is awaiting integration.
+ *
+ * Phase 3 (§R2 / §A5) layers the review decision (`review.json`) on TOP as two
+ * more derived-only buckets — still never a stored `WorkspaceStatus` (invariant
+ * #10). `approved` collapses back into `needs-review` (it is integrate-eligible):
+ *
+ * - `in-review`             — `review.state:"requested"` — in the Review lane,
+ *                             awaiting the reviewer's Approve / Bounce-back.
+ * - `qas-changes-requested` — `review.state:"changes-requested"` — re-opened to
+ *                             In progress, carrying the neutral bounce chip.
  */
-export type BoardCardState = AgentUiState | "blocked" | "needs-review";
+export type BoardCardState =
+  | AgentUiState
+  | "blocked"
+  | "needs-review"
+  | "in-review"
+  | "qas-changes-requested";
 
 /** The four read-only board lanes, left → right. States are DERIVED, not draggable. */
 export type BoardColumn = "backlog" | "in-progress" | "review" | "done";
@@ -70,20 +85,44 @@ function isBlocked(subtask: Workspace, board: BoardGraph): boolean {
 /**
  * Derive one subtask card's board state. PURE — unit-tested across every
  * precedence branch. Reuses Step 0's `deriveAgentState` for the honest running
- * status, then layers the two board-only buckets on top. Precedence:
+ * status, then layers the board-only buckets on top. Precedence:
  *
+ *   0. review.json decision (Phase 3, §R2) — supersedes the honest lane:
+ *        "requested"          → `in-review`               (Review lane)
+ *        "changes-requested"  → `qas-changes-requested`   (re-opened → In progress)
+ *        "approved"           → `needs-review`            (integrate-eligible)
  *   1. published contract → `needs-review`  (handoff complete, strongest signal)
  *   2. honest `done`      → `needs-review`  (clean exit = ready for review)
  *   3. pending + unsatisfied incoming edge → `blocked`
  *   4. otherwise the honest `deriveAgentState` value (working/idle/wedged/…)
+ *
+ * `review` is optional + derived-only — passing `undefined` reproduces the P0
+ * behavior exactly (no review ever moves the lane), keeping every existing
+ * call-site correct.
  */
 export function deriveBoardState(
   subtask: Workspace,
   board: BoardGraph,
   liveness: AgentLiveness | undefined,
   now: number,
+  review?: ReviewRecord,
 ): BoardCardResult {
   const agent = deriveAgentState(subtask, liveness, now);
+
+  // 0. The review decision layers OVER the honest state (a file, never a stored
+  //    status). It is the ticket's current lane once a review exists.
+  if (review) {
+    if (review.state === "requested") {
+      return { state: "in-review", since: agent.since };
+    }
+    if (review.state === "changes-requested") {
+      return { state: "qas-changes-requested", since: agent.since };
+    }
+    if (review.state === "approved") {
+      // Approved stays in Review, marked integrate-eligible (`needs-review`).
+      return { state: "needs-review", since: agent.since };
+    }
+  }
 
   // 1. A published contract is the strongest "this subtask finished its job"
   //    signal — ready for review regardless of whether the PTY is still up.
@@ -111,10 +150,7 @@ export function deriveBoardState(
  * backend" chip. Resolves each unsatisfied incoming edge's producer id to its
  * `role`. Empty when the subtask isn't blocked.
  */
-export function blockingRoles(
-  subtask: Workspace,
-  board: BoardState,
-): string[] {
+export function blockingRoles(subtask: Workspace, board: BoardState): string[] {
   if (!isBlocked(subtask, board)) return [];
   const roles: string[] = [];
   for (const edge of incomingEdges(subtask.id, board.dependencies)) {
@@ -140,9 +176,13 @@ export function boardColumn(state: BoardCardState): BoardColumn {
     case "wedged":
     case "failed":
     case "interrupted":
+    // A bounced ticket is re-opened for re-work — back in the In-progress lane.
+    case "qas-changes-requested":
       return "in-progress";
-    // Contract published / clean exit — awaiting the human's integrate review.
+    // Contract published / clean exit / approved — awaiting the human's integrate
+    // review; `in-review` sits in the same lane while QAS decides.
     case "needs-review":
+    case "in-review":
       return "review";
     // Integrated (P0: only the parent lands here once integration ships).
     case "done":

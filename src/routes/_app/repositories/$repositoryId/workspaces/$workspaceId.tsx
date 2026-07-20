@@ -1,6 +1,16 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Link, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ChevronLeft, Loader2, PanelRight, PanelRightClose } from "lucide-react";
+import {
+  Link,
+  Navigate,
+  createFileRoute,
+  useNavigate,
+} from "@tanstack/react-router";
+import {
+  ChevronLeft,
+  Loader2,
+  PanelRight,
+  PanelRightClose,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AgentStatusBadge } from "@/components/AgentStatusBadge";
 import { BranchChip } from "@/components/BranchChip";
@@ -15,6 +25,7 @@ import { PinnedRunCommandsToolbar } from "@/components/PinnedRunCommandsToolbar"
 import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
 import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
+import { TicketNextGate } from "@/components/board/TicketNextGate";
 import { WorkspaceAgentToolbar } from "@/components/WorkspaceAgentToolbar";
 import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
@@ -280,6 +291,11 @@ function WorkspaceDetail() {
                 collapsed={rightPanelCollapsed}
                 onToggle={toggleRightPanel}
               />
+            )}
+            {/* The ticket's single derived next gate (Page 04): Request review /
+                Approve+Bounce / Validate — the one primary per §G1. */}
+            {isSubtask && workspace.worktreePath && (
+              <TicketNextGate workspace={workspace} />
             )}
             <WorkspaceActionsMenu workspace={workspace} />
           </div>

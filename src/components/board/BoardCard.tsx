@@ -1,15 +1,28 @@
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Check, Eye, Loader2, Lock } from "lucide-react";
+import { Eye, Lock } from "lucide-react";
 import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
 import { AgentStatusIndicator } from "@/components/ui/AgentStatusIndicator";
-import { GlassButton } from "@/components/ui/GlassButton";
+import { NextGateButton } from "@/components/board/NextGateButton";
+import {
+  ApprovedChip,
+  ChangesRequestedChip,
+  InReviewChip,
+  ValidateChip,
+} from "@/components/board/GateChips";
 import type { BoardCardState } from "@/lib/deriveBoardState";
 import type { AgentUiState } from "@/lib/deriveAgentState";
+import type { GateVerb, NextGate } from "@/lib/deriveNextGate";
+import type { ReviewRecord, ValidateResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** A board-card state that is a plain honest agent state (Step 0). */
 function isAgentUiState(state: BoardCardState): state is AgentUiState {
-  return state !== "blocked" && state !== "needs-review";
+  return (
+    state !== "blocked" &&
+    state !== "needs-review" &&
+    state !== "in-review" &&
+    state !== "qas-changes-requested"
+  );
 }
 
 export interface BoardCardViewProps {
@@ -25,14 +38,26 @@ export interface BoardCardViewProps {
    */
   blockedOnRoles?: string[];
   /**
-   * "Mark done" override (E2-T4). Supplied ONLY for a producer subtask that
-   * hasn't published its handoff contract yet — clicking manually publishes it
-   * so a stuck agent never leaves its dependent silently blocked. Omit to hide
-   * the affordance entirely (blocked consumers, already-published producers).
+   * The ticket's `review.json`. Drives the Approved chip (over the plain Ready-
+   * for-review chip) and the bounce reason surfaced on a re-opened card.
    */
-  onMarkDone?: () => void;
-  /** Disables the "Mark done" button + shows a spinner while publishing. */
-  markDonePending?: boolean;
+  review?: ReviewRecord | null;
+  /** The ticket's last `validate.json` — drives the Validate chip (V2). */
+  validate?: ValidateResult | null;
+  /** ≥1 run command is a Validate check (drives the "Add a check" affordance). */
+  checksConfigured?: boolean;
+  /**
+   * The ticket's derived next gate (Phase 3 G1). When supplied, the card renders
+   * the shared {@link NextGateButton} (generalizing the old "Mark done"). Omit
+   * on a purely presentational card.
+   */
+  gate?: NextGate;
+  /** Runs the gate's mutation (validate / request-review / approve). */
+  onRunGate?: (verb: GateVerb) => void | Promise<unknown>;
+  /** Bounce-back (changes requested) with a required comment. */
+  onBounceGate?: (comment: string) => void | Promise<unknown>;
+  /** In-flight guard for the card's gate button. */
+  gatePending?: boolean;
   /**
    * Open this subtask's detail view (the drill-in — a subtask id IS a workspace
    * id). When supplied the whole card becomes a keyboard-activatable button;
@@ -60,8 +85,13 @@ export function BoardCardView({
   since,
   exitCode,
   blockedOnRoles = [],
-  onMarkDone,
-  markDonePending = false,
+  review,
+  validate,
+  checksConfigured = false,
+  gate,
+  onRunGate,
+  onBounceGate,
+  gatePending = false,
   onOpen,
 }: BoardCardViewProps) {
   const interactive = !!onOpen;
@@ -115,31 +145,43 @@ export function BoardCardView({
           />
         ) : state === "blocked" ? (
           <BlockedChip blockedOnRoles={blockedOnRoles} />
+        ) : state === "in-review" ? (
+          <InReviewChip />
+        ) : state === "qas-changes-requested" ? (
+          <ChangesRequestedChip comment={review?.comment ?? null} />
+        ) : review?.state === "approved" ? (
+          <ApprovedChip />
         ) : (
           <ReviewChip />
         )}
-        {onMarkDone && (
-          <GlassButton
-            variant="ghost"
-            size="sm"
-            data-testid="board-mark-done"
-            className="ml-auto shrink-0 gap-1"
-            disabled={markDonePending}
-            onClick={(e) => {
-              // Nested button inside a clickable card — never open the drill-in.
-              e.stopPropagation();
-              onMarkDone();
-            }}
-            title="Publish this subtask's handoff contract so its dependents unblock."
+
+        {/* Validate chip (V2) — only once checks exist for the repo or a result
+            is present, so a checkless repo's cards stay calm. */}
+        {state !== "blocked" && (checksConfigured || validate) ? (
+          <ValidateChip
+            validate={validate}
+            checksConfigured={checksConfigured}
+          />
+        ) : null}
+
+        {/* The one derived next gate for this ticket (generalizes Mark-done). */}
+        {gate ? (
+          <span
+            className="ml-auto shrink-0"
+            // Nested interactive controls inside a clickable card — never open
+            // the drill-in when the gate (or its dialogs) is used.
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
           >
-            {markDonePending ? (
-              <Loader2 className="size-3 animate-spin" aria-hidden="true" />
-            ) : (
-              <Check className="size-3" aria-hidden="true" />
-            )}
-            {markDonePending ? "Publishing…" : "Mark done"}
-          </GlassButton>
-        )}
+            <NextGateButton
+              gate={gate}
+              size="sm"
+              pending={gatePending}
+              onRun={onRunGate ?? (() => {})}
+              {...(onBounceGate ? { onBounce: onBounceGate } : {})}
+            />
+          </span>
+        ) : null}
       </div>
     </article>
   );
