@@ -37,8 +37,9 @@ use super::error::OrchestratorError;
 use super::liveness::{classify, DerivedState, LivenessThresholds, LIVENESS_POLL_INTERVAL};
 use super::repo_locks::RepoLockRegistry;
 use super::scheduler::{
-    augment_prompt, consumer_prompt_prefix, contract_file_is_ready, incoming_producer_ids,
-    is_producer, producer_prompt_suffix, ready_subtask_ids, ContractSeed, SchedulerConfig,
+    augment_prompt, brief_prompt_pointer, consumer_prompt_prefix, contract_file_is_ready,
+    incoming_producer_ids, is_producer, producer_prompt_suffix, ready_subtask_ids, ContractSeed,
+    SchedulerConfig,
 };
 use super::templating::interpolate_command;
 
@@ -940,8 +941,20 @@ impl TaskOrchestrator {
         } else {
             Some(consumer_prompt_prefix(&seeds))
         };
+
+        // Brief pointer (T3): name the ticket's brief files on the MAIN checkout
+        // (`repository_path` is `repository.local_path`, NOT the worktree). The
+        // dir is scaffolded at decompose (T2); we best-effort `create_dir_all`
+        // here too — mirroring the contract-dir precreate above — so the paths
+        // the pointer names always exist, then ALWAYS include the pointer once
+        // the dir is scaffolded (an empty brief is not an error, architect #5).
+        let brief = crate::tickets::ensure_ticket_dir(&repository_path, &subtask.id)
+            .map(|ticket_dir| brief_prompt_pointer(&ticket_dir))
+            .ok();
+
         let augmented_prompt = augment_prompt(
             subtask.prompt.as_deref(),
+            brief.as_deref(),
             producer_suffix.as_deref(),
             consumer_prefix.as_deref(),
         );

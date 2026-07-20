@@ -187,6 +187,7 @@ pub async fn start_decomposition(
     input: DecompositionInput,
     workspaces: State<'_, WorkspaceRepo>,
     board: State<'_, BoardRepo>,
+    repositories: State<'_, RepositoryRepo>,
     repo_locks: State<'_, Arc<RepoLockRegistry>>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
@@ -202,7 +203,9 @@ pub async fn start_decomposition(
     // git/DB mutations, not intra-write atomicity.)
     let lock = repo_locks.for_repository(&input.repository_id);
     let guard = lock.lock().await;
-    let assembled = create_decomposition_inner(&input, &current.user_id, &workspaces, &board).await;
+    let assembled =
+        create_decomposition_inner(&input, &current.user_id, &workspaces, &board, &repositories)
+            .await;
     drop(guard);
 
     let assembled = assembled?;
@@ -419,6 +422,7 @@ async fn create_decomposition_inner(
     user_id: &str,
     workspaces: &WorkspaceRepo,
     board: &BoardRepo,
+    repositories: &RepositoryRepo,
 ) -> Result<Board, BoardCmdError> {
     // Reject a malformed plan BEFORE any write, so nothing is persisted for a
     // bad input (the "no orphan rows" AC holds for invalid plans too). The SAME
@@ -486,9 +490,50 @@ async fn create_decomposition_inner(
         .create_decomposition(&parent, &subtasks, &dependencies, Some(user_id))
         .await?;
 
+    // 5. Scaffold each subtask's ticket folder on the MAIN checkout so a brief
+    //    exists before the agent spawns (T2). Best-effort: a scaffold failure
+    //    (permissions, a missing checkout) must NEVER fail the decomposition —
+    //    the Brief tab degrades to an empty-with-CTA state, not a hard error.
+    //    Skipped entirely when the repo has no `local_path` (architect #5).
+    scaffold_ticket_folders(&input.repository_id, &subtasks, repositories).await;
+
     // Return the assembled board, owner-scoped, so the caller renders the same
     // shape `get_board` returns.
     Ok(board.get_board_for_user(workspaces, &parent.id, user_id).await?)
+}
+
+/// Best-effort scaffold of `<repo>/.phasr/tickets/<subtaskId>/` for every freshly
+/// minted subtask (T2). Resolves `repository.local_path` via the threaded
+/// `RepositoryRepo` (architect #5); a repo with no checkout, or any per-ticket
+/// scaffold error, is logged and skipped — decomposition already succeeded, so a
+/// docs-scaffold hiccup can't undo it. Idempotent (a re-decompose re-scaffolds
+/// fresh ids; `scaffold_ticket` never clobbers existing content).
+async fn scaffold_ticket_folders(
+    repository_id: &str,
+    subtasks: &[Workspace],
+    repositories: &RepositoryRepo,
+) {
+    let Ok(repository) = repositories.get(repository_id).await else {
+        return;
+    };
+    let Some(repo_root) = repository.local_path.as_deref() else {
+        // No local checkout → nothing to scaffold against (architect #5).
+        return;
+    };
+    let repo_root = std::path::Path::new(repo_root);
+    for subtask in subtasks {
+        // `ticket.md`: H1 = the subtask's display name (its role), body = the
+        // subtask prompt (empty prompt → empty body, never an error).
+        let description = subtask.prompt.as_deref().unwrap_or("");
+        if let Err(err) = crate::tickets::scaffold_ticket(
+            repo_root,
+            &subtask.id,
+            &subtask.name,
+            description,
+        ) {
+            eprintln!("board: failed to scaffold ticket folder for {}: {err}", subtask.id);
+        }
+    }
 }
 
 /// The most subtasks a single decomposition may contain (D-OQ1). A sane board
@@ -893,7 +938,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn fresh() -> (WorkspaceRepo, BoardRepo, Repository) {
+    async fn fresh() -> (WorkspaceRepo, BoardRepo, RepositoryRepo, Repository) {
         let dir = tempfile::tempdir().unwrap();
         let path: PathBuf = dir.path().join("test.sqlite");
         let pool = init_pool(&path).await.unwrap();
@@ -901,11 +946,15 @@ mod tests {
         let repos = RepositoryRepo::new(pool.clone());
         let workspaces = WorkspaceRepo::new(pool.clone());
         let board = BoardRepo::new(pool.clone());
+        // No local_path → the T2 scaffold hook cleanly no-ops (architect #5), so
+        // these DAG-shape tests exercise the gate without touching the fs. The
+        // scaffold itself is covered by `scaffold_at_decompose_*` below + the
+        // `tickets` module tests.
         let r = Repository::new("repo".into(), None, None);
         repos.insert(&r).await.unwrap();
         seed_user(&pool, "user-a").await;
         seed_user(&pool, "user-b").await;
-        (workspaces, board, r)
+        (workspaces, board, repos, r)
     }
 
     fn sample_input(repository_id: &str) -> DecompositionInput {
@@ -936,8 +985,8 @@ mod tests {
     // PTY), and the parent has no agent.
     #[tokio::test]
     async fn start_decomposition_creates_dag_and_spawns_nothing() {
-        let (workspaces, board, repo) = fresh().await;
-        let b = create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board)
+        let (workspaces, board, repositories, repo) = fresh().await;
+        let b = create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
             .await
             .unwrap();
 
@@ -985,9 +1034,9 @@ mod tests {
     // `get_board`'s read path returns the same board the gate just wrote.
     #[tokio::test]
     async fn get_board_reads_back_the_created_decomposition() {
-        let (workspaces, board, repo) = fresh().await;
+        let (workspaces, board, repositories, repo) = fresh().await;
         let created =
-            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board)
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
                 .await
                 .unwrap();
 
@@ -1003,9 +1052,9 @@ mod tests {
     // Owner scoping: a different signed-in account can't read the board.
     #[tokio::test]
     async fn board_is_scoped_to_the_owner() {
-        let (workspaces, board, repo) = fresh().await;
+        let (workspaces, board, repositories, repo) = fresh().await;
         let created =
-            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board)
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
                 .await
                 .unwrap();
 
@@ -1028,9 +1077,9 @@ mod tests {
     // top-level workspace list that backs the sidebar.
     #[tokio::test]
     async fn subtasks_do_not_leak_into_the_flat_workspace_list() {
-        let (workspaces, board, repo) = fresh().await;
+        let (workspaces, board, repositories, repo) = fresh().await;
         let created =
-            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board)
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
                 .await
                 .unwrap();
 
@@ -1054,13 +1103,13 @@ mod tests {
     // start_task's deliberate-re-run-makes-fresh-state semantics.
     #[tokio::test]
     async fn re_decompose_mints_a_fresh_independent_parent() {
-        let (workspaces, board, repo) = fresh().await;
+        let (workspaces, board, repositories, repo) = fresh().await;
         let first =
-            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board)
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
                 .await
                 .unwrap();
         let second =
-            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board)
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
                 .await
                 .unwrap();
 
@@ -1077,13 +1126,13 @@ mod tests {
     // A malformed plan is a clear error, and NOTHING is persisted for it.
     #[tokio::test]
     async fn malformed_decomposition_is_rejected_and_persists_nothing() {
-        let (workspaces, board, repo) = fresh().await;
+        let (workspaces, board, repositories, repo) = fresh().await;
 
         // Duplicate role.
         let mut dup = sample_input(&repo.id);
         dup.subtasks[1].role = "backend".into();
         assert!(matches!(
-            create_decomposition_inner(&dup, "user-a", &workspaces, &board).await,
+            create_decomposition_inner(&dup, "user-a", &workspaces, &board, &repositories).await,
             Err(BoardCmdError::InvalidDecomposition(_))
         ));
 
@@ -1094,7 +1143,7 @@ mod tests {
             to_role: "backend".into(),
         };
         assert!(matches!(
-            create_decomposition_inner(&self_edge, "user-a", &workspaces, &board).await,
+            create_decomposition_inner(&self_edge, "user-a", &workspaces, &board, &repositories).await,
             Err(BoardCmdError::InvalidDecomposition(_))
         ));
 
@@ -1105,7 +1154,7 @@ mod tests {
             to_role: "nope".into(),
         };
         assert!(matches!(
-            create_decomposition_inner(&dangling, "user-a", &workspaces, &board).await,
+            create_decomposition_inner(&dangling, "user-a", &workspaces, &board, &repositories).await,
             Err(BoardCmdError::InvalidDecomposition(_))
         ));
 
@@ -1117,7 +1166,7 @@ mod tests {
             edges: vec![],
         };
         assert!(matches!(
-            create_decomposition_inner(&empty, "user-a", &workspaces, &board).await,
+            create_decomposition_inner(&empty, "user-a", &workspaces, &board, &repositories).await,
             Err(BoardCmdError::InvalidDecomposition(_))
         ));
 
@@ -1127,6 +1176,45 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    // T2: decomposing against a repo WITH a local checkout scaffolds a ticket
+    // folder for every subtask (H1 = role, body = prompt), so a brief exists
+    // before any agent spawns.
+    #[tokio::test]
+    async fn scaffold_at_decompose_creates_ticket_folders() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let created =
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repos)
+                .await
+                .unwrap();
+
+        let repo_root = std::path::Path::new(repo.local_path.as_deref().unwrap());
+        for subtask in &created.subtasks {
+            let dir = repo_root.join(".phasr").join("tickets").join(&subtask.id);
+            assert!(dir.join("ticket.md").is_file(), "ticket.md scaffolded for {}", subtask.id);
+            assert!(dir.join("prd.md").is_file());
+            assert!(dir.join("trd.md").is_file());
+            assert!(dir.join("figma.json").is_file());
+            assert!(dir.join("assets").is_dir());
+            // The H1 is the subtask role; the body is its seed prompt.
+            let ticket = std::fs::read_to_string(dir.join("ticket.md")).unwrap();
+            let role = subtask.role.as_deref().unwrap();
+            assert!(ticket.starts_with(&format!("# {role}")), "{ticket:?}");
+        }
+    }
+
+    // T2: scaffolding is best-effort — a repo with NO local checkout scaffolds
+    // nothing yet the decomposition still succeeds (the gate never depends on the
+    // docs write). `fresh()` uses a path-less repo, so this is the common case.
+    #[tokio::test]
+    async fn decompose_without_a_checkout_scaffolds_nothing_but_still_succeeds() {
+        let (workspaces, board, repositories, repo) = fresh().await;
+        let created =
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repositories)
+                .await
+                .expect("decomposition succeeds even with no checkout to scaffold");
+        assert_eq!(created.subtasks.len(), 2);
     }
 
     #[test]

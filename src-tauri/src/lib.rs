@@ -12,6 +12,7 @@ mod orchestrator;
 mod pty;
 mod store;
 mod sync;
+mod tickets;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -46,6 +47,11 @@ pub fn run() {
         .manage(Arc::new(
             commands::notifications::NotificationRouteRegistry::default(),
         ))
+        // Records the hash of the bytes the ticket file-service last wrote to
+        // each brief file. Shared so `write_ticket_section` (T4) can skip a
+        // spurious mtime-only conflict and the future `watch_ticket` (T7) can
+        // suppress its own-write change events by hash (architect #2).
+        .manage(Arc::new(tickets::TicketWriteRegistry::default()))
         .setup(|app| {
             auth_deeplink::configure_auth_deeplink(app)?;
 
@@ -167,6 +173,8 @@ pub fn run() {
             commands::board::integrate_parent,
             commands::board::board_integration_diff,
             commands::board::board_integration_file_diff,
+            commands::tickets::read_ticket_brief,
+            commands::tickets::write_ticket_section,
             commands::planner::plan_decomposition,
             commands::git::git_status,
             commands::git::git_diff,

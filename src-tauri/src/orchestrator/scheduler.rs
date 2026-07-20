@@ -186,18 +186,46 @@ pub fn consumer_prompt_prefix(seeds: &[ContractSeed]) -> String {
     out
 }
 
+/// Point the agent at its ticket brief (T3). The paths are ABSOLUTE and on the
+/// MAIN checkout (`<repo>/.phasr/tickets/<id>/…`), NOT the subtask's worktree:
+/// the brief is authored/uncommitted on the main checkout, so a fresh worktree
+/// (which only sees committed files) can't see it — the agent reads it via this
+/// out-of-worktree path, exactly like the published-contract pattern (A3 /
+/// architect #1). Always current, no commit needed at spawn.
+pub fn brief_prompt_pointer(ticket_dir: &std::path::Path) -> String {
+    let dir = ticket_dir.display();
+    format!(
+        "Your ticket brief (read-only reference, on the main checkout — OUTSIDE \
+         your worktree, so read it directly by absolute path):\n\
+         - `{dir}/prd.md` — product requirements\n\
+         - `{dir}/trd.md` — technical requirements\n\
+         - `{dir}/figma.json` — linked designs\n\
+         - `{dir}/assets/` — attached files\n\
+         Read these before you start; they define what to build. An empty file \
+         just means that section hasn't been written yet.\n\n---\n\n"
+    )
+}
+
 /// Assemble a subtask's spawn-time prompt from its base prompt plus (optional)
-/// producer suffix and consumer prefix. Returns `None` only when everything is
-/// empty (no base, not a producer, no seeds) so an all-empty prompt stays NULL —
-/// matching how the decomposition gate's `non_empty_prompt` treats a blank.
+/// brief pointer, producer suffix, and consumer prefix. Composition order is
+/// `[consumer_prefix (contracts)] [brief] [base] [producer_suffix]` (§C.2) —
+/// Phase 4's persona segment will prepend before `consumer_prefix`, keeping the
+/// documented final order `[persona][contracts][brief][base][producer]`. Returns
+/// `None` only when everything is empty (no base, no brief, not a producer, no
+/// seeds) so an all-empty prompt stays NULL — matching how the decomposition
+/// gate's `non_empty_prompt` treats a blank.
 pub fn augment_prompt(
     base: Option<&str>,
+    brief: Option<&str>,
     producer_suffix: Option<&str>,
     consumer_prefix: Option<&str>,
 ) -> Option<String> {
     let mut out = String::new();
     if let Some(prefix) = consumer_prefix {
         out.push_str(prefix);
+    }
+    if let Some(brief) = brief {
+        out.push_str(brief);
     }
     if let Some(base) = base {
         out.push_str(base);
@@ -355,17 +383,54 @@ mod tests {
 
     #[test]
     fn augment_prompt_composes_prefix_base_suffix_and_collapses_empty() {
-        // Producer: base + suffix.
-        let out = augment_prompt(Some("do the backend"), Some(" [WRITE CONTRACT]"), None).unwrap();
+        // Producer: base + suffix (no brief).
+        let out =
+            augment_prompt(Some("do the backend"), None, Some(" [WRITE CONTRACT]"), None).unwrap();
         assert_eq!(out, "do the backend [WRITE CONTRACT]");
 
-        // Consumer: prefix + base.
-        let out = augment_prompt(Some("do the frontend"), None, Some("[CONTRACT] ")).unwrap();
+        // Consumer: prefix + base (no brief).
+        let out =
+            augment_prompt(Some("do the frontend"), None, None, Some("[CONTRACT] ")).unwrap();
         assert_eq!(out, "[CONTRACT] do the frontend");
 
         // Nothing at all → NULL (not an empty string).
-        assert_eq!(augment_prompt(None, None, None), None);
-        assert_eq!(augment_prompt(Some("   "), None, None), None);
+        assert_eq!(augment_prompt(None, None, None, None), None);
+        assert_eq!(augment_prompt(Some("   "), None, None, None), None);
+    }
+
+    // T3: the 4-arg composition order is exactly
+    // `[consumer_prefix (contracts)] [brief] [base] [producer_suffix]`.
+    #[test]
+    fn augment_prompt_places_brief_between_contracts_and_base() {
+        let out = augment_prompt(
+            Some("BASE"),
+            Some("BRIEF "),
+            Some(" SUFFIX"),
+            Some("PREFIX "),
+        )
+        .unwrap();
+        assert_eq!(out, "PREFIX BRIEF BASE SUFFIX");
+
+        // Brief-only (an empty-prompt subtask with no edges) still produces a
+        // prompt — an empty brief is not an error, the pointer is still useful.
+        let out = augment_prompt(None, Some("BRIEF"), None, None).unwrap();
+        assert_eq!(out, "BRIEF");
+
+        // Brief + base, no contracts/producer (the common single-consumer case).
+        let out = augment_prompt(Some("BASE"), Some("BRIEF "), None, None).unwrap();
+        assert_eq!(out, "BRIEF BASE");
+    }
+
+    // T3: the pointer names the absolute main-repo ticket files (NOT the
+    // worktree) so the agent reads the always-current brief (architect #1/A3).
+    #[test]
+    fn brief_pointer_names_the_absolute_main_repo_ticket_paths() {
+        let dir = std::path::Path::new("/repo/.phasr/tickets/ticket-1");
+        let pointer = brief_prompt_pointer(dir);
+        assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/prd.md"));
+        assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/trd.md"));
+        assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/figma.json"));
+        assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/assets/"));
     }
 
     #[test]
