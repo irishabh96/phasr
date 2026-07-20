@@ -59,6 +59,7 @@ pub async fn start_session_terminal(
         PathBuf::from(cwd),
         rows.unwrap_or(24),
         cols.unwrap_or(80),
+        Vec::new(),
     )?;
 
     let (replay, rx) = handle.subscribe_with_replay();

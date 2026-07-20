@@ -589,6 +589,105 @@ async fn scaffold_ticket_folders(
     }
 }
 
+/// Add ONE subtask to an EXISTING epic — the `phasr new-ticket` CLI verb (A6 /
+/// §R5). Bounded to `parent_id` (the token's OWN epic): the IPC server passes the
+/// grant's `parent_id`, never a request-supplied one, so an agent can only grow
+/// its own board. Inserts a Pending, owner-stamped subtask (+ an optional
+/// `--after <role>` dependency edge); the scheduler mints its worktree/PTY on the
+/// next tick once its incoming edges are satisfied — no spawn happens here, exactly
+/// like the decomposition gate. Returns the new subtask id.
+///
+/// `pub(crate)` so the CLI IPC server reuses it (same reuse rationale as the other
+/// `_inner`s). Owner-scoped throughout (`get_for_user`/`list_by_parent_for_user`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn add_subtask_inner(
+    parent_id: &str,
+    user_id: &str,
+    role: &str,
+    agent: Agent,
+    prompt: &str,
+    after_role: Option<&str>,
+    workspaces: &WorkspaceRepo,
+    board: &BoardRepo,
+    repositories: &RepositoryRepo,
+) -> Result<String, BoardCmdError> {
+    let role = role.trim();
+    if role.is_empty() {
+        return Err(BoardCmdError::InvalidDecomposition(
+            "a new ticket needs a non-empty role".into(),
+        ));
+    }
+
+    // Owner-scoped read = the access boundary. A non-parent id, or a parent owned
+    // by another account, can't be grown.
+    let parent = workspaces.get_for_user(parent_id, user_id).await?;
+    if parent.workspace_kind != WorkspaceKind::Parent {
+        return Err(BoardCmdError::InvalidDecomposition(format!(
+            "workspace `{parent_id}` is not an epic — cannot add a ticket to it"
+        )));
+    }
+
+    // Enforce the same `(parent, role)` uniqueness the decompose gate does, and
+    // resolve an optional `--after` producer BEFORE any write, so a bad reference
+    // is a clean error rather than a half-written ticket.
+    let siblings = workspaces
+        .list_by_parent_for_user(parent_id, user_id)
+        .await?;
+    if siblings.iter().any(|s| s.role.as_deref() == Some(role)) {
+        return Err(BoardCmdError::InvalidDecomposition(format!(
+            "a ticket with role `{role}` already exists in this epic"
+        )));
+    }
+    let after_id = match after_role.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(after) => Some(
+            siblings
+                .iter()
+                .find(|s| s.role.as_deref() == Some(after))
+                .map(|s| s.id.clone())
+                .ok_or_else(|| {
+                    BoardCmdError::InvalidDecomposition(format!(
+                        "--after references unknown role `{after}` in this epic"
+                    ))
+                })?,
+        ),
+        None => None,
+    };
+
+    // Build the Pending subtask — NO branch/worktree/PTY; the scheduler mints
+    // those once it becomes ready. Inherits the epic's repository.
+    let mut subtask = Workspace::new(
+        parent.repository_id.clone(),
+        role.to_string(),
+        agent.command().to_string(),
+    );
+    subtask.workspace_kind = WorkspaceKind::Subtask;
+    subtask.parent_id = Some(parent_id.to_string());
+    subtask.role = Some(role.to_string());
+    subtask.agent = Some(agent);
+    subtask.prompt = non_empty_prompt(prompt);
+    let new_id = subtask.id.clone();
+    workspaces.insert_for_user(&subtask, user_id).await?;
+
+    // Optional dependency: the new ticket depends on `--after`'s ticket, so it
+    // stays blocked until that producer publishes its contract (edge = from→to).
+    if let Some(producer_id) = after_id {
+        board
+            .insert_dependency(&WorkspaceDependency::new(
+                parent_id.to_string(),
+                producer_id,
+                new_id.clone(),
+            ))
+            .await?;
+    }
+
+    // Best-effort scaffold of the new ticket's brief folder (same as the gate) so
+    // a brief exists before the agent spawns; a scaffold hiccup never fails the add.
+    scaffold_ticket_folders(&parent.repository_id, std::slice::from_ref(&subtask), repositories)
+        .await;
+
+    Ok(new_id)
+}
+
 /// The most subtasks a single decomposition may contain (D-OQ1). A sane board
 /// size that rejects a runaway plan (edges are implicitly bounded by the roles).
 /// Shared by the gate AND the planner (`orchestrator::planner`), which embeds it
@@ -1234,6 +1333,105 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    // CLI1 (§R5): `add_subtask_inner` (the `phasr new-ticket` verb) grows an
+    // EXISTING epic — a Pending subtask + an optional `--after` edge — and returns
+    // the new id. It spawns nothing (the scheduler does that later).
+    #[tokio::test]
+    async fn add_subtask_grows_the_epic_with_an_after_edge() {
+        let (workspaces, board, repositories, repo) = fresh().await;
+        let created = create_decomposition_inner(
+            &sample_input(&repo.id),
+            "user-a",
+            &workspaces,
+            &board,
+            &repositories,
+        )
+        .await
+        .unwrap();
+        let frontend = created
+            .subtasks
+            .iter()
+            .find(|s| s.role.as_deref() == Some("frontend"))
+            .unwrap();
+
+        let new_id = add_subtask_inner(
+            &created.parent.id,
+            "user-a",
+            "docs",
+            Agent::Claude,
+            "write the docs",
+            Some("frontend"),
+            &workspaces,
+            &board,
+            &repositories,
+        )
+        .await
+        .unwrap();
+
+        // The new subtask is Pending, kind=Subtask, under the same epic, no PTY.
+        let added = workspaces.get_for_user(&new_id, "user-a").await.unwrap();
+        assert_eq!(added.workspace_kind, WorkspaceKind::Subtask);
+        assert_eq!(added.status, WorkspaceStatus::Pending);
+        assert_eq!(added.parent_id.as_deref(), Some(created.parent.id.as_str()));
+        assert_eq!(added.role.as_deref(), Some("docs"));
+        assert!(added.branch.is_none() && added.worktree_path.is_none());
+
+        // The `--after frontend` edge landed: frontend (producer) → docs (consumer).
+        let deps = board.list_dependencies(&created.parent.id).await.unwrap();
+        assert!(
+            deps.iter()
+                .any(|e| e.from_subtask_id == frontend.id && e.to_subtask_id == new_id),
+            "the --after edge must make the new ticket depend on frontend"
+        );
+    }
+
+    // §R5: `new-ticket` is bounded to the token's own epic. A non-existent parent,
+    // or another account's parent, is `NotFound` (owner-scoped), and a duplicate
+    // role is rejected — an agent can only grow ITS epic, cleanly.
+    #[tokio::test]
+    async fn add_subtask_is_epic_bound_and_rejects_bad_input() {
+        let (workspaces, board, repositories, repo) = fresh().await;
+        let created = create_decomposition_inner(
+            &sample_input(&repo.id),
+            "user-a",
+            &workspaces,
+            &board,
+            &repositories,
+        )
+        .await
+        .unwrap();
+
+        // A different account cannot add to user-a's epic (owner-scoped NotFound).
+        assert!(matches!(
+            add_subtask_inner(
+                &created.parent.id, "user-b", "docs", Agent::Claude, "p", None,
+                &workspaces, &board, &repositories,
+            )
+            .await,
+            Err(BoardCmdError::Store(StoreError::NotFound))
+        ));
+
+        // A duplicate role is rejected (the (parent, role) uniqueness invariant).
+        assert!(matches!(
+            add_subtask_inner(
+                &created.parent.id, "user-a", "backend", Agent::Claude, "p", None,
+                &workspaces, &board, &repositories,
+            )
+            .await,
+            Err(BoardCmdError::InvalidDecomposition(_))
+        ));
+
+        // A dangling `--after` is a clean error, and nothing is persisted for it.
+        assert!(matches!(
+            add_subtask_inner(
+                &created.parent.id, "user-a", "docs", Agent::Claude, "p", Some("nope"),
+                &workspaces, &board, &repositories,
+            )
+            .await,
+            Err(BoardCmdError::InvalidDecomposition(_))
+        ));
     }
 
     // T2: decomposing against a repo WITH a local checkout scaffolds a ticket

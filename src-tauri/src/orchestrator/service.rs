@@ -33,13 +33,14 @@ use crate::pty::handle::PtyHandle;
 use crate::pty::{PtyEvent, TaskRuntime};
 use crate::store::{BoardRepo, RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
+use super::cli_tokens::{CliSpawnConfig, CliTokenRegistry};
 use super::error::OrchestratorError;
 use super::liveness::{classify, DerivedState, LivenessThresholds, LIVENESS_POLL_INTERVAL};
 use super::repo_locks::RepoLockRegistry;
 use super::scheduler::{
-    augment_prompt, brief_prompt_pointer, consumer_prompt_prefix, contract_file_is_ready,
-    incoming_producer_ids, is_producer, producer_prompt_suffix, ready_subtask_ids, ContractSeed,
-    SchedulerConfig,
+    augment_prompt, brief_prompt_pointer, cli_commands_prompt_segment, consumer_prompt_prefix,
+    contract_file_is_ready, incoming_producer_ids, is_producer, producer_prompt_suffix,
+    ready_subtask_ids, ContractSeed, SchedulerConfig,
 };
 use super::templating::interpolate_command;
 
@@ -111,6 +112,17 @@ pub struct TaskTerminalSubscription {
     pub rx: broadcast::Receiver<PtyEvent>,
 }
 
+/// The CLI seam (CLI1 / §R5/§J3): the shared token registry + the two runtime
+/// paths (`PHASR_BIN`/`PHASR_SOCK`) the scheduler injects so a spawned subtask's
+/// agent can advance its OWN board via `phasr <verb>`. Present in production (set
+/// at boot via `with_cli`); `None` under `cargo test`, so scheduled spawns inject
+/// NOTHING and stay byte-identical to pre-CLI behavior.
+#[derive(Clone)]
+struct CliSeam {
+    tokens: Arc<CliTokenRegistry>,
+    config: CliSpawnConfig,
+}
+
 /// The orchestrator itself. Hand it the dependencies it needs and call
 /// `start_task` / `stop_task` / `send_input`.
 #[derive(Clone)]
@@ -120,6 +132,7 @@ pub struct TaskOrchestrator {
     runtime: Arc<TaskRuntime>,
     repo_locks: Arc<RepoLockRegistry>,
     status_tx: broadcast::Sender<TaskStatusEvent>,
+    cli: Option<CliSeam>,
 }
 
 impl TaskOrchestrator {
@@ -141,7 +154,22 @@ impl TaskOrchestrator {
             runtime,
             repo_locks,
             status_tx,
+            // Off by default: only `with_cli` (called once at app boot) turns on
+            // per-subtask token minting + PHASR_* env injection. Tests never set
+            // it → scheduled spawns are unchanged.
+            cli: None,
         }
+    }
+
+    /// Turn on the CLI seam (CLI1): from now on `spawn_ready_subtask` mints a
+    /// per-subtask token in `tokens` and injects `PHASR_BIN`/`PHASR_SOCK`/
+    /// `PHASR_TOKEN` + the "commands you can run" prompt segment, and the
+    /// exit-watcher invalidates the token on subtask exit. Called once from
+    /// `lib.rs::initialize_database_state`; the SAME `tokens` Arc is shared with
+    /// the IPC server so mint (here) and resolve (there) see one map.
+    pub fn with_cli(mut self, tokens: Arc<CliTokenRegistry>, config: CliSpawnConfig) -> Self {
+        self.cli = Some(CliSeam { tokens, config });
+        self
     }
 
     pub fn subscribe_status(&self) -> broadcast::Receiver<TaskStatusEvent> {
@@ -270,6 +298,9 @@ impl TaskOrchestrator {
             worktree_path,
             request.rows.unwrap_or(24),
             request.cols.unwrap_or(80),
+            // A standalone agent gets no CLI env — only decomposition subtasks
+            // (spawn_ready_subtask) advance a board, so only they get PHASR_* (§J3).
+            Vec::new(),
         )?;
 
         self.broadcast_status(TaskStatusEvent {
@@ -423,6 +454,9 @@ impl TaskOrchestrator {
             cwd,
             rows,
             cols,
+            // Resuming a terminal re-attaches the existing task; the CLI env is
+            // seeded once at the scheduler spawn, not on every re-open.
+            Vec::new(),
         )?;
 
         self.broadcast_status(TaskStatusEvent {
@@ -569,12 +603,19 @@ impl TaskOrchestrator {
         let workspaces = self.workspaces.clone();
         let runtime = self.runtime.clone();
         let status_tx = self.status_tx.clone();
+        // Invalidate the subtask's CLI token when its process exits, so a dead
+        // agent's `PHASR_TOKEN` can't be replayed (§R5). A no-op for standalone
+        // agents (never minted) and under test (no CLI seam).
+        let cli = self.cli.clone();
 
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok(PtyEvent::Output { .. }) => continue,
                     Ok(PtyEvent::Exit { exit_code, .. }) => {
+                        if let Some(cli) = &cli {
+                            cli.tokens.invalidate_subtask(&task_id);
+                        }
                         let next = if exit_code == Some(0) {
                             WorkspaceStatus::Completed
                         } else {
@@ -952,6 +993,23 @@ impl TaskOrchestrator {
             .map(|ticket_dir| brief_prompt_pointer(&ticket_dir))
             .ok();
 
+        // CLI seam (CLI1 / §J3): resolve the subtask's owner ONCE here (a pure
+        // read, before the lock) — it gates BOTH the "commands you can run" prompt
+        // segment and (below) the PHASR_* env injection, so an agent is only told
+        // about `phasr` when it actually has a token. `None` when the CLI is off
+        // (tests) or the row is ownerless → nothing injected, byte-identical spawn.
+        let owner_id = match &self.cli {
+            Some(_) => self.workspaces.owner_id(&subtask.id).await.ok().flatten(),
+            None => None,
+        };
+        // Prepend the CLI orientation block to the brief slot (both are read-only
+        // orientation), leaving the rest of the composition order untouched.
+        let brief = match (owner_id.as_ref().map(|_| cli_commands_prompt_segment()), brief) {
+            (Some(cli), Some(b)) => Some(format!("{cli}{b}")),
+            (Some(cli), None) => Some(cli),
+            (None, b) => b,
+        };
+
         let augmented_prompt = augment_prompt(
             subtask.prompt.as_deref(),
             brief.as_deref(),
@@ -1014,6 +1072,28 @@ impl TaskOrchestrator {
         // subtask's own row/process, not the shared `.git` (start_task's order).
         drop(guard);
 
+        // Mint the per-subtask CLI token + assemble its PHASR_* env NOW — AFTER the
+        // idempotency check confirmed this tick owns the spawn, so a bailed re-tick
+        // never re-mints (and thus never invalidates) a live token (§R5). Empty
+        // when the CLI is off (tests) or the row is ownerless.
+        let cli_env = match (&self.cli, owner_id.as_deref()) {
+            (Some(cli), Some(user_id)) => {
+                let token = cli.tokens.mint(&subtask.id, user_id, &parent.id);
+                vec![
+                    (
+                        "PHASR_BIN".to_string(),
+                        cli.config.bin_path.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "PHASR_SOCK".to_string(),
+                        cli.config.socket_path.to_string_lossy().into_owned(),
+                    ),
+                    ("PHASR_TOKEN".to_string(), token),
+                ]
+            }
+            _ => Vec::new(),
+        };
+
         let pty_handle = self.runtime.spawn(
             subtask.id.clone(),
             Some(interpolated),
@@ -1021,6 +1101,7 @@ impl TaskOrchestrator {
             worktree_path,
             24,
             80,
+            cli_env,
         )?;
 
         self.broadcast_status(TaskStatusEvent {

@@ -7,7 +7,9 @@
 //! in `crate::commands::orchestrator` and forward straight through.
 
 mod board_events;
+mod cli_tokens;
 mod error;
+pub mod ipc_server;
 mod liveness;
 mod planner;
 mod repo_locks;
@@ -23,6 +25,12 @@ mod validate;
 // return type stays publicly nameable (not yet named internally).
 #[allow(unused_imports)]
 pub use board_events::{BoardChangedEvent, BoardEventBus};
+// The `phasr` CLI token registry (§R5): the scheduler mints per-subtask tokens
+// into it, the IPC server resolves them. `CliSpawnConfig` carries the two runtime
+// paths (`PHASR_BIN`/`PHASR_SOCK`) injected at spawn. `CliGrant` is re-exported so
+// `CliTokenRegistry::resolve`'s return type stays publicly nameable.
+#[allow(unused_imports)]
+pub use cli_tokens::{CliGrant, CliSpawnConfig, CliTokenRegistry};
 pub use error::OrchestratorError;
 // The captured, per-worktree Validate runner (V1) + its DTOs. Reused by
 // `commands::validate`; the DTOs round-trip through `validate.json`. `ValidateCheck`

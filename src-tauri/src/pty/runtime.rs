@@ -21,6 +21,10 @@ impl TaskRuntime {
         }
     }
 
+    /// `env` sets extra child-process environment on TOP of the terminal's
+    /// shaping. Every ordinary spawn passes an empty vec (byte-identical to
+    /// before); only the scheduler's `spawn_ready_subtask` populates it with the
+    /// per-ticket `PHASR_*` CLI vars (CLI1 / §J3).
     pub fn spawn(
         &self,
         task_id: String,
@@ -29,6 +33,7 @@ impl TaskRuntime {
         cwd: PathBuf,
         rows: u16,
         cols: u16,
+        env: Vec<(String, String)>,
     ) -> Result<Arc<PtyHandle>, PtyError> {
         {
             let running = self.running.lock();
@@ -46,6 +51,7 @@ impl TaskRuntime {
             log_path,
             rows,
             cols,
+            env,
         })?;
 
         self.running.lock().insert(task_id, handle.clone());
@@ -89,6 +95,7 @@ mod tests {
                 cwd,
                 24,
                 80,
+                Vec::new(),
             )
             .unwrap();
 
@@ -118,9 +125,9 @@ mod tests {
         let (runtime, _dir) = fresh_runtime();
         let cwd = std::env::temp_dir();
         runtime
-            .spawn("dupe".into(), None, None, cwd.clone(), 24, 80)
+            .spawn("dupe".into(), None, None, cwd.clone(), 24, 80, Vec::new())
             .unwrap();
-        let result = runtime.spawn("dupe".into(), None, None, cwd, 24, 80);
+        let result = runtime.spawn("dupe".into(), None, None, cwd, 24, 80, Vec::new());
         assert!(matches!(result, Err(PtyError::AlreadyRunning)));
     }
 
@@ -128,7 +135,9 @@ mod tests {
     fn kill_terminates_process() {
         let (runtime, _dir) = fresh_runtime();
         let cwd = std::env::temp_dir();
-        let handle = runtime.spawn("k1".into(), None, None, cwd, 24, 80).unwrap();
+        let handle = runtime
+            .spawn("k1".into(), None, None, cwd, 24, 80, Vec::new())
+            .unwrap();
 
         let mut rx = handle.subscribe();
         handle.kill().unwrap();

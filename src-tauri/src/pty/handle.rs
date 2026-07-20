@@ -75,6 +75,13 @@ pub struct PtySpawnOptions {
     pub log_path: PathBuf,
     pub rows: u16,
     pub cols: u16,
+    /// Extra environment variables to set on the child, applied AFTER the
+    /// terminal's own shaping (`shell::terminal_env`) so they win on a key
+    /// clash. Empty for every ordinary spawn (start/open/run-command/session) so
+    /// behavior is byte-identical; the scheduler's `spawn_ready_subtask` is the
+    /// ONLY populator — it injects `PHASR_BIN`/`PHASR_SOCK`/`PHASR_TOKEN` so a
+    /// ticket agent can advance its own board via `phasr <verb>` (CLI1 / §J3).
+    pub env: Vec<(String, String)>,
 }
 
 /// Owns one running task's PTY. Cheaply cloneable (`Arc` inside).
@@ -123,6 +130,7 @@ impl PtyHandle {
             log_path,
             rows,
             cols,
+            env,
         } = options;
 
         // Open the PTY and spawn the child.
@@ -146,6 +154,11 @@ impl PtyHandle {
             }
             cmd.cwd(&cwd);
             for (key, value) in shell::terminal_env(&launch.shell) {
+                cmd.env(key, value);
+            }
+            // Caller-supplied env LAST so it overrides the terminal shaping on a
+            // key clash (CLI1 injects PHASR_* here; empty for every other spawn).
+            for (key, value) in &env {
                 cmd.env(key, value);
             }
 
@@ -504,6 +517,7 @@ mod tests {
             log_path: dir.join("activity-test.log"),
             rows: 24,
             cols: 80,
+            env: Vec::new(),
         })
         .expect("spawn a shell")
     }
@@ -557,5 +571,34 @@ mod tests {
         );
 
         handle.kill().unwrap();
+    }
+
+    // CLI1 (§J3): a `PtySpawnOptions.env` entry reaches the spawned child. We set
+    // a marker var, then `echo $VAR` in the login shell and assert the value comes
+    // back — proving the injected `PHASR_*` env is actually inherited by the agent
+    // process (the env-plumbing this whole feature hinges on).
+    #[test]
+    fn spawn_options_env_is_inherited_by_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = PtyHandle::spawn(PtySpawnOptions {
+            task_id: "env-test".into(),
+            // Echo the injected var so its value shows up in the PTY output.
+            initial_command: Some("echo marker=$PHASR_TEST_VAR; exit".into()),
+            initial_prompt: None,
+            cwd: std::env::temp_dir(),
+            log_path: dir.path().join("env-test.log"),
+            rows: 24,
+            cols: 80,
+            env: vec![("PHASR_TEST_VAR".into(), "phasr-marker-9137".into())],
+        })
+        .expect("spawn a shell with injected env");
+
+        let mut rx = handle.subscribe();
+        assert!(
+            wait_for_output(&mut rx, "marker=phasr-marker-9137"),
+            "the injected env var must be inherited and expand in the child shell"
+        );
+
+        let _ = handle.kill();
     }
 }

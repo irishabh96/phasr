@@ -247,8 +247,18 @@ pub fn run() {
             commands::session_terminal::stop_session_terminal,
             commands::files::read_text_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // `.build().run(..)` rather than `.run(..)` so we get a `RunEvent` loop:
+        // on quit we remove the CLI socket file (§R4) so the NEXT launch binds
+        // cleanly (the pre-bind `remove_file` is the belt to this suspenders,
+        // covering a crash that never reaches `Exit`).
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            #[cfg(unix)]
+            if let tauri::RunEvent::Exit = event {
+                let _ = std::fs::remove_file(orchestrator::ipc_server::socket_path());
+            }
+        });
 }
 
 async fn initialize_database_state(
@@ -268,12 +278,24 @@ async fn initialize_database_state(
     // a repo serializes against the same lock.
     let repo_locks = Arc::new(RepoLockRegistry::new());
 
+    // CLI seam (Story CLI1 / §R5): ONE shared in-memory token registry — the
+    // scheduler mints a per-subtask token into it (`with_cli`), the IPC server
+    // resolves from it. Never persisted, so a restart starts empty and re-mints
+    // on the next spawn. `CliSpawnConfig` carries the two runtime paths injected
+    // into a spawned agent's env so it can reach us over the socket (§J3/§J4).
+    let cli_tokens = Arc::new(orchestrator::CliTokenRegistry::new());
+    let cli_config = orchestrator::CliSpawnConfig {
+        bin_path: resolve_phasr_cli_bin(),
+        socket_path: orchestrator::ipc_server::socket_path(),
+    };
+
     let orchestrator = TaskOrchestrator::new(
         workspace_repo.clone(),
         repository_repo.clone(),
         task_runtime,
         repo_locks.clone(),
-    );
+    )
+    .with_cli(cli_tokens.clone(), cli_config);
     commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
     // Board-refresh seam (architect §R1/§R2): a board/gate mutation calls
     // `notify(parent_id)` on this bus; the bridge re-emits `phasr://board-changed`
@@ -293,6 +315,43 @@ async fn initialize_database_state(
     // within one interval of `start_decomposition` writing the DAG.
     orchestrator.spawn_scheduler(BoardRepo::new(pool.clone()));
 
+    // The `phasr` CLI ↔ app IPC server (Story CLI1 / §R4), unix-only. One
+    // listener on ~/.phasr/phasr.sock; each connection is its own task so a slow
+    // `validate` never blocks a `comment`. A bind failure is NON-FATAL — the app
+    // runs fine, agents just can't self-advance the board this session (D6). Built
+    // BEFORE the `handle.manage` block below since it clones the same repos/pool.
+    #[cfg(unix)]
+    {
+        let socket = orchestrator::ipc_server::socket_path();
+        match orchestrator::ipc_server::bind(&socket) {
+            Ok(listener) => {
+                // Shares the SAME managed TicketWriteRegistry (registered in
+                // `setup` before this runs) so CLI gate writes suppress the
+                // watcher echo exactly like the command-driven writes.
+                let ticket_write_registry = handle
+                    .state::<Arc<tickets::TicketWriteRegistry>>()
+                    .inner()
+                    .clone();
+                let cli_server = Arc::new(orchestrator::ipc_server::CliServer {
+                    workspaces: workspace_repo.clone(),
+                    board: BoardRepo::new(pool.clone()),
+                    repositories: repository_repo.clone(),
+                    run_commands: RunCommandRepo::new(pool.clone()),
+                    write_registry: ticket_write_registry,
+                    board_events: board_events.clone(),
+                    tokens: cli_tokens.clone(),
+                    scheduler_config: orchestrator::SchedulerConfig::default(),
+                    validate_config: orchestrator::ValidateConfig::default(),
+                });
+                tauri::async_runtime::spawn(orchestrator::ipc_server::serve(listener, cli_server));
+            }
+            Err(err) => eprintln!(
+                "phasr: failed to bind CLI socket at {} ({err}); agents can't self-advance the board this session",
+                socket.display()
+            ),
+        }
+    }
+
     handle.manage(repository_repo);
     handle.manage(workspace_repo);
     handle.manage(BoardRepo::new(pool.clone()));
@@ -303,8 +362,31 @@ async fn initialize_database_state(
     handle.manage(repo_locks);
     handle.manage(orchestrator);
     handle.manage(board_events);
+    handle.manage(cli_tokens);
 
     Ok(())
+}
+
+/// Resolve the absolute path to the `phasr` agent CLI for `PHASR_BIN` (§J4/§R7).
+/// The CLI ships as an externalBin sidecar renamed to `phasr` next to the app
+/// executable (the pre-bundle copy step); in dev / `cargo tauri dev` it sits
+/// beside the main binary as `target/<profile>/phasr-cli`. Both reduce to "look
+/// next to `current_exe`", preferring the bundled `phasr`, then dev's `phasr-cli`.
+fn resolve_phasr_cli_bin() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["phasr", "phasr-cli"] {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+            // Dev/cargo fallback: the CLI bin may not be built yet — name it
+            // anyway so a later `cargo build --bin phasr-cli` makes it resolvable.
+            return dir.join("phasr-cli");
+        }
+    }
+    std::path::PathBuf::from("phasr-cli")
 }
 
 async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: &RepositoryRepo) {

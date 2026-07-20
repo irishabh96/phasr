@@ -245,6 +245,19 @@ impl WorkspaceRepo {
             .ok_or(StoreError::NotFound)
     }
 
+    /// The owning `user_id` of a workspace row, if any. The `Workspace` domain
+    /// struct deliberately does NOT carry `user_id` (it is a store-layer sync
+    /// column), so the scheduler reads it here to mint a CLI token scoped to the
+    /// subtask's owner (CLI1 / §R5). `None` for a local/sessionless row (the
+    /// test path) — the caller then skips CLI env injection entirely.
+    pub async fn owner_id(&self, id: &str) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query("SELECT user_id FROM workspaces WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&self.db)
+            .await?;
+        Ok(row.and_then(|r| r.try_get::<Option<String>, _>("user_id").ok().flatten()))
+    }
+
     pub async fn get_local_by_repository(
         &self,
         repository_id: &str,
@@ -883,6 +896,46 @@ mod tests {
             "owner B must see only B's task"
         );
         assert_ne!(a.id, b.id);
+    }
+
+    // CLI1 (§R5): `owner_id` reads back the syncable owner column the domain
+    // struct doesn't carry, so the scheduler can mint a token scoped to the
+    // subtask's owner. An owned row returns its owner; a sessionless row → None.
+    #[tokio::test]
+    async fn owner_id_reads_the_syncable_owner_column() {
+        let (_repos, workspaces, repo) = fresh().await;
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+             VALUES (?, ?, 'n', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+        )
+        .bind("user-a")
+        .bind("user-a")
+        .bind("user-a@example.com")
+        .execute(&workspaces.db)
+        .await
+        .unwrap();
+
+        let owned = Workspace::new(repo.id.clone(), "owned".into(), "cmd".into());
+        workspaces.insert_for_user(&owned, "user-a").await.unwrap();
+        assert_eq!(
+            workspaces.owner_id(&owned.id).await.unwrap().as_deref(),
+            Some("user-a"),
+            "an owned row reports its owner so the CLI token is user-scoped"
+        );
+
+        let local = Workspace::new(repo.id.clone(), "local".into(), "cmd".into());
+        workspaces.insert(&local).await.unwrap();
+        assert_eq!(
+            workspaces.owner_id(&local.id).await.unwrap(),
+            None,
+            "a sessionless row has no owner → the scheduler skips CLI injection"
+        );
+
+        assert_eq!(
+            workspaces.owner_id("does-not-exist").await.unwrap(),
+            None,
+            "a missing row is None, never an error"
+        );
     }
 
     // TOCTOU fix: `finish_if_running` is an atomic conditional — it flips a

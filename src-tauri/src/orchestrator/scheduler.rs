@@ -206,6 +206,27 @@ pub fn brief_prompt_pointer(ticket_dir: &std::path::Path) -> String {
     )
 }
 
+/// Tell the agent which `phasr` verbs it may run to advance its OWN ticket on the
+/// board (CLI1 / §J3). Mirrors `brief_prompt_pointer`: a short orientation block
+/// folded into the prompt's brief slot. Every verb goes through the app's local
+/// socket (`PHASR_SOCK`) authenticated by `PHASR_TOKEN`, so the board moves LIVE.
+/// Points at `"$PHASR_BIN"` (the absolute injected path) rather than a bare
+/// `phasr` so it works regardless of the agent's PATH (§J4). Only injected for a
+/// scheduled subtask that has an owner (the CLI env is present).
+pub fn cli_commands_prompt_segment() -> String {
+    "You can advance THIS ticket on the phasr board yourself — these commands \
+     update the board live for the human watching:\n\
+     - `\"$PHASR_BIN\" request-review` — mark your work ready for review\n\
+     - `\"$PHASR_BIN\" comment \"<note>\"` — post a note to this ticket's thread\n\
+     - `\"$PHASR_BIN\" update-status --done` — publish your handoff contract \
+     (unblocks dependent tickets)\n\
+     - `\"$PHASR_BIN\" new-ticket --role <role> --agent <agent> --prompt \"<p>\" \
+     [--after <role>]` — add a sibling ticket to this same epic\n\
+     - `\"$PHASR_BIN\" validate` — run the configured checks against your branch\n\
+     They act on YOUR ticket only. Run them from your worktree.\n\n---\n\n"
+        .to_string()
+}
+
 /// Assemble a subtask's spawn-time prompt from its base prompt plus (optional)
 /// brief pointer, producer suffix, and consumer prefix. Composition order is
 /// `[consumer_prefix (contracts)] [brief] [base] [producer_suffix]` (§C.2) —
@@ -431,6 +452,24 @@ mod tests {
         assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/trd.md"));
         assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/figma.json"));
         assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/assets/"));
+    }
+
+    // CLI1 (§J3): the "commands you can run" segment names every phasr verb via
+    // the injected `$PHASR_BIN` (not a bare `phasr`, so PATH doesn't matter, §J4)
+    // and mirrors the UI/CLI verb names 1:1.
+    #[test]
+    fn cli_commands_segment_names_every_verb_via_phasr_bin() {
+        let segment = cli_commands_prompt_segment();
+        assert!(segment.contains("$PHASR_BIN"), "invoke via the injected path");
+        for verb in [
+            "request-review",
+            "comment",
+            "update-status",
+            "new-ticket",
+            "validate",
+        ] {
+            assert!(segment.contains(verb), "segment must mention `{verb}`");
+        }
     }
 
     #[test]
