@@ -139,6 +139,48 @@ export function makeFixtures() {
       parentId: "epic-1",
       role: "frontend",
     },
+    // An INTERRUPTED subtask (relaunch-recovery orphan): startup recovery swept
+    // it from `running` → `stopped` and stamped `interruptedAt`, so the FE
+    // derives `status:"stopped" && interruptedAt != null` → interrupted. Opening
+    // it must REPLAY its pre-interruption log (`read_task_log`) behind an
+    // explicit "Resume" banner and must NEVER auto re-spawn the agent
+    // (`open_task_terminal`). Has a worktree so it opens the REAL detail view
+    // (not the "waiting" pane). Its log text comes from the shared
+    // `read_task_log` mock below. Lives under epic-1 so the sidebar epic-node
+    // count is unchanged (subtasks nest under the parent, never the flat list).
+    {
+      ...wsBase,
+      id: "epic-1-interrupted",
+      repositoryId: "repo-1",
+      workspaceKind: "subtask",
+      name: "interrupted agent",
+      agent: "claude",
+      status: "stopped",
+      branch: "phasr/epic-1-interrupted",
+      worktreePath: "/Users/test/.phasr/worktrees/epic-1-interrupted",
+      interruptedAt: NOW,
+      parentId: "epic-1",
+      role: "docs",
+    },
+    // CONTROL: identical to the interrupted subtask above EXCEPT `interruptedAt`
+    // is null — a calm user-stopped subtask. It must keep the unchanged
+    // click-to-resume behavior: `open_task_terminal` on open, no log replay, no
+    // Resume banner. Differing only in `interruptedAt` makes it a tight control
+    // proving that field is the sole pivot for the interrupted-open path.
+    {
+      ...wsBase,
+      id: "epic-1-control",
+      repositoryId: "repo-1",
+      workspaceKind: "subtask",
+      name: "stopped agent",
+      agent: "claude",
+      status: "stopped",
+      branch: "phasr/epic-1-control",
+      worktreePath: "/Users/test/.phasr/worktrees/epic-1-control",
+      interruptedAt: null,
+      parentId: "epic-1",
+      role: "qa",
+    },
   ];
   // ── Worklist / Home (Phase 2 §C.3) ───────────────────────────────────────
   // A cross-repo attention snapshot exercising ALL FOUR buckets exactly as the
