@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Dialog } from "@/components/ui/Dialog";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
+import { AutopilotHaltedBanner } from "@/components/AutopilotHaltedBanner";
+import { AutopilotToggle } from "@/components/board/AutopilotToggle";
 import { BoardCardView } from "@/components/board/BoardCard";
 import { NextGateButton } from "@/components/board/NextGateButton";
 import { IntegrationDiff } from "@/components/board/IntegrationDiff";
@@ -16,6 +18,7 @@ import {
 } from "@/lib/deriveBoardState";
 import {
   deriveNextGate,
+  isAutopilotOwnedGate,
   isIntegrateEligible,
   type NextGate,
 } from "@/lib/deriveNextGate";
@@ -27,6 +30,7 @@ import {
   useResolveReview,
   useValidateTicket,
 } from "@/lib/hooks/useBoard";
+import { useSetAutopilot } from "@/lib/hooks/useAutopilot";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -52,6 +56,8 @@ interface DerivedCard {
   subtask: Workspace;
   state: BoardCardState;
   column: BoardColumn;
+  /** The driver owns this ticket's next move (an AUTO gate) under autopilot. */
+  autopilotOwned: boolean;
   render: React.ReactNode;
 }
 
@@ -116,6 +122,11 @@ export function BoardView({
   });
   const now = useNow(anyLive);
 
+  // Autopilot is a per-epic flag on the parent (Phase 5a §7). When on, the AUTO
+  // gates the driver fires (Validate / Request-review) render NEUTRAL instead of
+  // coral, and "driving" surfaces the calm ambient chip.
+  const autopilotEnabled = board.parent.autopilotEnabled;
+
   const cards: DerivedCard[] = board.subtasks.map((subtask) => {
     const review = reviewFor(subtask.id);
     const validateResult = validateFor(subtask.id);
@@ -136,6 +147,7 @@ export function BoardView({
       review: review ?? null,
       checksConfigured,
       blockedOn: blockedOnRoles,
+      autopilotEnabled,
     });
 
     // A card's gate is in flight while its underlying mutation targets THIS id.
@@ -149,6 +161,7 @@ export function BoardView({
       subtask,
       state,
       column: boardColumn(state),
+      autopilotOwned: autopilotEnabled && isAutopilotOwnedGate(gate),
       render: (
         <BoardCardView
           key={subtask.id}
@@ -190,12 +203,20 @@ export function BoardView({
   const integrable =
     cards.length > 0 && cards.every((c) => isIntegrateEligible(c.state));
 
+  // "Driving" = autopilot is on AND at least one ticket's next move is the
+  // driver's (an AUTO gate) → the calm ambient chip (§7).
+  const autopilotDriving =
+    autopilotEnabled && cards.some((c) => c.autopilotOwned);
+
   return (
     <div className="flex min-h-0 flex-col gap-4" data-testid="board-view">
+      <AutopilotHaltedBanner />
       <BoardParentHeader
         board={board}
         integrable={integrable}
         shipped={shipped}
+        autopilotEnabled={autopilotEnabled}
+        autopilotDriving={autopilotDriving}
       />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -245,13 +266,18 @@ function BoardParentHeader({
   board,
   integrable,
   shipped,
+  autopilotEnabled,
+  autopilotDriving,
 }: {
   board: BoardState;
   integrable: boolean;
   shipped: boolean;
+  autopilotEnabled: boolean;
+  autopilotDriving: boolean;
 }) {
   const queryClient = useQueryClient();
   const integrate = useIntegrateParent(board.parent.id);
+  const setAutopilot = useSetAutopilot(board.parent.id);
   const { data: repository } = useRepository(board.parent.repositoryId);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewMode, setReviewMode] = useState<"clean" | "conflict">("clean");
@@ -269,6 +295,7 @@ function BoardParentHeader({
     integrable,
     integrated,
     shipped,
+    autopilotEnabled,
     ...(repository?.defaultBranch
       ? { baseBranch: repository.defaultBranch }
       : {}),
@@ -333,12 +360,31 @@ function BoardParentHeader({
         </span>
       </div>
 
-      <NextGateButton
-        gate={headerGate}
-        size="sm"
-        pending={integrate.isPending}
-        onRun={runEpicGate}
-      />
+      <div className="flex flex-wrap items-center gap-2.5">
+        <AutopilotToggle
+          enabled={autopilotEnabled}
+          driving={autopilotDriving}
+          pending={setAutopilot.isPending}
+          onToggle={(next) =>
+            setAutopilot.mutate(next, {
+              onError: (err) =>
+                showToast({
+                  title: next
+                    ? "Couldn't turn on autopilot"
+                    : "Couldn't turn off autopilot",
+                  intent: "error",
+                  message: humanizeError(err),
+                }),
+            })
+          }
+        />
+        <NextGateButton
+          gate={headerGate}
+          size="sm"
+          pending={integrate.isPending}
+          onRun={runEpicGate}
+        />
+      </div>
 
       <Dialog
         open={reviewOpen}

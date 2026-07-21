@@ -355,6 +355,27 @@ function GateButton({
     );
   }
 
+  // Enabled but NEUTRAL — an autopilot-owned AUTO gate (Phase 5a §7): the driver
+  // will fire it, so it is never coral. Still fully clickable (I4 — the founder
+  // can always take the wheel), just calm/outline instead of a coral demand.
+  if (gate.intent === "neutral") {
+    return (
+      <GlassButton
+        variant="outline"
+        size={size}
+        data-testid="next-gate"
+        data-gate-verb={gate.verb}
+        data-gate-enabled="true"
+        data-gate-intent="neutral"
+        disabled={busy}
+        onClick={onClick}
+        className={cn("gap-1.5", className)}
+      >
+        {children}
+      </GlassButton>
+    );
+  }
+
   // The one enabled primary — coral.
   return (
     <GlassButton

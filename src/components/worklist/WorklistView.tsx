@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { FolderGit2, Search } from "lucide-react";
+import {
+  AutopilotHaltedBanner,
+  HaltAutopilotButton,
+} from "@/components/AutopilotHaltedBanner";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput } from "@/components/ui/GlassInput";
 import { PanelState } from "@/components/ui/PanelState";
@@ -70,10 +74,13 @@ function Header({
   disabled,
   query,
   onQueryChange,
+  trailing,
 }: {
   disabled?: boolean;
   query?: string;
   onQueryChange?: (v: string) => void;
+  /** Optional right-aligned control (the global "Halt autopilot" affordance). */
+  trailing?: React.ReactNode;
 }) {
   return (
     <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
@@ -96,6 +103,7 @@ function Header({
           data-testid="worklist-search"
         />
       </div>
+      {trailing}
     </div>
   );
 }
@@ -221,6 +229,8 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
     return (
       <div className="mx-auto max-w-[860px] px-5 py-6">
         <Header query={search} onQueryChange={setSearch} disabled />
+        {/* A global halt can be live even with no current work — stay honest. */}
+        <AutopilotHaltedBanner className="mb-4" />
         {worklist.repositories.length === 0 ? (
           <PanelState
             kind="empty"
@@ -252,7 +262,14 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
 
   return (
     <div className="mx-auto flex h-full max-w-[860px] flex-col px-5 py-6">
-      <Header query={search} onQueryChange={setSearch} />
+      <Header
+        query={search}
+        onQueryChange={setSearch}
+        trailing={<HaltAutopilotButton />}
+      />
+
+      {/* Global halt is a persistent, honest banner while set (§5). */}
+      <AutopilotHaltedBanner className="mb-4" />
 
       {/* Filter chips — repo (single-select) · epic (toggle). */}
       <div className="mb-4 flex flex-wrap gap-1.5" data-testid="worklist-chips">

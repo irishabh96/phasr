@@ -57,6 +57,17 @@ export interface TicketGateInput {
   checksConfigured: boolean;
   /** Producer roles a blocked ticket is waiting on (for the disabled reason). */
   blockedOn?: readonly string[];
+  /**
+   * The owning epic has autopilot ON (Phase 5a, Stage A). When true and the
+   * derived gate is an AUTO step autopilot will fire itself (Validate /
+   * Request-review), its `intent` is downgraded from `primary` (coral) to
+   * `neutral` — autopilot owns the move, so it is NOT the founder's coral to
+   * spend. The gate stays ENABLED (I4 — the founder can still click it). Omitted
+   * / `false` reproduces the exact pre-autopilot ladder (parity preserved). The
+   * HUMAN-STOP Approve gate is NEVER downgraded — in Stage A the human makes the
+   * quality call.
+   */
+  autopilotEnabled?: boolean;
 }
 
 /** Derivation inputs for an epic (parent). */
@@ -71,6 +82,13 @@ export interface EpicGateInput {
   shipped: boolean;
   /** The repo's default branch, for the Ship label ("Ship to main"). */
   baseBranch?: string;
+  /**
+   * Autopilot ON for this epic (Phase 5a, Stage A). Downgrades the AUTO Integrate
+   * gate's `intent` to `neutral` (autopilot auto-integrates a clean, fully-approved
+   * epic). Ship is NEVER downgraded — it is always a HUMAN-STOP (I1). Omitted /
+   * `false` reproduces the pre-autopilot epic ladder.
+   */
+  autopilotEnabled?: boolean;
 }
 
 export type NextGateInput = TicketGateInput | EpicGateInput;
@@ -103,6 +121,33 @@ export function failingCheckCount(validate: ValidateResult | null): number {
  */
 export function isIntegrateEligible(state: BoardCardState): boolean {
   return state === "needs-review" || state === "done";
+}
+
+/**
+ * The gate verbs autopilot fires on its own in Stage A — the AUTO steps of the
+ * ladder (Validate → Request-review → Integrate). Approve is deliberately absent:
+ * in Stage A it is ALWAYS a HUMAN-STOP (the human makes the quality call). Ship is
+ * absent by design (never auto, I1).
+ */
+const AUTOPILOT_AUTO_VERBS: ReadonlySet<GateVerb> = new Set([
+  "validate",
+  "request-review",
+  "integrate",
+]);
+
+/**
+ * Whether autopilot owns this gate's next move — i.e. under an autopilot-on epic
+ * the driver will fire it itself, so it must NOT read as a coral "Needs you"
+ * demand. True only for an ENABLED AUTO gate (Validate / Request-review /
+ * Integrate). A disabled gate (blocked / validate-failing / not-yet-integrable)
+ * is a HUMAN-STOP or a calm wait, never autopilot-owned; the Approve gate (Stage A
+ * HUMAN-STOP) and Ship are never owned. Independent of `intent`, so it is
+ * idempotent — the same answer before and after the neutral downgrade
+ * `deriveNextGate` applies. Pure — reused by the board (intent downgrade + the
+ * "driving" chip) so "what autopilot drives" has one definition.
+ */
+export function isAutopilotOwnedGate(gate: NextGate): boolean {
+  return gate.enabled && AUTOPILOT_AUTO_VERBS.has(gate.verb);
 }
 
 function deriveTicketGate(i: TicketGateInput): NextGate {
@@ -223,7 +268,15 @@ function deriveEpicGate(i: EpicGateInput): NextGate {
 
 /** The one pure ladder entry point — dispatches on entity kind. */
 export function deriveNextGate(input: NextGateInput): NextGate {
-  return input.kind === "ticket"
-    ? deriveTicketGate(input)
-    : deriveEpicGate(input);
+  const gate =
+    input.kind === "ticket" ? deriveTicketGate(input) : deriveEpicGate(input);
+
+  // Autopilot owns the AUTO steps: downgrade a coral primary that the driver will
+  // fire itself to a calm neutral (still enabled — I4). Everything else (Approve,
+  // Ship, disabled/terminal gates) is untouched, so a non-autopilot epic is
+  // byte-for-byte the pre-autopilot ladder.
+  if (input.autopilotEnabled && isAutopilotOwnedGate(gate)) {
+    return { ...gate, intent: "neutral" };
+  }
+  return gate;
 }

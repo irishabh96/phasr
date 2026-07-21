@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveNextGate,
   failingCheckCount,
+  isAutopilotOwnedGate,
   isIntegrateEligible,
   type EpicGateInput,
   type TicketGateInput,
@@ -267,6 +268,153 @@ describe("deriveNextGate — epic ladder", () => {
     expect(g.enabled).toBe(false);
     expect(g.intent).toBe("success");
     expect(g.reason).toBe("Merged into main");
+  });
+});
+
+describe("deriveNextGate — autopilot intent downgrade (Phase 5a §7)", () => {
+  it("downgrades an AUTO Validate gate from primary(coral) to neutral, still enabled", () => {
+    const g = deriveNextGate(
+      ticket({
+        state: "working",
+        checksConfigured: true,
+        autopilotEnabled: true,
+      }),
+    );
+    expect(g.verb).toBe("validate");
+    expect(g.enabled).toBe(true); // I4 — the founder can still take the wheel
+    expect(g.intent).toBe("neutral"); // never coral: the driver owns it
+  });
+
+  it("downgrades an AUTO Request-review gate to neutral", () => {
+    const g = deriveNextGate(
+      ticket({
+        state: "needs-review",
+        checksConfigured: true,
+        validate: validateResult({ passed: true }),
+        autopilotEnabled: true,
+      }),
+    );
+    expect(g.verb).toBe("request-review");
+    expect(g.enabled).toBe(true);
+    expect(g.intent).toBe("neutral");
+  });
+
+  it("NEVER downgrades the Approve gate — Stage A keeps it a coral HUMAN-STOP", () => {
+    const g = deriveNextGate(
+      ticket({
+        state: "in-review",
+        review: review("requested"),
+        autopilotEnabled: true,
+      }),
+    );
+    expect(g.verb).toBe("approve");
+    expect(g.intent).toBe("primary"); // the human still makes the quality call
+  });
+
+  it("downgrades the epic Integrate gate to neutral (autopilot auto-integrates)", () => {
+    const g = deriveNextGate(epic({ integrable: true, autopilotEnabled: true }));
+    expect(g.verb).toBe("integrate");
+    expect(g.enabled).toBe(true);
+    expect(g.intent).toBe("neutral");
+    expect(g.confirm).toBe(true); // confirm semantics preserved
+  });
+
+  it("NEVER downgrades Ship — it is always a HUMAN-STOP (I1)", () => {
+    const g = deriveNextGate(
+      epic({
+        integrable: true,
+        integrated: true,
+        baseBranch: "main",
+        autopilotEnabled: true,
+      }),
+    );
+    expect(g.verb).toBe("ship");
+    expect(g.intent).toBe("primary");
+  });
+
+  it("leaves disabled/terminal gates untouched (blocked, validate-failing, approved)", () => {
+    const blocked = deriveNextGate(
+      ticket({ state: "blocked", autopilotEnabled: true }),
+    );
+    expect(blocked.enabled).toBe(false);
+    expect(blocked.intent).toBe("neutral"); // already neutral, still not "owned"
+
+    const failing = deriveNextGate(
+      ticket({
+        state: "working",
+        checksConfigured: true,
+        validate: validateResult({ passed: false }),
+        autopilotEnabled: true,
+      }),
+    );
+    expect(failing.enabled).toBe(false); // validate-failing is a HUMAN-STOP
+    expect(failing.intent).toBe("neutral");
+  });
+
+  it("is a no-op when autopilot is off (parity with the pre-autopilot ladder)", () => {
+    const off = deriveNextGate(
+      ticket({ state: "working", checksConfigured: true }),
+    );
+    const on = deriveNextGate(
+      ticket({
+        state: "working",
+        checksConfigured: true,
+        autopilotEnabled: false,
+      }),
+    );
+    expect(off.intent).toBe("primary");
+    expect(on).toEqual(off);
+  });
+});
+
+describe("isAutopilotOwnedGate", () => {
+  it("true for the enabled AUTO gates (Validate / Request-review / Integrate)", () => {
+    expect(
+      isAutopilotOwnedGate(
+        deriveNextGate(ticket({ state: "working", checksConfigured: true })),
+      ),
+    ).toBe(true); // validate
+    expect(
+      isAutopilotOwnedGate(
+        deriveNextGate(ticket({ state: "needs-review" })),
+      ),
+    ).toBe(true); // request-review (no checks)
+    expect(
+      isAutopilotOwnedGate(deriveNextGate(epic({ integrable: true }))),
+    ).toBe(true); // integrate
+  });
+
+  it("false for the HUMAN-STOP gates (Approve, Ship) and disabled/terminal gates", () => {
+    expect(
+      isAutopilotOwnedGate(
+        deriveNextGate(
+          ticket({ state: "in-review", review: review("requested") }),
+        ),
+      ),
+    ).toBe(false); // approve
+    expect(
+      isAutopilotOwnedGate(
+        deriveNextGate(
+          epic({ integrable: true, integrated: true, baseBranch: "main" }),
+        ),
+      ),
+    ).toBe(false); // ship
+    expect(
+      isAutopilotOwnedGate(deriveNextGate(ticket({ state: "blocked" }))),
+    ).toBe(false); // disabled
+  });
+
+  it("is idempotent across the neutral downgrade (same answer on an owned gate)", () => {
+    const owned = deriveNextGate(
+      ticket({
+        state: "working",
+        checksConfigured: true,
+        autopilotEnabled: true,
+      }),
+    );
+    // Already downgraded to neutral, yet still recognised as autopilot-owned.
+    expect(owned.intent).toBe("neutral");
+    expect(isAutopilotOwnedGate(owned)).toBe(true);
   });
 });
 

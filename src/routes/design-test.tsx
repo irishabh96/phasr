@@ -15,11 +15,18 @@ import {
 } from "@/components/ui/AgentStatusIndicator";
 import { BoardView } from "@/components/board/BoardView";
 import { NextGateButton } from "@/components/board/NextGateButton";
+import { AutopilotToggle } from "@/components/board/AutopilotToggle";
+import { AutopilotHaltedBannerView } from "@/components/AutopilotHaltedBanner";
+import { WorklistRow } from "@/components/worklist/WorklistRow";
 import {
   ChangesRequestedChip,
   ValidateChip,
 } from "@/components/board/GateChips";
 import { deriveNextGate, type NextGate } from "@/lib/deriveNextGate";
+import {
+  buildWorklistItems,
+  WORKLIST_BUCKET_LABEL,
+} from "@/lib/deriveWorklist";
 import { DecomposeForm } from "@/components/DecomposeForm";
 import { AgentWorkingBanner } from "@/components/brief/AgentWorkingBanner";
 import { AssetsSection } from "@/components/brief/AssetsSection";
@@ -42,6 +49,7 @@ import type {
   TicketAsset,
   TicketComment,
   ValidateResult,
+  WorklistState,
   Workspace,
 } from "@/lib/types";
 
@@ -333,6 +341,78 @@ const VALIDATE_FAILED: ValidateResult = {
   ranAtMs: BOARD_T0 - 5_000,
 };
 
+// ── Autopilot fixtures (Phase 5a, Stage A — S7) ─────────────────────────────
+// An epic with autopilot ON: both tickets finished producing (→ needs-review),
+// so the driver owns the mechanical Validate → Request-review → Integrate steps.
+// The epic header shows the NEUTRAL toggle (on) + the "Autopilot driving" chip,
+// and the epic's Integrate gate renders neutral (not coral) because autopilot
+// auto-integrates. NO IPC — the board reads the fixtures directly.
+const BOARD_AUTOPILOT: BoardState = {
+  parent: mockWs({
+    id: "parent-autopilot",
+    workspaceKind: "parent",
+    name: "task-comments",
+    prompt: "Add a task-comments API and wire the comments UI",
+    agent: null,
+    parentId: null,
+    role: null,
+    autopilotEnabled: true,
+  }),
+  subtasks: [
+    mockWs({
+      id: "ap-backend",
+      parentId: "parent-autopilot",
+      role: "backend",
+      name: "comments API",
+      status: "completed",
+      exitCode: 0,
+      startedAt: isoAgo(300_000),
+      finishedAt: isoAgo(40_000),
+    }),
+    mockWs({
+      id: "ap-frontend",
+      parentId: "parent-autopilot",
+      role: "frontend",
+      name: "comments UI",
+      status: "completed",
+      exitCode: 0,
+      startedAt: isoAgo(200_000),
+      finishedAt: isoAgo(12_000),
+    }),
+  ],
+  dependencies: [{ ...MOCK_EDGE, parentId: "parent-autopilot" }],
+  contracts: [],
+};
+
+// A cross-repo worklist scoped to that same autopilot-on epic PLUS one parked
+// HUMAN-STOP ticket, so `buildWorklistItems` routes: the finished ticket →
+// "Autopilot driving" (neutral, the driver owns it), the failed ticket → "Needs
+// you" (coral, genuinely the founder's). This is the honest-attention fix (§7).
+const WORKLIST_AUTOPILOT: WorklistState = {
+  repositories: [{ id: "repo-1", name: "payments-app" }],
+  boards: [
+    {
+      ...BOARD_AUTOPILOT,
+      subtasks: [
+        // Finished → needs-review → under autopilot → "Autopilot driving".
+        BOARD_AUTOPILOT.subtasks[0]!,
+        // Parked: the producer failed → HUMAN-STOP → stays in "Needs you".
+        mockWs({
+          id: "ap-docs",
+          parentId: "parent-autopilot",
+          role: "docs",
+          name: "comments docs",
+          status: "failed",
+          exitCode: 1,
+          startedAt: isoAgo(180_000),
+          finishedAt: isoAgo(30_000),
+        }),
+      ],
+    },
+  ],
+  looseAgents: [],
+};
+
 // The NextGate ladder, rendered as pure gates for the disabled-with-reason +
 // intent assertions (no IPC — onRun is a no-op here).
 const GATE_LADDER: ReadonlyArray<{ id: string; gate: NextGate }> = [
@@ -520,6 +600,17 @@ function DesignTest() {
   const setTheme = useUiStore((s) => s.setTheme);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [autopilotOn, setAutopilotOn] = useState(true);
+
+  // Autopilot worklist grouping (S7) — the REAL `buildWorklistItems` derivation
+  // over the fixture, so the "Autopilot driving" vs "Needs you" split is honest.
+  const autopilotItems = buildWorklistItems(WORKLIST_AUTOPILOT, {}, BOARD_T0);
+  const autopilotGroups = (["autopilot-driving", "needs-you"] as const).map(
+    (bucket) => ({
+      bucket,
+      rows: autopilotItems.filter((i) => i.bucket === bucket),
+    }),
+  );
 
   return (
     <div className="min-h-screen bg-(--color-bg-base) p-6 text-(--color-text-primary)">
@@ -848,6 +939,75 @@ function DesignTest() {
             gates={GATES_FIXTURE}
             checksConfigured
           />
+        </section>
+
+        {/* Phase 5a — Autopilot (Stage A / S7): the neutral toggle + driving
+            chip, the honest "Autopilot halted" banner + Resume, the honest
+            "Autopilot driving" vs "Needs you" worklist split, and a full board
+            on autopilot (neutral gates). All fixtures — no IPC. */}
+        <section data-testid="autopilot-states" className="flex flex-col gap-4">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Autopilot (Stage A) — toggle · halted banner · driving group
+          </h2>
+
+          {/* The persistent halted banner + its single Resume action. */}
+          <AutopilotHaltedBannerView
+            onResume={() =>
+              showToast({
+                title: "Resumed (mock)",
+                intent: "success",
+                message: "Autopilot un-halted.",
+              })
+            }
+          />
+
+          {/* The neutral toggle (a mode, never coral): interactive on/off + the
+              always-on and always-off reference states with the driving chip. */}
+          <div className="flex flex-wrap items-center gap-3 rounded-(--radius-panel) border border-(--color-border-default) p-3">
+            <AutopilotToggle
+              enabled={autopilotOn}
+              driving={autopilotOn}
+              onToggle={setAutopilotOn}
+            />
+            <span className="text-[11px] text-(--color-text-muted)">
+              on + driving
+            </span>
+            <AutopilotToggle enabled={false} onToggle={() => {}} />
+            <span className="text-[11px] text-(--color-text-muted)">off</span>
+          </div>
+
+          {/* The honest worklist split: a driver-owned ticket in "Autopilot
+              driving" (neutral), a parked ticket in "Needs you" (coral). */}
+          <div className="flex flex-col gap-4">
+            {autopilotGroups.map((group) => (
+              <section
+                key={group.bucket}
+                data-testid={`worklist-group-${group.bucket}`}
+              >
+                <div className="flex items-center gap-2 px-1 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-(--color-text-muted)">
+                  {WORKLIST_BUCKET_LABEL[group.bucket]}
+                  <span className="text-(--color-text-secondary)">
+                    {group.rows.length}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {group.rows.map((item) => (
+                    <WorklistRow
+                      key={item.id}
+                      item={item}
+                      selected={false}
+                      onOpen={() => {}}
+                      onFocus={() => {}}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+
+          {/* A full board on autopilot: header toggle ON + driving chip, and the
+              AUTO gates render neutral (never coral). */}
+          <BoardView board={BOARD_AUTOPILOT} />
         </section>
 
         {/* Brief tab — Phase 2 (mockup Page 04): banner, sections (read/edit/

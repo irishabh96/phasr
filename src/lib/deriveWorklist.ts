@@ -8,18 +8,27 @@ import type { AgentLiveness } from "@/lib/deriveAgentState";
 import type { Agent, Workspace, WorklistState } from "@/lib/types";
 
 /**
- * The four cross-repo attention buckets of the Worklist home (mockup Page 01),
+ * The cross-repo attention buckets of the Worklist home (mockup Page 01),
  * grouped by DERIVED honest state — NOT by hierarchy. Ordered by attention cost:
  *
- * - `needs-you` — a human decision is owed: wedged / failed / interrupted, or a
- *                 finished ticket awaiting integration (`needs-review`).
- * - `running`   — the factory is working for you: an agent in flight (working /
- *                 idle / resolving). Calm, not an alert.
- * - `waiting`   — `blocked` upstream. The CALM group — NEVER "Needs you": a
- *                 blocked ticket is not the user's fault (spec §A4 / claim #10).
- * - `recent`    — settled: cleanly done or stopped.
+ * - `needs-you`         — a human decision is owed: wedged / failed / interrupted,
+ *                         or a finished ticket awaiting integration (`needs-review`).
+ * - `autopilot-driving` — the ticket belongs to an autopilot-on epic and the
+ *                         driver will advance it (Validate → Request-review →
+ *                         Integrate). Calm/NEUTRAL — never coral: autopilot owns
+ *                         the move, so it is NOT the founder's to spend (Phase 5a).
+ * - `running`           — the factory is working for you: an agent in flight
+ *                         (working / idle / resolving). Calm, not an alert.
+ * - `waiting`           — `blocked` upstream. The CALM group — NEVER "Needs you":
+ *                         a blocked ticket is not the user's fault (spec §A4).
+ * - `recent`            — settled: cleanly done or stopped.
  */
-export type WorklistBucket = "needs-you" | "running" | "waiting" | "recent";
+export type WorklistBucket =
+  | "needs-you"
+  | "autopilot-driving"
+  | "running"
+  | "waiting"
+  | "recent";
 
 /**
  * Map one derived board-card state to its worklist bucket. PURE — unit-tested
@@ -38,8 +47,24 @@ export type WorklistBucket = "needs-you" | "running" | "waiting" | "recent";
  * The Phase 3 review buckets both surface to the human: `in-review` awaits the
  * reviewer's Approve/Bounce, and `qas-changes-requested` was bounced back and
  * needs re-work — both belong in "needs-you".
+ *
+ * Autopilot (Phase 5a, Stage A): when `autopilotEnabled` is true, a
+ * `needs-review` ticket (its producer finished — autopilot will Validate →
+ * Request-review → contribute to the epic Integrate) is routed to the neutral
+ * "Autopilot driving" group INSTEAD of coral "Needs you", so overnight the
+ * founder is not shown a pile of coral demands that are actually the driver's to
+ * do (the honest-attention fix, §7). The worklist has no gate side-load, so this
+ * is the one board-card state autopilot owns here; the genuine HUMAN-STOPs
+ * (wedged / failed / interrupted) STAY in "Needs you". `autopilotEnabled`
+ * defaults false → the pre-autopilot mapping, unchanged.
  */
-export function worklistBucket(state: BoardCardState): WorklistBucket {
+export function worklistBucket(
+  state: BoardCardState,
+  autopilotEnabled = false,
+): WorklistBucket {
+  if (autopilotEnabled && state === "needs-review") {
+    return "autopilot-driving";
+  }
   switch (state) {
     case "wedged":
     case "failed":
@@ -60,9 +85,10 @@ export function worklistBucket(state: BoardCardState): WorklistBucket {
   }
 }
 
-/** The buckets in render order (mockup Page 01). */
+/** The buckets in render order (mockup Page 01 + the neutral Autopilot group). */
 export const WORKLIST_BUCKET_ORDER: readonly WorklistBucket[] = [
   "needs-you",
+  "autopilot-driving",
   "running",
   "waiting",
   "recent",
@@ -71,6 +97,7 @@ export const WORKLIST_BUCKET_ORDER: readonly WorklistBucket[] = [
 /** Human labels for each bucket header (mockup Page 01). */
 export const WORKLIST_BUCKET_LABEL: Record<WorklistBucket, string> = {
   "needs-you": "Needs you",
+  "autopilot-driving": "Autopilot driving",
   running: "Running",
   waiting: "Waiting",
   recent: "Recent",
@@ -147,6 +174,9 @@ export function buildWorklistItems(
     const repoName = repoNameOf(worklist, board.parent.repositoryId);
     const epicName = board.parent.name;
     const epicGoal = board.parent.prompt?.trim() || board.parent.name;
+    // Autopilot is a per-epic flag on the parent (Phase 5a) — every subtask of an
+    // autopilot-on epic re-buckets its driver-owned work to "Autopilot driving".
+    const autopilotEnabled = board.parent.autopilotEnabled;
     for (const subtask of board.subtasks) {
       const { state, since } = deriveBoardState(
         subtask,
@@ -170,7 +200,7 @@ export function buildWorklistItems(
         exitCode: subtask.exitCode,
         state,
         since,
-        bucket: worklistBucket(state),
+        bucket: worklistBucket(state, autopilotEnabled),
         haystack: buildHaystack([
           repoName,
           epicName,

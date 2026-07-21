@@ -48,6 +48,35 @@ describe("worklistBucket — every BoardCardState maps to exactly one bucket", (
   });
 });
 
+describe("worklistBucket — autopilot re-routes the driver's own work (Phase 5a §7)", () => {
+  it("needs-review under an autopilot epic → Autopilot driving, NOT Needs you", () => {
+    // The AUTO ticket: its producer finished, so autopilot will Validate →
+    // Request-review → integrate it. It is the driver's move, never coral.
+    expect(worklistBucket("needs-review", true)).toBe("autopilot-driving");
+    expect(worklistBucket("needs-review", true)).not.toBe("needs-you");
+  });
+
+  it("needs-review with autopilot OFF stays in Needs you (default unchanged)", () => {
+    expect(worklistBucket("needs-review", false)).toBe("needs-you");
+    // The one-arg call (the sidebar-badge path) defaults to no autopilot.
+    expect(worklistBucket("needs-review")).toBe("needs-you");
+  });
+
+  it("a genuine HUMAN-STOP stays coral Needs you even under autopilot", () => {
+    // wedged/failed/interrupted are the founder's to resolve — the driver does
+    // NOT own them, so autopilot must not hide them in the calm group.
+    for (const state of ["failed", "wedged", "interrupted"] as const) {
+      expect(worklistBucket(state, true)).toBe("needs-you");
+    }
+  });
+
+  it("blocked/running/recent are unaffected by autopilot (still their calm groups)", () => {
+    expect(worklistBucket("blocked", true)).toBe("waiting");
+    expect(worklistBucket("working", true)).toBe("running");
+    expect(worklistBucket("done", true)).toBe("recent");
+  });
+});
+
 // ── row builder fixtures ────────────────────────────────────────────────────
 
 function ws(overrides: Partial<Workspace> & { id: string }): Workspace {
@@ -253,5 +282,77 @@ describe("buildWorklistItems — derives + buckets every row cross-repo", () => 
       looseAgents: [],
     };
     expect(buildWorklistItems(empty, NO_LIVENESS, NOW)).toEqual([]);
+  });
+});
+
+describe("buildWorklistItems — autopilot epic routing (Phase 5a §7)", () => {
+  const NO_LIVENESS: Record<string, AgentLiveness> = {};
+
+  /** One autopilot-ON epic: an AUTO ticket (needs-review) + a HUMAN-STOP (failed). */
+  function autopilotWorklist(): WorklistState {
+    return {
+      repositories: [{ id: "repo-1", name: "payments-app" }],
+      boards: [
+        {
+          parent: ws({
+            id: "epic-ap",
+            workspaceKind: "parent",
+            name: "overnight",
+            prompt: "Ship the comments feature",
+            agent: null,
+            parentId: null,
+            autopilotEnabled: true,
+          }),
+          subtasks: [
+            // clean-exit subtask → needs-review → the driver owns it.
+            ws({
+              id: "ap-done",
+              parentId: "epic-ap",
+              role: "backend",
+              name: "comments API",
+              status: "completed",
+              exitCode: 0,
+              finishedAt: iso(40_000),
+            }),
+            // failed → HUMAN-STOP → genuinely the founder's.
+            ws({
+              id: "ap-failed",
+              parentId: "epic-ap",
+              role: "docs",
+              name: "comments docs",
+              status: "failed",
+              exitCode: 1,
+              finishedAt: iso(30_000),
+            }),
+          ],
+          dependencies: [],
+          contracts: [],
+        },
+      ],
+      looseAgents: [],
+    };
+  }
+
+  it("routes the AUTO ticket to Autopilot driving and the HUMAN-STOP to Needs you", () => {
+    const items = buildWorklistItems(autopilotWorklist(), NO_LIVENESS, NOW);
+    const get = (id: string) => items.find((i) => i.id === id)!;
+
+    expect(get("ap-done").state).toBe("needs-review");
+    expect(get("ap-done").bucket).toBe("autopilot-driving"); // driver owns it
+    expect(get("ap-failed").state).toBe("failed");
+    expect(get("ap-failed").bucket).toBe("needs-you"); // still the founder's
+  });
+
+  it("excludes autopilot-driven tickets from the Needs-you badge count", () => {
+    const items = buildWorklistItems(autopilotWorklist(), NO_LIVENESS, NOW);
+    // Only the failed ticket owes the founder — the driven one does not inflate it.
+    expect(needsYouCount(items)).toBe(1);
+  });
+
+  it("the SAME clean-exit ticket stays Needs-you when its epic has autopilot OFF", () => {
+    const state = autopilotWorklist();
+    state.boards[0]!.parent.autopilotEnabled = false;
+    const items = buildWorklistItems(state, NO_LIVENESS, NOW);
+    expect(items.find((i) => i.id === "ap-done")!.bucket).toBe("needs-you");
   });
 });
