@@ -234,6 +234,9 @@ mod unix_impl {
                 crate::commands::review::request_review_inner(
                     &subtask,
                     &grant.user_id,
+                    // Attribution (G1): a CLI-fired request-review is the producing
+                    // agent acting on its own ticket — never the human "you".
+                    "agent",
                     &server.workspaces,
                     &server.board,
                     &server.repositories,

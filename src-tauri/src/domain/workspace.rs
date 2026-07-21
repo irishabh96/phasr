@@ -140,6 +140,12 @@ pub struct Workspace {
     /// never synced (see migration 0012). The frontend derives the honest
     /// "was interrupted" (Wedged) state from `status = stopped && this`.
     pub interrupted_at: Option<DateTime<Utc>>,
+    /// Autopilot (Phase 5a). Meaningful ONLY on a `parent` (epic) row: when
+    /// `true` the driver auto-advances that epic's gate ladder. LOCAL-ONLY —
+    /// backed by the additive `autopilot_enabled` column (migration 0015); board
+    /// rows are never synced (the `workspace_kind='agent'` PUSH filter), so this
+    /// needs no sync change. Defaults `false` (opt-in per epic).
+    pub autopilot_enabled: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -165,6 +171,7 @@ impl Workspace {
             finished_at: None,
             archived_at: None,
             interrupted_at: None,
+            autopilot_enabled: false,
             updated_at: now,
         }
     }

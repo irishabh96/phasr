@@ -156,6 +156,9 @@ pub async fn request_review(
     let assembled = request_review_inner(
         &subtask,
         &current.user_id,
+        // A human-clicked gate is always attributed `"you"` (G1/H); autopilot
+        // fires the same `_inner` with `"autopilot"`.
+        "you",
         &workspaces,
         &board,
         &repositories,
@@ -190,6 +193,8 @@ pub async fn resolve_review(
     let assembled = resolve_review_inner(
         &subtask,
         &current.user_id,
+        // Human gate → `"you"`; the QAS-agent path (Stage B) passes `"qas-agent"`.
+        "you",
         decision,
         comment.as_deref(),
         &workspaces,
@@ -249,6 +254,9 @@ pub async fn get_board_gates(
 pub(crate) async fn request_review_inner(
     subtask: &Workspace,
     user_id: &str,
+    // Attribution (G1): `"you"` for a human gate, `"autopilot"` when the driver
+    // fires this as an AUTO gate. Never hardcoded here so the audit stays honest.
+    by: &str,
     workspaces: &WorkspaceRepo,
     board: &BoardRepo,
     repositories: &RepositoryRepo,
@@ -263,7 +271,7 @@ pub(crate) async fn request_review_inner(
     let record = ReviewRecord {
         subtask_id: subtask.id.clone(),
         state: ReviewState::Requested,
-        by: "you".to_string(),
+        by: by.to_string(),
         comment: None,
         at_ms: chrono::Utc::now().timestamp_millis(),
         validate_passed,
@@ -288,6 +296,10 @@ pub(crate) async fn request_review_inner(
 pub(crate) async fn resolve_review_inner(
     subtask: &Workspace,
     user_id: &str,
+    // Attribution (G1): `"you"` for a human resolve, `"qas-agent"` for the QAS
+    // reviewer path (Stage B). Used for BOTH the record `by` AND the appended
+    // bounce comment author, so no autopilot decision ever masquerades as `"you"`.
+    by: &str,
     decision: ReviewDecision,
     comment: Option<&str>,
     workspaces: &WorkspaceRepo,
@@ -309,7 +321,7 @@ pub(crate) async fn resolve_review_inner(
         ReviewDecision::Approve => ReviewRecord {
             subtask_id: subtask.id.clone(),
             state: ReviewState::Approved,
-            by: "you".to_string(),
+            by: by.to_string(),
             comment: None,
             at_ms: now_ms,
             validate_passed,
@@ -320,12 +332,12 @@ pub(crate) async fn resolve_review_inner(
                 return Err(ReviewCmdError::MissingComment);
             };
             // Append the reason to the thread so the agent reads it on its next
-            // step (SAFe iteration authority); authored "you" per the human gate.
-            add_comment(&repo_root, &subtask.id, "you", reason)?;
+            // step (SAFe iteration authority); authored by the resolving actor.
+            add_comment(&repo_root, &subtask.id, by, reason)?;
             ReviewRecord {
                 subtask_id: subtask.id.clone(),
                 state: ReviewState::ChangesRequested,
-                by: "you".to_string(),
+                by: by.to_string(),
                 comment: Some(reason.to_string()),
                 at_ms: now_ms,
                 validate_passed,
@@ -513,7 +525,7 @@ mod tests {
         let registry = TicketWriteRegistry::default();
 
         request_review_inner(
-            frontend, "user-a", &workspaces, &board, &repos, &registry, &scheduler_config(&dir),
+            frontend, "user-a", "you", &workspaces, &board, &repos, &registry, &scheduler_config(&dir),
         )
         .await
         .unwrap();
@@ -521,6 +533,50 @@ mod tests {
         let review = read_review_record(&repo_root(&dir), &frontend.id).unwrap().unwrap();
         assert_eq!(review.state, ReviewState::Requested);
         assert_eq!(review.by, "you");
+    }
+
+    // G1: an autopilot-fired request-review is attributed `"autopilot"`, never
+    // `"you"` — the audit must never impersonate the human (spec S2/§8).
+    #[tokio::test]
+    async fn autopilot_request_review_is_attributed_autopilot_not_you() {
+        let (workspaces, board, repos, assembled, dir) = setup().await;
+        let frontend = subtask_by_role(&assembled, "frontend");
+        let registry = TicketWriteRegistry::default();
+
+        request_review_inner(
+            frontend, "user-a", "autopilot", &workspaces, &board, &repos, &registry,
+            &scheduler_config(&dir),
+        )
+        .await
+        .unwrap();
+
+        let review = read_review_record(&repo_root(&dir), &frontend.id).unwrap().unwrap();
+        assert_eq!(review.by, "autopilot", "autopilot must not write by == \"you\"");
+        assert_ne!(review.by, "you");
+    }
+
+    // G1: a `"qas-agent"`-attributed bounce writes that author on BOTH the record
+    // AND the appended comment (not `"you"`) — the two parametrized sites.
+    #[tokio::test]
+    async fn resolve_review_bounce_attribution_flows_to_record_and_comment() {
+        let (workspaces, board, repos, assembled, dir) = setup().await;
+        let frontend = subtask_by_role(&assembled, "frontend");
+        let registry = TicketWriteRegistry::default();
+
+        resolve_review_inner(
+            frontend, "user-a", "qas-agent", ReviewDecision::Bounce, Some("tighten the diff"),
+            &workspaces, &board, &repos, &registry,
+        )
+        .await
+        .unwrap();
+
+        let review = read_review_record(&repo_root(&dir), &frontend.id).unwrap().unwrap();
+        assert_eq!(review.by, "qas-agent");
+        let comments = crate::tickets::list_comments(&repo_root(&dir), &frontend.id).unwrap();
+        assert!(
+            comments.iter().any(|c| c.body == "tighten the diff" && c.author == "qas-agent"),
+            "the bounce comment author must equal the passed `by`, never \"you\""
+        );
     }
 
     // R1: request_review on a PRODUCER also publishes its contract (dependents
@@ -532,7 +588,7 @@ mod tests {
         let registry = TicketWriteRegistry::default();
 
         request_review_inner(
-            backend, "user-a", &workspaces, &board, &repos, &registry, &scheduler_config(&dir),
+            backend, "user-a", "you", &workspaces, &board, &repos, &registry, &scheduler_config(&dir),
         )
         .await
         .unwrap();
@@ -552,7 +608,7 @@ mod tests {
         let registry = TicketWriteRegistry::default();
 
         resolve_review_inner(
-            frontend, "user-a", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry,
+            frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry,
         )
         .await
         .unwrap();
@@ -572,6 +628,7 @@ mod tests {
         resolve_review_inner(
             frontend,
             "user-a",
+            "you",
             ReviewDecision::Bounce,
             Some("fix the empty state"),
             &workspaces,
@@ -603,14 +660,14 @@ mod tests {
 
         assert!(matches!(
             resolve_review_inner(
-                frontend, "user-a", ReviewDecision::Bounce, None, &workspaces, &board, &repos, &registry,
+                frontend, "user-a", "you", ReviewDecision::Bounce, None, &workspaces, &board, &repos, &registry,
             )
             .await,
             Err(ReviewCmdError::MissingComment)
         ));
         assert!(matches!(
             resolve_review_inner(
-                frontend, "user-a", ReviewDecision::Bounce, Some("   "), &workspaces, &board, &repos, &registry,
+                frontend, "user-a", "you", ReviewDecision::Bounce, Some("   "), &workspaces, &board, &repos, &registry,
             )
             .await,
             Err(ReviewCmdError::MissingComment)
@@ -627,7 +684,7 @@ mod tests {
 
         assert!(matches!(
             request_review_inner(
-                &agent, "user-a", &workspaces, &board, &repos, &registry, &scheduler_config(&dir),
+                &agent, "user-a", "you", &workspaces, &board, &repos, &registry, &scheduler_config(&dir),
             )
             .await,
             Err(ReviewCmdError::NotASubtask(_))
@@ -644,7 +701,7 @@ mod tests {
 
         // Approve the frontend; write a validate.json for the backend by hand.
         resolve_review_inner(
-            frontend, "user-a", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry,
+            frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry,
         )
         .await
         .unwrap();

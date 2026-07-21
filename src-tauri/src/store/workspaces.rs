@@ -20,6 +20,9 @@ pub struct WorkspaceUpdate {
     pub finished_at: Option<Option<DateTime<Utc>>>,
     pub archived_at: Option<Option<DateTime<Utc>>>,
     pub interrupted_at: Option<Option<DateTime<Utc>>>,
+    /// Autopilot per-epic toggle (migration 0015). Local-only; set by
+    /// `set_autopilot`.
+    pub autopilot_enabled: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -71,7 +74,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE repository_id = ? AND parent_id IS NULL AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -93,7 +97,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE repository_id = ? AND user_id = ? AND parent_id IS NULL AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -117,7 +122,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE repository_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -134,7 +140,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE parent_id = ? AND deleted_at IS NULL
              ORDER BY created_at ASC",
@@ -154,7 +161,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE parent_id = ? AND user_id = ? AND deleted_at IS NULL
              ORDER BY created_at ASC",
@@ -173,7 +181,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE status = ? AND deleted_at IS NULL
              ORDER BY updated_at DESC",
@@ -196,7 +205,8 @@ impl WorkspaceRepo {
         let rows = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE workspace_kind = 'parent' AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -210,7 +220,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -230,7 +241,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
         )
@@ -265,7 +277,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE repository_id = ? AND workspace_kind = 'local' AND deleted_at IS NULL
              LIMIT 1",
@@ -294,7 +307,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -320,7 +334,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -352,7 +367,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE parent_id = ? AND role = ? AND workspace_kind = 'subtask'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -377,7 +393,8 @@ impl WorkspaceRepo {
         let row = sqlx::query(
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
-                    created_at, started_at, finished_at, archived_at, interrupted_at, updated_at
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, updated_at
              FROM workspaces
              WHERE parent_id = ? AND role = ? AND user_id = ? AND workspace_kind = 'subtask'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -442,13 +459,17 @@ impl WorkspaceRepo {
         if let Some(interrupted_at) = patch.interrupted_at {
             current.interrupted_at = interrupted_at;
         }
+        if let Some(autopilot_enabled) = patch.autopilot_enabled {
+            current.autopilot_enabled = autopilot_enabled;
+        }
         current.updated_at = Utc::now();
 
         sqlx::query(
             "UPDATE workspaces SET
                 name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
-                started_at = ?, finished_at = ?, archived_at = ?, interrupted_at = ?, updated_at = ?,
+                started_at = ?, finished_at = ?, archived_at = ?, interrupted_at = ?,
+                autopilot_enabled = ?, updated_at = ?,
                 dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
              WHERE id = ?",
         )
@@ -464,6 +485,7 @@ impl WorkspaceRepo {
         .bind(current.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(current.archived_at.map(|dt| dt.to_rfc3339()))
         .bind(current.interrupted_at.map(|dt| dt.to_rfc3339()))
+        .bind(current.autopilot_enabled as i64)
         .bind(current.updated_at.to_rfc3339())
         .bind(id)
         .execute(&self.db)
@@ -563,9 +585,10 @@ where
         "INSERT INTO workspaces (
             id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
             branch, worktree_path, exit_code, parent_id, role,
-            created_at, started_at, finished_at, archived_at, interrupted_at, updated_at,
+            created_at, started_at, finished_at, archived_at, interrupted_at,
+            autopilot_enabled, updated_at,
             synced_at, dirty
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
     )
     .bind(&workspace.id)
     .bind(user_id)
@@ -586,6 +609,7 @@ where
     .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
     .bind(workspace.archived_at.map(|dt| dt.to_rfc3339()))
     .bind(workspace.interrupted_at.map(|dt| dt.to_rfc3339()))
+    .bind(workspace.autopilot_enabled as i64)
     .bind(workspace.updated_at.to_rfc3339())
     .bind(dirty)
     .execute(executor)
@@ -635,6 +659,7 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         finished_at: parse_optional_timestamp(row.try_get("finished_at")?, "finished_at")?,
         archived_at: parse_optional_timestamp(row.try_get("archived_at")?, "archived_at")?,
         interrupted_at: parse_optional_timestamp(row.try_get("interrupted_at")?, "interrupted_at")?,
+        autopilot_enabled: row.try_get::<i64, _>("autopilot_enabled")? != 0,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,
     })
 }
@@ -1032,6 +1057,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cleared.interrupted_at, None);
+    }
+
+    // S3 (Phase 5a): the additive `autopilot_enabled` column (migration 0015)
+    // round-trips through insert/get, defaults `false` on a fresh row, and is
+    // settable via `WorkspaceUpdate` (the `set_autopilot` command path). Locks
+    // the column across every SELECT/INSERT/UPDATE list, mirroring
+    // `interrupted_at_column_round_trips`.
+    #[tokio::test]
+    async fn autopilot_enabled_column_round_trips() {
+        let (_repos, workspaces, repo) = fresh().await;
+        let mut parent = Workspace::new(repo.id.clone(), "epic".into(), String::new());
+        parent.workspace_kind = WorkspaceKind::Parent;
+        workspaces.insert(&parent).await.unwrap();
+
+        // Fresh rows default OFF (opt-in per epic).
+        assert!(!workspaces.get(&parent.id).await.unwrap().autopilot_enabled);
+
+        // Flip it on via update → persists through the SELECT/UPDATE lists.
+        let on = workspaces
+            .update(
+                &parent.id,
+                WorkspaceUpdate {
+                    autopilot_enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(on.autopilot_enabled);
+        assert!(workspaces.get(&parent.id).await.unwrap().autopilot_enabled);
+
+        // And back off again.
+        workspaces
+            .update(
+                &parent.id,
+                WorkspaceUpdate {
+                    autopilot_enabled: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!workspaces.get(&parent.id).await.unwrap().autopilot_enabled);
     }
 
     #[tokio::test]
