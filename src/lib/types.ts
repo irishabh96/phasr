@@ -68,6 +68,15 @@ export interface Workspace {
    * never `name`. Mirrors the additive `role` column (migration 0013).
    */
   role: string | null;
+  /**
+   * Autopilot per-epic toggle (Phase 5a). Meaningful ONLY on a `parent` (epic)
+   * row: when `true` the driver auto-advances that epic's gate ladder. LOCAL-ONLY
+   * (mirrors the additive `autopilot_enabled` column, migration 0015 — board rows
+   * are never synced). Defaults `false` (opt-in per epic). The FE threads this
+   * into `worklistBucket`/`deriveNextGate` so autopilot-owned tickets group under
+   * "Autopilot driving" instead of masquerading as coral "Needs you".
+   */
+  autopilotEnabled: boolean;
   updatedAt: string;
 }
 
@@ -589,4 +598,21 @@ export type ReviewDecision = "approve" | "bounce";
  */
 export interface BoardChangedPayload {
   parentId: string;
+}
+
+// ── Autopilot (Phase 5a, Stage A — the self-driving board) ──────────────────
+// Mirrors the FROZEN wire contract (`commands/autopilot.rs`). The per-epic
+// `autopilotEnabled` flag rides on `Workspace` (above); this is the GLOBAL kill
+// switch the FE halted-banner reads. Board/autopilot state is LOCAL-ONLY (never
+// synced).
+
+/**
+ * The global autopilot state (`get_autopilot_state`). `killSwitchHalted` is the
+ * PERSISTED true-halt (§5): while set, the driver no-ops and the FE shows a
+ * persistent "Autopilot halted" banner with a single explicit "Resume". There is
+ * NO auto-resume. Mirrors the Rust `AutopilotState` (`#[serde(rename_all =
+ * "camelCase")]`).
+ */
+export interface AutopilotState {
+  killSwitchHalted: boolean;
 }

@@ -59,6 +59,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     interruptedAt: null,
     parentId: null,
     role: null,
+    autopilotEnabled: false,
     updatedAt: "2026-01-01T00:00:01Z",
     ...overrides,
   };

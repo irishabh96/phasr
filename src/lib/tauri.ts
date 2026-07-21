@@ -3,6 +3,7 @@ import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   Agent,
   AgentOption,
+  AutopilotState,
   BoardGates,
   BoardState,
   BranchStatus,
@@ -319,6 +320,21 @@ export const tauri = {
     invoke<ReviewRecord | null>("get_review", { subtaskId }),
   getBoardGates: (parentId: string) =>
     invoke<BoardGates>("get_board_gates", { parentId }),
+
+  // ── Autopilot (Phase 5a, Stage A — the self-driving board) ────────────────
+  // Thin wrappers over the FROZEN wire contract (`commands/autopilot.rs`). Errors
+  // arrive as plain strings. `setAutopilot` flips an epic's per-parent flag and
+  // returns the refreshed `BoardState` (its `parent.autopilotEnabled` now carries
+  // the new value), emitting `phasr://board-changed { parentId }` so the open
+  // board moves live. `setAutopilotKillSwitch` flips the GLOBAL persisted
+  // true-halt (§5, no auto-resume); `getAutopilotState` reads `{ killSwitchHalted }`
+  // for the halted banner.
+  setAutopilot: (parentId: string, enabled: boolean) =>
+    invoke<BoardState>("set_autopilot", { parentId, enabled }),
+  setAutopilotKillSwitch: (halted: boolean) =>
+    invoke<void>("set_autopilot_kill_switch", { halted }),
+  getAutopilotState: () =>
+    invoke<AutopilotState>("get_autopilot_state"),
 
   // ── worklist (cross-repo attention home, Phase 2 §C.3) ────────────────
   // One call returns every repo, every epic's board, and loose agents for the

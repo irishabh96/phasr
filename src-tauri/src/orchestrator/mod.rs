@@ -6,6 +6,7 @@
 //! errors and a handful of value types. Tauri command handlers live
 //! in `crate::commands::orchestrator` and forward straight through.
 
+mod autopilot;
 mod board_events;
 mod cli_tokens;
 mod error;
@@ -24,6 +25,16 @@ mod validate;
 // `phasr://board-changed`. Shared so the future CLI IPC server emits through the
 // same channel. `BoardChangedEvent` is re-exported so `BoardEventBus::subscribe`'s
 // return type stays publicly nameable (not yet named internally).
+// Autopilot (Phase 5a, Stage A): the headless gate-classification policy — the
+// pure `next_auto_action`/`next_epic_action` ladder + its value types. The
+// per-parent driver that consumes them lands in a later slice; re-exported now so
+// the policy surface is discoverable alongside the other orchestrator seams (and
+// nameable from the future driver/commands).
+#[allow(unused_imports)]
+pub use autopilot::{
+    next_auto_action, next_epic_action, AutoAction, EpicAction, EpicGateState, ReviewLadderState,
+    ReviewSnapshot, SafeVerb, StopReason, TicketGateState, TicketState, ValidateSnapshot,
+};
 #[allow(unused_imports)]
 pub use board_events::{BoardChangedEvent, BoardEventBus};
 // The `phasr` CLI token registry (§R5): the scheduler mints per-subtask tokens

@@ -69,6 +69,7 @@ function ws(overrides: Partial<Workspace> & { id: string }): Workspace {
     interruptedAt: null,
     parentId: "epic-1",
     role: null,
+    autopilotEnabled: false,
     updatedAt: iso(0),
     ...overrides,
   };

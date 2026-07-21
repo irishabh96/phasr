@@ -2,6 +2,7 @@
 //! repository call.
 
 pub mod agents;
+pub mod autopilot;
 pub mod board;
 pub mod files;
 pub mod git;

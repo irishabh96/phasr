@@ -31,6 +31,7 @@ function subtask(overrides: Partial<Workspace>): Workspace {
     interruptedAt: null,
     parentId: "parent-1",
     role: "frontend",
+    autopilotEnabled: false,
     updatedAt: iso(0),
     ...overrides,
   };

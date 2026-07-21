@@ -22,8 +22,8 @@ use domain::WorkspaceStatus;
 use orchestrator::{BoardEventBus, RepoLockRegistry, TaskOrchestrator};
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, BoardRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
-    WorkspaceRepo, WorkspaceUpdate,
+    default_db_path, init_pool, AutopilotStateRepo, BoardRepo, RepositoryRepo, RunCommandRepo,
+    SettingsRepo, UserRepo, WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Manager;
@@ -193,6 +193,9 @@ pub fn run() {
             commands::review::resolve_review,
             commands::review::get_review,
             commands::review::get_board_gates,
+            commands::autopilot::set_autopilot,
+            commands::autopilot::set_autopilot_kill_switch,
+            commands::autopilot::get_autopilot_state,
             commands::tickets::read_ticket_brief,
             commands::tickets::write_ticket_section,
             commands::tickets::list_ticket_assets,
@@ -357,6 +360,9 @@ async fn initialize_database_state(
     handle.manage(BoardRepo::new(pool.clone()));
     handle.manage(RunCommandRepo::new(pool.clone()));
     handle.manage(SettingsRepo::new(pool.clone()));
+    // Autopilot (Phase 5a, §5): the persisted kill-switch repo, managed so the
+    // enable/kill-switch commands (and the future driver) can reach it.
+    handle.manage(AutopilotStateRepo::new(pool.clone()));
     handle.manage(UserRepo::new(pool.clone()));
     handle.manage(pool);
     handle.manage(repo_locks);

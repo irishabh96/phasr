@@ -93,6 +93,7 @@ function mockWs(overrides: Partial<Workspace> & { id: string }): Workspace {
     interruptedAt: null,
     parentId: "parent-1",
     role: null,
+    autopilotEnabled: false,
     updatedAt: isoAgo(0),
     ...overrides,
   };
