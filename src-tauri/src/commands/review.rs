@@ -29,7 +29,8 @@ use crate::domain::Workspace;
 use crate::orchestrator::{BoardEventBus, SchedulerConfig, ValidateResult};
 use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo};
 use crate::tickets::{
-    add_comment, read_gate_file, write_gate_file, GateFile, TicketError, TicketWriteRegistry,
+    add_comment, read_gate_file, write_gate_file, GateFile, LastEditedBy, TicketError,
+    TicketWriteRegistry,
 };
 
 // ── wire DTOs (the frozen §C.2 contract; camelCase on the wire) ───────────────
@@ -332,8 +333,17 @@ pub(crate) async fn resolve_review_inner(
                 return Err(ReviewCmdError::MissingComment);
             };
             // Append the reason to the thread so the agent reads it on its next
-            // step (SAFe iteration authority); authored by the resolving actor.
-            add_comment(&repo_root, &subtask.id, by, reason)?;
+            // step (SAFe iteration authority); authored by the resolving actor. The
+            // author-kind tracks that actor (honesty #29): a human resolve is
+            // `"you"`, an agent resolve (e.g. `"qas-agent"`) is `"agent"` — never
+            // stamping an agent decision as the human. `"you"` is the sole human
+            // sentinel across the review gate (mirrors `ReviewRecord.by`).
+            let by_kind = if by == "you" {
+                LastEditedBy::You
+            } else {
+                LastEditedBy::Agent
+            };
+            add_comment(&repo_root, &subtask.id, by, by_kind, reason)?;
             ReviewRecord {
                 subtask_id: subtask.id.clone(),
                 state: ReviewState::ChangesRequested,

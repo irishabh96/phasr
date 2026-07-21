@@ -60,7 +60,9 @@ use crate::domain::{Workspace, WorkspaceContract, WorkspaceDependency, Workspace
 use crate::git;
 use crate::pty::TaskRuntime;
 use crate::store::{AutopilotStateRepo, BoardRepo, RepositoryRepo, RunCommandRepo, WorkspaceRepo};
-use crate::tickets::{add_comment, read_gate_file, ticket_dir, GateFile, TicketWriteRegistry};
+use crate::tickets::{
+    add_comment, read_gate_file, ticket_dir, GateFile, LastEditedBy, TicketWriteRegistry,
+};
 
 use super::super::liveness::{classify, DerivedState, LivenessThresholds};
 use super::policy::{
@@ -458,7 +460,8 @@ impl AutopilotDriver {
              `phasr validate`.",
             v.failing_count
         );
-        match add_comment(repo_root, &subtask.id, "autopilot", &body) {
+        // Authored by the autopilot AGENT, never the human `"you"` (honesty #29).
+        match add_comment(repo_root, &subtask.id, "autopilot", LastEditedBy::Agent, &body) {
             Ok(_) => {
                 write_bounce_marker(repo_root, &subtask.id, v.at_ms);
                 self.audit(

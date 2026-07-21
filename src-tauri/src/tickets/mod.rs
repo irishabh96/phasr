@@ -232,11 +232,11 @@ pub struct FigmaLink {
     pub added_at_ms: i64,
 }
 
-/// One comment on a ticket — one JSON object per line in `comments.jsonl`. Phase
-/// 2 only ever APPENDS `authorKind: "you"` (the agent is read-only on the brief
-/// until the Phase-3 CLI, architect #1); an `agent` comment carrying a `role` can
-/// be read back but is never written here. `Deserialize` too — we parse the same
-/// shape back off disk.
+/// One comment on a ticket — one JSON object per line in `comments.jsonl`. A
+/// human gate appends `authorKind: "you"`; an agent acting via the `phasr` CLI or
+/// the autopilot/QAS driver appends `authorKind: "agent"` (honesty #29 —
+/// `add_comment` requires the kind explicitly, so an agent write is never stamped
+/// `"you"`). `Deserialize` too — we parse the same shape back off disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TicketComment {
@@ -915,13 +915,17 @@ pub fn list_comments(repo_root: &Path, ticket_id: &str) -> Result<Vec<TicketComm
         .collect())
 }
 
-/// Append one comment to `comments.jsonl`. Phase 2 only ever appends `You`
-/// (honesty #1); `author` is the signed-in user's display name. Returns the
-/// created comment so the FE can render it optimistically.
+/// Append one comment to `comments.jsonl`. `author` is the display label (the
+/// signed-in user's name, or an agent's role/persona) and `author_kind` stamps
+/// WHO wrote it — threaded explicitly so an agent write can never masquerade as
+/// the human `"you"` (honesty #29). `You` for a human gate; `Agent` for a comment
+/// produced by the `phasr` CLI or the autopilot/QAS driver. Returns the created
+/// comment so the FE can render it optimistically.
 pub fn add_comment(
     repo_root: &Path,
     ticket_id: &str,
     author: &str,
+    author_kind: LastEditedBy,
     body: &str,
 ) -> Result<TicketComment, TicketError> {
     let dir = ticket_dir(repo_root, ticket_id)?;
@@ -929,7 +933,7 @@ pub fn add_comment(
     let comment = TicketComment {
         id: uuid::Uuid::new_v4().to_string(),
         author: author.to_string(),
-        author_kind: LastEditedBy::You,
+        author_kind,
         role: None,
         body: body.to_string(),
         created_at_ms: Utc::now().timestamp_millis(),
@@ -1526,9 +1530,9 @@ mod tests {
         let (_tmp, root) = repo();
         scaffold_ticket(&root, "t", "T", "d").unwrap();
 
-        let c1 = add_comment(&root, "t", "Rishabh", "first note").unwrap();
-        let c2 = add_comment(&root, "t", "Rishabh", "second note").unwrap();
-        // Phase 2 only ever appends "you" (honesty #1) — never "agent", no role.
+        let c1 = add_comment(&root, "t", "Rishabh", LastEditedBy::You, "first note").unwrap();
+        let c2 = add_comment(&root, "t", "Rishabh", LastEditedBy::You, "second note").unwrap();
+        // A human gate appends "you" (honesty #29).
         assert!(matches!(c1.author_kind, LastEditedBy::You));
         assert_eq!(c1.author, "Rishabh");
         assert!(c1.role.is_none());
@@ -1549,6 +1553,26 @@ mod tests {
             2,
             "a malformed jsonl line must be skipped, not fatal"
         );
+    }
+
+    // honesty #29: a comment written on behalf of an agent (e.g. the `phasr` CLI
+    // or the autopilot driver) is stamped `authorKind: "agent"`, and serializes as
+    // the lowercase `"agent"` on the wire — never masquerading as the human "you".
+    #[test]
+    fn comment_authored_agent_is_stamped_agent_not_you() {
+        let (_tmp, root) = repo();
+        scaffold_ticket(&root, "t", "T", "d").unwrap();
+
+        let c = add_comment(&root, "t", "backend", LastEditedBy::Agent, "done").unwrap();
+        assert!(matches!(c.author_kind, LastEditedBy::Agent));
+        assert_eq!(c.author, "backend");
+
+        // Round-trips off disk with the honest kind, and serializes lowercase.
+        let read_back = list_comments(&root, "t").unwrap();
+        assert_eq!(read_back.len(), 1);
+        assert!(matches!(read_back[0].author_kind, LastEditedBy::Agent));
+        let wire = serde_json::to_value(&read_back[0]).unwrap();
+        assert_eq!(wire["authorKind"], "agent");
     }
 
     // Pins the FROZEN §C wire shapes for the T5 DTOs: TicketAsset (kebab

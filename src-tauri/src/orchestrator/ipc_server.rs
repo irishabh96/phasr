@@ -109,7 +109,7 @@ mod unix_impl {
     use crate::orchestrator::cli_tokens::CliTokenRegistry;
     use crate::orchestrator::{BoardEventBus, SchedulerConfig, ValidateConfig};
     use crate::store::{BoardRepo, RepositoryRepo, RunCommandRepo, WorkspaceRepo};
-    use crate::tickets::TicketWriteRegistry;
+    use crate::tickets::{LastEditedBy, TicketWriteRegistry};
 
     use super::{CliRequest, CliResponse};
 
@@ -282,8 +282,16 @@ mod unix_impl {
                 let repo_root = owned_repo_root(&server.repositories, &subtask.repository_id).await?;
                 // Author by role so the thread names the agent (e.g. "backend").
                 let author = subtask.role.as_deref().unwrap_or("agent");
-                let comment = crate::tickets::add_comment(&repo_root, &grant.subtask_id, author, body)
-                    .map_err(|e| e.to_string())?;
+                // A CLI comment is written BY the producing agent on its own ticket —
+                // stamped `Agent`, never the human `"you"` (honesty #29).
+                let comment = crate::tickets::add_comment(
+                    &repo_root,
+                    &grant.subtask_id,
+                    author,
+                    LastEditedBy::Agent,
+                    body,
+                )
+                .map_err(|e| e.to_string())?;
                 serde_json::to_value(comment).map_err(|e| e.to_string())?
             }
             "validate" => {
@@ -561,6 +569,44 @@ mod unix_impl {
             let added = server.workspaces.get_for_user(&new_id, "user-a").await.unwrap();
             assert_eq!(added.parent_id.as_deref(), Some(parent_id.as_str()));
             assert_eq!(added.role.as_deref(), Some("docs"));
+        }
+
+        // honesty #29: a `comment` issued over the CLI is written BY the producing
+        // agent, so it is stamped `authorKind: "agent"` — NOT the human `"you"`.
+        // Asserted on BOTH the wire response and the persisted `comments.jsonl`.
+        #[tokio::test]
+        async fn dispatch_comment_is_authored_agent_not_you() {
+            let (server, subtask_id, parent_id, dir) = running_board().await;
+            let token = server.tokens.mint(&subtask_id, "user-a", &parent_id);
+            let sock = dir.path().join("phasr.sock");
+            let listener = bind(&sock).unwrap();
+            tokio::spawn(serve(listener, server.clone()));
+
+            let response = round_trip(
+                &sock,
+                serde_json::json!({
+                    "token": token,
+                    "verb": "comment",
+                    "args": { "body": "shipped the backend" },
+                }),
+            )
+            .await;
+            assert!(response.ok, "comment should succeed: {:?}", response.error);
+
+            // The wire response is the created comment — honestly `"agent"`.
+            let result = response.result.unwrap();
+            assert_eq!(result["authorKind"], "agent", "a CLI comment must not be stamped \"you\"");
+            assert_eq!(result["body"], "shipped the backend");
+
+            // And it persisted with the same honest kind (author = the ticket role).
+            let checkout = dir.path().join("checkout");
+            let comments = crate::tickets::list_comments(&checkout, &subtask_id).unwrap();
+            assert_eq!(comments.len(), 1);
+            assert!(
+                matches!(comments[0].author_kind, LastEditedBy::Agent),
+                "the persisted comment must be authored \"agent\", never \"you\""
+            );
+            assert_eq!(comments[0].author, "frontend");
         }
     }
 }

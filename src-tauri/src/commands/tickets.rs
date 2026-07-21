@@ -30,7 +30,8 @@ use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 use crate::tickets::{
     add_asset, add_comment, add_figma_link, default_ticket_assets_root, list_assets, list_comments,
     read_brief, remove_asset, remove_figma_link, ticket_dir, write_section, BriefSection, FigmaLink,
-    TicketAsset, TicketBrief, TicketComment, TicketError, TicketWriteRegistry, WriteSectionResult,
+    LastEditedBy, TicketAsset, TicketBrief, TicketComment, TicketError, TicketWriteRegistry,
+    WriteSectionResult,
 };
 
 // ── error ────────────────────────────────────────────────────────────────────
@@ -267,7 +268,8 @@ pub async fn add_ticket_comment(
     let repo_root = owned_repo_root(&repositories, &repository_id, &current.user_id)
         .await?
         .ok_or(TicketError::RepositoryHasNoLocalPath)?;
-    Ok(add_comment(&repo_root, &ticket_id, &current.name, &body)?)
+    // A UI comment is the signed-in human — stamped `"you"` (honesty #29).
+    Ok(add_comment(&repo_root, &ticket_id, &current.name, LastEditedBy::You, &body)?)
 }
 
 // ── T7: co-editing fs-watcher ────────────────────────────────────────────────
