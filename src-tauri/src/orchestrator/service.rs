@@ -760,6 +760,36 @@ impl TaskOrchestrator {
         });
     }
 
+    /// Build + start the autopilot driver (Phase 5a S4). The counterpart to
+    /// `spawn_scheduler`, but for the FULL gate ladder rather than just spawn: it
+    /// auto-advances Validate → Request-review and auto-integrates a fully-approved,
+    /// clean epic, parking hard at every human-judgment / outward edge. Owns the
+    /// runtime clone (for the I3 liveness read) + the shared per-parent lock map +
+    /// the durable last-fired markers, and starts its three trigger paths (event +
+    /// 3s backstop UNGATED by `has_work` + boot sweep). Called once at app boot
+    /// from `lib.rs::initialize_database_state`.
+    pub fn spawn_autopilot_driver(
+        &self,
+        board: BoardRepo,
+        run_commands: crate::store::RunCommandRepo,
+        write_registry: Arc<crate::tickets::TicketWriteRegistry>,
+        board_events: Arc<super::board_events::BoardEventBus>,
+        autopilot_state: crate::store::AutopilotStateRepo,
+    ) {
+        let driver = Arc::new(super::autopilot::AutopilotDriver::new(
+            self.workspaces.clone(),
+            board,
+            self.repositories.clone(),
+            run_commands,
+            self.repo_locks.clone(),
+            write_registry,
+            board_events,
+            autopilot_state,
+            self.runtime.clone(),
+        ));
+        driver.spawn();
+    }
+
     /// One scheduler pass. For every active decomposition parent:
     ///   1. Bridge any newly-published contract FILE into a
     ///      `workspace_contracts` row (the file→DB bridge, B3) — this is what

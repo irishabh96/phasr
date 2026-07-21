@@ -159,6 +159,13 @@ pub enum BoardCmdError {
     /// on the parent `workspace_id` (spec claim #6). The conflicting files ride
     /// the serialized error string so the UI can name them.
     IntegrationConflict { files: Vec<String> },
+    /// Re-integration was asked to tear down an integration worktree that still
+    /// carries an UNRESOLVED merge (Phase 5a I2). Tearing it down would clobber a
+    /// human's in-progress conflict resolution, so `integrate_parent_inner`
+    /// refuses with this distinct error rather than destroy their work — the
+    /// autopilot driver maps it to a durable HUMAN-STOP, and the human resolves
+    /// (or aborts) the existing merge before re-integrating.
+    MergeInProgress { worktree: String },
 }
 
 impl From<StoreError> for BoardCmdError {
@@ -197,6 +204,11 @@ impl std::fmt::Display for BoardCmdError {
             Self::IntegrationConflict { files } => {
                 write!(f, "integration stopped on conflicts in: {}", files.join(", "))
             }
+            Self::MergeInProgress { worktree } => write!(
+                f,
+                "integration worktree `{worktree}` has an unresolved merge in progress; \
+                 resolve or abort it before re-integrating"
+            ),
         }
     }
 }
@@ -910,7 +922,10 @@ fn marked_done_contract(role: &str, branch: Option<&str>) -> String {
 /// `integrate_parent`'s orchestration, minus session/sync wiring, so it can be
 /// driven directly against a real git repo + real subtask branches in tests.
 /// Owner-scoped throughout (`get_for_user` / `list_by_parent_for_user`).
-async fn integrate_parent_inner(
+///
+/// `pub(crate)` (Phase 5a S4): the autopilot driver fires the SAME code path the
+/// human Integrate button does (invariant I5 — one merge loop, no fork).
+pub(crate) async fn integrate_parent_inner(
     parent_id: &str,
     user_id: &str,
     workspaces: &WorkspaceRepo,
@@ -962,6 +977,21 @@ async fn integrate_parent_inner(
     // CURRENT subtask branches, never a stale half-merge. Both teardown helpers
     // are idempotent (no-op when nothing exists).
     if worktree_path.exists() {
+        // I2 (Phase 5a): NEVER tear down a worktree that is still MID-MERGE — a
+        // prior conflict left it for the human's interactive resolver, and
+        // `remove_worktree` would silently clobber that in-progress resolution.
+        // Refuse with a distinct error the autopilot driver maps to a durable
+        // HUMAN-STOP. Only a clean (fully-resolved / never-conflicted) prior
+        // worktree may be rebuilt from the current branches.
+        if !matches!(
+            git::merge_in_progress(&worktree_path)?,
+            git::InProgress::None
+        ) {
+            drop(guard);
+            return Err(BoardCmdError::MergeInProgress {
+                worktree: worktree_path.to_string_lossy().into_owned(),
+            });
+        }
         git::remove_worktree(&repo_path, &worktree_path)?;
     }
     git::branch_delete(&repo_path, &branch)?;
@@ -1899,6 +1929,61 @@ mod tests {
         let readme = std::fs::read_to_string(worktree.join("README.md")).unwrap();
         assert!(readme.contains("<<<<<<<"), "conflict markers must remain for resolution");
 
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // Phase 5a I2: once a prior integration left the worktree MID-MERGE (a
+    // conflict), a SECOND integrate must REFUSE to tear that worktree down —
+    // returning the distinct `MergeInProgress` error rather than clobbering the
+    // human's in-progress resolution. This is what makes the durable integrate
+    // STOP safe against the 3s backstop re-firing onto an unfinished merge.
+    #[tokio::test]
+    async fn integrate_parent_refuses_to_tear_down_a_mid_merge_worktree() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "README.md", "backend version\n", "backend edit");
+        commit_on_branch(repo_path, "phasr/frontend", "README.md", "frontend version\n", "frontend edit");
+        let (parent, _b, _f) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let repo_locks = RepoLockRegistry::new();
+
+        // First integrate: STOPS on the conflict, leaves the worktree mid-merge.
+        let first = integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks).await;
+        assert!(matches!(first, Err(BoardCmdError::IntegrationConflict { .. })));
+
+        let worktree = git::default_worktree_base_path().join(&parent.id);
+        assert!(
+            matches!(git::merge_in_progress(&worktree).unwrap(), git::InProgress::Merge { .. }),
+            "the first integrate must leave a merge in progress"
+        );
+        // Capture the conflicted README so we can prove it is untouched.
+        let before = std::fs::read_to_string(worktree.join("README.md")).unwrap();
+
+        // Second integrate on the SAME parent: must REFUSE (I2) — never clobber.
+        let second = integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks).await;
+        match second {
+            Err(BoardCmdError::MergeInProgress { worktree: w }) => {
+                assert!(w.contains(&parent.id), "the error names the mid-merge worktree");
+            }
+            other => panic!("expected MergeInProgress, got {other:?}"),
+        }
+
+        // The human's in-progress resolution is intact: still mid-merge, markers untouched.
+        assert!(
+            matches!(git::merge_in_progress(&worktree).unwrap(), git::InProgress::Merge { .. }),
+            "the refused teardown must leave the merge still in progress"
+        );
+        let after = std::fs::read_to_string(worktree.join("README.md")).unwrap();
+        assert_eq!(before, after, "the conflicted file must be byte-identical (never clobbered)");
+
+        // Clean up: abort the merge first so cleanup_integration can remove the worktree.
+        let _ = git::merge_abort(&worktree);
         cleanup_integration(repo_path, &parent);
     }
 

@@ -317,6 +317,24 @@ async fn initialize_database_state(
     // edges are satisfied — the initial ready set (the root `backend`) fans out
     // within one interval of `start_decomposition` writing the DAG.
     orchestrator.spawn_scheduler(BoardRepo::new(pool.clone()));
+    // Autopilot driver (Phase 5a S4): the full-gate-ladder counterpart to the
+    // scheduler. Auto-advances Validate → Request-review and auto-integrates a
+    // fully-approved, clean epic — parking hard at every human-judgment / outward
+    // edge — over ALL `autopilot_enabled` parents (event + 3s backstop UNGATED by
+    // `has_work` + a boot sweep). Kill-gated by the persisted switch, no
+    // auto-resume. Shares the SAME `board_events` bus + `TicketWriteRegistry` +
+    // `AutopilotStateRepo` the commands use, so a driver-fired gate is one code
+    // path with the buttons/CLI (invariant I5).
+    orchestrator.spawn_autopilot_driver(
+        BoardRepo::new(pool.clone()),
+        RunCommandRepo::new(pool.clone()),
+        handle
+            .state::<Arc<tickets::TicketWriteRegistry>>()
+            .inner()
+            .clone(),
+        board_events.clone(),
+        AutopilotStateRepo::new(pool.clone()),
+    );
 
     // The `phasr` CLI ↔ app IPC server (Story CLI1 / §R4), unix-only. One
     // listener on ~/.phasr/phasr.sock; each connection is its own task so a slow
