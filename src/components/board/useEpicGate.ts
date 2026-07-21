@@ -72,6 +72,11 @@ export function useEpicGate(
     ...(repository?.defaultBranch
       ? { baseBranch: repository.defaultBranch }
       : {}),
+    // Autopilot rides on the already-fetched board DTO (`board.parent` is this
+    // epic). Threading it downgrades the AUTO Integrate gate to neutral
+    // "autopilot-driving" so the ⌘K palette matches the board header. Ship is
+    // never downgraded (HUMAN-STOP). Off/absent ⇒ pre-autopilot ladder.
+    autopilotEnabled: board.parent.autopilotEnabled,
   });
 
   return {

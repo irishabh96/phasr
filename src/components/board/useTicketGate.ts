@@ -106,6 +106,13 @@ export function useTicketGate(
     review,
     checksConfigured,
     blockedOn,
+    // The owning epic's autopilot flag rides on the already-fetched board DTO
+    // (`board.parent` is this ticket's epic). Threading it downgrades an
+    // autopilot-owned AUTO gate (Validate / Request-review) from coral primary
+    // to neutral "autopilot-driving" — so the ticket-detail header + ⌘K palette
+    // read the SAME intent the board/worklist already do. Off/absent ⇒ the exact
+    // pre-autopilot ladder (parity preserved).
+    autopilotEnabled: board.parent.autopilotEnabled,
   });
 
   const canValidate = checksConfigured && VALIDATABLE_STATES.has(state);
