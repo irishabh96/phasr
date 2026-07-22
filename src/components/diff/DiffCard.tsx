@@ -212,17 +212,18 @@ export function DiffCard({
   return (
     <article
       className={cn(
-        // Softer border than before (subtle, not default): the 3px status edge
-        // bar + the gap-2 whitespace between cards carry the separation, so the
-        // stack reads calm instead of a wall of medium-weight boxes.
-        "relative overflow-hidden rounded-md border border-(--color-border-subtle)",
-        "bg-(--color-bg-surface)",
+        // Calm, borderless file block: no outer box or surface fill — a quiet
+        // 2px status rail on the left + the whitespace between files carry the
+        // separation, so an expanded stack reads as a legible list instead of a
+        // wall of stacked boxes. Only the expanded body draws a hairline to peel
+        // the diff off its header.
+        "group/diff relative overflow-hidden rounded-md",
         className,
       )}
     >
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute bottom-0 left-0 top-0 w-[3px]"
+        className="pointer-events-none absolute bottom-0 left-0 top-0 w-[2px] rounded-full"
         style={{
           backgroundColor: hasError
             ? "var(--color-danger)"
@@ -500,16 +501,13 @@ function CountsBadge({
       aria-label={`${adds} addition${adds === 1 ? "" : "s"}, ${removes} deletion${
         removes === 1 ? "" : "s"
       }`}
-      className="flex shrink-0 items-center gap-1 rounded bg-(--color-bg-elevated) px-1.5 py-0.5 font-mono text-[11px]"
+      className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums"
     >
       <span aria-hidden="true" className="text-(--diff-add-fg)">
         +{adds}
       </span>
-      <span aria-hidden="true" className="text-(--color-text-muted)">
-        ·
-      </span>
       <span aria-hidden="true" className="text-(--diff-remove-fg)">
-        -{removes}
+        −{removes}
       </span>
     </span>
   );

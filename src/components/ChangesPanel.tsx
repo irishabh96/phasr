@@ -1,9 +1,10 @@
 import { useQueries } from "@tanstack/react-query";
-import { AlertTriangle, Check, GitBranch } from "lucide-react";
+import { AlertTriangle, Check, FileDiff, GitBranch } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DiffList } from "@/components/diff/DiffList";
 import { DiffModeToggle, type DiffViewMode } from "@/components/diff/DiffView";
 import type { DiffCardFile } from "@/components/diff/DiffCard";
+import { PanelState } from "@/components/ui/PanelState";
 import {
   useGitAbortMerge,
   useGitBranchStatus,
@@ -47,6 +48,16 @@ function readDiffMode(): DiffViewMode {
 
 interface ChangesPanelProps {
   workspaceId: string;
+  /**
+   * Diff view mode + its setter. When BOTH are supplied (the workspace right
+   * sidebar) the panel is CONTROLLED — the Split/Inline toggle lives on the tab
+   * row and one ⌘\ listener up there drives every section. When OMITTED (the
+   * board's conflict-resolution dialog, which has no tab row) the panel falls
+   * back to owning the mode itself: its own persisted state, ⌘\ listener, and a
+   * Split/Inline toolbar rendered above the sections.
+   */
+  diffMode?: DiffViewMode;
+  onDiffModeChange?: (m: DiffViewMode) => void;
 }
 
 type Bucket = "conflicts" | "staged" | "unstaged" | "partial";
@@ -60,12 +71,17 @@ type Bucket = "conflicts" | "staged" | "unstaged" | "partial";
  * Diffs are fetched in parallel via TanStack `useQueries` so the user
  * sees results stream in instead of waiting for the whole set.
  */
-export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
+export function ChangesPanel({
+  workspaceId,
+  diffMode: controlledMode,
+  onDiffModeChange: controlledOnChange,
+}: ChangesPanelProps) {
   const {
     data: changes,
     isLoading: statusLoading,
     isError: statusError,
     error: statusErr,
+    refetch: refetchStatus,
   } = useGitStatus(workspaceId);
   const { data: branchStatus } = useGitBranchStatus(workspaceId);
   const { data: mergeInProgress } = useGitMergeInProgress(workspaceId);
@@ -88,32 +104,44 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const [lastCommitAt, setLastCommitAt] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
 
-  // The diff view mode + its ⌘\ shortcut live HERE (not in each DiffList) so
-  // split/inline flips every section at once and only ONE keyboard listener
-  // runs instead of one per section (the 4×-listener bug).
-  const [diffMode, setDiffMode] = useState<DiffViewMode>(readDiffMode);
-  const handleDiffModeChange = useCallback((next: DiffViewMode) => {
-    setDiffMode(next);
-    try {
-      window.localStorage.setItem(DIFF_MODE_KEY, next);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  // Controlled by the workspace right sidebar (toggle on the tab row), or
+  // self-owned in the board's dialog (its own toolbar + ⌘\). One path or the
+  // other — never both listeners at once.
+  const controlledMode_ = controlledMode;
+  const controlled =
+    controlledMode_ !== undefined && controlledOnChange !== undefined;
+  const [internalMode, setInternalMode] = useState<DiffViewMode>(readDiffMode);
+  const diffMode = controlled ? controlledMode_ : internalMode;
+  const onDiffModeChange = useCallback(
+    (next: DiffViewMode) => {
+      if (controlled) {
+        controlledOnChange?.(next);
+        return;
+      }
+      setInternalMode(next);
+      try {
+        window.localStorage.setItem(DIFF_MODE_KEY, next);
+      } catch {
+        /* ignore quota / sandboxed iframe */
+      }
+    },
+    [controlled, controlledOnChange],
+  );
   useEffect(() => {
+    if (controlled) return;
     const handler = (e: KeyboardEvent) => {
       if (!matchShortcut(e, SHORTCUTS.toggleDiffMode)) return;
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (target?.isContentEditable) return;
       e.preventDefault();
-      handleDiffModeChange(
-        diffMode === "side-by-side" ? "inline" : "side-by-side",
+      onDiffModeChange(
+        internalMode === "side-by-side" ? "inline" : "side-by-side",
       );
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [diffMode, handleDiffModeChange]);
+  }, [controlled, internalMode, onDiffModeChange]);
 
   // Expansion is owned HERE (not inside each DiffList) so we can gate the
   // per-file diff fetch on it: only expanded cards fetch their raw diff, so
@@ -281,29 +309,37 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {allFiles.length > 0 && (
+      {/* Uncontrolled (board dialog) renders its own toolbar; the workspace
+          sidebar folds the toggle onto the tab row, so it renders none here. */}
+      {!controlled && allFiles.length > 0 && (
         <div className="flex shrink-0 items-center justify-end border-b border-(--color-border-subtle) px-2 py-1.5">
-          <DiffModeToggle mode={diffMode} onChange={handleDiffModeChange} />
+          <DiffModeToggle mode={diffMode} onChange={onDiffModeChange} />
         </div>
       )}
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-2">
+      <div className="min-h-0 flex-1 space-y-5 overflow-auto p-3">
         {statusError && (
-          <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-(--color-danger)">
-            Couldn't load changes — {humanizeError(statusErr)}
-          </div>
+          <PanelState
+            kind="error"
+            title="Couldn't load changes"
+            error={statusErr}
+            onRetry={() => void refetchStatus()}
+            className="my-auto"
+          />
         )}
         {!statusError && changes === undefined && statusLoading && (
-          <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
-            Loading changes…
-          </div>
+          <PanelState kind="loading" rows={4} className="pt-1" />
         )}
         {!statusError &&
           changes !== undefined &&
           changes.length === 0 &&
           !inMerge && (
-            <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
-              No changes in this worktree yet.
-            </div>
+            <PanelState
+              kind="empty"
+              icon={<FileDiff aria-hidden="true" />}
+              title="No changes"
+              description="This worktree is even with HEAD. Edits you or the agent make show up here, ready to stage and commit."
+              className="my-auto"
+            />
           )}
 
         {conflicts.length > 0 && (
@@ -316,7 +352,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
               expanded={expandedPaths}
               onToggle={toggleExpanded}
               mode={diffMode}
-              onModeChange={handleDiffModeChange}
+              onModeChange={onDiffModeChange}
               onCopyPath={copyPath}
               conflict={conflictActions}
             />
@@ -343,7 +379,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
               expanded={expandedPaths}
               onToggle={toggleExpanded}
               mode={diffMode}
-              onModeChange={handleDiffModeChange}
+              onModeChange={onDiffModeChange}
               onCopyPath={copyPath}
               onUnstage={handleUnstage}
               onDiscard={handleDiscard}
@@ -371,7 +407,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
               expanded={expandedPaths}
               onToggle={toggleExpanded}
               mode={diffMode}
-              onModeChange={handleDiffModeChange}
+              onModeChange={onDiffModeChange}
               onCopyPath={copyPath}
               onStage={handleStage}
               onDiscard={handleDiscard}
@@ -386,7 +422,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
               expanded={expandedPaths}
               onToggle={toggleExpanded}
               mode={diffMode}
-              onModeChange={handleDiffModeChange}
+              onModeChange={onDiffModeChange}
               onCopyPath={copyPath}
               onStage={handleStage}
               onUnstage={handleUnstage}
@@ -591,10 +627,15 @@ function Section({
 }) {
   return (
     <section className="flex flex-col gap-2">
-      <header className="flex items-center justify-between px-1">
-        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
-          {title} <span className="text-(--color-text-secondary)">{count}</span>
-        </span>
+      <header className="flex items-center justify-between gap-2 px-0.5">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-(--color-text-muted)">
+            {title}
+          </span>
+          <span className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-(--color-bg-hover) px-1.5 text-[10.5px] font-medium tabular-nums leading-none text-(--color-text-muted)">
+            {count}
+          </span>
+        </div>
         {action}
       </header>
       {children}

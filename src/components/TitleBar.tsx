@@ -1,6 +1,11 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useNavigate } from "@tanstack/react-router";
-import { LogOut, Search, Settings as SettingsIcon, UserRound } from "lucide-react";
+import {
+  LogOut,
+  Search,
+  Settings as SettingsIcon,
+  UserRound,
+} from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import {
@@ -15,7 +20,8 @@ import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const isMac =
-  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform ?? navigator.userAgent);
+  typeof navigator !== "undefined" &&
+  /Mac/i.test(navigator.platform ?? navigator.userAgent);
 
 // Cache the session by its stable key so useSyncExternalStore's getSnapshot
 // returns a referentially-stable value between changes (readDesktopSession()
@@ -45,6 +51,11 @@ function useDesktopSession(): DesktopSession | null {
  * Transparent overlay titlebar. On macOS the native traffic lights stick out
  * the top-left, so we leave them ~92px of clearance. The whole bar is a
  * Tauri drag region — interactive children stop the drag automatically.
+ *
+ * Three balanced zones: the wordmark (left), an absolutely-centered command
+ * trigger (a discoverable ⌘K affordance — the app is keyboard-first, so the
+ * bar hands the user its single global "search or jump to" entry point instead
+ * of a bare, unexplained magnifier), and the account menu (right).
  */
 export function TitleBar() {
   const navigate = useNavigate();
@@ -62,28 +73,61 @@ export function TitleBar() {
     >
       <div
         data-tauri-drag-region
-        className="flex min-w-0 items-center gap-2 text-[13px] leading-none text-(--color-text-secondary)"
+        className="flex min-w-0 items-center leading-none"
       >
-        <span className="font-medium leading-none text-(--color-text-primary)">
+        <span className="text-[13px] font-semibold leading-none tracking-[-0.01em] text-(--color-text-primary)">
           Phasr
         </span>
       </div>
 
-      <div className="flex items-center gap-3">
-        <GlassButton
-          variant="ghost"
-          size="icon"
-          onClick={openCommandPalette}
-          aria-label="Search"
-          title={`Search (${SHORTCUTS.togglePalette.display.join("")})`}
-        >
-          <Search size={15} />
-        </GlassButton>
+      <CommandTrigger onOpen={openCommandPalette} />
+
+      <div className="flex items-center">
         <ProfileMenu
           session={session}
           onSettings={() => void navigate({ to: "/settings" })}
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * The centered global command/search affordance. Reads as a field but is a
+ * button — it opens the ⌘K command palette (honest: there is no separate
+ * search index). Kept deliberately quiet (glass + hairline, muted copy, no
+ * coral) so it balances the sparse bar without competing with the work below.
+ */
+function CommandTrigger({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-1/2 w-[min(400px,42vw)] -translate-x-1/2 -translate-y-1/2">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label="Search or run a command"
+        className={cn(
+          "pointer-events-auto group flex h-7 w-full items-center gap-2 rounded-full px-3",
+          "border border-(--glass-border-hairline) bg-(--glass-panel) backdrop-blur-md",
+          "text-(--color-text-muted) transition-colors duration-150",
+          "hover:border-(--color-border-strong) hover:text-(--color-text-secondary)",
+          "focus-visible:outline-none focus-visible:border-(--color-accent-500) focus-visible:shadow-[var(--ring-focus)]",
+        )}
+      >
+        <Search size={13} className="shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-left text-[12.5px] leading-none">
+          Search or jump to…
+        </span>
+        <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">
+          {SHORTCUTS.togglePalette.display.map((seg, i) => (
+            <kbd
+              key={i}
+              className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-[5px] bg-(--color-bg-hover) px-1 text-[10.5px] font-semibold leading-none text-(--color-text-muted)"
+            >
+              {seg}
+            </kbd>
+          ))}
+        </span>
+      </button>
     </div>
   );
 }
@@ -104,7 +148,12 @@ function ProfileMenu({
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <GlassButton variant="ghost" size="icon" title="Account menu" aria-label="Account menu">
+        <GlassButton
+          variant="ghost"
+          size="icon"
+          title="Account menu"
+          aria-label="Account menu"
+        >
           <ProfileAvatar session={session} />
         </GlassButton>
       </DropdownMenu.Trigger>

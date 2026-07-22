@@ -77,6 +77,11 @@ export function RepoEpics({
           repoId={repoId}
           activeWorkspaceId={activeWorkspaceId}
           isActiveEpic={epic.id === effectiveActiveParentId}
+          // The epic's OWN board is the open route (vs. merely being the
+          // ancestor of an open subtask). Only the former earns the coral
+          // selection tint — the ancestor case reads through brighter text so
+          // the open subtask row stays the single warm beacon (coral scarcity).
+          isBoardOpen={epic.id === activeParentId}
           isExpanded={isExpanded}
         />
       ))}
@@ -90,6 +95,7 @@ function EpicSidebarNode({
   repoId,
   activeWorkspaceId,
   isActiveEpic,
+  isBoardOpen,
   isExpanded,
 }: {
   epic: Workspace;
@@ -97,6 +103,7 @@ function EpicSidebarNode({
   repoId: string;
   activeWorkspaceId: string | null;
   isActiveEpic: boolean;
+  isBoardOpen: boolean;
   isExpanded: boolean;
 }) {
   const navigate = useNavigate();
@@ -106,7 +113,11 @@ function EpicSidebarNode({
   // siblings), collapsed otherwise. An explicit user toggle always wins.
   const expanded = stored ?? isActiveEpic;
 
+  // The full goal (long prompt) rides the rail tooltip; the row itself shows the
+  // short epic NAME so the tree stays scannable (and matches the board/worklist,
+  // which label an epic by name — not its multi-clause goal sentence).
   const goal = epic.prompt?.trim() || epic.name;
+  const label = epic.name || goal;
   const ExpandIcon = expanded ? ChevronDown : ChevronRight;
 
   const openBoard = () =>
@@ -128,15 +139,17 @@ function EpicSidebarNode({
             "flex h-7 w-7 items-center justify-center rounded-[8px]",
             "transition-colors duration-150 hover:bg-(--color-bg-elevated)",
             "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
-            isActiveEpic && "bg-(--color-bg-selected)",
+            isBoardOpen && "bg-(--color-bg-selected)",
           )}
         >
           <GitFork
             size={14}
             className={
-              isActiveEpic
+              isBoardOpen
                 ? "text-(--color-accent-text)"
-                : "text-(--color-text-muted)"
+                : isActiveEpic
+                  ? "text-(--color-text-secondary)"
+                  : "text-(--color-text-muted)"
             }
           />
         </button>
@@ -163,7 +176,9 @@ function EpicSidebarNode({
           "group/epic flex h-[36px] cursor-pointer items-center gap-2 rounded-[8px] px-2",
           "outline-none transition-colors duration-150 hover:bg-(--color-bg-elevated)",
           "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
-          isActiveEpic && "bg-(--color-bg-selected)",
+          // Coral tint ONLY when this epic's board is the open route; an epic
+          // that merely owns the open subtask is an ancestor, not the leaf.
+          isBoardOpen && "bg-(--color-bg-selected)",
         )}
       >
         <GitFork
@@ -171,7 +186,7 @@ function EpicSidebarNode({
           aria-hidden="true"
           className={cn(
             "shrink-0",
-            isActiveEpic
+            isBoardOpen
               ? "text-(--color-accent-text)"
               : "text-(--color-text-muted)",
           )}
@@ -184,7 +199,7 @@ function EpicSidebarNode({
               : "text-(--color-text-secondary)",
           )}
         >
-          {goal}
+          {label}
         </span>
         <EpicRollup epic={epic} subtasks={subtasks} />
         <button

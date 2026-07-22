@@ -363,7 +363,7 @@ function DiffMessage({
 
 function HunkHeader({ hunk }: { hunk: DiffHunk }) {
   return (
-    <div className="flex items-center gap-3 border-y border-(--color-border-subtle) bg-(--color-bg-elevated)/60 px-3 py-1 text-[11px] text-(--color-text-muted)">
+    <div className="flex items-center gap-3 bg-(--color-bg-elevated)/40 px-3 py-1 text-[11px] text-(--color-text-muted)">
       <span className="font-mono">
         @@ −{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
       </span>

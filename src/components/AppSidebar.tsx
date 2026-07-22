@@ -162,7 +162,9 @@ function HomeEntry({ isExpanded }: { isExpanded: boolean }) {
       aria-current={isActive ? "page" : undefined}
       className={cn(
         "group/home flex items-center rounded-[10px]",
-        isExpanded ? "h-[38px] gap-2.5 pl-2.5 pr-2" : "h-[38px] w-full justify-center",
+        isExpanded
+          ? "h-[38px] gap-2.5 pl-2.5 pr-2"
+          : "h-[38px] w-full justify-center",
         "outline-none transition-colors duration-150",
         "hover:bg-(--color-bg-hover)",
         "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
@@ -259,7 +261,11 @@ function RepoBlock({
             "hover:bg-(--color-bg-hover)",
             "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
             "data-[state=open]:bg-(--color-bg-elevated)",
-            isActive && "bg-(--color-bg-selected)",
+            // A repo header is a CONTAINER, never the open leaf — so it does NOT
+            // take the coral selection tint just for being the ancestor of the
+            // open workspace (that stacked two coral rows and diluted the accent).
+            // Being "current" reads through brighter avatar + name text below;
+            // coral stays reserved for the one open row.
           )}
         >
           <div
@@ -518,9 +524,12 @@ function SidebarFooter({
           <button
             type="button"
             onClick={openAddRepositoryPicker}
-            className="flex h-[34px] min-w-0 flex-1 items-center gap-2 rounded-[8px] px-2.5 text-[13px] font-medium text-(--color-text-secondary) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+            className="group/add flex h-[34px] min-w-0 flex-1 items-center gap-2 rounded-[8px] px-2.5 text-[13px] font-medium text-(--color-text-secondary) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
           >
-            <Plus size={13} className="text-(--color-accent-text)" />
+            <Plus
+              size={14}
+              className="text-(--color-text-muted) transition-colors duration-150 group-hover/add:text-(--color-text-primary)"
+            />
             Add repository
           </button>
           <GlassTooltip content="Collapse sidebar (⌘B)" side="right">
@@ -540,7 +549,7 @@ function SidebarFooter({
               type="button"
               onClick={openAddRepositoryPicker}
               aria-label="Add repository"
-              className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-accent-text) transition-colors duration-150 hover:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <Plus size={14} />
             </button>
