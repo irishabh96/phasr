@@ -166,10 +166,11 @@ export function agentActivityText(args: {
       return ago ? `finished ${ago} ago` : "needs review";
     case "failed":
       if (exitCode != null) return `exit code ${exitCode}`;
-      return ago ? `failed ${ago} ago` : "failed";
+      // The `·` suffix must ADD info (why/when), never echo the label word.
+      return ago ? `${ago} ago` : null;
     case "interrupted":
-      return "interrupted on relaunch";
+      return "when phasr last closed";
     case "stopped":
-      return ago ? `stopped ${ago} ago` : "stopped";
+      return ago ? `${ago} ago` : null;
   }
 }

@@ -265,7 +265,15 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
       <Header
         query={search}
         onQueryChange={setSearch}
-        trailing={<HaltAutopilotButton />}
+        // Only surface the global panic button when an epic actually has
+        // autopilot ON — else it persistently implies autopilot is running (and
+        // hands a rare, borderline-destructive action the primary top-right slot)
+        // when nothing is driving. (product-designer review H2)
+        trailing={
+          worklist.boards.some((b) => b.parent.autopilotEnabled) ? (
+            <HaltAutopilotButton />
+          ) : undefined
+        }
       />
 
       {/* Global halt is a persistent, honest banner while set (§5). */}
