@@ -15,7 +15,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentStatusBadge } from "@/components/AgentStatusBadge";
 import { SubtaskStatusBadge } from "@/components/SubtaskStatusBadge";
 import { BranchChip } from "@/components/BranchChip";
-import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
@@ -23,7 +22,6 @@ import { PanelState } from "@/components/ui/PanelState";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { WorkspaceRightSidebar } from "@/components/WorkspaceRightSidebar";
 import { PinnedRunCommandsToolbar } from "@/components/PinnedRunCommandsToolbar";
-import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandsPane } from "@/components/RunCommandsPane";
 import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
 import { TicketNextGate } from "@/components/board/TicketNextGate";
@@ -318,13 +316,12 @@ function WorkspaceDetail() {
             {...(ticketBrief ? { commentCount: ticketBrief.commentCount } : {})}
           />
           <div className="flex shrink-0 items-center gap-1">
+            {/* Run/Open-in folded into the ⋯ overflow (M3) to de-densify this
+                40px row: branch · status · tabs · Changes · next gate · ⋯. The
+                pinned run pills (⌘1-9) stay for quick access. */}
             <PinnedRunCommandsToolbar repositoryId={repositoryId} />
-            <RunCommandPicker repositoryId={repositoryId} />
             {workspace.worktreePath && workspace.workspaceKind !== "local" && (
               <SyncButton workspaceId={workspaceId} />
-            )}
-            {workspace.worktreePath && (
-              <OpenInMenu path={workspace.worktreePath} />
             )}
             {workspace.worktreePath && (
               <ChangesToggle

@@ -1,6 +1,17 @@
-import { useId } from "react";
+import { useId, type CSSProperties } from "react";
 import { Navigation } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/**
+ * The driving-chip dot reuses the system `pulse-dot` glow keyframe (index.css) —
+ * the SAME idiom as the working-status dot — instead of Tailwind's opacity-based
+ * `animate-pulse`, so the app has one pulse language (L3). Muted, never coral;
+ * reduced-motion is handled globally in index.css.
+ */
+const DRIVING_DOT_STYLE: CSSProperties = {
+  ["--pulse-color" as string]: "var(--color-text-muted)",
+  animation: "pulse-dot 2s ease-in-out infinite",
+};
 
 /**
  * The per-epic Autopilot toggle (Phase 5a, Stage A, §7). A NEUTRAL affordance —
@@ -97,7 +108,8 @@ export function AutopilotDrivingChip() {
     >
       <span
         aria-hidden="true"
-        className="inline-block size-[7px] animate-pulse rounded-full bg-(--color-text-muted)"
+        className="inline-block size-[7px] rounded-full bg-(--color-text-muted)"
+        style={DRIVING_DOT_STYLE}
       />
       Autopilot driving
     </span>

@@ -278,8 +278,14 @@ function RepoBlock({
                   "flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px]",
                   "text-[11px] font-semibold leading-none",
                   "transition-colors duration-150",
+                  // The row already carries the coral selection TINT
+                  // (--color-bg-selected). Keep the active avatar NEUTRAL so
+                  // that tint stays the one selection signal — a solid coral
+                  // fill here double-encodes selection and dilutes accent
+                  // scarcity (M1). Brighter text (primary vs secondary) is the
+                  // active cue, no second coral.
                   isActive
-                    ? "bg-(--color-accent-500) text-(--color-accent-onfill)"
+                    ? "bg-(--color-bg-elevated) text-(--color-text-primary)"
                     : "bg-(--color-bg-hover) text-(--color-text-secondary)",
                 )}
               >

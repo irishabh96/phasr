@@ -1,15 +1,21 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
   Check,
   ChevronDown,
+  ExternalLink,
   Eye,
+  FolderOpen,
   GitMerge,
   GitPullRequest,
   MoreHorizontal,
+  Play,
+  Plus,
   Rocket,
   ShieldCheck,
+  TerminalSquare,
   Trash2,
   Undo2,
 } from "lucide-react";
@@ -21,15 +27,19 @@ import { GlassButton } from "@/components/ui/GlassButton";
 import type { GateVerb } from "@/lib/deriveNextGate";
 import { useGitBranchStatus } from "@/lib/hooks/useGit";
 import { useRepository } from "@/lib/hooks/useRepositories";
+import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import {
   useArchiveWorkspace,
   useCheckWorkspaceDelete,
   useDeleteWorkspace,
   useOpenPullRequest,
 } from "@/lib/hooks/useWorkspaces";
+import { reportP0Error } from "@/lib/sentry";
+import { useUiStore } from "@/lib/store";
+import { tauri } from "@/lib/tauri";
 import { dismissToast, showToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import type { Workspace } from "@/lib/types";
+import type { LauncherKind, Workspace } from "@/lib/types";
 
 interface WorkspaceActionsMenuProps {
   workspace: Workspace;
@@ -51,6 +61,17 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const openPr = useOpenPullRequest();
   const checkDelete = useCheckWorkspaceDelete();
   const deleteWorkspace = useDeleteWorkspace();
+
+  // Lower-frequency header controls folded into this ⋯ overflow (M3): the repo
+  // Run picker + the "Open in <app>" launchers, so the 40px ticket header keeps
+  // only branch · status · tabs · Changes · the one next gate · ⋯.
+  const { data: runCommands } = useRunCommands(workspace.repositoryId);
+  const runPanel = useUiStore((s) => s.runPanel);
+  const { data: launchers } = useQuery({
+    queryKey: ["launchers"],
+    queryFn: () => tauri.listLaunchers(),
+    staleTime: 60_000,
+  });
 
   // After archive/delete, kick the user back to home — the sidebar will
   // surface a different workspace to select.
@@ -175,10 +196,43 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
     });
   };
 
-  // Local workspaces expose no header actions here — the only one was a
-  // destructive "Remove from Phasr", which still lives in the sidebar's
-  // right-click menu. Render nothing.
-  if (isLocalWorkspace) return null;
+  const handleLaunch = async (id: string) => {
+    const launcher = launchers?.find((item) => item.id === id);
+    if (launcher && !launcher.available) return;
+    setOpen(false);
+    if (!workspace.worktreePath) return;
+    try {
+      await tauri.launchApp(id, workspace.worktreePath);
+    } catch (err) {
+      reportP0Error(`Failed to open via ${id}`, err, {
+        area: "launcher",
+        operation: "open_external_tool",
+        launcherId: id,
+      });
+    }
+  };
+
+  const handlePickRun = (id: string) => {
+    setOpen(false);
+    runPanel.openTab(id);
+  };
+
+  const handleAddRunCommand = () => {
+    setOpen(false);
+    void navigate({
+      to: "/repositories/$repositoryId/settings",
+      params: { repositoryId: workspace.repositoryId },
+    });
+  };
+
+  // Local workspaces expose no gate / merge / PR / archive / delete here — the
+  // destructive "Remove from Phasr" still lives in the sidebar's right-click
+  // menu. They DO keep the utility Run + Open-in sections that used to sit in
+  // the header, so consolidating the header (M3) doesn't strip a local
+  // workspace of them.
+  const hasWorktree = !!workspace.worktreePath;
+  const launcherList = launchers ?? [];
+  const runList = runCommands ?? [];
 
   return (
     <>
@@ -215,6 +269,60 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
                   />
                 </>
               )}
+
+              {/* Run a repository command (folded in from the header — M3). */}
+              <MenuLabel>Run</MenuLabel>
+              {runList.length === 0 ? (
+                <MenuItem
+                  icon={
+                    <Plus size={12} className="text-(--color-text-muted)" />
+                  }
+                  label="Add run command…"
+                  onClick={handleAddRunCommand}
+                />
+              ) : (
+                runList.map((rc) => (
+                  <MenuItem
+                    key={rc.id}
+                    icon={<Play size={11} fill="currentColor" />}
+                    label={rc.name}
+                    title={rc.command}
+                    onClick={() => handlePickRun(rc.id)}
+                  />
+                ))
+              )}
+
+              {/* Open the worktree in another app (folded in from the header — M3). */}
+              {hasWorktree && launcherList.length > 0 && (
+                <>
+                  <li
+                    className="my-1 h-px bg-(--glass-border-hairline)"
+                    aria-hidden
+                  />
+                  <MenuLabel>Open in</MenuLabel>
+                  {launcherList.map((launcher) => (
+                    <MenuItem
+                      key={launcher.id}
+                      icon={<LauncherIcon kind={launcher.kind} />}
+                      label={launcher.name}
+                      disabled={!launcher.available}
+                      title={
+                        launcher.available
+                          ? launcher.name
+                          : "Not installed or not found"
+                      }
+                      onClick={() => handleLaunch(launcher.id)}
+                    />
+                  ))}
+                </>
+              )}
+
+              {(canMergeToMain || canOpenPr || canArchive) && (
+                <li
+                  className="my-1 h-px bg-(--glass-border-hairline)"
+                  aria-hidden
+                />
+              )}
               {canMergeToMain && (
                 <MenuItem
                   icon={<GitMerge size={12} />}
@@ -247,19 +355,21 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
                   disabled={archive.isPending}
                 />
               )}
-              {(canMergeToMain || canOpenPr || canArchive) && (
-                <li
-                  className="my-1 h-px bg-(--glass-border-hairline)"
-                  aria-hidden
-                />
+              {!isLocalWorkspace && (
+                <>
+                  <li
+                    className="my-1 h-px bg-(--glass-border-hairline)"
+                    aria-hidden
+                  />
+                  <MenuItem
+                    icon={<Trash2 size={12} />}
+                    label="Delete workspace"
+                    onClick={handleDelete}
+                    disabled={deleteWorkspace.isPending}
+                    danger
+                  />
+                </>
               )}
-              <MenuItem
-                icon={<Trash2 size={12} />}
-                label="Delete workspace"
-                onClick={handleDelete}
-                disabled={deleteWorkspace.isPending}
-                danger
-              />
             </ul>
           </div>
         )}
@@ -307,6 +417,25 @@ const GATE_MENU_ICON: Record<GateVerb, typeof Check> = {
 function GateMenuIcon({ verb }: { verb: GateVerb }) {
   const Icon = GATE_MENU_ICON[verb];
   return <Icon size={12} />;
+}
+
+/** Muted section header inside the ⋯ menu (Run / Open in groups). */
+function MenuLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <li
+      aria-hidden
+      className="px-2 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)"
+    >
+      {children}
+    </li>
+  );
+}
+
+/** Per-kind launcher glyph for the "Open in" group. */
+function LauncherIcon({ kind }: { kind: LauncherKind }) {
+  if (kind === "editor") return <ExternalLink size={12} />;
+  if (kind === "terminal") return <TerminalSquare size={12} />;
+  return <FolderOpen size={12} />;
 }
 
 function MenuItem({

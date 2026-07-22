@@ -79,7 +79,8 @@ export function AgentStatusBadgeView({
         ) : (
           <meta.Icon
             className={cn("size-[13px] shrink-0", meta.spin && "animate-spin")}
-            style={{ color: meta.colorVar }}
+            // Glyph rides the AA-safe chip fg (M5) — the tint keeps colorVar.
+            style={{ color: meta.glyphVar ?? meta.colorVar }}
             aria-hidden="true"
           />
         )}

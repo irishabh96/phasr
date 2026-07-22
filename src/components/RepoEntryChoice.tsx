@@ -28,7 +28,9 @@ interface RepoEntryChoiceProps {
  *                     (`openRepoInnerTerminalTab` → SessionTerminalTab).
  *
  * Design: neutral glass cards; coral is spent only on the recommended
- * "New task" icon so the accent stays scarce.
+ * "New task" icon so the accent stays scarce. The recommended path ALSO
+ * carries a neutral "Recommended" badge (mirroring "Optional" on the epic) so
+ * the cue never rides hue alone (L5).
  */
 export function RepoEntryChoice({ repo, onNewTask }: RepoEntryChoiceProps) {
   const requestDecompose = useUiStore((s) => s.requestDecompose);
@@ -49,6 +51,7 @@ export function RepoEntryChoice({ repo, onNewTask }: RepoEntryChoiceProps) {
         <ChoiceCard
           icon={Bot}
           accent
+          badge="Recommended"
           title="New task"
           description="Hand one agent a task in an isolated git worktree."
           aria-label={`New task in ${repo.name}`}

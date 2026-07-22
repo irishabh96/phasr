@@ -28,6 +28,14 @@ export interface AgentStatusMeta {
   label: string;
   /** The state's semantic color token as a `var(--color-…)` string. */
   colorVar: string;
+  /**
+   * Icon color when the glyph sits on a SOFT-chip 14% tint (M5). A darker,
+   * ≥3:1-safe variant of `colorVar` for the light theme, where the vivid
+   * success/warning wash out to ~2.8:1 on the tint. Falls back to `colorVar`
+   * for bare/muted contexts (sidebar/dot) that don't ride a tint. Dark theme
+   * resolves these back to the vivid tokens, so no dark regression.
+   */
+  glyphVar?: string;
   tier: StatusTier;
   /** Icon for the header badge (and sidebar, for non-dot states). */
   Icon: LucideIcon;
@@ -83,6 +91,7 @@ export function agentStatusMeta(state: AgentUiState): AgentStatusMeta {
       return {
         label: "Wedged",
         colorVar: "var(--color-warning)",
+        glyphVar: "var(--chip-warning-fg)",
         tier: "soft",
         Icon: Hourglass,
         spin: false,
@@ -103,6 +112,7 @@ export function agentStatusMeta(state: AgentUiState): AgentStatusMeta {
       return {
         label: "Failed",
         colorVar: "var(--color-danger)",
+        glyphVar: "var(--chip-danger-fg)",
         tier: "soft",
         Icon: CircleAlert,
         spin: false,
@@ -113,6 +123,7 @@ export function agentStatusMeta(state: AgentUiState): AgentStatusMeta {
       return {
         label: "Interrupted",
         colorVar: "var(--color-warning)",
+        glyphVar: "var(--chip-warning-fg)",
         tier: "soft",
         Icon: TriangleAlert,
         spin: false,

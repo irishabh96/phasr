@@ -72,7 +72,7 @@ export function ValidateChip({
         style={softStyle("var(--color-success)")}
       >
         <ShieldCheck
-          className="size-[13px] shrink-0 text-(--color-success)"
+          className="size-[13px] shrink-0 text-(--chip-success-fg)"
           aria-hidden="true"
         />
         <span className="text-(--color-text-primary)">Checks passed</span>
@@ -94,7 +94,7 @@ export function ValidateChip({
         .join(", ")}
     >
       <CircleAlert
-        className="size-[13px] shrink-0 text-(--color-danger)"
+        className="size-[13px] shrink-0 text-(--chip-danger-fg)"
         aria-hidden="true"
       />
       <span className="text-(--color-text-primary)">
@@ -132,7 +132,7 @@ export function ApprovedChip() {
       style={softStyle("var(--color-success)")}
     >
       <Check
-        className="size-[13px] shrink-0 text-(--color-success)"
+        className="size-[13px] shrink-0 text-(--chip-success-fg)"
         aria-hidden="true"
       />
       <span className="text-(--color-text-primary)">Approved</span>
