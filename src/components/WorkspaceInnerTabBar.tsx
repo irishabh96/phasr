@@ -205,8 +205,11 @@ function TabIcon({
   kind: InnerTab["kind"];
   active: boolean;
 }) {
+  // The active pill already carries the coral selection tint (--color-bg-
+  // selected); a coral icon on top would double the accent. Keep the icon
+  // neutral so coral stays scarce — reserved for the row's one next-gate.
   const cls = active
-    ? "text-(--color-accent-text)"
+    ? "text-(--color-text-primary)"
     : "text-(--color-text-muted)";
   if (kind === "brief") return <FileText size={11} className={cls} />;
   if (kind === "comments") return <MessageSquare size={11} className={cls} />;

@@ -245,47 +245,59 @@ export function BriefPanel({
       data-testid="brief-panel"
       data-visible={visible}
     >
-      <div className="mx-auto flex max-w-[760px] flex-col gap-3.5 px-5 py-4">
-        {agentWorking ? <AgentWorkingBanner /> : null}
+      <div className="mx-auto flex max-w-[720px] flex-col px-6 py-6">
+        {agentWorking ? (
+          <div className="mb-6">
+            <AgentWorkingBanner />
+          </div>
+        ) : null}
 
-        <SectionEditor
-          repositoryId={repositoryId}
-          ticketId={ticketId}
-          sectionKey="description"
-          label="Description"
-          section={brief.description}
-          onSaved={(s) => onSectionSaved("description", s)}
-        />
-        <SectionEditor
-          repositoryId={repositoryId}
-          ticketId={ticketId}
-          sectionKey="prd"
-          label="PRD"
-          section={brief.prd}
-          onSaved={(s) => onSectionSaved("prd", s)}
-        />
-        <SectionEditor
-          repositoryId={repositoryId}
-          ticketId={ticketId}
-          sectionKey="trd"
-          label="TRD"
-          section={brief.trd}
-          onSaved={(s) => onSectionSaved("trd", s)}
-        />
+        {/* The brief as a reading document: borderless prose sections with real
+            rhythm (24px between them), each lifting into an edit card in place. */}
+        <div className="flex flex-col gap-6">
+          <SectionEditor
+            repositoryId={repositoryId}
+            ticketId={ticketId}
+            sectionKey="description"
+            label="Description"
+            section={brief.description}
+            onSaved={(s) => onSectionSaved("description", s)}
+          />
+          <SectionEditor
+            repositoryId={repositoryId}
+            ticketId={ticketId}
+            sectionKey="prd"
+            label="PRD"
+            section={brief.prd}
+            onSaved={(s) => onSectionSaved("prd", s)}
+          />
+          <SectionEditor
+            repositoryId={repositoryId}
+            ticketId={ticketId}
+            sectionKey="trd"
+            label="TRD"
+            section={brief.trd}
+            onSaved={(s) => onSectionSaved("trd", s)}
+          />
+        </div>
 
-        <AssetsSection
-          assets={brief.assets}
-          onPick={() => void onPick()}
-          onRemove={(id) => void onRemoveAsset(id)}
-          uploading={uploading}
-          uploadError={uploadError}
-        />
+        {/* Attachments — object galleries kept as calm cards, set off from the
+            prose above by a single hairline. */}
+        <div className="mt-7 flex flex-col gap-4 border-t border-(--color-border-subtle) pt-7">
+          <AssetsSection
+            assets={brief.assets}
+            onPick={() => void onPick()}
+            onRemove={(id) => void onRemoveAsset(id)}
+            uploading={uploading}
+            uploadError={uploadError}
+          />
 
-        <FigmaSection
-          links={brief.figma}
-          onAdd={(url, label) => void onAddFigma(url, label)}
-          onRemove={(id) => void onRemoveFigma(id)}
-        />
+          <FigmaSection
+            links={brief.figma}
+            onAdd={(url, label) => void onAddFigma(url, label)}
+            onRemove={(id) => void onRemoveFigma(id)}
+          />
+        </div>
       </div>
     </div>
   );

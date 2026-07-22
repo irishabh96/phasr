@@ -212,7 +212,10 @@ export function DiffCard({
   return (
     <article
       className={cn(
-        "relative overflow-hidden rounded-md border border-(--color-border-default)",
+        // Softer border than before (subtle, not default): the 3px status edge
+        // bar + the gap-2 whitespace between cards carry the separation, so the
+        // stack reads calm instead of a wall of medium-weight boxes.
+        "relative overflow-hidden rounded-md border border-(--color-border-subtle)",
         "bg-(--color-bg-surface)",
         className,
       )}

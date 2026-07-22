@@ -76,7 +76,10 @@ function TabButton({
       {active && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-accent-500)"
+          // Neutral active indicator — coral in this panel is reserved for the
+          // Commit primary below, so the tab underline stays neutral (the bold
+          // primary label already carries the selection).
+          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-text-primary)"
         />
       )}
     </button>

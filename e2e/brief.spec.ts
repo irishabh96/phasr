@@ -28,9 +28,11 @@ function realErrors(errors: string[]) {
 async function bootToBrief(page: Page, fixtures = makeFixtures()) {
   const res = await bootApp(page, fixtures);
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
-  // epic-1-backend is a subtask WITH a worktree → the real detail view (Brief
-  // is its default inner tab), not the "not started" pane.
+  // epic-1-backend is a subtask WITH a worktree → the real detail view, not the
+  // "not started" pane. A spawned subtask now lands on its live "main" Terminal
+  // so the agent's output is visible immediately; click Brief to open it.
   await page.goto("/repositories/repo-1/workspaces/epic-1-backend");
+  await page.getByRole("tab", { name: "Brief" }).click();
   await expect(page.getByTestId("brief-panel")).toBeVisible({ timeout: 15_000 });
   return res;
 }

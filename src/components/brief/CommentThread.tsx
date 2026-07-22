@@ -21,14 +21,14 @@ export function CommentThread({
   now: number;
 }) {
   return (
-    <div className="flex flex-col gap-3" data-testid="brief-comment-thread">
+    <div className="flex flex-col gap-4" data-testid="brief-comment-thread">
       {comments.map((comment) => {
         const isAgent = comment.authorKind === "agent";
         const ago = formatDuration(Math.max(0, now - comment.createdAtMs));
         return (
           <div
             key={comment.id}
-            className="flex gap-2.5"
+            className="flex gap-3"
             data-testid="brief-comment"
             data-author-kind={comment.authorKind}
           >

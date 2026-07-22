@@ -131,6 +131,7 @@ export function SectionEditor({
   return (
     <SectionCard
       testId={`brief-section-${sectionKey}`}
+      variant="bare"
       title={isEditing ? `${label} · editing` : label}
       editing={isEditing}
       meta={isEditing ? null : meta}

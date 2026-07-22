@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import {
   ChevronLeft,
+  Hourglass,
   Loader2,
   PanelRight,
   PanelRightClose,
@@ -255,6 +256,7 @@ function WorkspaceDetail() {
         <div className="flex flex-1 items-center justify-center p-6">
           <PanelState
             kind="empty"
+            icon={<Hourglass aria-hidden="true" />}
             title="Not started yet"
             description={waitingDesc}
             action={
@@ -418,7 +420,10 @@ function ChangesToggle({
           <span
             className={cn(
               "ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1",
-              "bg-(--color-accent-500) text-[10px] font-semibold leading-none text-(--color-accent-onfill)",
+              // Neutral counter — coral is reserved for the single next-gate in
+              // this row (Validate), so the change count never competes with it.
+              "border border-(--color-border-default) bg-(--color-bg-elevated)",
+              "text-[10px] font-semibold leading-none text-(--color-text-secondary)",
             )}
           >
             {count > 99 ? "99+" : count}
