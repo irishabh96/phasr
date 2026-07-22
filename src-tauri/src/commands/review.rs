@@ -26,7 +26,7 @@ use tauri::State;
 use crate::auth::{AuthError, SessionState};
 use crate::commands::board::{publish_contract_inner, BoardCmdError, BoardState};
 use crate::domain::Workspace;
-use crate::orchestrator::{BoardEventBus, SchedulerConfig, ValidateResult};
+use crate::orchestrator::{BoardEventBus, SchedulerConfig, TaskOrchestrator, ValidateResult};
 use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo};
 use crate::tickets::{
     add_comment, read_gate_file, write_gate_file, GateFile, LastEditedBy, TicketError,
@@ -138,6 +138,36 @@ impl serde::Serialize for ReviewCmdError {
     }
 }
 
+// ── rework re-engagement seam ─────────────────────────────────────────────────
+
+/// How a bounce re-engages the ticket's producing agent. Kept behind a trait so
+/// `resolve_review_inner` stays testable WITHOUT a live PTY (the command wires
+/// the real `TaskOrchestrator`; tests wire a runtime holding a real PTY, or a
+/// spy). The reviewed subtask id IS the producing agent's PTY task id.
+pub(crate) trait ReworkReengager {
+    /// Hand `feedback` to the agent producing `task_id`; report how it landed.
+    fn reengage(&self, task_id: &str, feedback: &str) -> ReworkOutcome;
+}
+
+/// The result of re-engaging a bounced ticket's producing agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReworkOutcome {
+    /// The feedback was typed into the live agent's PTY — it reworks in place.
+    Delivered,
+    /// The agent's PTY had already exited; nothing was delivered.
+    AgentExited,
+}
+
+impl ReworkReengager for TaskOrchestrator {
+    fn reengage(&self, task_id: &str, feedback: &str) -> ReworkOutcome {
+        if self.deliver_rework_feedback(task_id, feedback) {
+            ReworkOutcome::Delivered
+        } else {
+            ReworkOutcome::AgentExited
+        }
+    }
+}
+
 // ── commands ─────────────────────────────────────────────────────────────────
 
 /// Move a ticket into the Review lane. Writes `review.json{state:"requested"}` and,
@@ -186,6 +216,7 @@ pub async fn resolve_review(
     board: State<'_, BoardRepo>,
     repositories: State<'_, RepositoryRepo>,
     registry: State<'_, Arc<TicketWriteRegistry>>,
+    orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
     board_events: State<'_, Arc<BoardEventBus>>,
 ) -> Result<BoardState, ReviewCmdError> {
@@ -202,6 +233,9 @@ pub async fn resolve_review(
         &board,
         &repositories,
         &registry,
+        // A bounce re-engages the producing agent through the live orchestrator
+        // (deliver the change request into its PTY / honest stop if it exited).
+        Some(&*orchestrator as &(dyn ReworkReengager + Send + Sync)),
     )
     .await?;
 
@@ -307,6 +341,12 @@ pub(crate) async fn resolve_review_inner(
     board: &BoardRepo,
     repositories: &RepositoryRepo,
     registry: &TicketWriteRegistry,
+    // A bounce re-engages the producing agent through this seam (typed into its
+    // live PTY, or an honest stop if it exited). `None` on the paths that don't
+    // (or can't) re-engage — the autopilot driver's park-only tests and the
+    // worklist read test — leaving those byte-identical to the pre-rework behavior.
+    // `Send + Sync` so the trait object can be held across the command's `.await`s.
+    rework: Option<&(dyn ReworkReengager + Send + Sync)>,
 ) -> Result<Board, ReviewCmdError> {
     let parent_id = subtask_parent(subtask)?;
     let repo_root = owned_repo_root(repositories, &subtask.repository_id).await?;
@@ -344,6 +384,39 @@ pub(crate) async fn resolve_review_inner(
                 LastEditedBy::Agent
             };
             add_comment(&repo_root, &subtask.id, by, by_kind, reason)?;
+
+            // Re-engage the producing agent so "request changes" actually
+            // re-drives it instead of leaving the ticket stuck at
+            // `changes-requested` forever. The reviewed subtask id IS the
+            // producing agent's PTY task id (the scheduler spawned it under that
+            // id), so the feedback goes straight to the right agent. If its
+            // interactive PTY is still ALIVE (the common case — `claude` never
+            // self-exits after publishing), the change request is typed in as a
+            // follow-up prompt and it reworks + re-publishes in place. If the
+            // agent has EXITED, there is nothing to type into: we leave an honest
+            // "re-run to apply changes" note (deferred — no auto re-spawn in this
+            // slice) so the ticket doesn't silently swallow the feedback.
+            if let Some(rework) = rework {
+                let feedback = format!(
+                    "Changes requested on this ticket:\n\n{reason}\n\nPlease address \
+                     these, update your work, and re-publish your contract when done."
+                );
+                if rework.reengage(&subtask.id, &feedback) == ReworkOutcome::AgentExited {
+                    // Attributed to `phasr` (Agent-kind), never masked as the
+                    // human — the human didn't write this, the system did
+                    // (honesty #29). `"you"` stays the sole human sentinel.
+                    add_comment(
+                        &repo_root,
+                        &subtask.id,
+                        "phasr",
+                        LastEditedBy::Agent,
+                        "The producing agent has exited, so this change request \
+                         could not be delivered to it automatically. Re-run this \
+                         ticket's agent to apply the requested changes.",
+                    )?;
+                }
+            }
+
             ReviewRecord {
                 subtask_id: subtask.id.clone(),
                 state: ReviewState::ChangesRequested,
@@ -605,7 +678,7 @@ mod tests {
 
         resolve_review_inner(
             frontend, "user-a", "qas-agent", ReviewDecision::Bounce, Some("tighten the diff"),
-            &workspaces, &board, &repos, &registry,
+            &workspaces, &board, &repos, &registry, None,
         )
         .await
         .unwrap();
@@ -648,7 +721,7 @@ mod tests {
         let registry = TicketWriteRegistry::default();
 
         resolve_review_inner(
-            frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry,
+            frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry, None,
         )
         .await
         .unwrap();
@@ -675,6 +748,7 @@ mod tests {
             &board,
             &repos,
             &registry,
+            None,
         )
         .await
         .unwrap();
@@ -700,14 +774,14 @@ mod tests {
 
         assert!(matches!(
             resolve_review_inner(
-                frontend, "user-a", "you", ReviewDecision::Bounce, None, &workspaces, &board, &repos, &registry,
+                frontend, "user-a", "you", ReviewDecision::Bounce, None, &workspaces, &board, &repos, &registry, None,
             )
             .await,
             Err(ReviewCmdError::MissingComment)
         ));
         assert!(matches!(
             resolve_review_inner(
-                frontend, "user-a", "you", ReviewDecision::Bounce, Some("   "), &workspaces, &board, &repos, &registry,
+                frontend, "user-a", "you", ReviewDecision::Bounce, Some("   "), &workspaces, &board, &repos, &registry, None,
             )
             .await,
             Err(ReviewCmdError::MissingComment)
@@ -741,7 +815,7 @@ mod tests {
 
         // Approve the frontend; write a validate.json for the backend by hand.
         resolve_review_inner(
-            frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry,
+            frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry, None,
         )
         .await
         .unwrap();
@@ -759,5 +833,186 @@ mod tests {
         assert_eq!(gates.reviews[0].subtask_id, frontend.id);
         assert_eq!(gates.validations.len(), 1, "one validation (backend)");
         assert_eq!(gates.validations[0].subtask_id, backend.id);
+    }
+
+    // R-rework (the broken review loop): a bounce on a ticket whose producing
+    // agent is still ALIVE must deliver the change-request feedback INTO that
+    // agent's PTY (so it reworks), while STILL writing the honest
+    // `changes-requested` state + the attributed reason comment. Uses a real
+    // runtime + a live fake-agent PTY keyed on the subtask id (== the producing
+    // agent's task id), and proves the feedback reached the agent's stdin by
+    // reading it back out of the agent's own echo.
+    #[tokio::test]
+    async fn bounce_with_live_agent_delivers_feedback_and_still_writes_state() {
+        use crate::orchestrator::RepoLockRegistry;
+        use crate::pty::TaskRuntime;
+
+        let (workspaces, board, repos, assembled, dir) = setup().await;
+        let frontend = subtask_by_role(&assembled, "frontend");
+        let registry = TicketWriteRegistry::default();
+
+        // A live agent: a fake that signals ready, then `cat`s its stdin so
+        // anything typed into it echoes straight back out (a stand-in for an
+        // interactive agent sitting at its prompt). Written to a file so it can
+        // be typed into the login shell without nested-quote escaping.
+        let script = dir.path().join("agent.sh");
+        std::fs::write(&script, "printf 'AGENT-READY\\n'\ncat\n").unwrap();
+
+        let runtime = std::sync::Arc::new(TaskRuntime::new(dir.path().join("logs")));
+        let handle = runtime
+            .spawn(
+                frontend.id.clone(),
+                Some(format!("sh {}", script.display())),
+                None,
+                dir.path().to_path_buf(),
+                24,
+                80,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+
+        // Wait until the fake agent is actually reading stdin (it printed READY,
+        // then hit `cat`) so the paste can't race an unready TUI.
+        assert!(
+            wait_for(&mut rx, "AGENT-READY"),
+            "the fake agent should signal it is ready to read"
+        );
+
+        let repo_locks = std::sync::Arc::new(RepoLockRegistry::new());
+        let orchestrator = crate::orchestrator::TaskOrchestrator::new(
+            workspaces.clone(),
+            repos.clone(),
+            runtime.clone(),
+            repo_locks,
+        );
+
+        resolve_review_inner(
+            frontend,
+            "user-a",
+            "you",
+            ReviewDecision::Bounce,
+            Some("fix the empty state"),
+            &workspaces,
+            &board,
+            &repos,
+            &registry,
+            Some(&orchestrator as &(dyn ReworkReengager + Send + Sync)),
+        )
+        .await
+        .unwrap();
+
+        // (1) The change-request feedback reached the LIVE agent's PTY: it shows
+        // up in the agent's echoed stdin. (`cat` / the tty echo surface it up to
+        // the first embedded newline of the paste-framed message — enough to
+        // prove the input landed on the right agent.)
+        let reached = wait_for(&mut rx, "Changes requested on this ticket:");
+        let _ = handle.kill();
+        assert!(
+            reached,
+            "the bounce feedback must be delivered into the live agent's PTY"
+        );
+
+        // (2) The honest review state + attributed reason comment are STILL
+        // written (the re-engagement ADDS to the bounce, never replaces it).
+        let review = read_review_record(&repo_root(&dir), &frontend.id).unwrap().unwrap();
+        assert_eq!(review.state, ReviewState::ChangesRequested);
+        assert_eq!(review.comment.as_deref(), Some("fix the empty state"));
+        let comments = crate::tickets::list_comments(&repo_root(&dir), &frontend.id).unwrap();
+        assert!(
+            comments.iter().any(|c| c.body == "fix the empty state" && c.author == "you"),
+            "the bounce reason must still be appended to the thread, attributed to the human"
+        );
+    }
+
+    // R-rework (exited path): a bounce on a ticket whose producing agent has
+    // EXITED can't deliver into a PTY, so it leaves an honest `phasr`-attributed
+    // "re-run to apply changes" note — never masked as the human — while STILL
+    // writing the `changes-requested` state + the reason comment.
+    #[tokio::test]
+    async fn bounce_with_exited_agent_leaves_honest_stop_and_still_writes_state() {
+        use crate::orchestrator::RepoLockRegistry;
+        use crate::pty::TaskRuntime;
+
+        let (workspaces, board, repos, assembled, dir) = setup().await;
+        let frontend = subtask_by_role(&assembled, "frontend");
+        let registry = TicketWriteRegistry::default();
+
+        // An orchestrator over an EMPTY runtime — no PTY for the subtask, i.e. the
+        // producing agent has exited (`deliver_rework_feedback` → false).
+        let runtime = std::sync::Arc::new(TaskRuntime::new(dir.path().join("logs")));
+        let repo_locks = std::sync::Arc::new(RepoLockRegistry::new());
+        let orchestrator = crate::orchestrator::TaskOrchestrator::new(
+            workspaces.clone(),
+            repos.clone(),
+            runtime,
+            repo_locks,
+        );
+
+        resolve_review_inner(
+            frontend,
+            "user-a",
+            "you",
+            ReviewDecision::Bounce,
+            Some("fix the empty state"),
+            &workspaces,
+            &board,
+            &repos,
+            &registry,
+            Some(&orchestrator as &(dyn ReworkReengager + Send + Sync)),
+        )
+        .await
+        .unwrap();
+
+        let review = read_review_record(&repo_root(&dir), &frontend.id).unwrap().unwrap();
+        assert_eq!(review.state, ReviewState::ChangesRequested);
+        assert_eq!(review.comment.as_deref(), Some("fix the empty state"));
+
+        let comments = crate::tickets::list_comments(&repo_root(&dir), &frontend.id).unwrap();
+        // The reason is still there, authored by the human.
+        assert!(
+            comments.iter().any(|c| c.body == "fix the empty state" && c.author == "you"),
+            "the bounce reason must still be appended, attributed to the human"
+        );
+        // The honest exited-stop note is present, authored `phasr` (Agent-kind),
+        // never `"you"` — the human didn't write it.
+        assert!(
+            comments.iter().any(|c| {
+                c.author == "phasr"
+                    && c.author_kind == LastEditedBy::Agent
+                    && c.body.contains("Re-run this ticket's agent")
+            }),
+            "an exited agent must leave an honest, non-human re-run note; got {comments:?}"
+        );
+    }
+
+    /// Drain output events until `needle` appears (or we time out). Blocking
+    /// loop — the PTY runs on its own OS threads, independent of this runtime.
+    fn wait_for(
+        rx: &mut tokio::sync::broadcast::Receiver<crate::pty::PtyEvent>,
+        needle: &str,
+    ) -> bool {
+        use crate::pty::PtyEvent;
+        let mut combined = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(PtyEvent::Output { chunk, .. }) => {
+                    combined.push_str(&chunk);
+                    if combined.contains(needle) {
+                        return true;
+                    }
+                }
+                Ok(PtyEvent::Exit { .. }) => return combined.contains(needle),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    return combined.contains(needle)
+                }
+            }
+        }
+        false
     }
 }

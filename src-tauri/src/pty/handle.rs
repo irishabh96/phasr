@@ -337,6 +337,28 @@ impl PtyHandle {
         self.write(b"\x03")
     }
 
+    /// Deliver a follow-up message to an ALREADY-RUNNING agent and submit it —
+    /// the same paste-framing + Enter the spawn-time hand-off uses
+    /// (`deliver_prompt_when_ready`), minus the readiness gate (the agent is
+    /// already interactive, so there is nothing to wait for). A multi-line
+    /// message is wrapped in a bracketed paste so its embedded newlines are
+    /// treated as literal text rather than a stream of per-line submits (the
+    /// issue-#2 framing, reused).
+    ///
+    /// Used by the review bounce: the change-request feedback is typed straight
+    /// into the producing agent's stdin so it reworks in place and re-publishes,
+    /// instead of the ticket stalling at `changes-requested`. Best-effort — a
+    /// write error (the child raced us to exit) surfaces as `PtyError` so the
+    /// caller can treat it as "agent gone".
+    pub fn paste_and_submit(&self, text: &str) -> Result<(), PtyError> {
+        self.write(&frame_prompt(text))?;
+        // Small gap so the TUI registers the paste before the submitting Enter,
+        // exactly as the spawn-time delivery does.
+        std::thread::sleep(Duration::from_millis(60));
+        self.write(b"\r")?;
+        Ok(())
+    }
+
     /// Forcefully kills the child process. Signals via the separate
     /// `ChildKiller` handle so we don't block on the waiter thread's
     /// long-held lock on the child itself.

@@ -522,6 +522,7 @@ mod tests {
             &board,
             &repos,
             &registry,
+            None,
         )
         .await
         .unwrap();

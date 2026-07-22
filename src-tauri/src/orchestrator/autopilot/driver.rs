@@ -1622,7 +1622,7 @@ mod tests {
         for s in [&backend, &frontend] {
             resolve_review_inner(
                 s, "user-a", "you", ReviewDecision::Approve, None,
-                &workspaces, &board_repo, &repos, &registry,
+                &workspaces, &board_repo, &repos, &registry, None,
             ).await.unwrap();
         }
         // The attribution boundary holds: the human decision is stamped "you".
@@ -1690,7 +1690,7 @@ mod tests {
         let registry = TicketWriteRegistry::default();
         resolve_review_inner(
             &ticket, "user-a", "you", ReviewDecision::Bounce, Some("tighten the diff"),
-            &workspaces, &board_repo, &repos, &registry,
+            &workspaces, &board_repo, &repos, &registry, None,
         ).await.unwrap();
 
         let driver = build_driver(&pool, tmp.path().join("contracts"), tmp.path().join("logs"));

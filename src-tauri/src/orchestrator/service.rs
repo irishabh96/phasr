@@ -524,6 +524,28 @@ impl TaskOrchestrator {
         Ok(())
     }
 
+    /// Re-engage the agent for `task_id` with review change-request feedback by
+    /// typing it into the agent's LIVE PTY as a follow-up prompt (paste-framed +
+    /// submitted, like the spawn-time hand-off — see `PtyHandle::paste_and_submit`).
+    /// Returns `true` when a live PTY received it, `false` when the agent had
+    /// already exited (nothing to type into).
+    ///
+    /// This is what makes the review "request changes" gate actually re-drive the
+    /// producing agent instead of stalling the ticket at `changes-requested`. The
+    /// PTY is keyed on the subtask id — the same id the scheduler spawned it under
+    /// — so the caller passes the reviewed subtask's id verbatim. `claude`
+    /// interactive never self-exits, so the common case IS a live PTY; a `false`
+    /// (a one-shot agent that finished, or a stopped one) is the caller's cue to
+    /// record an honest "re-run to apply changes" note rather than silently drop
+    /// the feedback. Best-effort: a write race with an exiting child degrades to
+    /// `false` rather than surfacing as an error on the bounce.
+    pub fn deliver_rework_feedback(&self, task_id: &str, feedback: &str) -> bool {
+        match self.runtime.get(task_id) {
+            Some(handle) => handle.paste_and_submit(feedback).is_ok(),
+            None => false,
+        }
+    }
+
     async fn cwd_for_task(&self, workspace: &Workspace) -> Result<PathBuf, OrchestratorError> {
         if let Some(path) = workspace.worktree_path.as_deref() {
             let path = PathBuf::from(path);
