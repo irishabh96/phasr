@@ -392,21 +392,22 @@ async fn initialize_database_state(
 }
 
 /// Resolve the absolute path to the `phasr` agent CLI for `PHASR_BIN` (§J4/§R7).
-/// The CLI ships as an externalBin sidecar renamed to `phasr` next to the app
-/// executable (the pre-bundle copy step); in dev / `cargo tauri dev` it sits
-/// beside the main binary as `target/<profile>/phasr-cli`. Both reduce to "look
-/// next to `current_exe`", preferring the bundled `phasr`, then dev's `phasr-cli`.
+/// The CLI ships as an externalBin sidecar named `phasr-cli` (#29): Tauri strips
+/// the target-triple suffix at bundle time, so `binaries/phasr-cli-<triple>` lands
+/// beside the main binary as `Phasr.app/Contents/MacOS/phasr-cli`; in dev /
+/// `cargo tauri dev` it's built as `target/<profile>/phasr-cli`. Both reduce to
+/// "look for `phasr-cli` next to `current_exe`".
+///
+/// We deliberately do NOT accept a bare `phasr` sibling: in dev the app binary IS
+/// `target/<profile>/phasr` (the Cargo package name), so matching `phasr` would
+/// resolve PHASR_BIN to the app itself and an agent's `"$PHASR_BIN" <verb>` would
+/// relaunch the app instead of the CLI. (The sidecar can't be named `phasr`
+/// anyway — tauri-build rejects a sidecar sharing the `phasr` package name.)
 fn resolve_phasr_cli_bin() -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for name in ["phasr", "phasr-cli"] {
-                let candidate = dir.join(name);
-                if candidate.exists() {
-                    return candidate;
-                }
-            }
-            // Dev/cargo fallback: the CLI bin may not be built yet — name it
-            // anyway so a later `cargo build --bin phasr-cli` makes it resolvable.
+            // Named unconditionally (even if not built yet in dev) so a later
+            // `cargo build --bin phasr-cli` makes it resolvable without a restart.
             return dir.join("phasr-cli");
         }
     }
@@ -508,6 +509,32 @@ mod tests {
         );
         assert!(recovered.finished_at.is_some());
         assert_eq!(recovered.exit_code, None);
+    }
+
+    // #29: PHASR_BIN resolves to the `phasr-cli` sidecar sitting beside the
+    // running executable — the bundled `Contents/MacOS/phasr-cli` in a packaged
+    // app, `target/<profile>/phasr-cli` in dev. Both are a `phasr-cli` sibling of
+    // `current_exe`.
+    #[test]
+    fn phasr_cli_resolves_next_to_the_current_exe() {
+        let resolved = resolve_phasr_cli_bin();
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some("phasr-cli")
+        );
+        if let Ok(exe) = std::env::current_exe() {
+            assert_eq!(resolved.parent(), exe.parent());
+        }
+    }
+
+    // Regression (#29): the sidecar is `phasr-cli`, never a bare `phasr`. In dev
+    // the app binary IS `target/<profile>/phasr` (the Cargo package name), so
+    // resolving PHASR_BIN to a `phasr` sibling would point an agent at the app
+    // itself — `"$PHASR_BIN" <verb>` would relaunch Phasr instead of the CLI.
+    #[test]
+    fn phasr_cli_is_never_the_bare_app_binary() {
+        let resolved = resolve_phasr_cli_bin();
+        assert_ne!(resolved.file_name().and_then(|n| n.to_str()), Some("phasr"));
     }
 
     // Recovery only touches `running` rows; a row already terminal at boot is

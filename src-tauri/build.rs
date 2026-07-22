@@ -24,7 +24,44 @@ fn main() {
         }
     }
 
+    // Sidecar (#29): `bundle.externalBin: ["binaries/phasr-cli"]` makes
+    // `binaries/phasr-cli-<triple>` a HARD build-time requirement — tauri-build
+    // aborts with "resource path ... doesn't exist" on ANY compile of this
+    // package (`cargo check`/`cargo test`/`cargo tauri dev`), not just bundling.
+    // The real sidecar is built + copied by scripts/bundle-cli-sidecar.mjs, but
+    // that only runs in `beforeBuildCommand` (a real `pnpm tauri build`). So for
+    // every other compile we seed an empty placeholder if one isn't already
+    // present, purely to satisfy tauri-build's existence check; the bundle step
+    // overwrites it with the real binary. This must run BEFORE tauri_build::build().
+    seed_sidecar_placeholder();
+
     tauri_build::build()
+}
+
+/// Ensure `binaries/phasr-cli-<triple>` exists so tauri-build's externalBin check
+/// passes on non-bundle compiles. CREATE-only (never truncates), so it can't
+/// clobber a real sidecar dropped by the pre-bundle copy step. The file is
+/// gitignored; the base name must match `bundle.externalBin` in tauri.conf.json.
+fn seed_sidecar_placeholder() {
+    const SIDECAR_BASE: &str = "phasr-cli";
+    // Cargo always sets TARGET for build scripts; it is the triple tauri-build
+    // suffixes the sidecar with (== TAURI_ENV_TARGET_TRIPLE for this build).
+    let Ok(target) = std::env::var("TARGET") else {
+        return;
+    };
+    let manifest_dir = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"),
+    );
+    let path = manifest_dir
+        .join("binaries")
+        .join(format!("{SIDECAR_BASE}-{target}"));
+    if path.exists() {
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::File::create(&path);
 }
 
 fn clerk_publishable_key() -> Option<String> {
