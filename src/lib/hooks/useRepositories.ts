@@ -3,6 +3,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { worklistKeys } from "@/lib/hooks/useWorklist";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { Repository, Workspace } from "@/lib/types";
@@ -96,6 +97,10 @@ export function useDeleteRepository() {
       queryClient.invalidateQueries({ queryKey: repositoryKeys.list() });
       queryClient.removeQueries({ queryKey: repositoryKeys.detail(id) });
       queryClient.removeQueries({ queryKey: workspaceKeys.byRepository(id) });
+      // The cross-repo Worklist/Home is a separate aggregate query — invalidate
+      // it too, or it keeps showing the just-deleted repo's tickets (the DB rows
+      // are already cascade-gone, so a refetch returns them empty).
+      queryClient.invalidateQueries({ queryKey: worklistKeys.all });
 
       // If the user is currently on the just-deleted repo's home or any
       // of its workspace routes, bounce them to `/` — which lands on the
