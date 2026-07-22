@@ -972,7 +972,7 @@ fn append_audit(repo_root: &Path, parent_id: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::review::{ReviewRecord, ReviewState};
+    use crate::commands::review::{resolve_review_inner, ReviewDecision, ReviewRecord, ReviewState};
     use crate::domain::{Repository, RunCommand};
     use crate::orchestrator::{ValidateCheck, ValidateResult};
     use crate::store::{init_pool, Db};
@@ -1479,5 +1479,312 @@ mod tests {
         assert!(refreshed.branch.is_none(), "never integrate an unreviewed epic (I7)");
         let log = read_audit(&repo_dir, &parent.id);
         assert_eq!(audit_count(&log, "integrated"), 0);
+    }
+
+    // ── full-ladder end-to-end: drive a real epic through EVERY Stage-A gate ──
+    //
+    // The slice tests above each prove ONE hop (dedup, kill switch, bounce,
+    // integrate-conflict, …). These three drive a real epic through the WHOLE
+    // walk against real infra — a temp git repo with worktrees/branches, a real
+    // sqlite pool, the real `_inner` command paths, and real on-disk gate/marker/
+    // audit files — the closest thing to running the board without the GUI. They
+    // are the only tests that exercise the driver's `Auto(Validate)` FIRE path
+    // (running + persisting a real `validate.json`), which every slice test skips.
+
+    /// A subtask WITH a real on-disk worktree dir (so `Auto(Validate)` can `cwd`
+    /// in and run a check) AND an integration branch. `insert_subtask` above never
+    /// sets a worktree, so validate can't run against it.
+    async fn insert_subtask_wt(
+        pool: &Db,
+        repo_id: &str,
+        parent_id: &str,
+        role: &str,
+        status: WorkspaceStatus,
+        branch: Option<&str>,
+        worktree: &Path,
+    ) -> Workspace {
+        std::fs::create_dir_all(worktree).unwrap();
+        let mut s = Workspace::new(repo_id.into(), role.into(), "cmd".into());
+        s.workspace_kind = WorkspaceKind::Subtask;
+        s.parent_id = Some(parent_id.into());
+        s.role = Some(role.into());
+        s.status = status;
+        s.branch = branch.map(String::from);
+        s.worktree_path = Some(worktree.to_string_lossy().into_owned());
+        if status == WorkspaceStatus::Completed {
+            s.exit_code = Some(0);
+        }
+        WorkspaceRepo::new(pool.clone())
+            .insert_for_user(&s, "user-a")
+            .await
+            .unwrap();
+        s
+    }
+
+    /// A PASSING repo check (`exit 0`) opted into Validate — so the forward ladder
+    /// proceeds validate → request-review instead of parking on a red build (the
+    /// existing `add_validate_check` uses `exit 1`, which parks).
+    async fn add_passing_check(pool: &Db, repo_id: &str) {
+        let mut rc = RunCommand::new(repo_id.into(), "unit".into(), "exit 0".into());
+        rc.run_in_validate = true;
+        RunCommandRepo::new(pool.clone()).insert_for_user(&rc, "user-a").await.unwrap();
+    }
+
+    fn git_rev(repo: &Path, rev: &str) -> String {
+        let out = Command::new("git").args(["rev-parse", rev]).current_dir(repo).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Every non-blank audit line's author column (`ts \t author \t message`) is
+    /// `"autopilot"` — the audit thread never impersonates the human (S6/G1).
+    fn audit_all_authored_autopilot(log: &str) -> bool {
+        log.lines()
+            .filter(|l| !l.trim().is_empty())
+            .all(|l| l.split('\t').nth(1) == Some("autopilot"))
+    }
+
+    // THE happy path: an epic with a 2-ticket DAG (backend → frontend) drives
+    // itself validate → request-review → PARK at in-review, then — after the
+    // HUMAN approves — integrate → PARK at Ship. Every safe gate auto-fires once;
+    // every human-judgment / outward edge PARKS; Ship never fires and base is
+    // untouched; and the whole run is attributed "autopilot". Re-driving past each
+    // boundary is a fixpoint (durable dedup), so the loops below never over-fire.
+    #[tokio::test]
+    async fn full_ladder_drives_epic_through_validate_review_to_ship_park() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_pool(&tmp.path().join("t.sqlite")).await.unwrap();
+        seed_user(&pool, "user-a").await;
+        let (repo, repo_dir) = git_repo(tmp.path(), &pool).await;
+        // Two non-overlapping subtask branches → a clean topological integrate.
+        commit_on_branch(&repo_dir, "phasr/backend", "backend.txt", "b\n", "backend");
+        commit_on_branch(&repo_dir, "phasr/frontend", "frontend.txt", "f\n", "frontend");
+        add_passing_check(&pool, &repo.id).await; // a real Validate check, passing.
+
+        let parent = insert_epic(&pool, &repo.id, true).await;
+        // backend = a still-Running producer that PUBLISHED its handoff contract
+        // (so it derives to needs-review despite an idle-orphan PTY, the I3 layer).
+        let backend = insert_subtask_wt(
+            &pool, &repo.id, &parent.id, "backend", WorkspaceStatus::Running,
+            Some("phasr/backend"), &tmp.path().join("wt-backend"),
+        ).await;
+        publish_contract(&pool, &parent.id, &backend.id, "backend").await;
+        // frontend = a cleanly-exited consumer (clean `done`) downstream of backend.
+        let frontend = insert_subtask_wt(
+            &pool, &repo.id, &parent.id, "frontend", WorkspaceStatus::Completed,
+            Some("phasr/frontend"), &tmp.path().join("wt-frontend"),
+        ).await;
+        add_edge(&pool, &parent.id, &backend.id, &frontend.id).await; // the DAG.
+
+        let base_before = git_rev(&repo_dir, "main");
+        let driver = build_driver(&pool, tmp.path().join("contracts"), tmp.path().join("logs"));
+
+        // ── Phase 1: drive to the human Review gate. Far more drives than the
+        //    ladder is long → the fire→re-derive walk must reach a FIXPOINT at the
+        //    park (validate → request-review → park, each fired exactly once).
+        for _ in 0..10 {
+            driver.drive_epic(&parent.id).await;
+        }
+
+        for (label, s) in [("backend", &backend), ("frontend", &frontend)] {
+            // Auto(Validate) actually RAN: a real validate.json, PASSED, on disk.
+            let raw = read_gate_file(&repo_dir, &s.id, GateFile::Validate).ok().flatten()
+                .unwrap_or_else(|| panic!("{label}: autopilot must run + persist validate.json"));
+            let v: ValidateResult = serde_json::from_str(&raw).unwrap();
+            assert!(v.passed, "{label}: the configured check passed");
+            assert_eq!(v.checks.len(), 1, "{label}: the one opted-in check ran");
+            assert_eq!(v.checks[0].name, "unit");
+            // Auto(RequestReview) flipped review.json to requested, STAMPED autopilot.
+            let review = read_review(&repo_dir, &s.id).expect("review.json written");
+            assert_eq!(review.state, ReviewLadderState::Requested, "{label}: flipped to requested");
+            assert_eq!(review_author(&repo_dir, &s.id).as_deref(), Some("autopilot"),
+                "{label}: an autopilot gate is NEVER attributed to the human");
+        }
+
+        // Each safe gate fired EXACTLY once across 10 drives (durable dedup)…
+        let log = read_audit(&repo_dir, &parent.id);
+        assert_eq!(audit_count(&log, "ran Validate"), 2, "validate fires once per ticket, never again");
+        assert_eq!(audit_count(&log, "passed (1 checks)"), 2, "both validates passed");
+        assert_eq!(audit_count(&log, "requested review"), 2, "request-review fires once per ticket");
+        // …then PARKS at in-review — NOT auto-approved (the Stage-A §0.5 boundary).
+        assert_eq!(audit_count(&log, "Needs you: review"), 2,
+            "each ticket parks at the human Approve gate, audited once (deduped)");
+        // The epic is NOT integrated: the human hasn't approved, so no merge fired.
+        let mid = WorkspaceRepo::new(pool.clone()).get(&parent.id).await.unwrap();
+        assert!(mid.branch.is_none(), "no integrate before the human approves");
+        assert_eq!(audit_count(&log, "integrated"), 0);
+        assert_eq!(git_rev(&repo_dir, "main"), base_before, "base untouched at the Review park");
+
+        // ── Phase 2: the HUMAN approves both tickets (by = "you", never autopilot).
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board_repo = BoardRepo::new(pool.clone());
+        let repos = RepositoryRepo::new(pool.clone());
+        let registry = TicketWriteRegistry::default();
+        for s in [&backend, &frontend] {
+            resolve_review_inner(
+                s, "user-a", "you", ReviewDecision::Approve, None,
+                &workspaces, &board_repo, &repos, &registry,
+            ).await.unwrap();
+        }
+        // The attribution boundary holds: the human decision is stamped "you".
+        assert_eq!(review_author(&repo_dir, &backend.id).as_deref(), Some("you"));
+
+        // Drive again — autopilot now auto-integrates the clean, fully-approved
+        // epic, reaches integrated, then PARKS at Ship. Loop to prove the fixpoint.
+        for _ in 0..10 {
+            driver.drive_epic(&parent.id).await;
+        }
+
+        // Reached INTEGRATED: the parent carries a real integration branch, and the
+        // integration worktree holds BOTH subtasks' work (a genuine clean merge).
+        let done = WorkspaceRepo::new(pool.clone()).get(&parent.id).await.unwrap();
+        let branch = done.branch.clone().expect("the epic auto-integrated");
+        assert!(branch.starts_with("phasr/integration/"), "carries the integration branch");
+        let worktree = done.worktree_path.clone().expect("the integration worktree");
+        let worktree = Path::new(&worktree);
+        assert!(worktree.join("backend.txt").exists() && worktree.join("frontend.txt").exists(),
+            "the integration worktree carries both subtasks' work");
+        assert_eq!(git::merge_in_progress(worktree).unwrap(), git::InProgress::None,
+            "a clean integrate leaves no merge in progress");
+
+        let log = read_audit(&repo_dir, &parent.id);
+        assert_eq!(audit_count(&log, "integrated 2 tickets"), 1, "integrate fires exactly once");
+        // Ship is NEVER auto-fired: PARK at Ship (HumanStop), audited once, and the
+        // base branch is byte-for-byte UNCHANGED — no merge-to-base from the driver.
+        assert_eq!(audit_count(&log, "Ship — needs you"), 1, "then parks at Ship, once (deduped)");
+        assert_eq!(git_rev(&repo_dir, "main"), base_before,
+            "Stage A never ships: base `main` must be byte-for-byte unchanged");
+        assert_eq!(audit_count(&log, "integrated but checks fail"), 0, "clean integrate → no fail park");
+
+        // Audit honesty end-to-end: every fire + park is authored "autopilot".
+        assert!(audit_all_authored_autopilot(&log),
+            "every audited action must be attributed to autopilot, never the human");
+
+        // The durable markers record the exact set of one-shot fires + parks.
+        let fired = read_fired_map(&repo_dir, &parent.id);
+        for suffix in ["|validate", "|request-review", "|park"] {
+            assert!(fired.keys().any(|k| k.ends_with(suffix)),
+                "a durable {suffix} marker must be recorded");
+        }
+        assert!(fired.contains_key(&fired_key(&parent.id, "integrate")),
+            "the epic integrate is durably recorded");
+
+        cleanup_integration(&repo_dir, &parent.id, &parent.name);
+    }
+
+    // Safety edge (d): a HUMAN-bounced ticket (review = changes-requested) PARKS
+    // and autopilot never auto-re-fires a gate or auto-re-spawns the producer
+    // (v1, §2). Re-driving is a fixpoint: only the deduped park is ever recorded.
+    #[tokio::test]
+    async fn changes_requested_ticket_parks_and_is_never_auto_respawned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_pool(&tmp.path().join("t.sqlite")).await.unwrap();
+        seed_user(&pool, "user-a").await;
+        let (repo, checkout) = plain_repo(tmp.path(), &pool).await;
+        let parent = insert_epic(&pool, &repo.id, true).await;
+        let ticket = insert_subtask(&pool, &repo.id, &parent.id, "backend", WorkspaceStatus::Completed, None).await;
+
+        // Human bounce: writes review.json{changes-requested} + a reason comment.
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let board_repo = BoardRepo::new(pool.clone());
+        let repos = RepositoryRepo::new(pool.clone());
+        let registry = TicketWriteRegistry::default();
+        resolve_review_inner(
+            &ticket, "user-a", "you", ReviewDecision::Bounce, Some("tighten the diff"),
+            &workspaces, &board_repo, &repos, &registry,
+        ).await.unwrap();
+
+        let driver = build_driver(&pool, tmp.path().join("contracts"), tmp.path().join("logs"));
+        for _ in 0..8 {
+            driver.drive_epic(&parent.id).await;
+        }
+
+        let log = read_audit(&checkout, &parent.id);
+        assert_eq!(audit_count(&log, "Changes requested — needs you"), 1,
+            "a bounced ticket parks once (deduped), never once per drive");
+        // No gate auto-fires on a bounced ticket, and the epic never integrates.
+        assert_eq!(audit_count(&log, "requested review"), 0, "no auto re-request-review");
+        assert_eq!(audit_count(&log, "ran Validate"), 0, "no auto re-validate");
+        assert_eq!(audit_count(&log, "integrated"), 0, "a non-approved epic never integrates");
+        // The review stays exactly as the human left it (changes-requested / "you").
+        let review = read_review(&checkout, &ticket.id).unwrap();
+        assert_eq!(review.state, ReviewLadderState::ChangesRequested);
+        assert_eq!(review_author(&checkout, &ticket.id).as_deref(), Some("you"));
+        // Only the park is durably recorded — no gate fired.
+        let fired = read_fired_map(&checkout, &parent.id);
+        assert!(!fired.is_empty() && fired.keys().all(|k| k.ends_with("|park")),
+            "only a park is recorded, no fired gate");
+        assert!(audit_all_authored_autopilot(&log));
+    }
+
+    // Safety edges (a) + (b), asserted MID-ladder (stronger than from-scratch): an
+    // epic frozen part-way through the ladder advances NOTHING while the kill
+    // switch is set (drive_epic AND sweep_all), NOR while its per-epic flag is off
+    // — and re-arming BOTH resumes the exact next hop, proving the freeze (not a
+    // terminal state) is what held it. There is no auto-resume.
+    #[tokio::test]
+    async fn kill_switch_and_disabled_flag_freeze_a_mid_ladder_epic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_pool(&tmp.path().join("t.sqlite")).await.unwrap();
+        seed_user(&pool, "user-a").await;
+        let (repo, checkout) = plain_repo(tmp.path(), &pool).await;
+        add_passing_check(&pool, &repo.id).await;
+        let parent = insert_epic(&pool, &repo.id, true).await;
+        let ticket = insert_subtask_wt(
+            &pool, &repo.id, &parent.id, "backend", WorkspaceStatus::Completed,
+            None, &tmp.path().join("wt"),
+        ).await;
+
+        let driver = build_driver(&pool, tmp.path().join("contracts"), tmp.path().join("logs"));
+
+        // One drive lands the ticket MID-ladder: Validate ran, but request-review
+        // has NOT yet fired (the next hop).
+        driver.drive_epic(&parent.id).await;
+        assert!(read_validate(&checkout, &ticket.id).is_some(), "validate ran (mid-ladder)");
+        assert!(read_review(&checkout, &ticket.id).is_none(), "not yet requested review");
+        let audit_frozen = read_audit(&checkout, &parent.id);
+        let fired_frozen = read_fired_map(&checkout, &parent.id);
+        assert!(!audit_frozen.is_empty(), "the mid-ladder validate was audited");
+
+        // (a) KILL SWITCH: while set, neither drive_epic NOR sweep_all advances the
+        //     next gate — the epic is frozen exactly where it was.
+        AutopilotStateRepo::new(pool.clone()).set_kill_switch(true).await.unwrap();
+        for _ in 0..5 {
+            driver.drive_epic(&parent.id).await;
+        }
+        driver.sweep_all().await;
+        assert_eq!(read_audit(&checkout, &parent.id), audit_frozen, "a halted driver appends no audit");
+        assert_eq!(read_fired_map(&checkout, &parent.id), fired_frozen, "a halted driver fires nothing");
+        assert!(read_review(&checkout, &ticket.id).is_none(), "request-review never fires while halted");
+
+        // (b) PER-EPIC FLAG OFF: un-halt but disable the epic → still frozen (the
+        //     other independent gate). No auto-resume from either gate alone.
+        AutopilotStateRepo::new(pool.clone()).set_kill_switch(false).await.unwrap();
+        WorkspaceRepo::new(pool.clone())
+            .update(&parent.id, crate::store::WorkspaceUpdate {
+                autopilot_enabled: Some(false),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            driver.drive_epic(&parent.id).await;
+        }
+        driver.sweep_all().await;
+        assert_eq!(read_audit(&checkout, &parent.id), audit_frozen, "a disabled epic appends no audit");
+        assert!(read_review(&checkout, &ticket.id).is_none(), "request-review never fires while disabled");
+
+        // Re-arm BOTH → the epic resumes the EXACT next hop (request-review),
+        // proving the freeze — not a terminal state — is what held it.
+        WorkspaceRepo::new(pool.clone())
+            .update(&parent.id, crate::store::WorkspaceUpdate {
+                autopilot_enabled: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        driver.drive_epic(&parent.id).await;
+        let review = read_review(&checkout, &ticket.id).expect("re-arming resumes the ladder");
+        assert_eq!(review.state, ReviewLadderState::Requested);
+        assert_eq!(review_author(&checkout, &ticket.id).as_deref(), Some("autopilot"));
     }
 }
