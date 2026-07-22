@@ -207,6 +207,19 @@ export function Terminal({
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [
         term.onData((data) => {
+          // Mouse-tracking leak guard: a full-screen agent TUI (Claude/codex)
+          // enables mouse reporting on the ALT screen; if it exits/crashes
+          // without disabling it, xterm.js keeps forwarding mouse reports and the
+          // bare shell echoes them as visible garbage (SGR `\x1b[<b;x;yM|m`, or
+          // legacy `\x1b[M` + 3 bytes). Forward mouse reports only while a TUI
+          // owns the screen (alternate buffer); at the shell (normal buffer)
+          // nothing consumes them, so drop them.
+          if (
+            term.buffer.active.type === "normal" &&
+            /^\x1b\[(?:<[0-9;]+[Mm]|M[\s\S]{3})$/.test(data)
+          ) {
+            return;
+          }
           // Routes user keystrokes through the orchestrator's
           // `send_input_to_task` command so the React side speaks
           // task vocabulary end-to-end.
