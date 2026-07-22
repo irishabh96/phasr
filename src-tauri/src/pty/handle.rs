@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -216,33 +217,37 @@ impl PtyHandle {
             last_activity: Arc::new(AtomicI64::new(now_ms())),
         });
 
-        // Schedule the agent command + optional prompt as keystrokes
-        // into the running shell. We use staged delays so:
-        //   1. The shell finishes printing its prompt.
-        //   2. The agent command is "typed" and ENTERed.
-        //   3. The agent has time to start up.
-        //   4. The user's prompt is typed into the agent's UI.
+        // Schedule the agent command + optional prompt as keystrokes into the
+        // running shell:
+        //   1. Wait for the shell to finish printing its prompt, then "type" and
+        //      ENTER the agent command.
+        //   2. Deliver the prompt — but ONLY once the agent is input-ready
+        //      (`deliver_prompt_when_ready`), not on a blind timer.
+        //
+        // Issue #2: the old path slept a FIXED ~1.2s and then typed the prompt.
+        // On a slow launch (cold start, repo indexing, MCP init) the agent's TUI
+        // wasn't listening yet, so the keystrokes were dropped and the agent sat
+        // at an empty prompt forever — "running" but doing nothing. And a
+        // multi-line prompt (every scheduled subtask: persona + brief + contract
+        // handoff) was typed with its embedded newlines raw, so the TUI submitted
+        // it one fragment at a time. Both are fixed below.
         let handle_for_writes = handle.clone();
         std::thread::spawn(move || {
+            let launched_at = Instant::now();
+            // Subscribe BEFORE typing the command so the readiness detector can't
+            // miss the shell's tty-handoff (`ESC[?2004l`) that follows it.
+            let ready_rx = handle_for_writes.subscribe();
             if let Some(cmd_text) = initial_command {
                 let trimmed = cmd_text.trim();
                 if !trimmed.is_empty() {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    std::thread::sleep(Duration::from_millis(300));
                     let _ = handle_for_writes.write(format!("{trimmed}\n").as_bytes());
                 }
             }
             if let Some(prompt) = initial_prompt {
                 let trimmed = prompt.trim();
                 if !trimmed.is_empty() {
-                    // Give the agent ~1.2s to launch its UI before we
-                    // start pasting the prompt.
-                    std::thread::sleep(std::time::Duration::from_millis(1_200));
-                    let _ = handle_for_writes.write(trimmed.as_bytes());
-                    // Submit the prompt with Enter. Most TUI agents
-                    // accept a plain newline; for the rare ones that
-                    // need \r, the shell will translate.
-                    std::thread::sleep(std::time::Duration::from_millis(60));
-                    let _ = handle_for_writes.write(b"\r");
+                    deliver_prompt_when_ready(&handle_for_writes, ready_rx, trimmed, launched_at);
                 }
             }
         });
@@ -362,6 +367,182 @@ impl PtyHandle {
 /// same clock the liveness poller diffs against (`chrono::Utc`).
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
+}
+
+/// Timing gate for prompt delivery (issue #2). Prompt keystrokes are held until
+/// the agent is actually INPUT-READY instead of firing on a blind fixed delay
+/// that raced the agent's TUI startup and dropped the prompt.
+struct PromptGate {
+    /// Never deliver sooner than this after launch. Preserves the original
+    /// ~1.5s floor (300ms shell-prompt wait + 1.2s launch) so a fast agent's
+    /// timing is unchanged, and it steps past the shell's echo of the command.
+    min_floor: Duration,
+    /// Quiet window that marks "the agent stopped rendering its UI and is now
+    /// waiting for input": a burst of startup output, then silence ⇒ ready.
+    settle: Duration,
+    /// Hard cap — deliver anyway if the agent never settles (e.g. an animated
+    /// idle status line), so delivery can never hang. Bounds worst-case latency.
+    max_wait: Duration,
+}
+
+impl Default for PromptGate {
+    fn default() -> Self {
+        Self {
+            min_floor: Duration::from_millis(1_500),
+            settle: Duration::from_millis(500),
+            max_wait: Duration::from_secs(8),
+        }
+    }
+}
+
+/// Bracketed-paste MODE toggles (DECSET 2004), distinct from the paste
+/// DELIMITERS below. A terminal line-editor (zsh/bash) enables paste mode while
+/// showing its prompt (`ENABLE`) and disables it (`DISABLE`) when it hands the
+/// tty to a child to run our command. A TUI agent then re-enables it once its
+/// own input box is ready. See `ReadinessDetector`.
+const PASTE_MODE_ENABLE: &[u8] = b"\x1b[?2004h";
+const PASTE_MODE_DISABLE: &[u8] = b"\x1b[?2004l";
+
+/// Detects the moment an agent's TUI is ready to accept input, from its PTY
+/// output. The signal is a paste-mode ENABLE (`ESC[?2004h`) that arrives AFTER
+/// the shell has DISABLED paste mode (`ESC[?2004l`) to run our launch command.
+///
+/// Keying on "enable AFTER the handoff" is what makes this shell-chrome-proof:
+/// the interactive shell emits its OWN `ENABLE` while drawing/redrawing its
+/// prompt (syntax highlighting, autosuggestions), which we must ignore — a naive
+/// "first output then settle" heuristic fires on that chrome and delivers the
+/// prompt into a still-loading agent (issue #2). The enable that follows the
+/// shell's `DISABLE` is the agent's, emitted exactly when it starts listening.
+///
+/// Pure and incremental (fed one chunk at a time) so it is unit-testable without
+/// a real PTY. Carries a short tail across chunks so an escape split at a read
+/// boundary is still matched.
+struct ReadinessDetector {
+    seen_handoff: bool,
+    carry: Vec<u8>,
+}
+
+impl ReadinessDetector {
+    fn new() -> Self {
+        Self {
+            seen_handoff: false,
+            carry: Vec::new(),
+        }
+    }
+
+    /// Feed one output chunk; returns `true` the first time the agent is ready.
+    fn observe(&mut self, chunk: &[u8]) -> bool {
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(chunk);
+
+        // Scan left-to-right so a same-chunk `DISABLE…ENABLE` is ordered
+        // correctly and a leading (pre-handoff) `ENABLE` is ignored.
+        let mut i = 0;
+        while i < buf.len() {
+            if buf[i..].starts_with(PASTE_MODE_DISABLE) {
+                self.seen_handoff = true;
+                i += PASTE_MODE_DISABLE.len();
+                continue;
+            }
+            if buf[i..].starts_with(PASTE_MODE_ENABLE) {
+                if self.seen_handoff {
+                    self.carry.clear();
+                    return true;
+                }
+                i += PASTE_MODE_ENABLE.len();
+                continue;
+            }
+            i += 1;
+        }
+
+        // Keep only a partial tail (< one full sequence) so we never re-scan a
+        // COMPLETE sequence next round (which could false-fire an old enable).
+        let keep = PASTE_MODE_ENABLE.len().max(PASTE_MODE_DISABLE.len()) - 1;
+        if buf.len() > keep {
+            self.carry = buf.split_off(buf.len() - keep);
+        } else {
+            self.carry = buf;
+        }
+        false
+    }
+}
+
+/// Bracketed-paste DELIMITERS (the `200~`/`201~` markers that wrap the pasted
+/// text itself — distinct from the mode toggles above). A terminal frames pasted
+/// text in these so a TUI treats embedded newlines as LITERAL text rather than a
+/// stream of Enter keys.
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// The bytes to type for the prompt BODY (the submitting `\r` is sent
+/// separately, exactly as a real paste-then-Enter would be). A MULTI-LINE prompt
+/// (personas, briefs, contract handoffs — every scheduled subtask) is wrapped in
+/// a bracketed paste so its embedded newlines don't submit the prompt one
+/// fragment at a time (issue #2). A single-line prompt is sent verbatim —
+/// byte-identical to the original behavior, and safe even for a rare agent that
+/// doesn't enable bracketed-paste mode.
+fn frame_prompt(prompt: &str) -> Vec<u8> {
+    if prompt.contains('\n') {
+        let mut out = Vec::with_capacity(prompt.len() + PASTE_START.len() + PASTE_END.len());
+        out.extend_from_slice(PASTE_START);
+        out.extend_from_slice(prompt.as_bytes());
+        out.extend_from_slice(PASTE_END);
+        out
+    } else {
+        prompt.as_bytes().to_vec()
+    }
+}
+
+/// Wait for the agent's TUI to signal it is input-ready (see `ReadinessDetector`),
+/// then type the prompt as a single (paste-framed) unit and submit with Enter.
+/// Runs on the injection thread. `launched_at` is when that thread began, so the
+/// floor and cap are measured from launch. `rx` was subscribed BEFORE the launch
+/// command was typed, so the handoff can't be missed.
+fn deliver_prompt_when_ready(
+    handle: &PtyHandle,
+    mut rx: broadcast::Receiver<PtyEvent>,
+    prompt: &str,
+    launched_at: Instant,
+) {
+    let gate = PromptGate::default();
+    let mut detector = ReadinessDetector::new();
+
+    // Block on the readiness signal, bounded by the hard cap so delivery can
+    // never hang for an agent that never emits it (we then fall back to typing
+    // anyway — no worse than the old blind delay, just later).
+    while launched_at.elapsed() < gate.max_wait {
+        match rx.try_recv() {
+            Ok(PtyEvent::Output { chunk, .. }) => {
+                if detector.observe(chunk.as_bytes()) {
+                    break;
+                }
+            }
+            // The agent process died before we could hand it the prompt (a
+            // launch failure) — nothing to deliver.
+            Ok(PtyEvent::Exit { .. }) => return,
+            Err(broadcast::error::TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // A verbose startup can outrun the buffer; the signal is likely
+            // still ahead of us, so keep scanning.
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
+
+    // Honor the floor (never type sooner than the original ~1.5s, so a fast
+    // agent is unchanged) and let the just-rendered input box settle before we
+    // paste into it.
+    let floor_remaining = gate.min_floor.saturating_sub(launched_at.elapsed());
+    if !floor_remaining.is_zero() {
+        std::thread::sleep(floor_remaining);
+    }
+    std::thread::sleep(gate.settle);
+
+    let _ = handle.write(&frame_prompt(prompt));
+    // Submit. Most TUI agents accept a plain Enter; the tty translates \r → \n.
+    std::thread::sleep(Duration::from_millis(60));
+    let _ = handle.write(b"\r");
 }
 
 fn pump_pty_output(
@@ -600,5 +781,143 @@ mod tests {
         );
 
         let _ = handle.kill();
+    }
+
+    // Issue #2 (readiness gate): the detector fires on a paste-mode ENABLE that
+    // follows the shell's tty-handoff DISABLE — and ONLY then. The shell's own
+    // pre-handoff enable (prompt draw) must be ignored, which is the whole point
+    // (it is the chrome a naive heuristic mistakes for the agent).
+    #[test]
+    fn readiness_detector_fires_on_paste_enable_after_handoff() {
+        let mut d = ReadinessDetector::new();
+        // The shell's prompt paste-enable (BEFORE handoff) must NOT fire.
+        assert!(!d.observe(b"\x1b[?2004hshell prompt> claude"));
+        // Shell disables paste mode to execute our command (hands off the tty).
+        assert!(!d.observe(b"running \x1b[?2004l\r\n"));
+        // The agent's TUI enables paste mode → input ready.
+        assert!(d.observe(b"agent ui \x1b[?2004h> "));
+    }
+
+    // An ENABLE with no preceding handoff is shell chrome — never ready.
+    #[test]
+    fn readiness_detector_ignores_enable_without_handoff() {
+        let mut d = ReadinessDetector::new();
+        assert!(!d.observe(b"\x1b[?2004h"));
+        assert!(!d.observe(b"more \x1b[?2004h chrome"));
+    }
+
+    // A same-chunk `DISABLE … ENABLE` is ordered correctly (handoff then ready).
+    #[test]
+    fn readiness_detector_handles_handoff_and_enable_in_one_chunk() {
+        let mut d = ReadinessDetector::new();
+        assert!(d.observe(b"exec \x1b[?2004l child \x1b[?2004h ready"));
+    }
+
+    // The mode escape can be split across two PTY reads (they cut at 4 KiB and
+    // mid-codepoint); the carry must still match it.
+    #[test]
+    fn readiness_detector_matches_escape_split_across_chunks() {
+        let mut d = ReadinessDetector::new();
+        assert!(!d.observe(b"\x1b[?2004l")); // handoff
+        assert!(!d.observe(b"foo\x1b[?20")); // enable, split ...
+        assert!(d.observe(b"04h> ")); // ... completes across the boundary
+    }
+
+    // Issue #2 (multi-line submit): a single-line prompt is byte-identical to the
+    // pre-fix delivery; a multi-line prompt is wrapped in a bracketed paste so
+    // its embedded newlines can never fire as per-line submits.
+    #[test]
+    fn frame_prompt_wraps_only_multiline_in_bracketed_paste() {
+        assert_eq!(frame_prompt("do the thing"), b"do the thing".to_vec());
+
+        let multi = "You are a backend engineer.\n\n---\n\nBuild the API.";
+        let framed = frame_prompt(multi);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"\x1b[200~");
+        expected.extend_from_slice(multi.as_bytes());
+        expected.extend_from_slice(b"\x1b[201~");
+        assert_eq!(framed, expected);
+        // The newline stays INSIDE the paste — it is never delivered as a bare
+        // submit that would fire off a fragment of the prompt.
+        assert!(framed.starts_with(b"\x1b[200~"));
+        assert!(framed.ends_with(b"\x1b[201~"));
+    }
+
+    // Issue #2 (end-to-end regression): the prompt must be delivered only AFTER
+    // the agent is input-ready, not on a blind timer. A fake agent stays SILENT
+    // for 2s (longer than the old fixed ~1.5s delay), then emits the paste-mode
+    // ENABLE a real TUI sends when its input is ready, prints a READY marker, and
+    // reads one line. The tty echoes typed input where it was typed, so the
+    // prompt's echo lands in the output stream at delivery time: with the old
+    // blind delay it would appear BEFORE the marker; with readiness gating it
+    // appears AFTER. We assert the prompt follows the marker — which fails on the
+    // old code — and that the agent received the full prompt.
+    #[test]
+    fn prompt_is_delivered_after_the_agent_is_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        // A slow-starting fake agent, written to a file to avoid nested-quote
+        // escaping when it is typed into the login shell. `printf '\033[?2004h'`
+        // mimics the TUI's input-ready paste-mode enable that the detector keys
+        // on (the interactive login shell supplies the preceding handoff DISABLE
+        // when it execs this script).
+        let script = dir.path().join("slow-agent.sh");
+        std::fs::write(
+            &script,
+            "sleep 2\n\
+             printf '\\033[?2004h'\n\
+             printf 'READY-MARKER-7739\\n'\n\
+             IFS= read -r line\n\
+             printf 'RECEIVED:%s\\n' \"$line\"\n\
+             exit\n",
+        )
+        .unwrap();
+
+        let handle = PtyHandle::spawn(PtySpawnOptions {
+            task_id: "ready-gate".into(),
+            initial_command: Some(format!("sh {}", script.display())),
+            initial_prompt: Some("phasr-prompt-8842".into()),
+            cwd: std::env::temp_dir(),
+            log_path: dir.path().join("ready-gate.log"),
+            rows: 24,
+            cols: 80,
+            env: Vec::new(),
+        })
+        .expect("spawn a slow-start fake agent");
+
+        let mut rx = handle.subscribe();
+        let mut combined = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(12);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(PtyEvent::Output { chunk, .. }) => {
+                    combined.push_str(&chunk);
+                    if combined.contains("RECEIVED:phasr-prompt-8842") {
+                        break;
+                    }
+                }
+                Ok(PtyEvent::Exit { .. }) => break,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = handle.kill();
+
+        let marker_at = combined
+            .find("READY-MARKER-7739")
+            .unwrap_or_else(|| panic!("agent should print its ready marker; output: {combined:?}"));
+        let prompt_at = combined.find("phasr-prompt-8842").unwrap_or_else(|| {
+            panic!("the prompt should be delivered to the agent; output: {combined:?}")
+        });
+        assert!(
+            prompt_at > marker_at,
+            "prompt must be typed AFTER the agent signalled ready (readiness gate), \
+             got prompt@{prompt_at} <= marker@{marker_at}; output: {combined:?}"
+        );
+        assert!(
+            combined.contains("RECEIVED:phasr-prompt-8842"),
+            "the agent should receive the full prompt back through its own read; output: {combined:?}"
+        );
     }
 }
