@@ -25,16 +25,16 @@
 //! (each a handful of small indexed reads). No new store query is required
 //! (architect #3) — the whole join reuses the existing owner-scoped methods.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::{Workspace, WorkspaceKind};
-use crate::store::{BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo};
-
-use super::board::BoardState;
+use crate::commands::review::{read_board_reviews, ReviewCmdError, ReviewRecord, ReviewState};
+use crate::domain::{Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceKind};
+use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo};
 
 // ── wire DTOs (the frozen §C.3 contract; camelCase on the wire) ──────────────
 
@@ -46,6 +46,47 @@ use super::board::BoardState;
 pub struct RepoBrief {
     pub id: String,
     pub name: String,
+}
+
+/// A subtask's review decision, trimmed to what the worklist derivation needs to
+/// move a lane HONESTLY: the `state` (kebab-case, mirrors `ReviewRecord`) + when
+/// it landed. The M4 honest-status fix — WITHOUT a subtask's review the FE's
+/// `deriveBoardState` can't tell "awaiting YOUR review" from "the agent must
+/// rework it" (`changes-requested`), so a bounced ticket wrongly collapses to
+/// `needs-review` and shows a "Ready for review" invite. The full `ReviewRecord`'s
+/// `by`/`comment`/`validatePassed` don't move the lane, so they're dropped to keep
+/// the cross-repo payload lean.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskReview {
+    pub state: ReviewState,
+    pub at_ms: i64,
+}
+
+/// A worklist subtask = the `Workspace` (FLATTENED onto the wire, so it stays a
+/// drop-in for `deriveBoardState` exactly as before) PLUS its `review` decision
+/// (M4). `review` is `null` until the ticket enters the review gate.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorklistSubtask {
+    #[serde(flatten)]
+    pub workspace: Workspace,
+    pub review: Option<SubtaskReview>,
+}
+
+/// One epic's board as the worklist renders it: the same parent/deps/contracts as
+/// `BoardState`, but its `subtasks` each carry their `review` decision (M4). A
+/// worklist-LOCAL DTO (not `BoardState`) precisely because the review side-load
+/// rides on each subtask here — the board route reads reviews separately via
+/// `get_board_gates`, whereas the cross-repo worklist can't afford a per-board
+/// second round-trip, so it threads the review inline.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorklistBoard {
+    pub parent: Workspace,
+    pub subtasks: Vec<WorklistSubtask>,
+    pub dependencies: Vec<WorkspaceDependency>,
+    pub contracts: Vec<WorkspaceContract>,
 }
 
 /// Everything the worklist buckets, cross-repo, for the signed-in user.
@@ -66,8 +107,10 @@ pub struct WorklistState {
     /// with no epics/agents still appears here (so its filter chip renders).
     pub repositories: Vec<RepoBrief>,
     /// Every epic (`parent`) for the user, cross-repo, each WITH its
-    /// subtasks/deps/contracts (the same `BoardState` the board route renders).
-    pub boards: Vec<BoardState>,
+    /// subtasks/deps/contracts — the `BoardState` shape plus each subtask's
+    /// `review` decision (M4), so the FE's `deriveBoardState` can render the
+    /// honest lane (a bounced ticket is re-work, not "ready for you").
+    pub boards: Vec<WorklistBoard>,
     /// `agent`/`local` workspaces NOT part of any decomposition (single-agent
     /// work) — the loose rows the worklist buckets alongside the epics' subtasks.
     pub loose_agents: Vec<Workspace>,
@@ -79,6 +122,10 @@ pub struct WorklistState {
 pub enum WorklistCmdError {
     Store(StoreError),
     Auth(AuthError),
+    /// A per-board review side-load failed (repo lookup or a `review.json` read).
+    /// Wraps the review command's aggregate so its transparent `Display` carries
+    /// through verbatim — the read path is reused, so is its error.
+    Review(ReviewCmdError),
 }
 
 impl From<StoreError> for WorklistCmdError {
@@ -93,11 +140,18 @@ impl From<AuthError> for WorklistCmdError {
     }
 }
 
+impl From<ReviewCmdError> for WorklistCmdError {
+    fn from(e: ReviewCmdError) -> Self {
+        Self::Review(e)
+    }
+}
+
 impl std::fmt::Display for WorklistCmdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(e) => write!(f, "{e}"),
             Self::Auth(e) => write!(f, "{e}"),
+            Self::Review(e) => write!(f, "{e}"),
         }
     }
 }
@@ -171,13 +225,16 @@ async fn list_worklist_inner(
 
     // Assemble each epic's board owner-scoped: parent + subtasks + edges +
     // contracts. Same shape the board route returns, so the worklist reuses the
-    // exact `deriveBoardState` the board does.
+    // exact `deriveBoardState` the board does — PLUS each subtask's review (M4),
+    // batch-read like `get_board_gates` (one owner-scoped repo lookup per board,
+    // then a cheap `review.json` read per subtask; no N-per-board DB fan-out).
     let mut boards = Vec::with_capacity(parent_ids.len());
     for parent_id in parent_ids {
         let assembled = board
             .get_board_for_user(workspaces, &parent_id, user_id)
             .await?;
-        boards.push(assembled.into());
+        let reviews = read_board_reviews(&assembled, repositories).await?;
+        boards.push(to_worklist_board(assembled, reviews));
     }
 
     Ok(WorklistState {
@@ -185,6 +242,44 @@ async fn list_worklist_inner(
         boards,
         loose_agents,
     })
+}
+
+/// Fold a board's batched review side-load onto its subtasks: each subtask gains
+/// its `review` (`None` when no `review.json` exists), trimmed to `{ state, atMs }`.
+/// Consumes the `Board` (it's serialized straight to the wire from here), so the
+/// subtasks move by value into their `WorklistSubtask` wrapper without a clone.
+fn to_worklist_board(board: Board, reviews: Vec<ReviewRecord>) -> WorklistBoard {
+    // subtask_id → its trimmed review, so the fold is a single O(1) `remove` per
+    // subtask rather than an O(subtasks × reviews) scan.
+    let mut by_subtask: HashMap<String, SubtaskReview> = reviews
+        .into_iter()
+        .map(|r| {
+            (
+                r.subtask_id,
+                SubtaskReview {
+                    state: r.state,
+                    at_ms: r.at_ms,
+                },
+            )
+        })
+        .collect();
+    let subtasks = board
+        .subtasks
+        .into_iter()
+        .map(|ws| {
+            let review = by_subtask.remove(&ws.id);
+            WorklistSubtask {
+                workspace: ws,
+                review,
+            }
+        })
+        .collect();
+    WorklistBoard {
+        parent: board.parent,
+        subtasks,
+        dependencies: board.dependencies,
+        contracts: board.contracts,
+    }
 }
 
 #[cfg(test)]
@@ -304,7 +399,7 @@ mod tests {
         );
         for subtask in &state.boards[0].subtasks {
             assert!(
-                !loose_ids.contains(&subtask.id),
+                !loose_ids.contains(&subtask.workspace.id),
                 "a subtask must never leak into looseAgents — it belongs to its board"
             );
         }
@@ -381,5 +476,95 @@ mod tests {
         // RepoBrief is exactly { id, name }.
         assert_eq!(json["repositories"][0]["id"], repo.id.as_str());
         assert_eq!(json["repositories"][0]["name"], "repo");
+    }
+
+    // M4 (honest-status): the worklist DTO carries each subtask's review decision,
+    // so a BOUNCED ticket surfaces as `changes-requested` (re-work) instead of
+    // collapsing to a "ready for you" invite. Read through the SAME
+    // `read_board_reviews`/`review.json` path the board gate uses.
+    #[tokio::test]
+    async fn worklist_carries_a_bounced_tickets_changes_requested_review() {
+        use crate::commands::review::{resolve_review_inner, ReviewDecision};
+        use crate::tickets::TicketWriteRegistry;
+
+        let (workspaces, board, repos, dir) = fresh().await;
+
+        // A repo WITH an on-disk checkout, so `review.json` has somewhere to live.
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let repo = Repository::new(
+            "repo".into(),
+            Some(checkout.to_string_lossy().into_owned()),
+            None,
+        );
+        repos.insert_for_user(&repo, "user-a").await.unwrap();
+        let parent_id = seed_epic(&workspaces, &board, &repo, "user-a").await;
+
+        // Bounce the frontend subtask via the REAL resolve path → review.json{
+        // changes-requested}.
+        let assembled = board
+            .get_board_for_user(&workspaces, &parent_id, "user-a")
+            .await
+            .unwrap();
+        let frontend = assembled
+            .subtasks
+            .iter()
+            .find(|s| s.role.as_deref() == Some("frontend"))
+            .unwrap();
+        let registry = TicketWriteRegistry::default();
+        resolve_review_inner(
+            frontend,
+            "user-a",
+            "you",
+            ReviewDecision::Bounce,
+            Some("tighten the empty state"),
+            &workspaces,
+            &board,
+            &repos,
+            &registry,
+        )
+        .await
+        .unwrap();
+
+        let state = list_worklist_inner("user-a", &workspaces, &board, &repos)
+            .await
+            .unwrap();
+
+        // The bounced subtask carries its `changes-requested` review (+ when it
+        // landed), NOT null — the whole point of the fix.
+        let wl_frontend = state.boards[0]
+            .subtasks
+            .iter()
+            .find(|s| s.workspace.id == frontend.id)
+            .unwrap();
+        let review = wl_frontend
+            .review
+            .as_ref()
+            .expect("a bounced ticket must carry its review decision, not null");
+        assert_eq!(review.state, ReviewState::ChangesRequested);
+        assert!(review.at_ms > 0, "the review carries when it landed");
+
+        // A never-reviewed sibling stays `review: null` — no false positive.
+        let wl_backend = state.boards[0]
+            .subtasks
+            .iter()
+            .find(|s| s.workspace.role.as_deref() == Some("backend"))
+            .unwrap();
+        assert!(
+            wl_backend.review.is_none(),
+            "a ticket that never entered the review gate carries no review"
+        );
+
+        // Wire shape: the flattened subtask carries its Workspace `id` AND a
+        // trimmed `review` of exactly { state (kebab-case), atMs (camelCase) }.
+        let json = serde_json::to_value(&state).unwrap();
+        let sub = json["boards"][0]["subtasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == frontend.id.as_str())
+            .unwrap();
+        assert_eq!(sub["review"]["state"], "changes-requested");
+        assert!(sub["review"]["atMs"].is_i64(), "atMs must be camelCase on the wire");
     }
 }

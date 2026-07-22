@@ -423,12 +423,59 @@ export interface RepoBrief {
   name: string;
 }
 
+/**
+ * A subtask's review decision, trimmed to what the worklist derivation needs to
+ * move a lane HONESTLY (M4): the `state` + when it landed. Mirrors the trimmed
+ * Rust `SubtaskReview` (`commands/worklist.rs`) — the same kebab-case
+ * {@link ReviewState} + camelCase `atMs` as a full {@link ReviewRecord}, minus the
+ * `by`/`comment`/`validatePassed` the lane derivation never reads.
+ */
+export interface SubtaskReview {
+  state: ReviewState;
+  atMs: number;
+}
+
+/**
+ * A worklist subtask = the {@link Workspace} (its fields are flattened onto the
+ * wire, so it stays a drop-in for `deriveBoardState`) PLUS its `review` decision
+ * (M4). `review` is `null` until the ticket enters the review gate. This is what
+ * lets the worklist's `deriveBoardState` tell "awaiting YOUR review" apart from a
+ * bounced (`changes-requested`) ticket the agent must rework.
+ *
+ * `review` is marked OPTIONAL (not just `| null`) so a plain `Workspace`/
+ * `BoardState`-shaped value still satisfies this type — the Rust wire always
+ * sends the key (`null` when the ticket never entered the review gate), so a
+ * reader treats absent and `null` identically. The FE follow-up threads
+ * `subtask.review` into `deriveBoardState` as the honest lane signal.
+ */
+export interface WorklistSubtask extends Workspace {
+  review?: SubtaskReview | null;
+}
+
+/**
+ * One epic's board as the worklist renders it — the {@link BoardState} shape, but
+ * each subtask carries its `review` inline (M4). A worklist-LOCAL type (not
+ * `BoardState`) precisely because the review side-load rides on each subtask
+ * here; the board route reads reviews separately via `getBoardGates`.
+ */
+export interface WorklistBoard {
+  parent: Workspace;
+  subtasks: WorklistSubtask[];
+  dependencies: WorkspaceDependency[];
+  contracts: WorkspaceContract[];
+}
+
 /** Everything the worklist buckets: every repo, every epic board, and loose agents. */
 export interface WorklistState {
   /** For the filter chips + repo-name labels on each row. */
   repositories: RepoBrief[];
-  /** Every epic (`parent`) for the signed-in user, cross-repo, WITH subtasks/deps/contracts. */
-  boards: BoardState[];
+  /**
+   * Every epic (`parent`) for the signed-in user, cross-repo, WITH
+   * subtasks/deps/contracts — plus each subtask's `review` decision (M4), so the
+   * FE's `deriveBoardState` renders the honest lane (a bounced ticket is re-work,
+   * not "ready for you").
+   */
+  boards: WorklistBoard[];
   /** `agent`/`local` workspaces NOT part of any decomposition (single-agent work). */
   looseAgents: Workspace[];
 }

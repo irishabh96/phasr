@@ -389,6 +389,36 @@ async fn read_board_gates(
     })
 }
 
+/// Batch-read every subtask's `review.json` for an already-resolved (owner-scoped)
+/// board — the review-only sibling of `read_board_gates` (no validate reads).
+/// Reuses the SAME `read_review_record` path the board gate does; a worklist board
+/// just doesn't need the validate snapshot the board route also side-loads, so
+/// this skips it to keep the cross-repo payload lean.
+///
+/// `pub(crate)` so the cross-repo worklist reuses it (M4 honest-status fix): the
+/// worklist derivation needs each subtask's review STATE to tell "awaiting YOUR
+/// review" apart from a bounced (`changes-requested`) ticket. Batched exactly like
+/// `get_board_gates` — ONE owner-scoped repo lookup per board, then a cheap
+/// `review.json` read per subtask (never an N-per-board DB fan-out).
+pub(crate) async fn read_board_reviews(
+    assembled: &Board,
+    repositories: &RepositoryRepo,
+) -> Result<Vec<ReviewRecord>, ReviewCmdError> {
+    let repository = repositories.get(&assembled.parent.repository_id).await?;
+    let mut reviews = Vec::new();
+    let Some(repo_root) = repository.local_path.as_deref() else {
+        // No checkout here → no gate files to read (empty, never an error).
+        return Ok(reviews);
+    };
+    let repo_root = Path::new(repo_root);
+    for subtask in &assembled.subtasks {
+        if let Some(review) = read_review_record(repo_root, &subtask.id)? {
+            reviews.push(review);
+        }
+    }
+    Ok(reviews)
+}
+
 /// The `(parent_id)` of a decomposition subtask, or `NotASubtask`.
 fn subtask_parent(subtask: &Workspace) -> Result<String, ReviewCmdError> {
     match (subtask.parent_id.as_ref(), subtask.role.as_ref()) {
