@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { FolderGit2, Search } from "lucide-react";
+import { CheckCircle2, FolderGit2, Search } from "lucide-react";
 import {
   AutopilotHaltedBanner,
   HaltAutopilotButton,
@@ -32,6 +32,9 @@ import { cn } from "@/lib/utils";
  */
 const BUCKET_CAP = 50;
 
+/** Shared page frame — one column, generous gutters, honest vertical rhythm. */
+const FRAME = "mx-auto flex h-full max-w-[820px] flex-col px-6 py-8";
+
 /**
  * The Worklist / Home surface (mockup Page 01, story F1). A calm cross-repo
  * "what needs me" home grouped by DERIVED honest state — Needs you / Running /
@@ -45,13 +48,14 @@ export function WorklistView() {
 
   if (query.isError) {
     return (
-      <div className="mx-auto max-w-[860px] px-5 py-6">
+      <div className={FRAME}>
         <Header disabled />
         <PanelState
           kind="error"
           title="Couldn't load your worklist"
           error={query.error}
           onRetry={() => void query.refetch()}
+          className="my-auto"
         />
       </div>
     );
@@ -59,9 +63,9 @@ export function WorklistView() {
 
   if (query.isLoading || !query.data) {
     return (
-      <div className="mx-auto max-w-[860px] px-5 py-6">
+      <div className={FRAME}>
         <Header disabled />
-        <PanelState kind="loading" rows={6} className="mt-4" />
+        <PanelState kind="loading" rows={6} className="mt-2" />
       </div>
     );
   }
@@ -69,7 +73,20 @@ export function WorklistView() {
   return <WorklistLoaded worklist={query.data} />;
 }
 
-/** The static header (title + search) — rendered in every state for stability. */
+/** The page title — prominent, its own tier above the controls (calm states). */
+function PageTitle() {
+  return (
+    <h1 className="text-[19px] font-semibold tracking-[-0.01em] text-(--color-text-primary)">
+      Home
+    </h1>
+  );
+}
+
+/**
+ * The header for the working states: page title on the left, a constrained
+ * search on the right, and the optional global "Halt autopilot" affordance.
+ * Rendered in loading/error/loaded for layout stability.
+ */
 function Header({
   disabled,
   query,
@@ -83,11 +100,11 @@ function Header({
   trailing?: React.ReactNode;
 }) {
   return (
-    <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
-      <h1 className="shrink-0 text-[17px] font-semibold text-(--color-text-primary)">
-        Home
-      </h1>
-      <div className="relative min-w-[180px] flex-1">
+    <div className="mb-5 flex flex-wrap items-center gap-3">
+      <div className="mr-auto shrink-0">
+        <PageTitle />
+      </div>
+      <div className="relative w-[280px] max-w-full">
         <Search
           className="pointer-events-none absolute left-3 top-1/2 size-[14px] -translate-y-1/2 text-(--color-text-muted)"
           aria-hidden="true"
@@ -95,7 +112,7 @@ function Header({
         <GlassInput
           type="search"
           aria-label="Search tickets, epics, repos"
-          placeholder="Search tickets, epics, repos…"
+          placeholder="Search…"
           disabled={disabled}
           value={query ?? ""}
           onChange={(e) => onQueryChange?.(e.target.value)}
@@ -227,41 +244,42 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
   // ── whole-surface states (first-run / all-quiet) ──────────────────────────
   if (allItems.length === 0) {
     return (
-      <div className="mx-auto max-w-[860px] px-5 py-6">
-        <Header query={search} onQueryChange={setSearch} disabled />
+      <div className={FRAME}>
+        <PageTitle />
         {/* A global halt can be live even with no current work — stay honest. */}
-        <AutopilotHaltedBanner className="mb-4" />
-        {worklist.repositories.length === 0 ? (
-          <PanelState
-            kind="empty"
-            icon={<FolderGit2 />}
-            title="Nothing here yet"
-            description="Add a repository, then start an epic or a quick task — your agents will show up here as they work."
-            action={
-              <GlassButton
-                variant="primary"
-                size="sm"
-                onClick={openAddRepositoryPicker}
-              >
-                Add repository
-              </GlassButton>
-            }
-            className="mt-6"
-          />
-        ) : (
-          <PanelState
-            kind="empty"
-            title="Nothing needs you right now"
-            description="Every agent is quiet. When something wants your attention — a review, a wedged run — it'll surface here."
-            className="mt-6"
-          />
-        )}
+        <AutopilotHaltedBanner className="mt-5" />
+        <div className="flex flex-1 items-center justify-center">
+          {worklist.repositories.length === 0 ? (
+            <PanelState
+              kind="empty"
+              icon={<FolderGit2 />}
+              title="Nothing here yet"
+              description="Add a repository, then start an epic or a quick task — your agents will show up here as they work."
+              action={
+                <GlassButton
+                  variant="primary"
+                  size="sm"
+                  onClick={openAddRepositoryPicker}
+                >
+                  Add repository
+                </GlassButton>
+              }
+            />
+          ) : (
+            <PanelState
+              kind="empty"
+              icon={<CheckCircle2 />}
+              title="Nothing needs you right now"
+              description="Every agent is quiet. When something wants your attention — a review, a wedged run — it'll surface here."
+            />
+          )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex h-full max-w-[860px] flex-col px-5 py-6">
+    <div className={FRAME}>
       <Header
         query={search}
         onQueryChange={setSearch}
@@ -279,8 +297,9 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
       {/* Global halt is a persistent, honest banner while set (§5). */}
       <AutopilotHaltedBanner className="mb-4" />
 
-      {/* Filter chips — repo (single-select) · epic (toggle). */}
-      <div className="mb-4 flex flex-wrap gap-1.5" data-testid="worklist-chips">
+      {/* Filter chips — repo (single-select) · epic (toggle). Neutral fills so
+          the surface's single warm beacon stays the keyboard selection. */}
+      <div className="mb-5 flex flex-wrap gap-1" data-testid="worklist-chips">
         <Chip
           active={repoFilter === null}
           onClick={() => {
@@ -303,7 +322,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
           </Chip>
         ))}
         {epics.length > 0 ? (
-          <span className="mx-1 h-3.5 w-px self-center bg-(--color-border-subtle)" />
+          <span className="mx-1.5 h-4 w-px self-center bg-(--color-border-subtle)" />
         ) : null}
         {epics.map((epic) => (
           <Chip
@@ -313,7 +332,8 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
               setEpicFilter((cur) => (cur === epic.id ? null : epic.id))
             }
           >
-            epic: {epic.name}
+            <span className="text-(--color-text-muted)">epic</span>
+            {epic.name}
           </Chip>
         ))}
       </div>
@@ -321,12 +341,14 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
       {/* The grouped rows (scrollable) + the keyboard-nav listbox. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {visibleRows.length === 0 ? (
-          <PanelState
-            kind="empty"
-            title="No matching tickets"
-            description="No ticket, epic, or repo matches those filters. Clear the search or a chip to see everything."
-            className="mt-6"
-          />
+          <div className="flex h-full items-center justify-center">
+            <PanelState
+              kind="empty"
+              icon={<Search />}
+              title="No matching tickets"
+              description="No ticket, epic, or repo matches those filters. Clear the search or a chip to see everything."
+            />
+          </div>
         ) : (
           <div
             role="listbox"
@@ -335,7 +357,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
               selectedId ? `worklist-row-${selectedId}` : undefined
             }
             onKeyDown={onListKeyDown}
-            className="flex flex-col gap-4"
+            className="flex flex-col gap-7 pb-2"
           >
             {groups.map((group) => {
               const cap = expanded.has(group.bucket)
@@ -348,13 +370,15 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
                   key={group.bucket}
                   data-testid={`worklist-group-${group.bucket}`}
                 >
-                  <div className="flex items-center gap-2 px-1 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-(--color-text-muted)">
-                    {WORKLIST_BUCKET_LABEL[group.bucket]}
-                    <span className="text-(--color-text-secondary)">
+                  <div className="mb-2 flex items-center gap-2 px-3">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-(--color-text-muted)">
+                      {WORKLIST_BUCKET_LABEL[group.bucket]}
+                    </span>
+                    <span className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-(--color-bg-hover) px-1.5 text-[10.5px] font-medium tabular-nums leading-none text-(--color-text-muted)">
                       {group.rows.length}
                     </span>
                   </div>
-                  <div className="flex flex-col gap-1.5">
+                  <div className="flex flex-col gap-1">
                     {shown.map((item) => (
                       <WorklistRow
                         key={item.id}
@@ -377,7 +401,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
                             return next;
                           })
                         }
-                        className="inline-flex min-h-8 items-center self-start rounded-[8px] px-2 py-1 text-[11.5px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+                        className="mt-0.5 inline-flex min-h-8 items-center self-start rounded-(--radius-control) px-3 py-1 text-[11.5px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
                       >
                         Show {hidden} more
                       </button>
@@ -391,7 +415,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
       </div>
 
       {/* Keyboard hints (mockup Page 01 footer). */}
-      <div className="mt-3 flex gap-3.5 text-[11px] text-(--color-text-muted)">
+      <div className="mt-4 flex gap-4 border-t border-(--color-border-subtle) pt-3 text-[11px] text-(--color-text-muted)">
         <span className="inline-flex items-center gap-1">
           <Kbd>j</Kbd>
           <Kbd>k</Kbd>
@@ -429,11 +453,11 @@ function Chip({
       className={cn(
         // ≥32px min hit target (L4) via min-height, not a bulkier pill — the
         // small text stays centered in a comfortably tappable box.
-        "inline-flex min-h-8 items-center gap-1.5 rounded-full px-2.5 text-[11.5px]",
+        "inline-flex min-h-8 items-center gap-1.5 rounded-full px-3 text-[12px]",
         "transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
-          ? "border border-transparent bg-(--color-bg-selected) text-(--color-text-primary)"
-          : "border border-(--color-border-default) text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+          ? "bg-(--color-bg-active) font-medium text-(--color-text-primary)"
+          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
       )}
     >
       {children}

@@ -39,8 +39,15 @@ function isAgentUiState(state: BoardCardState): state is AgentUiState {
 /**
  * One Worklist row (mockup Page 01 row anatomy): leading honest-status glyph ·
  * {ticket name · persona chip · agent-type mark} + a sub-line {repo · epic ·
- * branch/merge-target} · a right-aligned honest status. Only STATUS carries
- * color (persona/agent-type are neutral; coral is reserved for selection).
+ * branch/merge-target} · a right-aligned honest status.
+ *
+ * CRAFT: the row is a BORDERLESS list item on the pane's base surface — no
+ * per-row card border (which stacked into a noisy box-list). Separation comes
+ * from a clean grid + generous rhythm; a calm `--color-bg-hover` fill on hover
+ * and the coral-tinted `--color-bg-selected` on the roving keyboard selection.
+ * Coral is scarce by design: the SELECTION is the surface's single warm beacon,
+ * so persona/agent marks stay neutral and only honest STATUS carries semantic
+ * color.
  *
  * REUSES the Step 0 honest-status components verbatim (`AgentStatusIndicator` +
  * `AgentStatusBadgeView`) so a worklist row can never lie; the board-only buckets
@@ -88,11 +95,11 @@ export function WorklistRow({
         }
       }}
       className={cn(
-        "flex cursor-pointer items-center gap-3 rounded-(--radius-panel) border px-3 py-2.5",
+        "flex cursor-pointer items-center gap-3 rounded-(--radius-control) px-3 py-2.5",
         "outline-none transition-colors duration-150",
         selected
-          ? "border-transparent bg-(--color-bg-selected)"
-          : "border-(--color-border-default) bg-(--color-bg-surface) hover:border-(--color-border-strong) hover:bg-(--color-bg-elevated)",
+          ? "bg-(--color-bg-selected)"
+          : "hover:bg-(--color-bg-hover)",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
       )}
     >
@@ -100,20 +107,20 @@ export function WorklistRow({
         <RowGlyph state={item.state} />
       </span>
 
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-(--color-text-primary)">
+          <span className="truncate text-[13px] font-medium leading-none text-(--color-text-primary)">
             {item.name}
           </span>
           {item.role ? <PersonaChip role={item.role} /> : null}
           {item.agent ? <AgentTypeMark agent={item.agent} /> : null}
         </div>
-        <div className="truncate text-[11.5px] text-(--color-text-muted)">
+        <div className="truncate text-[11.5px] leading-none text-(--color-text-muted)">
           {subline}
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2.5">
+      <div className="flex shrink-0 items-center gap-2.5 pl-2">
         {isAgentUiState(item.state) ? (
           <AgentStatusBadgeView
             state={item.state}
@@ -139,7 +146,7 @@ function buildSubline(item: WorklistItem) {
   const tail = item.merged ? (
     <span>merged into main</span>
   ) : item.branch ? (
-    <span className="font-mono">{item.branch}</span>
+    <span className="font-mono text-[11px]">{item.branch}</span>
   ) : null;
 
   return (
@@ -147,17 +154,27 @@ function buildSubline(item: WorklistItem) {
       <span className="truncate">{item.repoName}</span>
       {item.epicName ? (
         <>
-          <span aria-hidden="true">·</span>
+          <Dot />
           <span className="truncate">{item.epicName}</span>
         </>
       ) : null}
       {tail ? (
         <>
-          <span aria-hidden="true">·</span>
+          <Dot />
           <span className="truncate">{tail}</span>
         </>
       ) : null}
     </span>
+  );
+}
+
+/** A dim mid-dot separator for the sub-line — quieter than an inline "·". */
+function Dot() {
+  return (
+    <span
+      aria-hidden="true"
+      className="size-[2.5px] shrink-0 rounded-full bg-(--color-text-muted) opacity-60"
+    />
   );
 }
 
@@ -179,7 +196,7 @@ function PersonaChip({ role }: { role: string }) {
   return (
     <span
       data-testid="worklist-persona"
-      className="inline-flex h-5 shrink-0 items-center rounded-full border border-(--glass-border-hairline) bg-(--color-bg-input) px-2 text-[11px] font-medium capitalize text-(--color-text-primary)"
+      className="inline-flex h-[18px] shrink-0 items-center rounded-full bg-(--color-bg-hover) px-2 text-[10.5px] font-medium capitalize leading-none text-(--color-text-secondary)"
     >
       {role}
     </span>
@@ -196,7 +213,7 @@ function AgentTypeMark({ agent }: { agent: Agent }) {
     <GlassTooltip content={agent} side="top">
       <span
         data-testid="worklist-agent-mark"
-        className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-[3px] text-[9px] font-bold leading-none tracking-wide text-(--color-text-muted)"
+        className="inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-(--color-bg-hover) px-[3px] text-[9px] font-bold leading-none tracking-wide text-(--color-text-muted)"
       >
         {AGENT_MARK[agent]}
       </span>
