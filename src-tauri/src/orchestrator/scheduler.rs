@@ -206,6 +206,30 @@ pub fn brief_prompt_pointer(ticket_dir: &std::path::Path) -> String {
     )
 }
 
+/// Point the agent at its EPIC's SHARED docs (Phase 2b E4). Every subtask of the
+/// same epic inherits these — one PRD/TRD/design for the whole initiative, read
+/// by ALL siblings — so an agent builds against the same source as the rest of
+/// its team. Like the per-ticket brief, the paths are ABSOLUTE and on the MAIN
+/// checkout (`<repo>/.phasr/epics/<parentId>/…`), OUTSIDE the worktree, so a
+/// fresh worktree (committed files only) can't see the uncommitted docs — the
+/// agent reads them directly by absolute path (A3). This block leads the brief
+/// slot (shared context first), AHEAD of the per-ticket brief that refines it.
+/// Only emitted when the epic actually has docs on disk (E4 / `epic_has_docs`),
+/// never pointing at files that were never written.
+pub fn epic_docs_prompt_pointer(epic_dir: &std::path::Path) -> String {
+    let dir = epic_dir.display();
+    format!(
+        "Your epic's SHARED docs — the PRD, TRD, and design for the WHOLE \
+         initiative that every task in this epic inherits (read these first; your \
+         own ticket brief below refines them). On the main checkout — OUTSIDE your \
+         worktree, so read them directly by absolute path:\n\
+         - `{dir}/prd.md` — epic product requirements\n\
+         - `{dir}/trd.md` — epic technical requirements\n\
+         - `{dir}/figma.json` — epic-wide linked designs\n\
+         - `{dir}/assets/` — shared reference files\n\n---\n\n"
+    )
+}
+
 /// Tell the agent which `phasr` verbs it may run to advance its OWN ticket on the
 /// board (CLI1 / §J3). Mirrors `brief_prompt_pointer`: a short orientation block
 /// folded into the prompt's brief slot. Every verb goes through the app's local
@@ -491,6 +515,67 @@ mod tests {
         assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/trd.md"));
         assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/figma.json"));
         assert!(pointer.contains("/repo/.phasr/tickets/ticket-1/assets/"));
+    }
+
+    // E4: the epic-docs pointer names the absolute main-repo EPIC files (NOT the
+    // worktree, NOT the per-ticket tree), so every sibling reads the same shared
+    // source by absolute path (A3).
+    #[test]
+    fn epic_docs_pointer_names_the_absolute_main_repo_epic_paths() {
+        let dir = std::path::Path::new("/repo/.phasr/epics/epic-1");
+        let pointer = epic_docs_prompt_pointer(dir);
+        assert!(pointer.contains("/repo/.phasr/epics/epic-1/prd.md"));
+        assert!(pointer.contains("/repo/.phasr/epics/epic-1/trd.md"));
+        assert!(pointer.contains("/repo/.phasr/epics/epic-1/figma.json"));
+        assert!(pointer.contains("/repo/.phasr/epics/epic-1/assets/"));
+        // Names it as SHARED/epic-wide so the agent knows it's the whole team's source.
+        assert!(pointer.to_lowercase().contains("shared"));
+    }
+
+    // E4: the epic docs lead the brief slot, AHEAD of the per-ticket brief — the
+    // composed order is `[persona][consumer][epic-docs][ticket-brief][base][producer]`.
+    // (The spawn site folds both pointers into the single `brief` arg; here we
+    // pin the ordering directly.)
+    #[test]
+    fn augment_prompt_places_epic_docs_ahead_of_ticket_brief() {
+        let epic = epic_docs_prompt_pointer(std::path::Path::new("/repo/.phasr/epics/E"));
+        let ticket = brief_prompt_pointer(std::path::Path::new("/repo/.phasr/tickets/T"));
+        let brief = format!("{epic}{ticket}"); // epic-docs FIRST in the brief slot
+
+        let out = augment_prompt(
+            Some("BASE"),
+            Some(&brief),
+            Some(" SUFFIX"),
+            Some("PREFIX "),
+            Some("PERSONA "),
+        )
+        .unwrap();
+
+        // Full documented order: persona → consumer contracts → epic-docs →
+        // ticket-brief → base → producer suffix.
+        let i_persona = out.find("PERSONA").unwrap();
+        let i_prefix = out.find("PREFIX").unwrap();
+        let i_epic = out.find("/repo/.phasr/epics/E/prd.md").unwrap();
+        let i_ticket = out.find("/repo/.phasr/tickets/T/prd.md").unwrap();
+        let i_base = out.find("BASE").unwrap();
+        let i_suffix = out.find("SUFFIX").unwrap();
+        assert!(i_persona < i_prefix, "persona leads");
+        assert!(i_prefix < i_epic, "consumer contracts precede epic docs");
+        assert!(i_epic < i_ticket, "epic docs precede the per-ticket brief");
+        assert!(i_ticket < i_base, "brief precedes the base prompt");
+        assert!(i_base < i_suffix, "producer suffix trails");
+    }
+
+    // E4: a doc-LESS epic contributes NO epic block — the brief slot (and the
+    // whole composition) stays byte-identical to the pre-2b spawn.
+    #[test]
+    fn augment_prompt_without_epic_docs_is_unchanged() {
+        let ticket = brief_prompt_pointer(std::path::Path::new("/repo/.phasr/tickets/T"));
+        // No epic pointer prepended (spawn skips it when `epic_has_docs` is false).
+        let out = augment_prompt(Some("BASE"), Some(&ticket), None, None, None).unwrap();
+        assert!(!out.contains("/repo/.phasr/epics/"), "no epic block for a doc-less epic");
+        assert!(out.starts_with(&ticket), "the ticket brief still leads the slot");
+        assert!(out.ends_with("BASE"));
     }
 
     // CLI1 (§J3): the "commands you can run" segment names every phasr verb via

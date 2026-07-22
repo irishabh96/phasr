@@ -411,6 +411,10 @@ mod unix_impl {
                     SubtaskInput { role: "frontend".into(), agent: Agent::Claude, prompt: "fe".into() },
                 ],
                 edges: vec![EdgeInput { from_role: "backend".into(), to_role: "frontend".into() }],
+                epic_prd: None,
+                epic_trd: None,
+                epic_figma: vec![],
+                epic_asset_paths: vec![],
             };
             let assembled =
                 create_decomposition_inner(&input, "user-a", &workspaces, &board, &repositories)

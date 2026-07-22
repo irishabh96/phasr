@@ -262,6 +262,11 @@ export const tauri = {
   // (humanized by the form); on any reject the surface falls back to manual edit.
   planDecomposition: (repositoryId: string, goal: string) =>
     invoke<ProposedPlan>("plan_decomposition", { repositoryId, goal }),
+  // The single write is still `startDecomposition` — the whole `DecompositionInput`
+  // rides through, including the Phase 2b optional epic-brief fields
+  // (`epicPrd`/`epicTrd`/`epicFigma`/`epicAssetPaths`), which the gate writes to
+  // `<repo>/.phasr/epics/<parentId>/` before any subtask spawns. No per-field
+  // mapping: the object is passed as-is, so the wire contract lives in `types.ts`.
   startDecomposition: (input: DecompositionInput) =>
     invoke<BoardState>("start_decomposition", { input }),
   getBoard: (parentId: string) => invoke<BoardState>("get_board", { parentId }),

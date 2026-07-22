@@ -40,8 +40,8 @@ use super::repo_locks::RepoLockRegistry;
 use super::personas;
 use super::scheduler::{
     augment_prompt, brief_prompt_pointer, cli_commands_prompt_segment, consumer_prompt_prefix,
-    contract_file_is_ready, incoming_producer_ids, is_producer, producer_prompt_suffix,
-    ready_subtask_ids, ContractSeed, SchedulerConfig,
+    contract_file_is_ready, epic_docs_prompt_pointer, incoming_producer_ids, is_producer,
+    producer_prompt_suffix, ready_subtask_ids, ContractSeed, SchedulerConfig,
 };
 use super::templating::interpolate_command;
 
@@ -1061,6 +1061,25 @@ impl TaskOrchestrator {
             (Some(cli), Some(b)) => Some(format!("{cli}{b}")),
             (Some(cli), None) => Some(cli),
             (None, b) => b,
+        };
+
+        // Epic-docs inheritance (Phase 2b E4): every subtask of `parent` shares
+        // ONE PRD/TRD/design at `<repo>/.phasr/epics/<parent.id>/`, read by
+        // absolute path on the MAIN checkout (same reach-not-copy mechanism as
+        // the ticket brief, A3). Prepend it to the FRONT of the brief slot so
+        // shared context leads the per-ticket brief. Emit the pointer ONLY when
+        // the epic actually has docs on disk — a doc-less epic stays byte-identical
+        // (no empty-file pointer). Derived from `parent.id`, so a CLI-added sibling
+        // (claim 11) or a re-decompose inherits with zero extra wiring.
+        let brief = match crate::tickets::epic_dir(&repository_path, &parent.id) {
+            Ok(epic_dir) if crate::tickets::epic_has_docs(&repository_path, &parent.id) => {
+                let epic = epic_docs_prompt_pointer(&epic_dir);
+                Some(match brief {
+                    Some(b) => format!("{epic}{b}"),
+                    None => epic,
+                })
+            }
+            _ => brief,
         };
 
         // Role persona (Phase 4): the LEADING segment. Derived purely from

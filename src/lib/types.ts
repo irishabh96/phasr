@@ -386,15 +386,40 @@ export interface EdgeInput {
 }
 
 /**
+ * One epic-wide Figma link on the decomposition wire (Phase 2b). Only `url` +
+ * optional `label` are supplied by the FE; the `id`/`addedBy`/`addedAt` are
+ * minted server-side when the gate appends it to the epic's `figma.json`.
+ * Mirrors the Rust `FigmaLinkInput` (`commands/board.rs`, camelCase).
+ */
+export interface FigmaLinkInput {
+  url: string;
+  label?: string | null;
+}
+
+/**
  * The approved decomposition plan submitted by the "Start N agents" gate. The
  * draft lives entirely in the frontend form until the user clicks — nothing is
  * persisted before `startDecomposition` fires (B2).
+ *
+ * Phase 2b adds the optional EPIC-brief fields: the shared PRD/TRD/Figma/assets
+ * for the WHOLE epic, written to `<repo>/.phasr/epics/<parentId>/` at the gate
+ * (before any subtask spawns) and inherited by every task's spawn prompt (E4).
+ * All optional — omit them for a doc-less epic (a pre-2b caller is unchanged).
+ * The "Epic brief" review-step panel (E2) populates them.
  */
 export interface DecompositionInput {
   repositoryId: string;
   parentPrompt: string;
   subtasks: SubtaskInput[];
   edges: EdgeInput[];
+  /** Epic PRD markdown (written to `prd.md` when non-empty). */
+  epicPrd?: string | null;
+  /** Epic TRD markdown (written to `trd.md` when non-empty). */
+  epicTrd?: string | null;
+  /** Epic-wide Figma links (validated + appended to `figma.json`). */
+  epicFigma?: FigmaLinkInput[];
+  /** Absolute source paths of staged assets, copied into the epic `assets/`. */
+  epicAssetPaths?: string[];
 }
 
 /**

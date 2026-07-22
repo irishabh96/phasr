@@ -27,6 +27,7 @@ use crate::orchestrator::{
 };
 use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
+use crate::tickets::{self, BriefSection};
 
 /// Tauri event name on which a board/gate mutation announces the affected board
 /// (architect §R1/§R2). The FE invalidates the board query for `{ parentId }`,
@@ -81,6 +82,36 @@ pub struct DecompositionInput {
     pub parent_prompt: String,
     pub subtasks: Vec<SubtaskInput>,
     pub edges: Vec<EdgeInput>,
+    // ── Phase 2b (E3): the epic's SHARED docs, written at the gate on the main
+    //    checkout BEFORE this call returns, so they exist on disk before the
+    //    scheduler's first tick can spawn a doc-less subtask. All optional +
+    //    `#[serde(default)]` so a pre-2b caller still deserializes unchanged. The
+    //    FE (E2) populates these from the review-step "Epic brief" panel.
+    /// The epic PRD markdown (written to `prd.md` when non-empty).
+    #[serde(default)]
+    pub epic_prd: Option<String>,
+    /// The epic TRD markdown (written to `trd.md` when non-empty).
+    #[serde(default)]
+    pub epic_trd: Option<String>,
+    /// Epic-wide Figma links (validated + appended to `figma.json`).
+    #[serde(default)]
+    pub epic_figma: Vec<FigmaLinkInput>,
+    /// Absolute source paths of staged assets, `fs::copy`d into the epic
+    /// `assets/` at the gate (a picked path is just a string — no copy until now,
+    /// preserving the B2 no-persist gate).
+    #[serde(default)]
+    pub epic_asset_paths: Vec<String>,
+}
+
+/// One Figma link on the epic-brief wire (`{ url, label? }`, camelCase). The
+/// `id`/`addedBy`/`addedAt` are minted server-side by `add_epic_figma_link`, so
+/// the FE only supplies the url + optional label.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FigmaLinkInput {
+    pub url: String,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// One planned subtask: its DAG slot (`role`, also the dedup key with
@@ -562,9 +593,85 @@ pub(crate) async fn create_decomposition_inner(
     //    Skipped entirely when the repo has no `local_path` (architect #5).
     scaffold_ticket_folders(&input.repository_id, &subtasks, repositories).await;
 
+    // 6. Write the epic's SHARED docs (E3) on the MAIN checkout BEFORE returning,
+    //    so they're on disk before the scheduler's first tick can spawn a subtask
+    //    doc-less (closing the attach-vs-spawn race by construction, A2). Skipped
+    //    when nothing was attached, and best-effort per item — a docs hiccup can
+    //    never undo the already-committed decomposition (mirrors the T2 scaffold).
+    write_epic_docs(&input.repository_id, &parent.id, input, repositories).await;
+
     // Return the assembled board, owner-scoped, so the caller renders the same
     // shape `get_board` returns.
     Ok(board.get_board_for_user(workspaces, &parent.id, user_id).await?)
+}
+
+/// Best-effort write of the epic's shared docs at the gate (E3). Scaffolds
+/// `<repo>/.phasr/epics/<parentId>/`, overwrites `prd.md`/`trd.md` with any
+/// provided content, appends each validated Figma link, and copies each staged
+/// asset — via the generalised `tickets` epic service (E1). Skipped ENTIRELY
+/// when the human attached nothing (never leave an empty epic folder — E4's
+/// inheritance pointer keys on real docs existing) and when the repo has no
+/// local checkout. Every write is logged-and-skipped on failure so the
+/// decomposition still succeeds (mirrors `scaffold_ticket_folders`).
+async fn write_epic_docs(
+    repository_id: &str,
+    parent_id: &str,
+    input: &DecompositionInput,
+    repositories: &RepositoryRepo,
+) {
+    let prd = input.epic_prd.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let trd = input.epic_trd.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    // Nothing attached → don't create an empty epic folder (A2/E4).
+    if prd.is_none() && trd.is_none() && input.epic_figma.is_empty() && input.epic_asset_paths.is_empty() {
+        return;
+    }
+
+    let Ok(repository) = repositories.get(repository_id).await else {
+        return;
+    };
+    let Some(repo_root) = repository.local_path.as_deref() else {
+        // No local checkout → nowhere to write (architect #5, mirrors the scaffold).
+        return;
+    };
+    let repo_root = std::path::Path::new(repo_root);
+
+    // Scaffold the folder + templates first (idempotent); provided sections are
+    // overwritten below, un-provided ones keep the template (= "not written yet").
+    if let Err(err) = tickets::scaffold_epic(repo_root, parent_id) {
+        eprintln!("board: failed to scaffold epic folder for {parent_id}: {err}");
+    }
+
+    // A throwaway registry: the gate write is a FIRST write, before any editor or
+    // T7 watcher exists, so conflict-suppression / own-write dedup are irrelevant
+    // here (the E5 edit surface uses the shared managed registry). `None` base
+    // never conflicts, so this always writes.
+    let registry = tickets::TicketWriteRegistry::default();
+    for (section, content) in [(BriefSection::Prd, prd), (BriefSection::Trd, trd)] {
+        if let Some(content) = content {
+            if let Err(err) =
+                tickets::write_epic_section(&registry, repo_root, parent_id, section, content, None)
+            {
+                eprintln!("board: failed to write epic {section:?} for {parent_id}: {err}");
+            }
+        }
+    }
+
+    for link in &input.epic_figma {
+        if let Err(err) =
+            tickets::add_epic_figma_link(repo_root, parent_id, &link.url, link.label.as_deref())
+        {
+            eprintln!("board: failed to add epic figma link for {parent_id}: {err}");
+        }
+    }
+
+    let assets_root = tickets::default_epic_assets_root();
+    for path in &input.epic_asset_paths {
+        if let Err(err) =
+            tickets::add_epic_asset(repo_root, parent_id, std::path::Path::new(path), &assets_root)
+        {
+            eprintln!("board: failed to copy epic asset `{path}` for {parent_id}: {err}");
+        }
+    }
 }
 
 /// Best-effort scaffold of `<repo>/.phasr/tickets/<subtaskId>/` for every freshly
@@ -1164,6 +1271,10 @@ mod tests {
                 from_role: "backend".into(),
                 to_role: "frontend".into(),
             }],
+            epic_prd: None,
+            epic_trd: None,
+            epic_figma: vec![],
+            epic_asset_paths: vec![],
         }
     }
 
@@ -1351,6 +1462,10 @@ mod tests {
             parent_prompt: "x".into(),
             subtasks: vec![],
             edges: vec![],
+            epic_prd: None,
+            epic_trd: None,
+            epic_figma: vec![],
+            epic_asset_paths: vec![],
         };
         assert!(matches!(
             create_decomposition_inner(&empty, "user-a", &workspaces, &board, &repositories).await,
@@ -1488,6 +1603,62 @@ mod tests {
             let role = subtask.role.as_deref().unwrap();
             assert!(ticket.starts_with(&format!("# {role}")), "{ticket:?}");
         }
+    }
+
+    // E3 (Phase 2b): the gate writes the epic's SHARED docs under
+    // `.phasr/epics/<parentId>/` — prd/trd from the provided content, a validated
+    // figma link, and a copied asset — BEFORE returning, so they precede the
+    // scheduler's first tick. Every subtask then inherits them (E4).
+    #[tokio::test]
+    async fn gate_writes_epic_docs_before_returning() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_root = std::path::Path::new(repo.local_path.as_deref().unwrap());
+
+        // Stage a small asset the gate will copy into the epic assets/.
+        let src = repo_root.join("wireframe.png");
+        std::fs::write(&src, vec![3u8; 512]).unwrap();
+
+        let mut input = sample_input(&repo.id);
+        input.epic_prd = Some("# Epic PRD\n\nBuild the whole widget.".into());
+        input.epic_trd = Some("# Epic TRD\n\nUse the shared API.".into());
+        input.epic_figma = vec![FigmaLinkInput {
+            url: "https://www.figma.com/file/shared".into(),
+            label: Some("Epic design".into()),
+        }];
+        input.epic_asset_paths = vec![src.to_string_lossy().into_owned()];
+
+        let created = create_decomposition_inner(&input, "user-a", &workspaces, &board, &repos)
+            .await
+            .unwrap();
+
+        let epic = repo_root.join(".phasr").join("epics").join(&created.parent.id);
+        assert!(
+            std::fs::read_to_string(epic.join("prd.md")).unwrap().contains("Build the whole widget"),
+            "epic prd.md carries the provided content"
+        );
+        assert!(std::fs::read_to_string(epic.join("trd.md")).unwrap().contains("shared API"));
+        assert!(epic.join("assets").join("wireframe.png").is_file(), "the staged asset was copied");
+        let figma = std::fs::read_to_string(epic.join("figma.json")).unwrap();
+        assert!(figma.contains("figma.com/file/shared"), "the figma link was appended");
+        // Every subtask inherits the epic docs (E4): the epic now has docs on disk.
+        assert!(crate::tickets::epic_has_docs(repo_root, &created.parent.id));
+    }
+
+    // E3: a decomposition with NO epic docs attached creates NO epic folder — we
+    // never leave an empty `.phasr/epics/<id>/` (E4's pointer keys on real docs).
+    #[tokio::test]
+    async fn gate_without_epic_docs_creates_no_epic_folder() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let created =
+            create_decomposition_inner(&sample_input(&repo.id), "user-a", &workspaces, &board, &repos)
+                .await
+                .unwrap();
+        let repo_root = std::path::Path::new(repo.local_path.as_deref().unwrap());
+        assert!(
+            !repo_root.join(".phasr").join("epics").join(&created.parent.id).exists(),
+            "a doc-less epic must not create an epics/ folder"
+        );
+        assert!(!crate::tickets::epic_has_docs(repo_root, &created.parent.id));
     }
 
     // T2: scaffolding is best-effort — a repo with NO local checkout scaffolds

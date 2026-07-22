@@ -296,23 +296,65 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 // ── path resolution (traversal-safe) ─────────────────────────────────────────
 
-/// `<repo>/.phasr/tickets`.
+/// Which on-disk doc collection a brief operation targets. Threaded through the
+/// path resolvers so the SAME traversal-safe file-service serves both the
+/// per-subtask ticket store (`.phasr/tickets/<id>/`) and the shared epic-doc
+/// store (`.phasr/epics/<parentId>/`, Phase 2b E1). Every pre-2b ticket caller
+/// goes through the `BriefScope::Ticket` wrappers, so their behaviour — and the
+/// on-disk layout — is byte-identical; the epic entry points are thin
+/// `BriefScope::Epic` wrappers that inherit the identical sanitisation, atomic
+/// write, figma validation, and asset-copy code (A1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BriefScope {
+    /// Per-subtask ticket docs under `.phasr/tickets/<subtaskId>/`.
+    Ticket,
+    /// Shared epic docs under `.phasr/epics/<parentId>/`, inherited by every
+    /// subtask of the epic via the spawn prompt (Phase 2b E4).
+    Epic,
+}
+
+impl BriefScope {
+    /// The `.phasr/<collection>/` segment this scope's docs live under.
+    fn collection(self) -> &'static str {
+        match self {
+            BriefScope::Ticket => "tickets",
+            BriefScope::Epic => "epics",
+        }
+    }
+}
+
+/// `<repo>/.phasr/<collection>` — the collection root for a brief scope.
+fn scope_root(repo_root: &Path, scope: BriefScope) -> PathBuf {
+    repo_root.join(".phasr").join(scope.collection())
+}
+
+/// `<repo>/.phasr/tickets` (the `BriefScope::Ticket` collection root).
 fn tickets_root(repo_root: &Path) -> PathBuf {
-    repo_root.join(".phasr").join("tickets")
+    scope_root(repo_root, BriefScope::Ticket)
+}
+
+/// Resolve `<repo>/.phasr/<collection>/<sanitised id>`, rejecting a traversal id
+/// BEFORE any fs access (A1 / `#EXPORT_CRITICAL`). The single resolver both
+/// scopes hang off, so the epic store inherits the identical guard for free.
+pub fn doc_dir(repo_root: &Path, scope: BriefScope, id: &str) -> Result<PathBuf, TicketError> {
+    let id = sanitize_id(id)?;
+    Ok(scope_root(repo_root, scope).join(id))
 }
 
 /// Resolve `<repo>/.phasr/tickets/<sanitised id>`, rejecting a traversal id
 /// BEFORE any fs access (A1 / `#EXPORT_CRITICAL`). Public so the scheduler's
-/// brief pointer (T3) names the exact same absolute path.
+/// brief pointer (T3) names the exact same absolute path. Thin `Ticket`-scope
+/// wrapper over `doc_dir` (byte-identical to the pre-2b behaviour).
 pub fn ticket_dir(repo_root: &Path, ticket_id: &str) -> Result<PathBuf, TicketError> {
-    let id = sanitize_ticket_id(ticket_id)?;
-    Ok(tickets_root(repo_root).join(id))
+    doc_dir(repo_root, BriefScope::Ticket, ticket_id)
 }
 
-/// Reject any `ticketId` that could escape the tickets root. A subtask id is a
-/// UUID, so this never fires in practice — it is the belt-and-suspenders guard
-/// against a crafted id reaching the fs.
-fn sanitize_ticket_id(id: &str) -> Result<&str, TicketError> {
+/// Reject any id that could escape its collection root (`..`, a path separator,
+/// or an absolute path). A subtask/epic id is a UUID, so this never fires in
+/// practice — it is the belt-and-suspenders guard against a crafted id reaching
+/// the fs. Shared verbatim by both scopes (A1); the error stays
+/// `InvalidTicketId` since it is the existing traversal-guard variant.
+fn sanitize_id(id: &str) -> Result<&str, TicketError> {
     let trimmed = id.trim();
     let escapes = trimmed.is_empty()
         || trimmed == "."
@@ -437,7 +479,7 @@ pub fn read_brief(
     // A traversal id errors here (before any read); a valid-but-missing dir just
     // reads back as empty sections below.
     let dir = ticket_dir(repo_root, ticket_id)?;
-    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+    let app_data_dir = app_data_doc_dir(assets_app_data_root, ticket_id)?;
     let meta = read_meta(&dir);
 
     // Read ticket.md once: the H1 is the title, the body is the description.
@@ -536,7 +578,21 @@ pub fn write_section(
     base_mtime_ms: Option<i64>,
 ) -> Result<WriteSectionResult, TicketError> {
     let dir = ticket_dir(repo_root, ticket_id)?;
-    std::fs::create_dir_all(&dir)?; // create-on-write for a not-yet-scaffolded ticket
+    write_section_in(registry, &dir, section, content, base_mtime_ms)
+}
+
+/// The conflict-aware write over an already-resolved dir, shared by the ticket
+/// and epic scopes (the caller has already sanitised the id via
+/// `ticket_dir`/`epic_dir`). Identical mtime-primed, hash-arbitrated semantics
+/// for both — the epic edit surface (E5) gets the same guarantees for free.
+fn write_section_in(
+    registry: &TicketWriteRegistry,
+    dir: &Path,
+    section: BriefSection,
+    content: &str,
+    base_mtime_ms: Option<i64>,
+) -> Result<WriteSectionResult, TicketError> {
+    std::fs::create_dir_all(dir)?; // create-on-write for a not-yet-scaffolded doc
     let path = dir.join(section.file_name());
 
     let disk = read_file_opt(&path)?;
@@ -560,7 +616,7 @@ pub fn write_section(
     let content_diverged = new_bytes.as_bytes() != disk_content.as_bytes();
     let is_our_own_write = registry.matches(&path, disk_content.as_bytes());
     if stale && content_diverged && !is_our_own_write {
-        let meta = read_meta(&dir);
+        let meta = read_meta(dir);
         return Ok(WriteSectionResult::Conflict {
             on_disk: build_section_content(section, &disk_content, disk_mtime, &meta),
         });
@@ -573,11 +629,11 @@ pub fn write_section(
     registry.record(&path, new_bytes.as_bytes());
 
     // Our writes are always the human ("you"); Phase 2 never stamps "agent".
-    stamp_meta(&dir, section, LastEditedBy::You, Utc::now().timestamp_millis())?;
+    stamp_meta(dir, section, LastEditedBy::You, Utc::now().timestamp_millis())?;
 
-    let meta = read_meta(&dir);
+    let meta = read_meta(dir);
     Ok(WriteSectionResult::Saved {
-        section: read_section(&dir, section, &meta)?,
+        section: read_section(dir, section, &meta)?,
     })
 }
 
@@ -597,14 +653,15 @@ pub fn default_ticket_assets_root() -> PathBuf {
         .join("ticket-assets")
 }
 
-/// The per-ticket app-data dir `<root>/<sanitised id>` for large binaries.
-/// Sanitises the id (traversal-safe) exactly like `ticket_dir` does for the
-/// in-repo tree, so a crafted id can't escape the app-data root either (A1).
-fn app_data_ticket_dir(
+/// The per-doc app-data dir `<root>/<sanitised id>` for large binaries.
+/// Sanitises the id (traversal-safe) exactly like `doc_dir` does for the in-repo
+/// tree, so a crafted id can't escape the app-data root either (A1). Scope-agnostic
+/// (the caller passes the right root: `ticket-assets` vs `epic-assets`).
+fn app_data_doc_dir(
     assets_app_data_root: &Path,
-    ticket_id: &str,
+    doc_id: &str,
 ) -> Result<PathBuf, TicketError> {
-    let id = sanitize_ticket_id(ticket_id)?;
+    let id = sanitize_id(doc_id)?;
     Ok(assets_app_data_root.join(id))
 }
 
@@ -719,8 +776,18 @@ pub fn add_asset(
     assets_app_data_root: &Path,
 ) -> Result<TicketAsset, TicketError> {
     let dir = ticket_dir(repo_root, ticket_id)?;
-    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+    let app_data_dir = app_data_doc_dir(assets_app_data_root, ticket_id)?;
+    add_asset_in(&dir, &app_data_dir, source_path)
+}
 
+/// Shared asset-copy over already-resolved dirs (so both the ticket and epic
+/// scopes reuse the identical storage-split + de-dupe + traversal-safe copy). The
+/// caller has already sanitised the id via `ticket_dir`/`epic_dir`.
+fn add_asset_in(
+    dir: &Path,
+    app_data_dir: &Path,
+    source_path: &Path,
+) -> Result<TicketAsset, TicketError> {
     let meta = std::fs::metadata(source_path)?;
     if !meta.is_file() {
         return Err(TicketError::AssetSourceNotAFile(
@@ -736,11 +803,11 @@ pub fn add_asset(
     // for asset ids so the destination can never escape the ticket.
     let base = sanitize_asset_id(original)?.to_string();
 
-    let existing = existing_asset_ids(&dir, &app_data_dir);
+    let existing = existing_asset_ids(dir, app_data_dir);
     let name = unique_asset_name(&existing, &base);
 
     let (dest_dir, storage) = if is_large_asset(&name, size) {
-        (app_data_dir, AssetStorage::AppData)
+        (app_data_dir.to_path_buf(), AssetStorage::AppData)
     } else {
         (dir.join("assets"), AssetStorage::InRepo)
     };
@@ -768,7 +835,7 @@ pub fn list_assets(
     assets_app_data_root: &Path,
 ) -> Result<Vec<TicketAsset>, TicketError> {
     let dir = ticket_dir(repo_root, ticket_id)?;
-    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+    let app_data_dir = app_data_doc_dir(assets_app_data_root, ticket_id)?;
     list_assets_in(&dir, &app_data_dir)
 }
 
@@ -819,7 +886,7 @@ pub fn remove_asset(
 ) -> Result<(), TicketError> {
     let id = sanitize_asset_id(asset_id)?;
     let dir = ticket_dir(repo_root, ticket_id)?;
-    let app_data_dir = app_data_ticket_dir(assets_app_data_root, ticket_id)?;
+    let app_data_dir = app_data_doc_dir(assets_app_data_root, ticket_id)?;
     for candidate in [dir.join("assets").join(id), app_data_dir.join(id)] {
         if candidate.is_file() {
             std::fs::remove_file(&candidate)?;
@@ -868,10 +935,17 @@ pub fn add_figma_link(
     url: &str,
     label: Option<&str>,
 ) -> Result<FigmaLink, TicketError> {
-    validate_figma_url(url)?;
     let dir = ticket_dir(repo_root, ticket_id)?;
-    std::fs::create_dir_all(&dir)?; // create-on-write for an unscaffolded ticket
-    let mut links = read_figma(&dir)?;
+    add_figma_link_in(&dir, url, label)
+}
+
+/// Shared figma-append over an already-resolved dir (so both scopes reuse the
+/// identical `validate_figma_url` + create-on-write + append). The caller has
+/// already sanitised the id via `ticket_dir`/`epic_dir`.
+fn add_figma_link_in(dir: &Path, url: &str, label: Option<&str>) -> Result<FigmaLink, TicketError> {
+    validate_figma_url(url)?;
+    std::fs::create_dir_all(dir)?; // create-on-write for an unscaffolded doc
+    let mut links = read_figma(dir)?;
     let link = FigmaLink {
         id: uuid::Uuid::new_v4().to_string(),
         url: url.trim().to_string(),
@@ -883,7 +957,7 @@ pub fn add_figma_link(
         added_at_ms: Utc::now().timestamp_millis(),
     };
     links.push(link.clone());
-    write_figma(&dir, &links)?;
+    write_figma(dir, &links)?;
     Ok(link)
 }
 
@@ -954,6 +1028,180 @@ fn append_jsonl_line(path: &Path, line: &str) -> io::Result<()> {
         .open(path)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")
+}
+
+// ── Phase 2b: epic-doc store (shared docs inherited by every subtask) ────────
+//
+// A `parent` (epic) owns ONE shared doc set at `<repo>/.phasr/epics/<parentId>/`,
+// a sibling of the per-subtask `tickets/` tree (A1). Every entry point here is a
+// thin `BriefScope::Epic` wrapper over the SAME sanitisation/atomic-write/figma/
+// asset-copy code the ticket surface uses — so the epic store inherits the
+// traversal guarantee (`#EXPORT_CRITICAL`) for free and the per-ticket callers
+// stay byte-identical. The epic has NO `ticket.md`/description (its "description"
+// is the parent's `parentPrompt`, already on the row) and NO comments thread —
+// only `prd.md` / `trd.md` / `figma.json` / `assets/`.
+
+/// The full read-side view of an epic's shared docs (E5-ready; also exercised by
+/// the E1 write+read tests). Mirrors `TicketBrief` minus the ticket-only
+/// `description`/`title`/`commentCount`. camelCase on the wire.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpicBrief {
+    pub parent_id: String,
+    pub prd: BriefSectionContent,
+    pub trd: BriefSectionContent,
+    pub assets: Vec<TicketAsset>,
+    pub figma: Vec<FigmaLink>,
+}
+
+/// `~/.phasr/epic-assets`, the app-data home for LARGE epic binaries kept OUT of
+/// the git-versioned repo — sibling of `default_ticket_assets_root`, keyed by
+/// `<parentId>/`. Same `$HOME`-unset `/tmp` fallback for CI sandboxes.
+pub fn default_epic_assets_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".phasr")
+        .join("epic-assets")
+}
+
+/// Resolve `<repo>/.phasr/epics/<sanitised parentId>`, rejecting a traversal id
+/// BEFORE any fs access (A1). Public so the scheduler's epic-docs pointer (E4)
+/// names the exact same absolute path.
+pub fn epic_dir(repo_root: &Path, parent_id: &str) -> Result<PathBuf, TicketError> {
+    doc_dir(repo_root, BriefScope::Epic, parent_id)
+}
+
+/// Best-effort create the epic dir so the paths a pointer references exist even
+/// for an epic that was never scaffolded (mirrors `ensure_ticket_dir`). Returns
+/// the dir on success.
+pub fn ensure_epic_dir(repo_root: &Path, parent_id: &str) -> Result<PathBuf, TicketError> {
+    let dir = epic_dir(repo_root, parent_id)?;
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Scaffold `<repo>/.phasr/epics/<parentId>/` with template `prd.md`/`trd.md`, an
+/// empty `figma.json` (`[]`), and the `assets/` dir. Idempotent (never clobbers
+/// existing content — a re-decompose preserves human edits) and best-effort (a
+/// failure never fails the gate, mirroring `scaffold_ticket`). NO `ticket.md`/
+/// `comments.jsonl` — the epic has no description or thread (A1). Also seeds
+/// `.phasr/epics/.gitignore` (`**/.meta.json`) once so the local-only authorship
+/// sidecar never rides into a PR.
+pub fn scaffold_epic(repo_root: &Path, parent_id: &str) -> Result<(), TicketError> {
+    let dir = epic_dir(repo_root, parent_id)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir.join("assets"))?;
+
+    create_if_absent(&dir.join("prd.md"), PRD_TEMPLATE)?;
+    create_if_absent(&dir.join("trd.md"), TRD_TEMPLATE)?;
+    create_if_absent(&dir.join("figma.json"), "[]\n")?;
+
+    create_if_absent(
+        &scope_root(repo_root, BriefScope::Epic).join(".gitignore"),
+        "**/.meta.json\n",
+    )?;
+
+    warn_if_phasr_gitignored(repo_root);
+    Ok(())
+}
+
+/// Write one epic section (`prd`/`trd`) conflict-aware, exactly like
+/// `write_section` for a ticket (E5-ready). The gate (E3) writes with
+/// `base_mtime_ms = None`, which never conflicts — a fresh first write.
+pub fn write_epic_section(
+    registry: &TicketWriteRegistry,
+    repo_root: &Path,
+    parent_id: &str,
+    section: BriefSection,
+    content: &str,
+    base_mtime_ms: Option<i64>,
+) -> Result<WriteSectionResult, TicketError> {
+    let dir = epic_dir(repo_root, parent_id)?;
+    write_section_in(registry, &dir, section, content, base_mtime_ms)
+}
+
+/// Append a Figma link to the epic's `figma.json`, validated + create-on-write —
+/// the `BriefScope::Epic` twin of `add_figma_link`.
+pub fn add_epic_figma_link(
+    repo_root: &Path,
+    parent_id: &str,
+    url: &str,
+    label: Option<&str>,
+) -> Result<FigmaLink, TicketError> {
+    let dir = epic_dir(repo_root, parent_id)?;
+    add_figma_link_in(&dir, url, label)
+}
+
+/// Copy a staged source file into the epic's assets (in-repo `assets/` for small
+/// files, `~/.phasr/epic-assets/<parentId>/` for large binaries) — the
+/// `BriefScope::Epic` twin of `add_asset`, same storage split + de-dupe.
+pub fn add_epic_asset(
+    repo_root: &Path,
+    parent_id: &str,
+    source_path: &Path,
+    assets_app_data_root: &Path,
+) -> Result<TicketAsset, TicketError> {
+    let dir = epic_dir(repo_root, parent_id)?;
+    let app_data_dir = app_data_doc_dir(assets_app_data_root, parent_id)?;
+    add_asset_in(&dir, &app_data_dir, source_path)
+}
+
+/// Read the whole epic brief (`prd`/`trd`/`figma`/`assets`). Missing files →
+/// empty sections (never an error); no local checkout or a never-scaffolded epic
+/// → an empty brief. A traversal id IS an error (rejected before any fs touch).
+pub fn read_epic_brief(
+    repo_local_path: Option<&Path>,
+    parent_id: &str,
+    assets_app_data_root: &Path,
+) -> Result<EpicBrief, TicketError> {
+    let empty = || BriefSectionContent {
+        content: String::new(),
+        mtime_ms: None,
+        last_edited_by: None,
+        last_edited_at_ms: None,
+    };
+    let Some(repo_root) = repo_local_path else {
+        return Ok(EpicBrief {
+            parent_id: parent_id.to_string(),
+            prd: empty(),
+            trd: empty(),
+            assets: Vec::new(),
+            figma: Vec::new(),
+        });
+    };
+    let dir = epic_dir(repo_root, parent_id)?;
+    let app_data_dir = app_data_doc_dir(assets_app_data_root, parent_id)?;
+    let meta = read_meta(&dir);
+    Ok(EpicBrief {
+        parent_id: parent_id.to_string(),
+        prd: read_section(&dir, BriefSection::Prd, &meta)?,
+        trd: read_section(&dir, BriefSection::Trd, &meta)?,
+        assets: list_assets_in(&dir, &app_data_dir)?,
+        figma: read_figma(&dir)?,
+    })
+}
+
+/// True when the epic has any shared doc written on disk. Used at spawn (E4) to
+/// decide whether to point agents at the epic docs: a doc-LESS epic (only an
+/// empty `ensure_epic_dir` folder, or none at all) returns false so we never
+/// point an agent at files that were never written. Templates count as
+/// "written" (the human attached SOMETHING to this epic), matching the
+/// per-ticket brief's posture. In-repo only (`prd.md`/`trd.md`/`figma.json`/
+/// `assets/`) — a doc'd epic always has the scaffolded prd/trd, so this needs no
+/// app-data root at the spawn site.
+pub fn epic_has_docs(repo_root: &Path, parent_id: &str) -> bool {
+    let Ok(dir) = epic_dir(repo_root, parent_id) else {
+        return false;
+    };
+    dir.join("prd.md").is_file()
+        || dir.join("trd.md").is_file()
+        || read_figma(&dir).map(|l| !l.is_empty()).unwrap_or(false)
+        || dir
+            .join("assets")
+            .read_dir()
+            .map(|mut e| e.next().is_some())
+            .unwrap_or(false)
 }
 
 // ── Phase 3 gate files (validate.json / review.json) ─────────────────────────
@@ -1636,5 +1884,137 @@ mod tests {
         assert_eq!(compose_ticket_md(Some("T"), "body"), "# T\n\nbody\n");
         assert_eq!(compose_ticket_md(Some("T"), ""), "# T\n");
         assert_eq!(compose_ticket_md(None, "just body"), "just body\n");
+    }
+
+    // ── Phase 2b (E1): the epic-doc store ─────────────────────────────────────
+
+    // scaffold_epic lays down the SHARED epic layout under `.phasr/epics/<id>/`
+    // — prd/trd/figma/assets — but NO `ticket.md`/`comments.jsonl` (the epic has
+    // no description or thread), and it lives in a sibling of `tickets/`.
+    #[test]
+    fn epic_scaffold_creates_the_shared_layout() {
+        let (_tmp, root) = repo();
+        scaffold_epic(&root, "epic-1").unwrap();
+
+        let dir = root.join(".phasr").join("epics").join("epic-1");
+        assert!(dir.join("prd.md").is_file());
+        assert!(dir.join("trd.md").is_file());
+        assert!(dir.join("figma.json").is_file());
+        assert!(dir.join("assets").is_dir());
+        // The epic has NO ticket.md / comments.jsonl (unlike a ticket).
+        assert!(!dir.join("ticket.md").exists(), "epic must not have a ticket.md");
+        assert!(!dir.join("comments.jsonl").exists(), "epic has no comments thread");
+        assert_eq!(std::fs::read_to_string(dir.join("figma.json")).unwrap().trim(), "[]");
+        // A sibling root of tickets/, so it never collides with the per-subtask tree.
+        assert!(!root.join(".phasr").join("tickets").join("epic-1").exists());
+        // The authorship sidecar is gitignored under the epics root too.
+        let gitignore =
+            std::fs::read_to_string(root.join(".phasr").join("epics").join(".gitignore")).unwrap();
+        assert!(gitignore.contains("**/.meta.json"));
+    }
+
+    // write_epic_section + read_epic_brief round-trip prd/trd, reusing the exact
+    // conflict-aware write + read path the ticket surface uses.
+    #[test]
+    fn epic_write_and_read_prd_trd() {
+        let (_tmp, root) = repo();
+        scaffold_epic(&root, "epic-1").unwrap();
+        let reg = TicketWriteRegistry::default();
+        let app_data = root.join("epic-app-data");
+
+        write_epic_section(&reg, &root, "epic-1", BriefSection::Prd, "shared PRD", None).unwrap();
+        write_epic_section(&reg, &root, "epic-1", BriefSection::Trd, "shared TRD", None).unwrap();
+
+        let brief = read_epic_brief(Some(&root), "epic-1", &app_data).unwrap();
+        assert_eq!(brief.parent_id, "epic-1");
+        assert_eq!(brief.prd.content, "shared PRD");
+        assert_eq!(brief.trd.content, "shared TRD");
+        // The human's gate write is stamped "you" (never "agent").
+        assert_eq!(brief.prd.last_edited_by, Some(LastEditedBy::You));
+    }
+
+    // An epic figma link + a copied asset surface in the epic brief, same as the
+    // ticket store (small PNG routes in-repo, kind=image).
+    #[test]
+    fn epic_figma_link_and_asset_copy() {
+        let (_tmp, root) = repo();
+        scaffold_epic(&root, "epic-1").unwrap();
+        let app_data = root.join("epic-app-data");
+
+        add_epic_figma_link(&root, "epic-1", "https://www.figma.com/file/abc", Some("Design"))
+            .unwrap();
+        let src = root.join("hero.png");
+        std::fs::write(&src, vec![7u8; 256]).unwrap();
+        let asset = add_epic_asset(&root, "epic-1", &src, &app_data).unwrap();
+        assert!(matches!(asset.storage, AssetStorage::InRepo));
+        assert!(root.join(".phasr/epics/epic-1/assets/hero.png").is_file());
+
+        let brief = read_epic_brief(Some(&root), "epic-1", &app_data).unwrap();
+        assert_eq!(brief.figma.len(), 1);
+        assert_eq!(brief.figma[0].label.as_deref(), Some("Design"));
+        assert_eq!(brief.assets.len(), 1);
+        assert_eq!(brief.assets[0].name, "hero.png");
+        // A malformed epic figma url is rejected up front (same guard as tickets).
+        assert!(matches!(
+            add_epic_figma_link(&root, "epic-1", "not a url", None),
+            Err(TicketError::InvalidFigmaUrl(_))
+        ));
+    }
+
+    // `#EXPORT_CRITICAL`: a crafted parentId can never reach the fs — every epic
+    // entry point runs the shared sanitiser BEFORE any filesystem touch.
+    #[test]
+    fn epic_traversal_ids_are_rejected_before_any_fs_touch() {
+        let (_tmp, root) = repo();
+        let reg = TicketWriteRegistry::default();
+        for bad in ["..", "../evil", "a/b", "/abs", "", "."] {
+            assert!(matches!(
+                scaffold_epic(&root, bad),
+                Err(TicketError::InvalidTicketId(_))
+            ));
+            assert!(matches!(
+                write_epic_section(&reg, &root, bad, BriefSection::Prd, "x", None),
+                Err(TicketError::InvalidTicketId(_))
+            ));
+            assert!(matches!(
+                read_epic_brief(Some(&root), bad, Path::new("/tmp")),
+                Err(TicketError::InvalidTicketId(_))
+            ));
+        }
+        assert!(!root.join(".phasr").exists(), "a rejected id created nothing");
+    }
+
+    // E4 gate: `epic_has_docs` is false for a doc-LESS epic (only an empty
+    // ensured dir) and true once ANY shared doc lands — so the spawn pointer
+    // never points agents at files that were never written.
+    #[test]
+    fn epic_has_docs_reflects_written_content() {
+        let (_tmp, root) = repo();
+        // No epic at all → false.
+        assert!(!epic_has_docs(&root, "epic-1"));
+        // An empty ensured dir (no docs) → still false.
+        ensure_epic_dir(&root, "epic-1").unwrap();
+        assert!(!epic_has_docs(&root, "epic-1"), "an empty epic dir has no docs");
+        // Scaffold (writes template prd/trd) → the human attached something → true.
+        scaffold_epic(&root, "epic-1").unwrap();
+        assert!(epic_has_docs(&root, "epic-1"));
+
+        // A figma-only epic (no scaffolded prd/trd) also counts as having docs.
+        add_epic_figma_link(&root, "epic-2", "https://figma.com/file/x", None).unwrap();
+        assert!(epic_has_docs(&root, "epic-2"));
+    }
+
+    // Pins the FROZEN EpicBrief wire shape (camelCase `parentId`, the shared
+    // `BriefSectionContent`/`FigmaLink`/`TicketAsset` DTOs) for the E5 read cmd.
+    #[test]
+    fn epic_brief_wire_shape() {
+        // No checkout → an empty epic brief; we only pin the serialized wire shape.
+        let brief = read_epic_brief(None, "epic-1", Path::new("/tmp")).unwrap();
+        let json = serde_json::to_value(&brief).unwrap();
+        assert_eq!(json["parentId"], "epic-1");
+        assert!(json["prd"].is_object());
+        assert!(json["trd"].is_object());
+        assert!(json["assets"].is_array());
+        assert!(json["figma"].is_array());
     }
 }
