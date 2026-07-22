@@ -4,6 +4,10 @@ version = "0.3.1"
 description = "Phasr — run multiple coding agents in parallel, each in an isolated git worktree."
 authors = ["Rishabh Bhatia <irishabh96@gmail.com>"]
 edition = "2021"
+# Two bin targets exist (the `phasr` app from src/main.rs + the `phasr-cli`
+# sidecar below), so `cargo run` / `tauri dev` (which run bare `cargo run`) need
+# to be told which is the default — the app.
+default-run = "phasr"
 
 [lib]
 name = "phasr_lib"
@@ -14,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # name "phasr" (from src/main.rs), so this target is named "phasr-cli" to avoid a
 # duplicate-binary-name collision; the on-disk/invocation name is irrelevant —
 # agents call it via the absolute "$PHASR_BIN" the app injects (§J4). Bundle it as
-# an externalBin sidecar named `phasr` via a pre-bundle copy step.
+# an externalBin sidecar named `phasr-cli` via a pre-bundle copy step.
 [[bin]]
 name = "phasr-cli"
 path = "src/bin/phasr_cli.rs"
