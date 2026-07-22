@@ -3,11 +3,12 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   GitBranch,
-  GitFork,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { RepoEntryChoice } from "@/components/RepoEntryChoice";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { humanizeError } from "@/lib/humanizeError";
 import { useGitBranches } from "@/lib/hooks/useGit";
@@ -44,7 +45,6 @@ export function CreateFirstWorkspacePane({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const requestGitInit = useUiStore((s) => s.requestGitInit);
-  const requestDecompose = useUiStore((s) => s.requestDecompose);
 
   const isGitQuery = useQuery({
     queryKey: ["pathIsGit", repo.localPath ?? ""],
@@ -67,6 +67,10 @@ export function CreateFirstWorkspacePane({
   const branchesQuery = useGitBranches(isGit ? repo.localPath : null);
   const branches = branchesQuery.data ?? [];
 
+  // First-run onboarding: land on a calm three-way choice, not straight in a
+  // form. "New task" reveals the two-step form below; "New epic"/"Open
+  // terminal" fire their own flows from the choice surface itself.
+  const [mode, setMode] = useState<"choice" | "task">("choice");
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
   const [baseBranch, setBaseBranch] = useState(repo.defaultBranch);
@@ -140,6 +144,8 @@ export function CreateFirstWorkspacePane({
   // accidentally fire an incomplete form. Esc on Step 2 steps back (E4).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // The form shortcuts are inert on the choice screen.
+      if (mode !== "task") return;
       if (e.key === "Escape" && step === 2) {
         e.preventDefault();
         setStep(1);
@@ -161,7 +167,7 @@ export function CreateFirstWorkspacePane({
     // handleStart is reconstructed each render but the effect re-binds
     // cheaply; the alternative (a ref dance) buys nothing here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, trimmedName, isGitConfirmed, activeAgent, submitting]);
+  }, [mode, step, trimmedName, isGitConfirmed, activeAgent, submitting]);
 
   return (
     <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto px-6 py-10">
@@ -185,68 +191,61 @@ export function CreateFirstWorkspacePane({
           </div>
         )}
 
-        <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-(--color-text-muted)">
-          Step {step} of 2
-        </div>
-
-        {step === 1 ? (
-          <Step1
-            name={name}
-            setName={setName}
-            previewBranch={previewBranch}
-            baseBranch={baseBranch}
-            setBaseBranch={setBaseBranch}
-            branches={branches}
-            advancedOpen={advancedOpen}
-            setAdvancedOpen={setAdvancedOpen}
-            canContinue={trimmedName.length > 0 && isGitConfirmed}
-            onContinue={() => setStep(2)}
+        {mode === "choice" ? (
+          <RepoEntryChoice
+            repo={repo}
+            onNewTask={() => {
+              setStep(1);
+              setMode("task");
+            }}
           />
         ) : (
-          <Step2
-            agents={allAgents}
-            activeAgentValue={activeAgentValue}
-            setAgent={setAgent}
-            activeCommand={activeAgent?.command}
-            prompt={prompt}
-            setPrompt={setPrompt}
-            canStart={!!activeAgent && !submitting && isGitConfirmed}
-            submitting={submitting}
-            error={error}
-            onBack={() => setStep(1)}
-            onStart={handleStart}
-          />
-        )}
-
-        {/*
-          Progressive disclosure: a clearly-SEPARATE second path for a bigger
-          job, kept out of the single-agent flow above. Shown only on step 1 so
-          it never interrupts the agent/prompt step. Opens the shell-mounted
-          DecomposeModal (the "Start 2 agents" gate) via `requestDecompose`.
-        */}
-        {step === 1 && (
-          <div className="mt-8 flex items-center justify-between gap-4 border-t border-(--glass-border-hairline) pt-5">
-            <div className="min-w-0">
-              <p className="text-[13px] font-medium text-(--color-text-primary)">
-                Working on something bigger?
-              </p>
-              <p className="mt-0.5 text-[12px] text-(--color-text-secondary)">
-                Split a goal across two agents — a backend and a frontend that
-                hand off through a contract.
-              </p>
-            </div>
-            <GlassButton
-              variant="outline"
-              size="md"
+          <>
+            <button
               type="button"
-              onClick={() => requestDecompose(repo.id)}
-              aria-label={`New epic in ${repo.name}`}
-              className="shrink-0"
+              onClick={() => {
+                setStep(1);
+                setMode("choice");
+              }}
+              className="mb-4 flex items-center gap-1 text-[12.5px] text-(--color-text-secondary) transition-colors hover:text-(--color-text-primary)"
             >
-              <GitFork size={13} />
-              New epic
-            </GlassButton>
-          </div>
+              <ChevronLeft size={13} />
+              Back to options
+            </button>
+
+            <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-(--color-text-muted)">
+              Step {step} of 2
+            </div>
+
+            {step === 1 ? (
+              <Step1
+                name={name}
+                setName={setName}
+                previewBranch={previewBranch}
+                baseBranch={baseBranch}
+                setBaseBranch={setBaseBranch}
+                branches={branches}
+                advancedOpen={advancedOpen}
+                setAdvancedOpen={setAdvancedOpen}
+                canContinue={trimmedName.length > 0 && isGitConfirmed}
+                onContinue={() => setStep(2)}
+              />
+            ) : (
+              <Step2
+                agents={allAgents}
+                activeAgentValue={activeAgentValue}
+                setAgent={setAgent}
+                activeCommand={activeAgent?.command}
+                prompt={prompt}
+                setPrompt={setPrompt}
+                canStart={!!activeAgent && !submitting && isGitConfirmed}
+                submitting={submitting}
+                error={error}
+                onBack={() => setStep(1)}
+                onStart={handleStart}
+              />
+            )}
+          </>
         )}
       </div>
     </div>
