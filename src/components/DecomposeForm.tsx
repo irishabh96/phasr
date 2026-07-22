@@ -1,13 +1,18 @@
 import {
   AlertTriangle,
   ArrowRight,
+  ChevronRight,
   CornerDownRight,
+  FileText,
+  Figma,
   Loader2,
   Plus,
   Sparkles,
+  Upload,
   X,
 } from "lucide-react";
-import { useReducer, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { useReducer, useRef, useState, type ReactNode } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
@@ -26,7 +31,64 @@ import { useAgents } from "@/lib/hooks/useAgents";
 import { humanizeError } from "@/lib/humanizeError";
 import { showToast } from "@/lib/toast";
 import { tauri } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
 import type { Agent, BoardState } from "@/lib/types";
+
+/** A staged Figma link in the epic-brief draft — client id keys the React list. */
+interface DraftFigma {
+  id: string;
+  url: string;
+  label: string | null;
+}
+
+/** A staged asset in the epic-brief draft — the absolute source `path` is what
+ *  the gate copies at Start; `name` is its basename for the chip. */
+interface DraftAsset {
+  id: string;
+  path: string;
+  name: string;
+}
+
+/** Source-path basename for the staged-file chip. */
+function basename(p: string): string {
+  return p.split(/[\\/]/).pop() || p;
+}
+
+/** Lenient http(s) guard — rejects obvious junk client-side before the gate. */
+function isLikelyUrl(value: string): boolean {
+  try {
+    const u = new URL(value.trim());
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Compact host+path label for a linked Figma file (mirrors the brief pattern). */
+function shortUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}`.replace(/\/$/, "");
+  } catch {
+    return url;
+  }
+}
+
+/** Source extensions offered by the epic-brief "Add files" picker. */
+const EPIC_ASSET_EXTENSIONS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "pdf",
+  "fig",
+  "md",
+  "txt",
+  "mp4",
+  "mov",
+];
 
 interface DecomposeFormProps {
   repositoryId: string;
@@ -102,6 +164,52 @@ export function DecomposeForm({
 
   // Synchronous re-entrancy guard (D1). Belt AND suspenders with `disabled`.
   const inFlightRef = useRef(false);
+
+  // ── Epic-brief draft (Phase 2b · E2) ──────────────────────────────────────
+  // Shared PRD/TRD/Figma/asset context every ticket inherits. Held ENTIRELY in
+  // the form (the B2 no-persist gate) — nothing is written until Start threads
+  // these onto the unchanged `startDecomposition` input. Survives a re-plan: the
+  // brief is epic-level context, not tied to the specific ticket breakdown.
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [epicPrd, setEpicPrd] = useState("");
+  const [epicTrd, setEpicTrd] = useState("");
+  const [epicFigma, setEpicFigma] = useState<DraftFigma[]>([]);
+  const [epicAssets, setEpicAssets] = useState<DraftAsset[]>([]);
+  // Monotonic client-id source for the Figma/asset lists (never leaves the form).
+  const briefSeq = useRef(0);
+  const mkBriefId = () => `b${briefSeq.current++}`;
+
+  const addFigma = (url: string, label: string | null) =>
+    setEpicFigma((f) => [...f, { id: mkBriefId(), url, label }]);
+  const removeFigma = (id: string) =>
+    setEpicFigma((f) => f.filter((x) => x.id !== id));
+  const removeAsset = (id: string) =>
+    setEpicAssets((a) => a.filter((x) => x.id !== id));
+
+  // "Add files" → Tauri file picker → stage the absolute source paths (deduped).
+  const pickAssets = async () => {
+    try {
+      const picked = await open({
+        multiple: true,
+        filters: [{ name: "Docs & designs", extensions: EPIC_ASSET_EXTENSIONS }],
+      });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      setEpicAssets((prev) => {
+        const have = new Set(prev.map((a) => a.path));
+        const next = paths
+          .filter((p) => !have.has(p))
+          .map((p) => ({ id: mkBriefId(), path: p, name: basename(p) }));
+        return [...prev, ...next];
+      });
+    } catch (e) {
+      showToast({
+        title: "Couldn't add files",
+        intent: "error",
+        message: humanizeError(e),
+      });
+    }
+  };
 
   const trimmedGoal = goal.trim();
   const validation = validateDraft(draft);
@@ -179,7 +287,12 @@ export function DecomposeForm({
     setSubmitting(true);
     setStartError(null);
 
-    const input = toDecompositionInput(draft, repositoryId, goal);
+    const input = toDecompositionInput(draft, repositoryId, goal, {
+      prd: epicPrd,
+      trd: epicTrd,
+      figma: epicFigma.map((f) => ({ url: f.url, label: f.label })),
+      assetPaths: epicAssets.map((a) => a.path),
+    });
     try {
       const board = await tauri.startDecomposition(input);
       showToast({
@@ -386,6 +499,24 @@ export function DecomposeForm({
             </GlassButton>
           </div>
         </div>
+      )}
+
+      {/* ── Epic brief (Phase 2b · E2) — optional shared context ──────────── */}
+      {phase === "review" && (
+        <EpicBriefPanel
+          open={briefOpen}
+          onToggle={() => setBriefOpen((v) => !v)}
+          prd={epicPrd}
+          onPrd={setEpicPrd}
+          trd={epicTrd}
+          onTrd={setEpicTrd}
+          figma={epicFigma}
+          onAddFigma={addFigma}
+          onRemoveFigma={removeFigma}
+          assets={epicAssets}
+          onPickAssets={() => void pickAssets()}
+          onRemoveAsset={removeAsset}
+        />
       )}
 
       {startError && (
@@ -614,5 +745,383 @@ function TicketRow({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * The optional epic-brief attach panel (Phase 2b · E2). A quiet, collapsible
+ * "Epic brief · optional" section that reads as an intentional part of the review
+ * flow, not a bolted-on box: at rest it's a single header row whose right edge
+ * summarizes what's attached; expanded, it holds the four shared docs — PRD/TRD
+ * markdown, Figma links, and staged files — every ticket inherits. Kept
+ * presentational + prop-driven so `/design-test` renders it from form state.
+ * NO coral here: the modal's one accent stays on "Start N agents".
+ */
+function EpicBriefPanel({
+  open: isOpen,
+  onToggle,
+  prd,
+  onPrd,
+  trd,
+  onTrd,
+  figma,
+  onAddFigma,
+  onRemoveFigma,
+  assets,
+  onPickAssets,
+  onRemoveAsset,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  prd: string;
+  onPrd: (v: string) => void;
+  trd: string;
+  onTrd: (v: string) => void;
+  figma: DraftFigma[];
+  onAddFigma: (url: string, label: string | null) => void;
+  onRemoveFigma: (id: string) => void;
+  assets: DraftAsset[];
+  onPickAssets: () => void;
+  onRemoveAsset: (id: string) => void;
+}) {
+  // Honest collapsed summary: what's actually attached, or the invite copy.
+  const parts: string[] = [];
+  if (prd.trim()) parts.push("PRD");
+  if (trd.trim()) parts.push("TRD");
+  if (figma.length > 0)
+    parts.push(`${figma.length} ${figma.length === 1 ? "link" : "links"}`);
+  if (assets.length > 0)
+    parts.push(`${assets.length} ${assets.length === 1 ? "file" : "files"}`);
+  const summary = parts.length > 0 ? parts.join(" · ") : null;
+
+  return (
+    <section
+      data-testid="decompose-brief"
+      className="rounded-(--radius-panel) border border-(--color-border-subtle) bg-[color-mix(in_oklab,var(--color-bg-surface)_70%,transparent)]"
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={isOpen}
+        data-testid="decompose-brief-toggle"
+        className="flex w-full items-center gap-2.5 rounded-(--radius-panel) px-4 py-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--color-bg-hover)_45%,transparent)] focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+      >
+        <ChevronRight
+          className={cn(
+            "size-3.5 shrink-0 text-(--color-text-muted) transition-transform duration-(--duration-glass) ease-(--ease-glass)",
+            isOpen && "rotate-90",
+          )}
+          aria-hidden="true"
+        />
+        <span className="text-[13px] font-semibold text-(--color-text-primary)">
+          Epic brief
+        </span>
+        <span className="rounded-full border border-(--glass-border-hairline) bg-(--color-bg-input) px-1.5 py-px text-[10px] font-medium uppercase tracking-[0.06em] text-(--color-text-muted)">
+          optional
+        </span>
+        <span
+          className={cn(
+            "ml-auto min-w-0 truncate pl-2 text-[12px]",
+            summary ? "text-(--color-text-secondary)" : "text-(--color-text-muted)",
+          )}
+          data-testid="decompose-brief-summary"
+        >
+          {summary ?? "Shared with every ticket"}
+        </span>
+      </button>
+
+      {isOpen && (
+        <div className="flex flex-col gap-5 border-t border-(--glass-border-hairline) px-4 pb-4 pt-4">
+          <p className="text-[12px] leading-relaxed text-(--color-text-muted)">
+            Context the whole epic inherits — every ticket's agent starts with
+            these docs.
+          </p>
+
+          <BriefField
+            label="PRD"
+            action={
+              <span className="text-[11px] text-(--color-text-muted)">
+                Markdown
+              </span>
+            }
+          >
+            <GlassTextarea
+              value={prd}
+              onChange={(e) => onPrd(e.target.value)}
+              autoGrow
+              rows={3}
+              data-testid="decompose-brief-prd"
+              aria-label="Epic PRD (markdown)"
+              placeholder="What every ticket should build toward — goals, requirements, constraints…"
+              className="max-h-[32vh] font-mono text-[12px] leading-[1.6]"
+            />
+          </BriefField>
+
+          <BriefField
+            label="TRD"
+            action={
+              <span className="text-[11px] text-(--color-text-muted)">
+                Markdown
+              </span>
+            }
+          >
+            <GlassTextarea
+              value={trd}
+              onChange={(e) => onTrd(e.target.value)}
+              autoGrow
+              rows={3}
+              data-testid="decompose-brief-trd"
+              aria-label="Epic TRD (markdown)"
+              placeholder="Shared technical decisions — interfaces, data shapes, conventions…"
+              className="max-h-[32vh] font-mono text-[12px] leading-[1.6]"
+            />
+          </BriefField>
+
+          <BriefFigmaField
+            links={figma}
+            onAdd={onAddFigma}
+            onRemove={onRemoveFigma}
+          />
+
+          <BriefFilesField
+            assets={assets}
+            onPick={onPickAssets}
+            onRemove={onRemoveAsset}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One labelled sub-section of the epic brief — an uppercase eyebrow with an
+ *  optional right-aligned action, over its field body. Matches the modal's own
+ *  "Goal" label rhythm (11px / 0.08em tracking / muted). */
+function BriefField({
+  label,
+  action,
+  children,
+}: {
+  label: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex min-h-[16px] items-center justify-between gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-(--color-text-muted)">
+          {label}
+        </span>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Figma links for the epic brief — an inline "Add link" form (url + optional
+ *  label, client-side http(s) validation) over compact link rows. Draft-only:
+ *  mirrors the brief's FigmaSection pattern without its IPC/thumbnail chrome. */
+function BriefFigmaField({
+  links,
+  onAdd,
+  onRemove,
+}: {
+  links: DraftFigma[];
+  onAdd: (url: string, label: string | null) => void;
+  onRemove: (id: string) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [url, setUrl] = useState("");
+  const [label, setLabel] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = () => {
+    if (!isLikelyUrl(url)) {
+      setError("Enter a valid http(s) link.");
+      return;
+    }
+    onAdd(url.trim(), label.trim() || null);
+    setUrl("");
+    setLabel("");
+    setError(null);
+    setAdding(false);
+  };
+
+  const action = (
+    <button
+      type="button"
+      onClick={() => setAdding((v) => !v)}
+      data-testid="decompose-brief-figma-add"
+      className="inline-flex items-center gap-1.5 rounded-[6px] text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+    >
+      <Plus className="size-3" aria-hidden="true" />
+      Add link
+    </button>
+  );
+
+  return (
+    <BriefField label="Figma" action={action}>
+      {adding && (
+        <div
+          className="mb-1 flex flex-col gap-2"
+          data-testid="decompose-brief-figma-form"
+        >
+          <GlassInput
+            autoFocus
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              if (error) setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                submit();
+              }
+              if (e.key === "Escape") setAdding(false);
+            }}
+            placeholder="https://figma.com/file/…"
+            aria-label="Figma URL"
+            data-testid="decompose-brief-figma-url"
+            className="h-8 text-[12px]"
+          />
+          <GlassInput
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Label (optional) — e.g. Comments panel"
+            aria-label="Figma label"
+            data-testid="decompose-brief-figma-label"
+            className="h-8 text-[12px]"
+          />
+          {error && (
+            <p role="alert" className="text-[11.5px] text-(--color-danger)">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setAdding(false);
+                setError(null);
+              }}
+            >
+              Cancel
+            </GlassButton>
+            <GlassButton
+              variant="outline"
+              size="sm"
+              onClick={submit}
+              data-testid="decompose-brief-figma-submit"
+            >
+              Add link
+            </GlassButton>
+          </div>
+        </div>
+      )}
+
+      {links.length === 0 && !adding ? (
+        <p className="text-[12px] text-(--color-text-muted)">
+          No design links yet.
+        </p>
+      ) : links.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {links.map((link) => (
+            <div
+              key={link.id}
+              data-testid="decompose-brief-figma-link"
+              className="flex items-center gap-2 rounded-[8px] border border-(--glass-border-hairline) bg-(--color-bg-input) py-1.5 pl-2.5 pr-1.5"
+            >
+              <Figma
+                className="size-3.5 shrink-0 text-(--color-text-muted)"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-(--color-text-secondary)">
+                {shortUrl(link.url)}
+                {link.label ? ` · ${link.label}` : ""}
+              </span>
+              <button
+                type="button"
+                onClick={() => onRemove(link.id)}
+                aria-label={`Remove ${link.label ?? shortUrl(link.url)}`}
+                data-testid="decompose-brief-figma-remove"
+                className="grid size-5 shrink-0 place-items-center rounded-full text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-danger) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+              >
+                <X className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </BriefField>
+  );
+}
+
+/** Staged files for the epic brief — an "Add files" affordance (Tauri picker)
+ *  over compact filename chips with per-file remove. Empty → a dashed invite. */
+function BriefFilesField({
+  assets,
+  onPick,
+  onRemove,
+}: {
+  assets: DraftAsset[];
+  onPick: () => void;
+  onRemove: (id: string) => void;
+}) {
+  const action = (
+    <button
+      type="button"
+      onClick={onPick}
+      data-testid="decompose-brief-files-add"
+      className="inline-flex items-center gap-1.5 rounded-[6px] text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+    >
+      <Plus className="size-3" aria-hidden="true" />
+      Add files
+    </button>
+  );
+
+  return (
+    <BriefField label="Files" action={assets.length > 0 ? action : undefined}>
+      {assets.length === 0 ? (
+        <button
+          type="button"
+          onClick={onPick}
+          data-testid="decompose-brief-files-empty"
+          className="flex w-full items-center gap-2 rounded-[8px] border border-dashed border-(--color-border-default) px-3 py-2.5 text-left text-[12px] text-(--color-text-muted) transition-colors hover:border-(--color-border-strong) hover:text-(--color-text-secondary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+        >
+          <Upload className="size-3.5 shrink-0" aria-hidden="true" />
+          Attach mockups, PDFs, or specs
+        </button>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {assets.map((asset) => (
+            <div
+              key={asset.id}
+              data-testid="decompose-brief-file"
+              className="flex items-center gap-2 rounded-[8px] border border-(--glass-border-hairline) bg-(--color-bg-input) py-1.5 pl-2.5 pr-1.5"
+            >
+              <FileText
+                className="size-3.5 shrink-0 text-(--color-text-muted)"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-(--color-text-secondary)">
+                {asset.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => onRemove(asset.id)}
+                aria-label={`Remove ${asset.name}`}
+                data-testid="decompose-brief-file-remove"
+                className="grid size-5 shrink-0 place-items-center rounded-full text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-danger) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+              >
+                <X className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </BriefField>
   );
 }

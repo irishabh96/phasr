@@ -10,6 +10,7 @@
 import type {
   Agent,
   DecompositionInput,
+  FigmaLinkInput,
   ProposedPlan,
 } from "./types";
 
@@ -328,17 +329,51 @@ export function dependencyRoles(
 }
 
 /**
+ * The optional EPIC-brief draft (Phase 2b, E2) held in `DecomposeForm` state:
+ * shared PRD/TRD markdown, Figma links, and staged asset SOURCE paths that every
+ * task inherits. Lives entirely in the form — the B2 no-persist gate means none
+ * of it is written until the "Start N agents" click fires `startDecomposition`.
+ */
+export interface EpicBriefDraft {
+  /** PRD markdown, as typed (trimmed at projection; omitted when blank). */
+  prd: string;
+  /** TRD markdown, as typed (trimmed at projection; omitted when blank). */
+  trd: string;
+  /** Draft Figma links. A blank `url` row is dropped; `label` → null when blank. */
+  figma: Array<{ url: string; label?: string | null }>;
+  /** Absolute source paths of staged assets (blank entries dropped). */
+  assetPaths: string[];
+}
+
+/**
  * Project the draft onto the FROZEN gate shape (`DecompositionInput`). Roles and
  * prompts are trimmed; edges are resolved from client id → role and any edge
  * with an unset end is dropped (validation blocks Start before this runs, but
  * the projection stays defensive).
+ *
+ * The optional `brief` threads the Phase 2b epic-brief fields onto the wire.
+ * Every field is OMITTED when empty (trimmed markdown blank, no links, no
+ * paths), so a doc-less epic — or a pre-2b caller that passes no `brief` at all —
+ * produces exactly the same input as before (backward compatible).
  */
 export function toDecompositionInput(
   state: DraftState,
   repositoryId: string,
   goal: string,
+  brief?: EpicBriefDraft,
 ): DecompositionInput {
   const roleById = new Map(state.tickets.map((t) => [t.id, t.role.trim()]));
+
+  const prd = brief?.prd.trim() ?? "";
+  const trd = brief?.trd.trim() ?? "";
+  const figma: FigmaLinkInput[] = (brief?.figma ?? [])
+    .map((f) => ({
+      url: f.url.trim(),
+      label: f.label?.trim() ? f.label.trim() : null,
+    }))
+    .filter((f) => f.url !== "");
+  const assetPaths = (brief?.assetPaths ?? []).filter((p) => p.trim() !== "");
+
   return {
     repositoryId,
     parentPrompt: goal.trim(),
@@ -353,5 +388,10 @@ export function toDecompositionInput(
         fromRole: roleById.get(e.fromId) ?? "",
         toRole: roleById.get(e.toId) ?? "",
       })),
+    // Omit-when-empty keeps a doc-less / pre-2b decomposition byte-identical.
+    ...(prd ? { epicPrd: prd } : {}),
+    ...(trd ? { epicTrd: trd } : {}),
+    ...(figma.length > 0 ? { epicFigma: figma } : {}),
+    ...(assetPaths.length > 0 ? { epicAssetPaths: assetPaths } : {}),
   };
 }

@@ -300,3 +300,49 @@ describe("dependencyRoles + toDecompositionInput", () => {
     ]);
   });
 });
+
+describe("toDecompositionInput — epic brief (Phase 2b · E2)", () => {
+  it("threads PRD/TRD/Figma/asset paths, trimming and dropping the empties", () => {
+    const input = toDecompositionInput(hydrated(), "repo-1", "goal", {
+      prd: "  # PRD\n\nGoal: comments  ",
+      trd: "## TRD",
+      figma: [
+        { url: "  https://figma.com/file/abc  ", label: "  Comments panel  " },
+        { url: "https://figma.com/file/def", label: "" },
+        { url: "   ", label: "dropped — blank url" },
+      ],
+      assetPaths: ["/src/mock.png", "  ", "/src/spec.pdf"],
+    });
+
+    // Markdown is trimmed; the label collapses to null when blank; the blank-url
+    // Figma row and the whitespace asset path are dropped.
+    expect(input.epicPrd).toBe("# PRD\n\nGoal: comments");
+    expect(input.epicTrd).toBe("## TRD");
+    expect(input.epicFigma).toEqual([
+      { url: "https://figma.com/file/abc", label: "Comments panel" },
+      { url: "https://figma.com/file/def", label: null },
+    ]);
+    expect(input.epicAssetPaths).toEqual(["/src/mock.png", "/src/spec.pdf"]);
+  });
+
+  it("omits every epic field for a whitespace-only / empty brief", () => {
+    const input = toDecompositionInput(hydrated(), "repo-1", "goal", {
+      prd: "   ",
+      trd: "",
+      figma: [{ url: "   ", label: "x" }],
+      assetPaths: ["  "],
+    });
+    expect(input).not.toHaveProperty("epicPrd");
+    expect(input).not.toHaveProperty("epicTrd");
+    expect(input).not.toHaveProperty("epicFigma");
+    expect(input).not.toHaveProperty("epicAssetPaths");
+  });
+
+  it("omits every epic field when no brief is passed (pre-2b caller unchanged)", () => {
+    const input = toDecompositionInput(hydrated(), "repo-1", "goal");
+    expect(input).not.toHaveProperty("epicPrd");
+    expect(input).not.toHaveProperty("epicTrd");
+    expect(input).not.toHaveProperty("epicFigma");
+    expect(input).not.toHaveProperty("epicAssetPaths");
+  });
+});
