@@ -84,6 +84,7 @@ test.describe("New task form (NewTaskModal)", () => {
   }) => {
     await boot(page);
     await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
     const submit = page.getByRole("button", { name: "Start task" });
     await expect(submit).toBeDisabled();
     await page.locator("#new-task-name").fill("fix login redirect");
@@ -98,10 +99,14 @@ test.describe("New task form (NewTaskModal)", () => {
   }) => {
     const { errors } = await boot(page);
     await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
     await clearCalls(page);
 
     await page.locator("#new-task-name").fill("fix login redirect");
     await page.locator("#new-task-agent").selectOption("codex");
+    // Gate on React having committed the select value before Enter submits —
+    // else the handler can read a stale agent under parallel-suite CPU jitter.
+    await expect(page.locator("#new-task-agent")).toHaveValue("codex");
     await page.locator("#new-task-prompt").fill("Repair the redirect loop");
     // Enter inside the name input submits the form.
     await page.locator("#new-task-name").press("Enter");
@@ -151,9 +156,13 @@ test.describe("New task form (NewTaskModal)", () => {
   }) => {
     await boot(page);
     await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
     // Keep the modal open (no navigation) so both clicks land on the button.
     await setResponse(page, "start_task", { __reject: "held-open-unique" });
     await page.locator("#new-task-name").fill("race task");
+    // Gate on the submit being actionable (name committed, handler wired) so the
+    // two synchronous clicks below actually exercise the re-entrancy guard.
+    await expect(page.getByRole("button", { name: "Start task" })).toBeEnabled();
     await clearCalls(page);
 
     // Two synchronous clicks before React can disable the button.
