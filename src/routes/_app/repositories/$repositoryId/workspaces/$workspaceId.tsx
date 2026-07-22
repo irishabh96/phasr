@@ -11,8 +11,9 @@ import {
   PanelRight,
   PanelRightClose,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentStatusBadge } from "@/components/AgentStatusBadge";
+import { SubtaskStatusBadge } from "@/components/SubtaskStatusBadge";
 import { BranchChip } from "@/components/BranchChip";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
@@ -76,6 +77,7 @@ function WorkspaceDetail() {
   const { data: runCommands } = useRunCommands(repositoryId);
   const rightPanelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
+  const setRightPanelCollapsed = useUiStore((s) => s.setRightPanelCollapsed);
   const rightPanelWidth = useUiStore((s) => s.rightPanelWidth);
   const setRightPanelWidth = useUiStore((s) => s.setRightPanelWidth);
   const [resizing, setResizing] = useState(false);
@@ -101,14 +103,41 @@ function WorkspaceDetail() {
   // `command` for the title). ensureInnerTabs is a no-op if already set.
   useEffect(() => {
     if (!workspace) return;
-    // A subtask seeds [brief, main, comments] with brief active by default
-    // (mockup Page 04); agent/local seeds stay the single "main" tab.
+    const isSubtaskKind = workspace.workspaceKind === "subtask";
+    // A subtask seeds [brief, main, comments] (mockup Page 04); agent/local
+    // seeds stay the single "main" tab. A subtask whose agent has ALREADY been
+    // spawned (it owns a worktree → real terminal output exists) lands on the
+    // live "main" Terminal so the user immediately sees what the agent is doing;
+    // a not-yet-started subtask (no worktree) still lands on the Brief.
+    const seedActive: "brief" | "main" =
+      isSubtaskKind && workspace.worktreePath ? "main" : "brief";
     ensureInnerTabs(
       workspaceId,
       workspace.command || workspace.name || "Main",
-      workspace.workspaceKind === "subtask",
+      isSubtaskKind,
+      seedActive,
     );
   }, [workspace, workspaceId, ensureInnerTabs]);
+
+  // #6 — Make a task's changes discoverable. The diff lives in the collapsible
+  // right panel; when it's collapsed the user can miss that the agent produced
+  // changes. Auto-open the panel the first time a workspace surfaces changes —
+  // ONCE per workspace, so a deliberate re-collapse always sticks, and never
+  // when there's nothing to show.
+  const autoOpenedChangesRef = useRef<string | null>(null);
+  useEffect(() => {
+    const count = changes?.length ?? 0;
+    if (!workspace?.worktreePath || count === 0) return;
+    if (autoOpenedChangesRef.current === workspaceId) return;
+    autoOpenedChangesRef.current = workspaceId;
+    if (rightPanelCollapsed) setRightPanelCollapsed(false);
+  }, [
+    changes,
+    workspace?.worktreePath,
+    workspaceId,
+    rightPanelCollapsed,
+    setRightPanelCollapsed,
+  ]);
 
   // ⌘1..⌘9 launch pinned run commands (ordered by sortOrder), matching
   // the numbered chips on the PinnedRunCommandsToolbar.
@@ -264,8 +293,20 @@ function WorkspaceDetail() {
         <div className="flex h-[var(--layout-header-height)] items-center gap-3 pl-4 pr-2">
           <div className="flex shrink-0 items-center gap-2">
             {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
-            {workspace.workspaceKind !== "local" && (
+            {/* Honest status — the SAME derivation the board card + sidebar use,
+                so a card and its detail can never disagree (board vs item). An
+                agent reads its Step 0 `deriveAgentState`; a subtask reads the
+                board-aware `deriveBoardState` (working/idle/wedged · blocked ·
+                needs-review), never a raw "Running" `WorkspaceStatus`. */}
+            {workspace.workspaceKind === "agent" && (
               <AgentStatusBadge
+                workspaceId={workspaceId}
+                repositoryId={repositoryId}
+                changeCount={changeCount}
+              />
+            )}
+            {workspace.workspaceKind === "subtask" && (
+              <SubtaskStatusBadge
                 workspaceId={workspaceId}
                 repositoryId={repositoryId}
                 changeCount={changeCount}

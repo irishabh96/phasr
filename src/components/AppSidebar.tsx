@@ -420,17 +420,22 @@ export function WorkspaceLink({
   active: boolean;
   isExpanded: boolean;
 }) {
-  const isAgent = ws.workspaceKind === "agent";
+  // Both a standalone `agent` and a `subtask` carry a live agent PTY, so both
+  // get the HONEST Step 0 status — never the raw `StatusDot status` (which would
+  // pulse "running" while the agent is quietly idle, disagreeing with the board
+  // card + detail badge). Only a `local` row (no agent) keeps the raw dot/branch.
+  const hasAgent =
+    ws.workspaceKind === "agent" || ws.workspaceKind === "subtask";
   // Latest liveness snapshot + a scoped 1 Hz clock so the honest "Ns ago"
   // counter ticks — only for a running agent, never the whole tree (S0.1).
   const live = useAgentLiveness(ws.id);
   const now = useNow(
-    isAgent &&
+    hasAgent &&
       isLiveState(
         live?.derivedState ?? (ws.status === "running" ? "working" : "stopped"),
       ),
   );
-  const derived = isAgent ? deriveAgentState(ws, live, now) : null;
+  const derived = hasAgent ? deriveAgentState(ws, live, now) : null;
 
   return (
     <WorkspaceSidebarMenu workspace={ws}>

@@ -298,14 +298,20 @@ interface UiState {
   /**
    * Seed the workspace's inner tabs on first mount. For a `subtask` (pass
    * `seedBrief: true`) the seed is `[brief, main(Terminal), comments]` with
-   * **brief active by default** and brief/comments non-closable (mockup Page
-   * 04, spec A2/F3). For every other kind it's the byte-identical single `main`
-   * tab — the standalone agent/local flow is untouched. No-op if already set.
+   * brief/comments non-closable (mockup Page 04, spec A2/F3). For every other
+   * kind it's the byte-identical single `main` tab — the standalone agent/local
+   * flow is untouched. No-op if already set.
+   *
+   * `seedActive` picks the initially-focused subtask tab: `"main"` (the live
+   * agent Terminal) when the agent has already been spawned — its real output
+   * exists, so the user should land on it, not the spec — and `"brief"` for a
+   * not-yet-started subtask. Ignored unless `seedBrief` is true.
    */
   ensureInnerTabs: (
     workspaceId: string,
     mainTitle: string,
     seedBrief?: boolean,
+    seedActive?: "brief" | "main",
   ) => void;
   /** Focus existing "main" tab or create one (used by "+ Open agent" + empty state). */
   openInnerAgentTab: (workspaceId: string, title: string) => InnerTab;
@@ -616,7 +622,12 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   innerTabs: {},
-  ensureInnerTabs: (workspaceId, mainTitle, seedBrief = false) => {
+  ensureInnerTabs: (
+    workspaceId,
+    mainTitle,
+    seedBrief = false,
+    seedActive = "brief",
+  ) => {
     const state = get().innerTabs[workspaceId];
     if (state) return;
     const mainTab: InnerTab = {
@@ -645,7 +656,9 @@ export const useUiStore = create<UiState>((set, get) => ({
           ...get().innerTabs,
           [workspaceId]: {
             tabs: [briefTab, mainTab, commentsTab],
-            activeTabId: briefTab.id,
+            // A live/started subtask lands on its Terminal (the agent output);
+            // a not-yet-started one lands on the Brief. Falls back to brief.
+            activeTabId: seedActive === "main" ? mainTab.id : briefTab.id,
           },
         },
       });
