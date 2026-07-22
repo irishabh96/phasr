@@ -1,12 +1,14 @@
 import {
   AlertTriangle,
   ArrowRight,
+  ChevronRight,
   Loader2,
   Plus,
   Sparkles,
   X,
 } from "lucide-react";
 import { useReducer, useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
@@ -95,6 +97,9 @@ export function DecomposeForm({
   // the Re-plan discard confirm — D-OQ6).
   const [dirty, setDirty] = useState(false);
   const [replanConfirm, setReplanConfirm] = useState(false);
+  // Dependency editor: collapsed to a scannable summary by default; the raw
+  // from→to editor is secondary (opened via the header toggle or "Add edge").
+  const [depsOpen, setDepsOpen] = useState(false);
 
   // Synchronous re-entrancy guard (D1). Belt AND suspenders with `disabled`.
   const inFlightRef = useRef(false);
@@ -105,6 +110,18 @@ export function DecomposeForm({
   const atCap = draft.tickets.length >= MAX_SUBTASKS;
   // Handoff-contract count = fully-wired edges (the footer's honest tally).
   const contractCount = draft.edges.filter((e) => e.fromId && e.toId).length;
+
+  // Read-only projection of the edges → role labels, for the collapsed
+  // "Dependencies" summary (the scannable default read; editing is behind the
+  // toggle). An unset endpoint shows an em-dash so it never reads as a real name.
+  const roleLabelById = new Map(
+    draft.tickets.map((t, i) => [t.id, t.role.trim() || `ticket ${i + 1}`]),
+  );
+  const handoffSummary = draft.edges.map((e) => ({
+    id: e.id,
+    from: e.fromId ? (roleLabelById.get(e.fromId) ?? "removed") : "—",
+    to: e.toId ? (roleLabelById.get(e.toId) ?? "removed") : "—",
+  }));
 
   // Edits go through this so the Re-plan confirm knows the draft is dirty.
   const edit = (action: DraftAction) => {
@@ -125,6 +142,7 @@ export function DecomposeForm({
       setProposedCount(plan.subtasks.length);
       setManualMode(false);
       setDirty(false);
+      setDepsOpen(false);
       setPhase("review");
     } catch (err) {
       // Never a dead end — humanize, seed a manual draft, keep raw for Details.
@@ -135,6 +153,7 @@ export function DecomposeForm({
       setManualMode(true);
       dispatch({ type: "seedManual", fallbackAgent });
       setDirty(false);
+      setDepsOpen(false);
       setPhase("review");
       showToast({
         title: "The planner couldn't draft a plan",
@@ -153,6 +172,7 @@ export function DecomposeForm({
     setManualMode(true);
     dispatch({ type: "seedManual", fallbackAgent });
     setDirty(false);
+    setDepsOpen(false);
     setPhase("review");
   };
 
@@ -354,22 +374,81 @@ export function DecomposeForm({
             </div>
           </div>
 
-          {/* Dependencies box — the mockup's `.dag`. */}
+          {/* Dependencies box — the mockup's `.dag`. Collapsed to a scannable
+              read-only summary by default; the raw from→to editor opens via the
+              header toggle or "Add edge" (which reveals the new row). */}
           <div
             className="rounded-(--radius-panel) border border-(--color-border-default) bg-[color-mix(in_oklab,var(--color-bg-surface)_55%,transparent)] p-3"
             data-testid="decompose-dag"
           >
-            <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-(--color-text-muted)">
-              Dependencies
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-(--color-text-muted)">
+                  Dependencies
+                </span>
+                {draft.edges.length > 0 && (
+                  <span className="text-[11px] text-(--color-text-muted)">
+                    · {draft.edges.length}{" "}
+                    {draft.edges.length === 1 ? "handoff" : "handoffs"}
+                  </span>
+                )}
+              </div>
+              {draft.edges.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setDepsOpen((o) => !o)}
+                  aria-expanded={depsOpen}
+                  data-testid="decompose-deps-toggle"
+                  className="flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+                >
+                  <ChevronRight
+                    className={cn(
+                      "size-3 transition-transform duration-(--duration-glass) ease-(--ease-glass)",
+                      depsOpen && "rotate-90",
+                    )}
+                    aria-hidden="true"
+                  />
+                  {depsOpen ? "Done" : "Edit"}
+                </button>
+              )}
             </div>
 
-            {draft.edges.length === 0 && (
-              <p className="mb-2 text-[11.5px] text-(--color-text-muted)">
-                No handoffs — every ticket runs independently.
-              </p>
-            )}
+            {/* Collapsed: the scannable read-only summary. */}
+            {!depsOpen &&
+              (draft.edges.length === 0 ? (
+                <p className="mt-2 text-[11.5px] text-(--color-text-muted)">
+                  No handoffs — every ticket runs independently.
+                </p>
+              ) : (
+                <ul
+                  className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5"
+                  data-testid="decompose-deps-summary"
+                >
+                  {handoffSummary.map((h) => (
+                    <li
+                      key={h.id}
+                      className="flex items-center gap-1.5 text-[11.5px] text-(--color-text-secondary)"
+                    >
+                      <span className="font-medium">{h.from}</span>
+                      <ArrowRight
+                        className="size-3 text-(--color-text-muted)"
+                        aria-hidden="true"
+                      />
+                      <span className="font-medium">{h.to}</span>
+                    </li>
+                  ))}
+                </ul>
+              ))}
 
-            <div className="flex flex-col gap-2">
+            {/* Editable rows stay mounted so validation + the plan submit read
+                every edge even while the summary is showing; hidden (not
+                unmounted) when collapsed. */}
+            <div
+              className={cn(
+                "mt-2.5 flex-col gap-2",
+                depsOpen ? "flex" : "hidden",
+              )}
+            >
               {draft.edges.map((edge) => (
                 <EdgeRow
                   key={edge.id}
@@ -382,25 +461,29 @@ export function DecomposeForm({
                   onRemove={() => edit({ type: "removeEdge", id: edge.id })}
                 />
               ))}
+            </div>
 
-              <div>
-                <GlassButton
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  onClick={() => edit({ type: "addEdge" })}
-                  disabled={draft.tickets.length < 2}
-                  data-testid="decompose-add-edge"
-                  title={
-                    draft.tickets.length < 2
-                      ? "Add a second ticket to create a handoff."
-                      : undefined
-                  }
-                >
-                  <Plus className="size-3.5" aria-hidden="true" />
-                  Add edge
-                </GlassButton>
-              </div>
+            <div className="mt-2.5">
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                type="button"
+                onClick={() => {
+                  // Reveal the editor so the freshly-added row is reachable.
+                  setDepsOpen(true);
+                  edit({ type: "addEdge" });
+                }}
+                disabled={draft.tickets.length < 2}
+                data-testid="decompose-add-edge"
+                title={
+                  draft.tickets.length < 2
+                    ? "Add a second ticket to create a handoff."
+                    : undefined
+                }
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                Add edge
+              </GlassButton>
             </div>
           </div>
         </>
@@ -549,8 +632,9 @@ function TicketRow({
           data-testid="decompose-prompt"
           aria-label={`Prompt for ${label}`}
           placeholder={`What should the ${label} agent do?`}
-          rows={2}
-          className="text-[12px]"
+          autoGrow
+          rows={3}
+          className="max-h-[40vh] text-[12px] leading-[1.55]"
         />
       </div>
 

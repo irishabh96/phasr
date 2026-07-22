@@ -1,5 +1,8 @@
 import {
   forwardRef,
+  useCallback,
+  useLayoutEffect,
+  useRef,
   type InputHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
@@ -39,17 +42,48 @@ export const GlassInput = forwardRef<HTMLInputElement, InputProps>(
 );
 GlassInput.displayName = "GlassInput";
 
-type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
+interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
+  /**
+   * Grow the field to fit its content (up to any `max-height` set via
+   * `className`, after which it scrolls internally). `rows` still sets the
+   * MINIMUM height. Opt-in so existing fixed-height callers are unchanged.
+   */
+  autoGrow?: boolean;
+}
 
 export const GlassTextarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ className, rows = 3, ...props }, ref) => {
+  ({ className, rows = 3, autoGrow = false, value, ...props }, ref) => {
+    const innerRef = useRef<HTMLTextAreaElement | null>(null);
+
+    // Merge the forwarded ref with our own so auto-grow can measure the node.
+    const setRef = useCallback(
+      (node: HTMLTextAreaElement | null) => {
+        innerRef.current = node;
+        if (typeof ref === "function") ref(node);
+        else if (ref) ref.current = node;
+      },
+      [ref],
+    );
+
+    // Reset to `auto` then snap to scrollHeight so the field both grows AND
+    // shrinks with its content. Runs before paint (no visible reflow jump).
+    useLayoutEffect(() => {
+      if (!autoGrow) return;
+      const el = innerRef.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    }, [autoGrow, value]);
+
     return (
       <textarea
-        ref={ref}
+        ref={setRef}
         rows={rows}
+        value={value}
         className={cn(
           inputBaseClasses,
           "py-2 px-3 text-[13px] resize-none leading-relaxed",
+          autoGrow && "overflow-y-auto",
           className,
         )}
         {...props}
