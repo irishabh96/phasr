@@ -163,13 +163,21 @@ test.describe("Git / diff / changes", () => {
     }
   });
 
-  test("local workspace shows NO actions menu / remove button (intentional)", async ({ page }) => {
+  test("local workspace: ⋯ menu keeps Run/Open-in but has NO destructive actions", async ({ page }) => {
     await bootApp(page);
     await page.goto("/repositories/repo-1/workspaces/ws-local");
     await expect(page).toHaveURL(/ws-local/, { timeout: 8000 });
     await page.waitForTimeout(500);
-    expect(await page.getByRole("button", { name: /workspace actions/i }).count()).toBe(0);
-    expect(await page.getByRole("button", { name: /remove from phasr/i }).count()).toBe(0);
+    // M3 consolidation: a local (terminal) workspace now DOES show the ⋯ menu —
+    // it keeps the Run + Open-in sections that used to sit in the header — but the
+    // agent-workspace destructive actions stay gated off for a bare terminal.
+    const menuBtn = page.getByRole("button", { name: /workspace actions/i });
+    await expect(menuBtn).toHaveCount(1);
+    await menuBtn.click();
+    const forbidden = page.getByRole("menuitem", {
+      name: /delete workspace|archive|merge|pull request|remove from phasr/i,
+    });
+    expect(await forbidden.count()).toBe(0);
   });
 });
 
