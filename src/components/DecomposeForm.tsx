@@ -542,7 +542,11 @@ export function DecomposeForm({
             <ArrowRight className="size-3.5" aria-hidden="true" />
             {submitting
               ? "Starting…"
-              : `Start ${n} ${n === 1 ? "agent" : "agents"}`}
+              : phase === "planning"
+                ? "Planning…"
+                : phase === "review"
+                  ? `Start ${n} ${n === 1 ? "agent" : "agents"}`
+                  : "Start"}
           </GlassButton>
         </div>
       </div>
