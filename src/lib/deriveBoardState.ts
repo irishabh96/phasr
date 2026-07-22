@@ -98,14 +98,16 @@ function isBlocked(subtask: Workspace, board: BoardGraph): boolean {
  *
  * `review` is optional + derived-only — passing `undefined` reproduces the P0
  * behavior exactly (no review ever moves the lane), keeping every existing
- * call-site correct.
+ * call-site correct. Only `.state` is read here, so the param is widened to the
+ * trimmed `Pick<ReviewRecord, "state">` — a full `ReviewRecord` (board route) OR
+ * the worklist's slimmer `SubtaskReview` ({@link WorklistSubtask}, M4) both fit.
  */
 export function deriveBoardState(
   subtask: Workspace,
   board: BoardGraph,
   liveness: AgentLiveness | undefined,
   now: number,
-  review?: ReviewRecord,
+  review?: Pick<ReviewRecord, "state">,
 ): BoardCardResult {
   const agent = deriveAgentState(subtask, liveness, now);
 

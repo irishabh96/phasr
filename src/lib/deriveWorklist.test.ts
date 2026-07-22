@@ -9,6 +9,7 @@ import type { BoardCardState } from "./deriveBoardState";
 import type { AgentLiveness } from "./deriveAgentState";
 import type {
   BoardState,
+  SubtaskReview,
   Workspace,
   WorkspaceContract,
   WorkspaceDependency,
@@ -354,5 +355,92 @@ describe("buildWorklistItems — autopilot epic routing (Phase 5a §7)", () => {
     state.boards[0]!.parent.autopilotEnabled = false;
     const items = buildWorklistItems(state, NO_LIVENESS, NOW);
     expect(items.find((i) => i.id === "ap-done")!.bucket).toBe("needs-you");
+  });
+});
+
+describe("buildWorklistItems — M4: a subtask's review decision moves the honest lane", () => {
+  const NO_LIVENESS: Record<string, AgentLiveness> = {};
+
+  /**
+   * One epic with a single clean-exit subtask. ABSENT a review it derives to
+   * `needs-review` ("Ready for review"); `review` side-loads the reviewer's
+   * decision inline (M4 wire — `WorklistSubtask.review`) so the worklist can tell
+   * "awaiting your review" apart from a bounced ticket the agent must rework.
+   */
+  function reviewedWorklist(review: SubtaskReview | null): WorklistState {
+    return {
+      repositories: [{ id: "repo-1", name: "payments-app" }],
+      boards: [
+        {
+          parent: ws({
+            id: "epic-r",
+            workspaceKind: "parent",
+            name: "checkout",
+            prompt: "Add comments to checkout",
+            agent: null,
+            parentId: null,
+          }),
+          subtasks: [
+            {
+              ...ws({
+                id: "ticket",
+                parentId: "epic-r",
+                role: "backend",
+                name: "comments API",
+                status: "completed",
+                exitCode: 0,
+                finishedAt: iso(60_000),
+              }),
+              review,
+            },
+          ],
+          dependencies: [],
+          contracts: [],
+        },
+      ],
+      looseAgents: [],
+    };
+  }
+
+  it("a bounced ticket (review 'changes-requested') derives to the re-work state, NOT a review invite", () => {
+    const items = buildWorklistItems(
+      reviewedWorklist({ state: "changes-requested", atMs: NOW - 30_000 }),
+      NO_LIVENESS,
+      NOW,
+    );
+    const ticket = items.find((i) => i.id === "ticket")!;
+    // The M4 fix: threading `subtask.review` re-opens this clean-exit subtask for
+    // re-work instead of collapsing it to `needs-review` (a false "Ready for review").
+    expect(ticket.state).toBe("qas-changes-requested");
+    expect(ticket.state).not.toBe("needs-review");
+    expect(ticket.bucket).toBe("needs-you");
+  });
+
+  it("a ticket at review 'requested' derives to in-review (still the review flow, not re-work)", () => {
+    const items = buildWorklistItems(
+      reviewedWorklist({ state: "requested", atMs: NOW - 30_000 }),
+      NO_LIVENESS,
+      NOW,
+    );
+    const ticket = items.find((i) => i.id === "ticket")!;
+    expect(ticket.state).toBe("in-review");
+    expect(ticket.state).not.toBe("qas-changes-requested");
+    expect(ticket.bucket).toBe("needs-you");
+  });
+
+  it("the SAME subtask with no review (null) stays the needs-review invite", () => {
+    const items = buildWorklistItems(reviewedWorklist(null), NO_LIVENESS, NOW);
+    const ticket = items.find((i) => i.id === "ticket")!;
+    expect(ticket.state).toBe("needs-review");
+    expect(ticket.bucket).toBe("needs-you");
+  });
+
+  it("an approved ticket collapses back to needs-review (integrate-eligible)", () => {
+    const items = buildWorklistItems(
+      reviewedWorklist({ state: "approved", atMs: NOW - 30_000 }),
+      NO_LIVENESS,
+      NOW,
+    );
+    expect(items.find((i) => i.id === "ticket")!.state).toBe("needs-review");
   });
 });

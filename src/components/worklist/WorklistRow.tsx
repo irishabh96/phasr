@@ -5,7 +5,12 @@ import type {
 } from "react";
 import { Eye, Lock } from "lucide-react";
 import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
+import {
+  ChangesRequestedChip,
+  InReviewChip,
+} from "@/components/board/GateChips";
 import { AgentStatusIndicator } from "@/components/ui/AgentStatusIndicator";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import type { BoardCardState } from "@/lib/deriveBoardState";
 import type { AgentUiState } from "@/lib/deriveAgentState";
 import type { WorklistItem } from "@/lib/deriveWorklist";
@@ -23,7 +28,12 @@ const AGENT_MARK: Record<Agent, string> = {
 
 /** A board-only bucket state (never a plain honest agent state). */
 function isAgentUiState(state: BoardCardState): state is AgentUiState {
-  return state !== "blocked" && state !== "needs-review";
+  return (
+    state !== "blocked" &&
+    state !== "needs-review" &&
+    state !== "in-review" &&
+    state !== "qas-changes-requested"
+  );
 }
 
 /**
@@ -33,9 +43,11 @@ function isAgentUiState(state: BoardCardState): state is AgentUiState {
  * color (persona/agent-type are neutral; coral is reserved for selection).
  *
  * REUSES the Step 0 honest-status components verbatim (`AgentStatusIndicator` +
- * `AgentStatusBadgeView`) so a worklist row can never lie; the two board-only
- * buckets (`blocked` / `needs-review`) get calm, purpose-built chips — blocked
- * is MUTED (never coral: it is not the user's fault).
+ * `AgentStatusBadgeView`) so a worklist row can never lie; the board-only buckets
+ * get calm, purpose-built chips — `blocked` is MUTED (never coral: it is not the
+ * user's fault), `needs-review`/`in-review` are soft `info` review invites, and a
+ * bounced `qas-changes-requested` ticket gets the neutral re-work chip (M4), so
+ * the worklist tells "awaiting your review" apart from "the agent must rework".
  *
  * Roving-tabindex list item: `selected` sets `tabIndex=0` + `aria-selected`;
  * `Enter`/`Space`/click `open` it (subtask → ticket detail, loose agent → its
@@ -110,6 +122,10 @@ export function WorklistRow({
           />
         ) : item.state === "blocked" ? (
           <BlockedChip blockedOnRoles={item.blockedOnRoles} />
+        ) : item.state === "in-review" ? (
+          <InReviewChip />
+        ) : item.state === "qas-changes-requested" ? (
+          <ChangesRequestedChip />
         ) : (
           <ReviewChip />
         )}
@@ -170,16 +186,21 @@ function PersonaChip({ role }: { role: string }) {
   );
 }
 
-/** Small neutral agent-type mark (C/O/G/OC…). */
+/**
+ * Small neutral agent-type mark (C/O/G/OC…). The full agent name rides a
+ * `GlassTooltip` (L2) — the app's tooltip, not a native `title=` that breaks the
+ * glass look.
+ */
 function AgentTypeMark({ agent }: { agent: Agent }) {
   return (
-    <span
-      data-testid="worklist-agent-mark"
-      title={agent}
-      className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-[3px] text-[9px] font-bold leading-none tracking-wide text-(--color-text-muted)"
-    >
-      {AGENT_MARK[agent]}
-    </span>
+    <GlassTooltip content={agent} side="top">
+      <span
+        data-testid="worklist-agent-mark"
+        className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-[3px] text-[9px] font-bold leading-none tracking-wide text-(--color-text-muted)"
+      >
+        {AGENT_MARK[agent]}
+      </span>
+    </GlassTooltip>
   );
 }
 

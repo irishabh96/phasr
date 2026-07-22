@@ -377,7 +377,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
                             return next;
                           })
                         }
-                        className="self-start rounded-[8px] px-2 py-1 text-[11.5px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+                        className="inline-flex min-h-8 items-center self-start rounded-[8px] px-2 py-1 text-[11.5px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
                       >
                         Show {hidden} more
                       </button>
@@ -427,7 +427,9 @@ function Chip({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "inline-flex h-[26px] items-center gap-1.5 rounded-full px-2.5 text-[11.5px]",
+        // ≥32px min hit target (L4) via min-height, not a bulkier pill — the
+        // small text stays centered in a comfortably tappable box.
+        "inline-flex min-h-8 items-center gap-1.5 rounded-full px-2.5 text-[11.5px]",
         "transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border border-transparent bg-(--color-bg-selected) text-(--color-text-primary)"

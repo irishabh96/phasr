@@ -183,6 +183,10 @@ export function buildWorklistItems(
         board,
         liveness[subtask.id],
         now,
+        // M4: the subtask's review decision layers over the honest lane so a
+        // bounced (`changes-requested`) ticket derives to the re-work state
+        // instead of collapsing to `needs-review` (a false "Ready for review").
+        subtask.review ?? undefined,
       );
       items.push({
         id: subtask.id,
