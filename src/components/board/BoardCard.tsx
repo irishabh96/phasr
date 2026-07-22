@@ -1,8 +1,8 @@
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Eye, Lock } from "lucide-react";
 import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
-import { AgentStatusIndicator } from "@/components/ui/AgentStatusIndicator";
 import { NextGateButton } from "@/components/board/NextGateButton";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import {
   ApprovedChip,
   ChangesRequestedChip,
@@ -12,8 +12,21 @@ import {
 import type { BoardCardState } from "@/lib/deriveBoardState";
 import type { AgentUiState } from "@/lib/deriveAgentState";
 import type { GateVerb, NextGate } from "@/lib/deriveNextGate";
-import type { ReviewRecord, ValidateResult } from "@/lib/types";
+import type { Agent, ReviewRecord, ValidateResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/**
+ * Short neutral agent-type mark (mockup Page 01: claude→C, codex→O, …). Mirrors
+ * the worklist's mark verbatim so the same agent reads identically in both
+ * surfaces — never colored (only status carries color).
+ */
+const AGENT_MARK: Record<Agent, string> = {
+  claude: "C",
+  codex: "O",
+  copilot: "CP",
+  gemini: "G",
+  opencode: "OC",
+};
 
 /** A board-card state that is a plain honest agent state (Step 0). */
 function isAgentUiState(state: BoardCardState): state is AgentUiState {
@@ -29,6 +42,8 @@ export interface BoardCardViewProps {
   /** DAG slot label, e.g. "backend" / "frontend". `null` renders the name only. */
   role: string | null;
   name: string;
+  /** The ticket's agent type — rendered as the quiet neutral mark (C/O/G…). */
+  agent?: Agent | null;
   state: BoardCardState;
   since: number | null;
   exitCode?: number | null;
@@ -81,6 +96,7 @@ export interface BoardCardViewProps {
 export function BoardCardView({
   role,
   name,
+  agent,
   state,
   since,
   exitCode,
@@ -116,27 +132,33 @@ export function BoardCardView({
       data-role={role ?? undefined}
       {...activation}
       className={cn(
-        "flex flex-col gap-2 rounded-(--radius-panel) border border-(--color-border-default) bg-(--color-bg-surface) p-3",
+        "flex flex-col gap-3 rounded-(--radius-panel) border border-(--color-border-default) bg-(--color-bg-surface) p-3.5",
         interactive &&
           "cursor-pointer outline-none transition-colors duration-150 hover:border-(--color-border-strong) hover:bg-(--color-bg-elevated) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
       )}
     >
-      <div className="flex items-center gap-2">
-        <CardGlyph state={state} />
-        {role && (
-          <span
+      {/* Identity — the role reads as a clean title; the agent mark is a quiet
+          neutral aside; the ticket name is a muted subline (never the star, so
+          it truncates gracefully at its own full width, not mid-word). */}
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <h4
             data-testid="board-card-role"
-            className="rounded-full border border-(--glass-border-hairline) bg-(--color-bg-input) px-2 py-0.5 text-[11px] font-medium text-(--color-text-primary)"
+            className="min-w-0 flex-1 truncate text-[13px] font-semibold capitalize leading-tight text-(--color-text-primary)"
           >
-            {role}
-          </span>
-        )}
-        <span className="min-w-0 truncate text-[12px] text-(--color-text-secondary)">
-          {name}
-        </span>
+            {role ?? name}
+          </h4>
+          {agent ? <AgentTypeMark agent={agent} /> : null}
+        </div>
+        {role ? (
+          <p className="truncate text-[11.5px] leading-tight text-(--color-text-muted)">
+            {name}
+          </p>
+        ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Status — quiet. Only status carries semantic color. */}
+      <div className="flex flex-wrap items-center gap-1.5">
         {isAgentUiState(state) ? (
           <AgentStatusBadgeView
             state={state}
@@ -163,40 +185,47 @@ export function BoardCardView({
             checksConfigured={checksConfigured}
           />
         ) : null}
-
-        {/* The one derived next gate for this ticket (generalizes Mark-done). */}
-        {gate ? (
-          <span
-            className="ml-auto shrink-0"
-            // Nested interactive controls inside a clickable card — never open
-            // the drill-in when the gate (or its dialogs) is used.
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-          >
-            <NextGateButton
-              gate={gate}
-              size="sm"
-              pending={gatePending}
-              onRun={onRunGate ?? (() => {})}
-              {...(onBounceGate ? { onBounce: onBounceGate } : {})}
-            />
-          </span>
-        ) : null}
       </div>
+
+      {/* The one derived next gate for this ticket (generalizes Mark-done) — on
+          its own action row so it never fights the status chips, and coral
+          (when it's the enabled primary) is the card's single loud element. */}
+      {gate ? (
+        <div
+          className="flex flex-wrap gap-1.5"
+          // Nested interactive controls inside a clickable card — never open the
+          // drill-in when the gate (or its dialogs) is used.
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <NextGateButton
+            gate={gate}
+            size="sm"
+            pending={gatePending}
+            onRun={onRunGate ?? (() => {})}
+            {...(onBounceGate ? { onBounce: onBounceGate } : {})}
+          />
+        </div>
+      ) : null}
     </article>
   );
 }
 
-/** The leading glyph — reuses the Step 0 indicator for real agent states. */
-function CardGlyph({ state }: { state: BoardCardState }) {
-  if (isAgentUiState(state)) return <AgentStatusIndicator state={state} />;
-  const Icon = state === "blocked" ? Lock : Eye;
-  const color =
-    state === "blocked" ? "var(--color-text-muted)" : "var(--color-info)";
+/**
+ * Small neutral agent-type mark (C/O/G/OC…) — mirrors the worklist mark so an
+ * agent reads identically across surfaces. The full agent name rides a
+ * `GlassTooltip` (the app's tooltip, not a native `title=`).
+ */
+function AgentTypeMark({ agent }: { agent: Agent }) {
   return (
-    <span className="inline-flex size-4 shrink-0 items-center justify-center">
-      <Icon className="size-[14px]" style={{ color }} aria-hidden="true" />
-    </span>
+    <GlassTooltip content={agent} side="top">
+      <span
+        data-testid="board-agent-mark"
+        className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-[3px] text-[9px] font-bold leading-none tracking-wide text-(--color-text-muted)"
+      >
+        {AGENT_MARK[agent]}
+      </span>
+    </GlassTooltip>
   );
 }
 

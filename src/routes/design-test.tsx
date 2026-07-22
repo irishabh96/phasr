@@ -203,6 +203,32 @@ const BOARD_INTEGRABLE: BoardState = {
   ],
 };
 
+// Mostly-empty: a single just-started ticket, so three lanes stand empty —
+// exercises the calm empty-lane placeholder across the board.
+const BOARD_EMPTY: BoardState = {
+  parent: mockWs({
+    id: "parent-empty",
+    workspaceKind: "parent",
+    name: "task-comments",
+    prompt: "Add a task-comments API and wire the comments UI",
+    agent: null,
+    parentId: null,
+    role: null,
+  }),
+  subtasks: [
+    mockWs({
+      id: "sub-backend",
+      parentId: "parent-empty",
+      role: "backend",
+      name: "comments API",
+      status: "running",
+      startedAt: isoAgo(30_000),
+    }),
+  ],
+  dependencies: [],
+  contracts: [],
+};
+
 // Handoff: backend published its contract (→ needs-review), frontend now
 // running (→ working).
 const BOARD_HANDOFF: BoardState = {
@@ -856,6 +882,13 @@ function DesignTest() {
             Board · fresh (backend working, frontend blocked)
           </h2>
           <BoardView board={BOARD_FRESH} />
+        </section>
+
+        <section data-testid="board-empty" className="flex flex-col gap-3">
+          <h2 className="text-[13px] font-semibold text-(--color-text-secondary)">
+            Board · mostly empty (one ticket, three empty lanes)
+          </h2>
+          <BoardView board={BOARD_EMPTY} />
         </section>
 
         <section data-testid="board-handoff" className="flex flex-col gap-3">
