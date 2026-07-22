@@ -147,9 +147,18 @@ async fn run_planner(
             prompt,
             "--output-format",
             "json",
-            // Read-only: inspect the codebase, never mutate it (D-OQ10).
-            "--permission-mode",
-            "plan",
+            // One-shot structured decomposition, NOT an agentic session:
+            // `--tools ""` disables all tools (else the model tries to explore the
+            // codebase and burns the timeout on tool turns / emits fake tool calls
+            // when tools are off), and `--effort low` stops it "thinking" for ~90s
+            // before the first token. Together: a valid plan in ~5–30s, well under
+            // the timeout, instead of a guaranteed Timeout. The decomposition is a
+            // draft the user reviews/edits, so deep code inspection isn't worth a
+            // dead front door.
+            "--tools",
+            "",
+            "--effort",
+            "low",
         ])
         .current_dir(repo_dir)
         .stdin(Stdio::null())
@@ -345,8 +354,8 @@ each assigned to one agent, connected by a dependency DAG of producer→consumer
 ## Repository\n\
 - name: {repo_name}\n\
 - branch: {branch}\n\
-You are running READ-ONLY inside this repository — inspect the codebase (file layout, \
-stack, existing patterns) to inform the decomposition. Do NOT modify any files.\n\n\
+Decompose from the goal and the repository name/branch above. Do NOT attempt to read \
+files or use tools — reply directly with ONLY the plan.\n\n\
 ## Agents available (pick the best fit per ticket)\n{agents}\n\
 ## Roles\n\
 Each ticket has a unique, kebab-case `role` naming the slice of work; roles are the \
