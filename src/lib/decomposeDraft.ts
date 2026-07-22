@@ -56,6 +56,7 @@ export type DraftAction =
   | { type: "setAgent"; id: string; agent: Agent }
   | { type: "setPrompt"; id: string; prompt: string }
   | { type: "addEdge" }
+  | { type: "addDependency"; fromId: string; toId: string }
   | { type: "removeEdge"; id: string }
   | { type: "setEdgeFrom"; id: string; fromId: string }
   | { type: "setEdgeTo"; id: string; toId: string };
@@ -173,6 +174,27 @@ export function draftReducer(
       return {
         ...state,
         edges: [...state.edges, { id, fromId: "", toId: "" }],
+        seq,
+      };
+    }
+
+    case "addDependency": {
+      // One-shot, fully-formed edge for the INLINE per-ticket dependency editor
+      // (the "waits for X" picker on each ticket card). Same edge model as
+      // `addEdge` + setEdgeFrom/To, but atomic so a single `selectOption` wires a
+      // complete handoff. Idempotent: never duplicates an existing edge.
+      const exists = state.edges.some(
+        (e) => e.fromId === action.fromId && e.toId === action.toId,
+      );
+      if (exists || action.fromId === "" || action.toId === "") return state;
+      let seq = state.seq;
+      const id = `e${seq++}`;
+      return {
+        ...state,
+        edges: [
+          ...state.edges,
+          { id, fromId: action.fromId, toId: action.toId },
+        ],
         seq,
       };
     }

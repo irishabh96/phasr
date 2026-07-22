@@ -160,11 +160,16 @@ test.describe("planner review surface (/design-test)", () => {
       .getByTestId("decompose-prompt")
       .fill("Fifth ticket work");
 
-    // Add an edge api → role-5.
-    await form.getByTestId("decompose-add-edge").click();
-    const newEdge = form.getByTestId("decompose-edge").last();
-    await newEdge.getByTestId("decompose-edge-from").selectOption({ label: "api" });
-    await newEdge.getByTestId("decompose-edge-to").selectOption({ label: "role-5" });
+    // Add an edge api → role-5 via role-5's INLINE dependency picker
+    // (dependencies now live on the ticket, not a separate DAG editor).
+    await form
+      .getByTestId("decompose-ticket")
+      .nth(4)
+      .getByTestId("decompose-dep-add")
+      .selectOption({ label: "api" });
+    await expect(
+      form.getByTestId("decompose-ticket").nth(4).getByTestId("decompose-edge"),
+    ).toContainText("api");
 
     // Nothing has persisted through all of that editing.
     expect(await PLANNER_CALLS(page, "start_decomposition")).toBe(0);
@@ -233,11 +238,13 @@ test.describe("planner review surface (/design-test)", () => {
     page,
   }) => {
     const form = await plan(page);
-    // backend → frontend already exists; add frontend → backend to close a cycle.
-    await form.getByTestId("decompose-add-edge").click();
-    const cyc = form.getByTestId("decompose-edge").last();
-    await cyc.getByTestId("decompose-edge-from").selectOption({ label: "frontend" });
-    await cyc.getByTestId("decompose-edge-to").selectOption({ label: "backend" });
+    // backend → frontend already exists; make backend also WAIT FOR frontend
+    // (via backend's inline picker) to close a cycle.
+    await form
+      .getByTestId("decompose-ticket")
+      .first()
+      .getByTestId("decompose-dep-add")
+      .selectOption({ label: "frontend" });
 
     await expect(form.getByTestId("decompose-submit")).toBeDisabled();
     await expect(form.getByTestId("decompose-reason")).toContainText("cycle");

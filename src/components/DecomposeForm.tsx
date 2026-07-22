@@ -1,27 +1,24 @@
 import {
   AlertTriangle,
   ArrowRight,
-  ChevronRight,
+  CornerDownRight,
   Loader2,
   Plus,
   Sparkles,
   X,
 } from "lucide-react";
 import { useReducer, useRef, useState } from "react";
-import { cn } from "@/lib/utils";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { ConfirmDialog } from "@/components/ui/Dialog";
 import {
   MAX_SUBTASKS,
-  dependencyRoles,
   draftReducer,
   emptyDraft,
   toDecompositionInput,
   validateDraft,
   type DraftAction,
-  type DraftEdge,
   type DraftState,
   type DraftTicket,
 } from "@/lib/decomposeDraft";
@@ -50,9 +47,14 @@ type Phase = "idle" | "planning" | "review";
 /**
  * The Planner review/edit surface (FE-1, mockup Page 02). The user types one
  * goal, the planner proposes N tickets + a dependency DAG, and every field is
- * editable — persona/role, agent-type, prompt, and the edges — before a single
- * "Start N agents" click submits the whole plan through the UNCHANGED
+ * editable — persona/role, agent-type, prompt, and the handoffs — before a
+ * single "Start N agents" click submits the whole plan through the UNCHANGED
  * `start_decomposition` gate. Nothing persists before that click.
+ *
+ * Dependencies are edited INLINE on each ticket ("waits for X" chips + a
+ * "Depends on…" picker), so the read view and the edit affordance are the same
+ * object — there is no separate DAG editor. Every incoming handoff carries the
+ * `decompose-edge` testid so the plan's edges stay assertable end-to-end.
  *
  * Never a dead end: a planner failure drops straight into manual editing (a
  * seeded blank ticket) so the user can still hand-build and Start a plan.
@@ -97,9 +99,6 @@ export function DecomposeForm({
   // the Re-plan discard confirm — D-OQ6).
   const [dirty, setDirty] = useState(false);
   const [replanConfirm, setReplanConfirm] = useState(false);
-  // Dependency editor: collapsed to a scannable summary by default; the raw
-  // from→to editor is secondary (opened via the header toggle or "Add edge").
-  const [depsOpen, setDepsOpen] = useState(false);
 
   // Synchronous re-entrancy guard (D1). Belt AND suspenders with `disabled`.
   const inFlightRef = useRef(false);
@@ -111,17 +110,11 @@ export function DecomposeForm({
   // Handoff-contract count = fully-wired edges (the footer's honest tally).
   const contractCount = draft.edges.filter((e) => e.fromId && e.toId).length;
 
-  // Read-only projection of the edges → role labels, for the collapsed
-  // "Dependencies" summary (the scannable default read; editing is behind the
-  // toggle). An unset endpoint shows an em-dash so it never reads as a real name.
+  // Stable role label per client id, for the inline "waits for X" chips and the
+  // "Depends on…" picker options (an unset role falls back to a positional name).
   const roleLabelById = new Map(
     draft.tickets.map((t, i) => [t.id, t.role.trim() || `ticket ${i + 1}`]),
   );
-  const handoffSummary = draft.edges.map((e) => ({
-    id: e.id,
-    from: e.fromId ? (roleLabelById.get(e.fromId) ?? "removed") : "—",
-    to: e.toId ? (roleLabelById.get(e.toId) ?? "removed") : "—",
-  }));
 
   // Edits go through this so the Re-plan confirm knows the draft is dirty.
   const edit = (action: DraftAction) => {
@@ -142,7 +135,6 @@ export function DecomposeForm({
       setProposedCount(plan.subtasks.length);
       setManualMode(false);
       setDirty(false);
-      setDepsOpen(false);
       setPhase("review");
     } catch (err) {
       // Never a dead end — humanize, seed a manual draft, keep raw for Details.
@@ -153,7 +145,6 @@ export function DecomposeForm({
       setManualMode(true);
       dispatch({ type: "seedManual", fallbackAgent });
       setDirty(false);
-      setDepsOpen(false);
       setPhase("review");
       showToast({
         title: "The planner couldn't draft a plan",
@@ -172,7 +163,6 @@ export function DecomposeForm({
     setManualMode(true);
     dispatch({ type: "seedManual", fallbackAgent });
     setDirty(false);
-    setDepsOpen(false);
     setPhase("review");
   };
 
@@ -215,15 +205,15 @@ export function DecomposeForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex flex-col gap-4"
+      className="flex flex-col gap-6"
       data-testid="decompose-form"
       aria-label="Plan and start a decomposition"
     >
       {/* ── Goal ─────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2">
         <label
           htmlFor="decompose-goal"
-          className="text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)"
+          className="text-[11px] font-semibold uppercase tracking-[0.08em] text-(--color-text-muted)"
         >
           Goal
         </label>
@@ -239,11 +229,12 @@ export function DecomposeForm({
               void runPlanner();
           }}
           placeholder="e.g. add task-comments to checkout: API, web UI, docs, and QA"
+          className="h-10 text-[14px]"
         />
 
         {/* Planner status line — the mockup's `.planning` row. */}
         {phase === "idle" && (
-          <div className="mt-1 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
             <GlassButton
               variant="primary"
               size="sm"
@@ -259,7 +250,7 @@ export function DecomposeForm({
               type="button"
               onClick={skipToManual}
               data-testid="decompose-skip-ai"
-              className="text-[11.5px] text-(--color-text-muted) underline-offset-2 hover:text-(--color-text-primary) hover:underline"
+              className="text-[12px] text-(--color-text-muted) underline-offset-2 hover:text-(--color-text-primary) hover:underline"
             >
               Skip AI, edit manually
             </button>
@@ -268,24 +259,30 @@ export function DecomposeForm({
 
         {phase === "planning" && (
           <div
-            className="mt-1 flex items-center gap-2 text-[11.5px] text-(--color-text-muted)"
+            className="flex items-center gap-2 pt-0.5 text-[12px] text-(--color-text-muted)"
             data-testid="decompose-planning"
           >
-            <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
             Planning… reading the repository and proposing tickets.
           </div>
         )}
 
         {phase === "review" && !manualMode && proposedCount != null && (
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11.5px] text-(--color-text-muted)">
-            <Sparkles className="size-3 text-(--color-accent-text)" aria-hidden="true" />
-            Planner proposed {proposedCount}{" "}
-            {proposedCount === 1 ? "ticket" : "tickets"} ·{" "}
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[12px] text-(--color-text-muted)">
+            <Sparkles
+              className="size-3.5 text-(--color-text-muted)"
+              aria-hidden="true"
+            />
+            Planner proposed{" "}
+            <span className="font-medium text-(--color-text-secondary)">
+              {proposedCount} {proposedCount === 1 ? "ticket" : "tickets"}
+            </span>
+            <span aria-hidden="true">·</span>
             <button
               type="button"
               onClick={requestReplan}
               data-testid="decompose-replan"
-              className="text-(--color-accent-text) hover:underline"
+              className="font-medium text-(--color-text-secondary) underline-offset-2 hover:text-(--color-text-primary) hover:underline"
             >
               Re-plan
             </button>
@@ -293,15 +290,12 @@ export function DecomposeForm({
         )}
 
         {phase === "review" && manualMode && (
-          <div
-            className="mt-1 flex flex-col gap-1"
-            data-testid="decompose-manual-note"
-          >
-            <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-(--color-text-muted)">
+          <div className="flex flex-col gap-1.5 pt-0.5" data-testid="decompose-manual-note">
+            <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-(--color-text-muted)">
               {plannerError ? (
                 <>
                   <AlertTriangle
-                    className="size-3 text-(--color-warning)"
+                    className="size-3.5 text-(--color-warning)"
                     aria-hidden="true"
                   />
                   {plannerError} Build the plan by hand ·{" "}
@@ -313,7 +307,7 @@ export function DecomposeForm({
                 type="button"
                 onClick={requestReplan}
                 data-testid="decompose-replan"
-                className="text-(--color-accent-text) hover:underline"
+                className="font-medium text-(--color-text-secondary) underline-offset-2 hover:text-(--color-text-primary) hover:underline disabled:opacity-50"
                 disabled={trimmedGoal.length === 0}
               >
                 Try the planner again
@@ -321,13 +315,13 @@ export function DecomposeForm({
             </div>
             {plannerRawError && (
               <details
-                className="text-[11px] text-(--color-text-muted)"
+                className="text-[11.5px] text-(--color-text-muted)"
                 data-testid="decompose-error-details"
               >
                 <summary className="cursor-pointer select-none hover:text-(--color-text-primary)">
                   Details
                 </summary>
-                <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded-[8px] border border-(--glass-border-hairline) bg-(--color-bg-input) p-2 font-mono text-[10.5px] text-(--color-text-secondary)">
+                <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap rounded-[8px] border border-(--glass-border-hairline) bg-(--color-bg-input) p-2 font-mono text-[10.5px] text-(--color-text-secondary)">
                   {plannerRawError}
                 </pre>
               </details>
@@ -336,162 +330,67 @@ export function DecomposeForm({
         )}
       </div>
 
-      {/* ── Tickets + DAG (review only) ──────────────────────────────────── */}
+      {/* ── Tickets (review only) ────────────────────────────────────────── */}
       {phase === "review" && (
-        <>
-          <div className="flex flex-col gap-2.5">
-            {draft.tickets.map((ticket, index) => (
-              <TicketRow
-                key={ticket.id}
-                ticket={ticket}
-                index={index}
-                agentOptions={agentOptions}
-                waitsFor={dependencyRoles(draft, ticket.id)}
-                onRole={(role) => edit({ type: "setRole", id: ticket.id, role })}
-                onAgent={(agent) =>
-                  edit({ type: "setAgent", id: ticket.id, agent })
-                }
-                onPrompt={(prompt) =>
-                  edit({ type: "setPrompt", id: ticket.id, prompt })
-                }
-                onRemove={() => edit({ type: "removeTicket", id: ticket.id })}
-              />
-            ))}
+        <div className="flex flex-col gap-2.5">
+          {draft.tickets.map((ticket, index) => (
+            <TicketRow
+              key={ticket.id}
+              ticket={ticket}
+              index={index}
+              agentOptions={agentOptions}
+              incoming={draft.edges
+                .filter((e) => e.toId === ticket.id && e.fromId !== "")
+                .map((e) => ({
+                  edgeId: e.id,
+                  fromId: e.fromId,
+                  label: roleLabelById.get(e.fromId) ?? "removed",
+                }))}
+              depOptions={draft.tickets
+                .filter(
+                  (t) =>
+                    t.id !== ticket.id &&
+                    !draft.edges.some(
+                      (e) => e.toId === ticket.id && e.fromId === t.id,
+                    ),
+                )
+                .map((t) => ({
+                  label: roleLabelById.get(t.id) ?? t.id,
+                  value: t.id,
+                }))}
+              onRole={(role) => edit({ type: "setRole", id: ticket.id, role })}
+              onAgent={(agent) => edit({ type: "setAgent", id: ticket.id, agent })}
+              onPrompt={(prompt) =>
+                edit({ type: "setPrompt", id: ticket.id, prompt })
+              }
+              onAddDep={(fromId) =>
+                edit({ type: "addDependency", fromId, toId: ticket.id })
+              }
+              onRemoveDep={(edgeId) => edit({ type: "removeEdge", id: edgeId })}
+              onRemove={() => edit({ type: "removeTicket", id: ticket.id })}
+            />
+          ))}
 
-            <div>
-              <GlassButton
-                variant="ghost"
-                size="sm"
-                type="button"
-                onClick={() => edit({ type: "addTicket", fallbackAgent })}
-                disabled={atCap}
-                data-testid="decompose-add-ticket"
-                title={atCap ? `At most ${MAX_SUBTASKS} tickets.` : undefined}
-              >
-                <Plus className="size-3.5" aria-hidden="true" />
-                Add ticket
-              </GlassButton>
-            </div>
-          </div>
-
-          {/* Dependencies box — the mockup's `.dag`. Collapsed to a scannable
-              read-only summary by default; the raw from→to editor opens via the
-              header toggle or "Add edge" (which reveals the new row). */}
-          <div
-            className="rounded-(--radius-panel) border border-(--color-border-default) bg-[color-mix(in_oklab,var(--color-bg-surface)_55%,transparent)] p-3"
-            data-testid="decompose-dag"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-(--color-text-muted)">
-                  Dependencies
-                </span>
-                {draft.edges.length > 0 && (
-                  <span className="text-[11px] text-(--color-text-muted)">
-                    · {draft.edges.length}{" "}
-                    {draft.edges.length === 1 ? "handoff" : "handoffs"}
-                  </span>
-                )}
-              </div>
-              {draft.edges.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setDepsOpen((o) => !o)}
-                  aria-expanded={depsOpen}
-                  data-testid="decompose-deps-toggle"
-                  className="flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
-                >
-                  <ChevronRight
-                    className={cn(
-                      "size-3 transition-transform duration-(--duration-glass) ease-(--ease-glass)",
-                      depsOpen && "rotate-90",
-                    )}
-                    aria-hidden="true"
-                  />
-                  {depsOpen ? "Done" : "Edit"}
-                </button>
-              )}
-            </div>
-
-            {/* Collapsed: the scannable read-only summary. */}
-            {!depsOpen &&
-              (draft.edges.length === 0 ? (
-                <p className="mt-2 text-[11.5px] text-(--color-text-muted)">
-                  No handoffs — every ticket runs independently.
-                </p>
-              ) : (
-                <ul
-                  className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5"
-                  data-testid="decompose-deps-summary"
-                >
-                  {handoffSummary.map((h) => (
-                    <li
-                      key={h.id}
-                      className="flex items-center gap-1.5 text-[11.5px] text-(--color-text-secondary)"
-                    >
-                      <span className="font-medium">{h.from}</span>
-                      <ArrowRight
-                        className="size-3 text-(--color-text-muted)"
-                        aria-hidden="true"
-                      />
-                      <span className="font-medium">{h.to}</span>
-                    </li>
-                  ))}
-                </ul>
-              ))}
-
-            {/* Editable rows stay mounted so validation + the plan submit read
-                every edge even while the summary is showing; hidden (not
-                unmounted) when collapsed. */}
-            <div
-              className={cn(
-                "mt-2.5 flex-col gap-2",
-                depsOpen ? "flex" : "hidden",
-              )}
+          <div>
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              type="button"
+              onClick={() => edit({ type: "addTicket", fallbackAgent })}
+              disabled={atCap}
+              data-testid="decompose-add-ticket"
+              title={atCap ? `At most ${MAX_SUBTASKS} tickets.` : undefined}
             >
-              {draft.edges.map((edge) => (
-                <EdgeRow
-                  key={edge.id}
-                  edge={edge}
-                  tickets={draft.tickets}
-                  onFrom={(fromId) =>
-                    edit({ type: "setEdgeFrom", id: edge.id, fromId })
-                  }
-                  onTo={(toId) => edit({ type: "setEdgeTo", id: edge.id, toId })}
-                  onRemove={() => edit({ type: "removeEdge", id: edge.id })}
-                />
-              ))}
-            </div>
-
-            <div className="mt-2.5">
-              <GlassButton
-                variant="ghost"
-                size="sm"
-                type="button"
-                onClick={() => {
-                  // Reveal the editor so the freshly-added row is reachable.
-                  setDepsOpen(true);
-                  edit({ type: "addEdge" });
-                }}
-                disabled={draft.tickets.length < 2}
-                data-testid="decompose-add-edge"
-                title={
-                  draft.tickets.length < 2
-                    ? "Add a second ticket to create a handoff."
-                    : undefined
-                }
-              >
-                <Plus className="size-3.5" aria-hidden="true" />
-                Add edge
-              </GlassButton>
-            </div>
+              <Plus className="size-3.5" aria-hidden="true" />
+              Add ticket
+            </GlassButton>
           </div>
-        </>
+        </div>
       )}
 
       {startError && (
         <p
-          className="truncate text-[11px] text-(--color-danger)"
+          className="truncate text-[12px] text-(--color-danger)"
           title={startError}
           data-testid="decompose-error"
         >
@@ -500,22 +399,24 @@ export function DecomposeForm({
       )}
 
       {/* ── Footer — the mockup's `.modal-f`. ────────────────────────────── */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-(--glass-border-hairline) pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--glass-border-hairline) pt-4">
         <span
-          className="text-[11.5px] text-(--color-text-muted)"
+          className="text-[12px] text-(--color-text-muted)"
           data-testid="decompose-hint"
         >
           Nothing is created until you start.
-          {phase === "review" &&
-            ` ${contractCount} handoff ${
-              contractCount === 1 ? "contract" : "contracts"
-            }.`}
+          {phase === "review" && contractCount > 0 && (
+            <>
+              {" "}
+              {contractCount} {contractCount === 1 ? "handoff" : "handoffs"}.
+            </>
+          )}
         </span>
 
         <div className="flex items-center gap-2">
           {phase === "review" && !validation.ok && validation.reason && (
             <span
-              className="max-w-[26ch] truncate text-[11px] text-(--color-warning)"
+              className="max-w-[26ch] truncate text-[12px] text-(--color-warning)"
               title={validation.reason}
               data-testid="decompose-reason"
             >
@@ -539,7 +440,6 @@ export function DecomposeForm({
                 : undefined
             }
           >
-            <ArrowRight className="size-3.5" aria-hidden="true" />
             {submitting
               ? "Starting…"
               : phase === "planning"
@@ -547,6 +447,7 @@ export function DecomposeForm({
                 : phase === "review"
                   ? `Start ${n} ${n === 1 ? "agent" : "agents"}`
                   : "Start"}
+            <ArrowRight className="size-3.5" aria-hidden="true" />
           </GlassButton>
         </div>
       </div>
@@ -568,146 +469,150 @@ export function DecomposeForm({
   );
 }
 
-/** One editable ticket row — the mockup's `.tickrow`. */
+interface IncomingDep {
+  edgeId: string;
+  fromId: string;
+  label: string;
+}
+
+/** One editable ticket — the mockup's `.tickrow`, re-crafted: a calm card with a
+ *  clean identity row (role · agent · inline "waits for" handoffs) over a
+ *  flush-reading prompt body. */
 function TicketRow({
   ticket,
   index,
   agentOptions,
-  waitsFor,
+  incoming,
+  depOptions,
   onRole,
   onAgent,
   onPrompt,
+  onAddDep,
+  onRemoveDep,
   onRemove,
 }: {
   ticket: DraftTicket;
   index: number;
   agentOptions: Array<{ label: string; value: string }>;
-  waitsFor: string[];
+  incoming: IncomingDep[];
+  depOptions: Array<{ label: string; value: string }>;
   onRole: (v: string) => void;
   onAgent: (v: Agent) => void;
   onPrompt: (v: string) => void;
+  onAddDep: (fromId: string) => void;
+  onRemoveDep: (edgeId: string) => void;
   onRemove: () => void;
 }) {
-  const hint =
-    waitsFor.length === 0
-      ? "runs first · no deps"
-      : `waits for ${waitsFor.join(", ")}`;
   const label = ticket.role.trim() || `ticket ${index + 1}`;
 
   return (
     <div
-      className="flex items-start gap-2.5 rounded-(--radius-panel) border border-(--color-border-default) bg-[color-mix(in_oklab,var(--color-bg-surface)_65%,transparent)] p-2.5"
+      className="rounded-(--radius-panel) border border-(--color-border-subtle) bg-[color-mix(in_oklab,var(--color-bg-surface)_70%,transparent)] p-4"
       data-testid="decompose-ticket"
       data-role={ticket.role.trim()}
     >
-      <span
-        className="mt-1 select-none text-[14px] text-(--color-text-muted)"
-        aria-hidden="true"
-      >
-        ⠿
-      </span>
+      <div className="flex items-start gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+          {/* Identity row: role (title) · agent · inline handoffs. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            {/* Neutral persona/role — an editable title, no semantic color. */}
+            <input
+              value={ticket.role}
+              onChange={(e) => onRole(e.target.value)}
+              data-testid="decompose-role"
+              aria-label={`Role for ticket ${index + 1}`}
+              spellCheck={false}
+              style={{
+                width: `calc(${Math.max(ticket.role.length, 4)}ch + 1.75rem)`,
+              }}
+              className="-ml-1.5 h-7 min-w-0 rounded-[6px] px-1.5 text-[13px] font-semibold text-(--color-text-primary) outline-none transition-colors !border-transparent !bg-transparent hover:!bg-[var(--color-bg-hover)] focus:!border-[var(--color-accent-500)] focus:!bg-[var(--color-bg-input)] focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]"
+            />
 
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Neutral persona/role chip — editable, no semantic color. */}
-          <input
-            value={ticket.role}
-            onChange={(e) => onRole(e.target.value)}
-            data-testid="decompose-role"
-            aria-label={`Role for ticket ${index + 1}`}
-            spellCheck={false}
-            style={{ width: `${Math.max(ticket.role.length, 4) + 2}ch` }}
-            className="h-5 rounded-full border border-(--glass-border-hairline) bg-(--color-bg-input) px-2 text-[11px] font-medium text-(--color-text-primary) outline-none focus:border-(--color-accent-500) focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_12%,transparent)]"
+            <GlassSelect
+              value={ticket.agent}
+              onChange={(e) => onAgent(e.target.value as Agent)}
+              options={agentOptions}
+              data-testid="decompose-agent"
+              aria-label={`Agent for ${label}`}
+              className="h-7 w-auto min-w-[104px] rounded-[8px] py-0 pl-2 pr-8 text-[12px] [-webkit-text-fill-color:transparent] !border-transparent !bg-transparent hover:!bg-[var(--color-bg-hover)]"
+            />
+
+            {/* Inline dependency editor: the read view (chips) IS the edit
+                affordance. Each chip is an incoming handoff (`decompose-edge`). */}
+            <span
+              aria-hidden="true"
+              className="mx-0.5 h-3.5 w-px shrink-0 bg-(--glass-border-hairline)"
+            />
+            <div className="flex flex-wrap items-center gap-1.5">
+              {incoming.length === 0 ? (
+                <span className="inline-flex items-center gap-1 text-[12px] text-(--color-text-muted)">
+                  <CornerDownRight className="size-3" aria-hidden="true" />
+                  runs first
+                </span>
+              ) : (
+                <span className="text-[12px] text-(--color-text-muted)">
+                  waits for
+                </span>
+              )}
+              {incoming.map((dep) => (
+                <span
+                  key={dep.edgeId}
+                  data-testid="decompose-edge"
+                  className="inline-flex items-center gap-0.5 rounded-full border border-(--glass-border-hairline) bg-(--color-bg-input) py-0.5 pl-2 pr-0.5 text-[12px] text-(--color-text-secondary)"
+                >
+                  {dep.label}
+                  <button
+                    type="button"
+                    onClick={() => onRemoveDep(dep.edgeId)}
+                    data-testid="decompose-dep-remove"
+                    aria-label={`Stop ${label} waiting for ${dep.label}`}
+                    className="grid size-4 place-items-center rounded-full text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-danger)"
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </span>
+              ))}
+              {depOptions.length > 0 && (
+                <GlassSelect
+                  // Always resets to the placeholder: picking a role ADDS a
+                  // handoff, it never becomes the control's value.
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) onAddDep(e.target.value);
+                  }}
+                  options={depOptions}
+                  placeholder="Depends on…"
+                  data-testid="decompose-dep-add"
+                  aria-label={`Add a dependency for ${label}`}
+                  className="h-[26px] w-auto min-w-[128px] rounded-full py-0 pl-2.5 pr-8 text-[12px] [-webkit-text-fill-color:transparent] !border-transparent !bg-transparent hover:!bg-[var(--color-bg-hover)]"
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Prompt body — reads as flush copy at rest, boxes on focus. */}
+          <GlassTextarea
+            value={ticket.prompt}
+            onChange={(e) => onPrompt(e.target.value)}
+            data-testid="decompose-prompt"
+            aria-label={`Prompt for ${label}`}
+            placeholder={`What should the ${label} agent do?`}
+            autoGrow
+            rows={1}
+            className="-mx-2 max-h-[40vh] rounded-[8px] px-2 py-1 text-[13px] leading-[1.55] text-(--color-text-secondary) !border-transparent !bg-transparent hover:!bg-[color-mix(in_oklab,var(--color-bg-hover)_45%,transparent)] focus:!border-[var(--color-accent-500)] focus:!bg-[var(--color-bg-input)] focus:text-(--color-text-primary)"
           />
-          <GlassSelect
-            value={ticket.agent}
-            onChange={(e) => onAgent(e.target.value as Agent)}
-            options={agentOptions}
-            data-testid="decompose-agent"
-            aria-label={`Agent for ${label}`}
-            className="h-6 w-auto min-w-[104px] rounded-[8px] py-0 pl-2.5 pr-8 text-[11.5px]"
-          />
-          <span className="text-[11px] text-(--color-text-muted)">{hint}</span>
         </div>
 
-        <GlassTextarea
-          value={ticket.prompt}
-          onChange={(e) => onPrompt(e.target.value)}
-          data-testid="decompose-prompt"
-          aria-label={`Prompt for ${label}`}
-          placeholder={`What should the ${label} agent do?`}
-          autoGrow
-          rows={3}
-          className="max-h-[40vh] text-[12px] leading-[1.55]"
-        />
+        <button
+          type="button"
+          onClick={onRemove}
+          data-testid="decompose-remove-ticket"
+          aria-label={`Remove ${label}`}
+          className="-mr-1 -mt-0.5 grid size-7 shrink-0 place-items-center rounded-[6px] text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-danger) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
       </div>
-
-      <button
-        type="button"
-        onClick={onRemove}
-        data-testid="decompose-remove-ticket"
-        aria-label={`Remove ${label}`}
-        className="mt-0.5 rounded-[6px] p-1 text-(--color-text-muted) transition-colors hover:text-(--color-danger)"
-      >
-        <X className="size-4" aria-hidden="true" />
-      </button>
-    </div>
-  );
-}
-
-/** One editable dependency edge — the mockup's `.edge`. */
-function EdgeRow({
-  edge,
-  tickets,
-  onFrom,
-  onTo,
-  onRemove,
-}: {
-  edge: DraftEdge;
-  tickets: DraftTicket[];
-  onFrom: (v: string) => void;
-  onTo: (v: string) => void;
-  onRemove: () => void;
-}) {
-  // Options are the CURRENT roles, valued by stable client id (not role string)
-  // so renaming a role never orphans this edge.
-  const options = tickets.map((t, i) => ({
-    label: t.role.trim() || `ticket ${i + 1}`,
-    value: t.id,
-  }));
-  const compact =
-    "h-6 w-auto min-w-[104px] rounded-[8px] py-0 pl-2.5 pr-8 text-[11.5px]";
-
-  return (
-    <div className="flex flex-wrap items-center gap-2" data-testid="decompose-edge">
-      <GlassSelect
-        value={edge.fromId}
-        onChange={(e) => onFrom(e.target.value)}
-        options={options}
-        placeholder="from"
-        data-testid="decompose-edge-from"
-        aria-label="Edge producer"
-        className={compact}
-      />
-      <ArrowRight className="size-3.5 text-(--color-text-muted)" aria-hidden="true" />
-      <GlassSelect
-        value={edge.toId}
-        onChange={(e) => onTo(e.target.value)}
-        options={options}
-        placeholder="to"
-        data-testid="decompose-edge-to"
-        aria-label="Edge consumer"
-        className={compact}
-      />
-      <button
-        type="button"
-        onClick={onRemove}
-        data-testid="decompose-remove-edge"
-        aria-label="Remove dependency"
-        className="rounded-[6px] p-1 text-(--color-text-muted) transition-colors hover:text-(--color-danger)"
-      >
-        <X className="size-4" aria-hidden="true" />
-      </button>
     </div>
   );
 }

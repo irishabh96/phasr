@@ -116,6 +116,19 @@ describe("draftReducer — edges + role-rename cascade", () => {
     ]);
   });
 
+  it("addDependency wires a complete edge in one shot (and dedupes)", () => {
+    let s = hydrated();
+    const web = at(s.tickets, 1).id;
+    const docs = at(s.tickets, 2).id;
+    // web waits for docs — a brand-new handoff added via the inline picker.
+    s = draftReducer(s, { type: "addDependency", fromId: docs, toId: web });
+    expect(last(s.edges)).toMatchObject({ fromId: docs, toId: web });
+    const count = s.edges.length;
+    // Re-adding the same handoff is a no-op (the picker never lists a role twice).
+    s = draftReducer(s, { type: "addDependency", fromId: docs, toId: web });
+    expect(s.edges).toHaveLength(count);
+  });
+
   it("adds and removes edges", () => {
     let s = draftReducer(hydrated(), { type: "addEdge" });
     const newEdge = last(s.edges);
