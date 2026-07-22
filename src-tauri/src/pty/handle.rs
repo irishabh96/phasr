@@ -395,69 +395,56 @@ impl Default for PromptGate {
     }
 }
 
-/// Bracketed-paste MODE toggles (DECSET 2004), distinct from the paste
-/// DELIMITERS below. A terminal line-editor (zsh/bash) enables paste mode while
-/// showing its prompt (`ENABLE`) and disables it (`DISABLE`) when it hands the
-/// tty to a child to run our command. A TUI agent then re-enables it once its
-/// own input box is ready. See `ReadinessDetector`.
-const PASTE_MODE_ENABLE: &[u8] = b"\x1b[?2004h";
-const PASTE_MODE_DISABLE: &[u8] = b"\x1b[?2004l";
+/// The ALT-SCREEN enable (DECSET 1049) — a full-screen TUI's request to take
+/// over the terminal. An interactive shell NEVER enters the alternate screen
+/// (only a TUI does), which is exactly why this is the readiness signal.
+const ALT_SCREEN_ENABLE: &[u8] = b"\x1b[?1049h";
 
-/// Detects the moment an agent's TUI is ready to accept input, from its PTY
-/// output. The signal is a paste-mode ENABLE (`ESC[?2004h`) that arrives AFTER
-/// the shell has DISABLED paste mode (`ESC[?2004l`) to run our launch command.
+/// Detects the moment an agent's full-screen TUI has taken over the terminal
+/// (and is about to render its input box), from its PTY output: the ALT-SCREEN
+/// enable (`ESC[?1049h`).
 ///
-/// Keying on "enable AFTER the handoff" is what makes this shell-chrome-proof:
-/// the interactive shell emits its OWN `ENABLE` while drawing/redrawing its
-/// prompt (syntax highlighting, autosuggestions), which we must ignore — a naive
-/// "first output then settle" heuristic fires on that chrome and delivers the
-/// prompt into a still-loading agent (issue #2). The enable that follows the
-/// shell's `DISABLE` is the agent's, emitted exactly when it starts listening.
+/// Why the alt-screen and NOT the bracketed-paste enable (`ESC[?2004h`) we tried
+/// first: a fancy interactive shell (zsh + starship + syntax-highlighting /
+/// autosuggestions) toggles paste mode REPEATEDLY while redrawing its prompt, so
+/// a `2004l`→`2004h` pair fires BEFORE the agent ever takes over — delivering the
+/// prompt straight into the shell (`zsh: command not found: …`, the regression a
+/// real fancy shell exposed). The alt-screen enter has no such chrome to confuse
+/// it: the shell stays on the primary screen throughout, and every real agent TUI
+/// (verified: claude emits `ESC[?1049h` as its first act) switches to the alt
+/// screen. An agent that never does simply never fires this and falls back to the
+/// hard-cap timer — no worse than the old blind delay.
 ///
 /// Pure and incremental (fed one chunk at a time) so it is unit-testable without
 /// a real PTY. Carries a short tail across chunks so an escape split at a read
 /// boundary is still matched.
 struct ReadinessDetector {
-    seen_handoff: bool,
     carry: Vec<u8>,
 }
 
 impl ReadinessDetector {
     fn new() -> Self {
-        Self {
-            seen_handoff: false,
-            carry: Vec::new(),
-        }
+        Self { carry: Vec::new() }
     }
 
-    /// Feed one output chunk; returns `true` the first time the agent is ready.
+    /// Feed one output chunk; returns `true` the first time the agent's TUI
+    /// enters the alternate screen (input-ready).
     fn observe(&mut self, chunk: &[u8]) -> bool {
         let mut buf = std::mem::take(&mut self.carry);
         buf.extend_from_slice(chunk);
 
-        // Scan left-to-right so a same-chunk `DISABLE…ENABLE` is ordered
-        // correctly and a leading (pre-handoff) `ENABLE` is ignored.
-        let mut i = 0;
-        while i < buf.len() {
-            if buf[i..].starts_with(PASTE_MODE_DISABLE) {
-                self.seen_handoff = true;
-                i += PASTE_MODE_DISABLE.len();
-                continue;
-            }
-            if buf[i..].starts_with(PASTE_MODE_ENABLE) {
-                if self.seen_handoff {
-                    self.carry.clear();
-                    return true;
-                }
-                i += PASTE_MODE_ENABLE.len();
-                continue;
-            }
-            i += 1;
+        if buf
+            .windows(ALT_SCREEN_ENABLE.len())
+            .any(|w| w == ALT_SCREEN_ENABLE)
+        {
+            self.carry.clear();
+            return true;
         }
 
-        // Keep only a partial tail (< one full sequence) so we never re-scan a
-        // COMPLETE sequence next round (which could false-fire an old enable).
-        let keep = PASTE_MODE_ENABLE.len().max(PASTE_MODE_DISABLE.len()) - 1;
+        // Keep a partial tail (< one full sequence) so an escape split across a
+        // read boundary is still matched next round, without re-scanning a
+        // complete sequence.
+        let keep = ALT_SCREEN_ENABLE.len() - 1;
         if buf.len() > keep {
             self.carry = buf.split_off(buf.len() - keep);
         } else {
@@ -788,29 +775,30 @@ mod tests {
     // pre-handoff enable (prompt draw) must be ignored, which is the whole point
     // (it is the chrome a naive heuristic mistakes for the agent).
     #[test]
-    fn readiness_detector_fires_on_paste_enable_after_handoff() {
+    fn readiness_detector_fires_on_alt_screen_enter() {
         let mut d = ReadinessDetector::new();
-        // The shell's prompt paste-enable (BEFORE handoff) must NOT fire.
-        assert!(!d.observe(b"\x1b[?2004hshell prompt> claude"));
-        // Shell disables paste mode to execute our command (hands off the tty).
+        // The shell's prompt chrome (paste-mode toggles, redraws) must NOT fire —
+        // the shell never enters the alt screen.
+        assert!(!d.observe(b"\x1b[?2004hshell prompt> claude\r\n"));
         assert!(!d.observe(b"running \x1b[?2004l\r\n"));
-        // The agent's TUI enables paste mode → input ready.
-        assert!(d.observe(b"agent ui \x1b[?2004h> "));
+        // The agent's TUI enters the alt screen → input ready.
+        assert!(d.observe(b"\x1b[?1049h\x1b[2J\x1b[H agent ui"));
     }
 
-    // An ENABLE with no preceding handoff is shell chrome — never ready.
+    // Bracketed-paste toggles are the shell's own chrome (zsh + syntax
+    // highlighting) — they must NEVER be read as readiness (the regression fix).
     #[test]
-    fn readiness_detector_ignores_enable_without_handoff() {
+    fn readiness_detector_ignores_shell_paste_chrome() {
         let mut d = ReadinessDetector::new();
         assert!(!d.observe(b"\x1b[?2004h"));
-        assert!(!d.observe(b"more \x1b[?2004h chrome"));
+        assert!(!d.observe(b"redraw \x1b[?2004l more \x1b[?2004h chrome"));
     }
 
-    // A same-chunk `DISABLE … ENABLE` is ordered correctly (handoff then ready).
+    // The alt-screen enter can share a chunk with other startup bytes.
     #[test]
-    fn readiness_detector_handles_handoff_and_enable_in_one_chunk() {
+    fn readiness_detector_fires_when_alt_screen_shares_a_chunk() {
         let mut d = ReadinessDetector::new();
-        assert!(d.observe(b"exec \x1b[?2004l child \x1b[?2004h ready"));
+        assert!(d.observe(b"\x1b7\x1b[r\x1b8\x1b[?25h\x1b[?1049h\x1b[2J ready"));
     }
 
     // The mode escape can be split across two PTY reads (they cut at 4 KiB and
@@ -818,9 +806,8 @@ mod tests {
     #[test]
     fn readiness_detector_matches_escape_split_across_chunks() {
         let mut d = ReadinessDetector::new();
-        assert!(!d.observe(b"\x1b[?2004l")); // handoff
-        assert!(!d.observe(b"foo\x1b[?20")); // enable, split ...
-        assert!(d.observe(b"04h> ")); // ... completes across the boundary
+        assert!(!d.observe(b"boot \x1b[?10")); // alt-screen enter, split ...
+        assert!(d.observe(b"49h\x1b[2J> ")); // ... completes across the boundary
     }
 
     // Issue #2 (multi-line submit): a single-line prompt is byte-identical to the
@@ -856,15 +843,15 @@ mod tests {
     fn prompt_is_delivered_after_the_agent_is_ready() {
         let dir = tempfile::tempdir().unwrap();
         // A slow-starting fake agent, written to a file to avoid nested-quote
-        // escaping when it is typed into the login shell. `printf '\033[?2004h'`
-        // mimics the TUI's input-ready paste-mode enable that the detector keys
-        // on (the interactive login shell supplies the preceding handoff DISABLE
-        // when it execs this script).
+        // escaping when it is typed into the login shell. `printf '\033[?1049h'`
+        // mimics the TUI entering the alternate screen — the input-ready signal
+        // the detector keys on (a bare shell never enters the alt screen, so it
+        // can't false-fire).
         let script = dir.path().join("slow-agent.sh");
         std::fs::write(
             &script,
             "sleep 2\n\
-             printf '\\033[?2004h'\n\
+             printf '\\033[?1049h'\n\
              printf 'READY-MARKER-7739\\n'\n\
              IFS= read -r line\n\
              printf 'RECEIVED:%s\\n' \"$line\"\n\
