@@ -248,7 +248,9 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
         <PageTitle />
         {/* A global halt can be live even with no current work — stay honest. */}
         <AutopilotHaltedBanner className="mt-5" />
-        <div className="flex flex-1 items-center justify-center">
+        {/* Bias the calm empty toward optical center (~42vh) — dead-centering it
+            in the tall flex track reads as sitting low with a gap above. */}
+        <div className="flex flex-1 items-center justify-center pb-[24vh]">
           {worklist.repositories.length === 0 ? (
             <PanelState
               kind="empty"

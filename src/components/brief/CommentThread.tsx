@@ -1,3 +1,8 @@
+import {
+  agentGlyph,
+  agentKeyFromName,
+  AGENT_GLYPH_COLOR,
+} from "@/lib/agentIdentity";
 import { formatDuration } from "@/lib/formatDuration";
 import type { TicketComment } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -5,6 +10,64 @@ import { cn } from "@/lib/utils";
 /** First letter of a name, uppercased — the avatar glyph (mockup Page 04). */
 function initial(name: string): string {
   return (name.trim()[0] ?? "?").toUpperCase();
+}
+
+/**
+ * The author avatar. Known agents (claude/codex/…) render their tinted brand
+ * glyph so same-initial agents no longer collapse into an identical "C" circle;
+ * humans and unrecognized authors keep the neutral initial. Identity only — the
+ * tint is subtle and carries no status meaning.
+ */
+function AuthorAvatar({
+  author,
+  isAgent,
+}: {
+  author: string;
+  isAgent: boolean;
+}) {
+  const agentKey = isAgent ? agentKeyFromName(author) : null;
+  const base =
+    "grid size-[26px] shrink-0 place-items-center rounded-full border bg-(--color-bg-elevated)";
+
+  if (agentKey) {
+    const color = AGENT_GLYPH_COLOR[agentKey];
+    return (
+      <span
+        className={cn(base, "border-(--glass-border-hairline)")}
+        style={{ borderColor: `color-mix(in oklab, ${color} 32%, transparent)` }}
+      >
+        <span
+          aria-hidden="true"
+          className="size-[15px]"
+          style={{
+            backgroundColor: color,
+            WebkitMaskImage: `url("${agentGlyph(agentKey)}")`,
+            maskImage: `url("${agentGlyph(agentKey)}")`,
+            WebkitMaskRepeat: "no-repeat",
+            maskRepeat: "no-repeat",
+            WebkitMaskPosition: "center",
+            maskPosition: "center",
+            WebkitMaskSize: "contain",
+            maskSize: "contain",
+          }}
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={cn(
+        base,
+        "border-(--glass-border-hairline) text-[11px] font-semibold",
+        isAgent
+          ? "text-(--color-text-muted)"
+          : "text-(--color-text-secondary)",
+      )}
+    >
+      {initial(author)}
+    </span>
+  );
 }
 
 /**
@@ -32,16 +95,7 @@ export function CommentThread({
             data-testid="brief-comment"
             data-author-kind={comment.authorKind}
           >
-            <span
-              className={cn(
-                "grid size-[26px] shrink-0 place-items-center rounded-full border border-(--glass-border-hairline) bg-(--color-bg-elevated) text-[11px] font-semibold",
-                isAgent
-                  ? "text-(--color-text-muted)"
-                  : "text-(--color-text-secondary)",
-              )}
-            >
-              {initial(comment.author)}
-            </span>
+            <AuthorAvatar author={comment.author} isAgent={isAgent} />
             <div className="min-w-0 flex-1">
               <div className="mb-0.5 flex flex-wrap items-center gap-2 text-[11px] text-(--color-text-muted)">
                 <b className="text-[12px] font-semibold text-(--color-text-primary)">

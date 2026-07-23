@@ -74,7 +74,9 @@ function WelcomeState() {
   );
 
   return (
-    <div className="flex h-full items-center justify-center px-8">
+    // Bias the greeting toward optical center (~42vh) — true-centering it leaves
+    // a heavy gap above and reads as sitting low.
+    <div className="flex h-full items-center justify-center px-8 pb-[20vh]">
       <div className="w-full max-w-2xl text-center">
         <h1 className="text-[24px] font-semibold tracking-tight leading-none">
           {greeting}

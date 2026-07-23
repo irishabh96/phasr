@@ -15,7 +15,7 @@ import {
   Undo2,
   UserCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useGateCommands, type GateCommand } from "@/components/board/useGateCommands";
 import { StatusDot } from "@/components/ui/StatusDot";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
@@ -46,6 +46,16 @@ import type { Repository, Workspace } from "@/lib/types";
 interface WorkspaceEntry extends Workspace {
   repositoryName: string;
 }
+
+// cmdk keys its roving selection off each item's `value`. These builders are the
+// single source of that string so the initial-selection pin (below) can name the
+// true first item without the value drifting from what the row actually renders.
+const workspaceItemValue = (ws: WorkspaceEntry) =>
+  `workspace ${ws.repositoryName} ${ws.name} ${ws.command} ${ws.prompt ?? ""}`;
+const repositoryItemValue = (repo: Repository) =>
+  `repository ${repo.name} ${repo.localPath ?? ""} ${repo.remoteUrl ?? ""}`;
+const gateItemValue = (cmd: GateCommand) =>
+  `command gate ${cmd.label} ${cmd.keywords}`;
 
 export function CommandPalette() {
   const open = useUiStore((s) => s.commandPaletteOpen);
@@ -131,6 +141,44 @@ export function CommandPalette() {
     [workspaces],
   );
 
+  // ── Initial roving selection ──────────────────────────────────────────────
+  // cmdk locks its highlight to whatever item mounts first. Repositories are on
+  // screen before the async `list_workspaces` fan-out resolves, so the highlight
+  // sticks to a repository row and the workspaces that stream in ABOVE it never
+  // take it — the palette opens with the bottom repo row highlighted instead of
+  // the top workspace. We drive the selected value and (re-)pin it to the true
+  // first item whenever the palette opens or that async content settles, but
+  // never yank a selection the user has already moved.
+  const [selected, setSelected] = useState("");
+  const pinnedTop = useRef("");
+
+  const firstItemValue = useMemo(() => {
+    const gateCmd = gate.hasContext ? gate.commands[0] : undefined;
+    if (gateCmd) return gateItemValue(gateCmd);
+    const ws = recentWorkspaces[0];
+    if (ws) return workspaceItemValue(ws);
+    const repo = repositories?.[0];
+    if (repo) return repositoryItemValue(repo);
+    return "settings account profile sign out user";
+  }, [gate.hasContext, gate.commands, recentWorkspaces, repositories]);
+
+  useEffect(() => {
+    if (!open) {
+      pinnedTop.current = "";
+      setSelected("");
+      return;
+    }
+    setSelected((prev) => {
+      // Fresh open (nothing pinned yet) OR the user hasn't moved off the last
+      // auto-pinned top → (re-)pin to the current first item.
+      if (pinnedTop.current === "" || prev === pinnedTop.current) {
+        pinnedTop.current = firstItemValue;
+        return firstItemValue;
+      }
+      return prev;
+    });
+  }, [open, firstItemValue]);
+
   return (
     <>
     <Command.Dialog
@@ -138,6 +186,8 @@ export function CommandPalette() {
       onOpenChange={(o) => (o ? openPalette() : close())}
       label="Command palette"
       className={PALETTE_DIALOG_CLS}
+      value={selected}
+      onValueChange={setSelected}
       shouldFilter
     >
       <div className="relative w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
@@ -174,7 +224,7 @@ export function CommandPalette() {
                 {recentWorkspaces.map((ws) => (
                   <Command.Item
                     key={ws.id}
-                    value={`workspace ${ws.repositoryName} ${ws.name} ${ws.command} ${ws.prompt ?? ""}`}
+                    value={workspaceItemValue(ws)}
                     onSelect={() =>
                       go(() =>
                         navigate({
@@ -204,7 +254,7 @@ export function CommandPalette() {
                 {repositories.map((repo: Repository) => (
                   <Command.Item
                     key={repo.id}
-                    value={`repository ${repo.name} ${repo.localPath ?? ""} ${repo.remoteUrl ?? ""}`}
+                    value={repositoryItemValue(repo)}
                     onSelect={() => go(() => void navigateToRepoEntry(repo.id))}
                     className={ITEM_CLS}
                   >
@@ -325,7 +375,7 @@ function GateCommandItem({ cmd }: { cmd: GateCommand }) {
     <Command.Item
       data-testid={`gate-command-${cmd.verb}`}
       data-gate-enabled={cmd.enabled}
-      value={`command gate ${cmd.label} ${cmd.keywords}`}
+      value={gateItemValue(cmd)}
       disabled={!cmd.enabled}
       onSelect={() => {
         if (cmd.enabled) cmd.select();

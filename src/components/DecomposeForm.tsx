@@ -107,6 +107,42 @@ interface DecomposeFormProps {
 type Phase = "idle" | "planning" | "review";
 
 /**
+ * Turn a raw planner failure (the serialized `PlannerCmdError` — e.g. "the
+ * planner agent isn't available: No such file…") into a short, human lead for
+ * the inline note. `humanizeError` doesn't know the planner's vocabulary, so it
+ * leaked the raw, lowercase reason as the headline; this maps it to plain copy.
+ * The unedited reason still rides in the Details disclosure below.
+ */
+function humanizePlannerError(raw: string): string {
+  const s = raw.toLowerCase();
+  if (
+    s.includes("isn't available") ||
+    s.includes("not available") ||
+    s.includes("binary not found") ||
+    s.includes("no such file") ||
+    s.includes("not found")
+  )
+    return "The planner couldn't run — Claude may not be installed.";
+  if (
+    s.includes("took too long") ||
+    s.includes("timed out") ||
+    s.includes("timeout")
+  )
+    return "The planner timed out before it finished.";
+  if (s.includes("no local path"))
+    return "This repository has no local folder for the planner to inspect.";
+  if (
+    s.includes("couldn't parse") ||
+    s.includes("could not parse") ||
+    s.includes("unparseable")
+  )
+    return "The planner's response couldn't be read.";
+  if (s.includes("invalid plan"))
+    return "The planner drafted a plan that didn't hold together.";
+  return "The planner couldn't finish drafting a plan.";
+}
+
+/**
  * The Planner review/edit surface (FE-1, mockup Page 02). The user types one
  * goal, the planner proposes N tickets + a dependency DAG, and every field is
  * editable — persona/role, agent-type, prompt, and the handoffs — before a
@@ -246,9 +282,10 @@ export function DecomposeForm({
       setPhase("review");
     } catch (err) {
       // Never a dead end — humanize, seed a manual draft, keep raw for Details.
-      const message = humanizeError(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      const message = humanizePlannerError(raw);
       setPlannerError(message);
-      setPlannerRawError(err instanceof Error ? err.message : String(err));
+      setPlannerRawError(raw);
       setProposedCount(null);
       setManualMode(true);
       dispatch({ type: "seedManual", fallbackAgent });
