@@ -188,8 +188,10 @@ export function BoardCardView({
       </div>
 
       {/* The one derived next gate for this ticket (generalizes Mark-done) — on
-          its own action row so it never fights the status chips, and coral
-          (when it's the enabled primary) is the card's single loud element. */}
+          its own action row so it never fights the status chips. LOW emphasis: a
+          per-card enabled-primary gate renders as a quiet coral TINT (not a
+          fill), reserving the loud coral fill for the epic milestone so a full
+          board doesn't spend accent on every card (§D1 accent scarcity). */}
       {gate ? (
         <div
           className="flex flex-wrap gap-1.5"
@@ -201,6 +203,7 @@ export function BoardCardView({
           <NextGateButton
             gate={gate}
             size="sm"
+            emphasis="low"
             pending={gatePending}
             onRun={onRunGate ?? (() => {})}
             {...(onBounceGate ? { onBounce: onBounceGate } : {})}

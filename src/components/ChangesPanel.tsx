@@ -218,6 +218,17 @@ export function ChangesPanel({
   const showCommitSuccess =
     lastCommitAt !== null && Date.now() - lastCommitAt < SUCCESS_FADE_MS;
 
+  // Humanize the status-load failure for the panel heading/body, but keep the
+  // raw git reason behind a "Details" disclosure — a stale `index.lock` or a
+  // running git process is genuinely useful for a developer to see (M1).
+  const statusErrRaw =
+    statusErr instanceof Error
+      ? statusErr.message
+      : statusErr != null
+        ? String(statusErr)
+        : "";
+  const statusErrHuman = humanizeError(statusErr);
+
   const copyPath = (p: string) => {
     void navigator.clipboard?.writeText(p);
   };
@@ -321,7 +332,12 @@ export function ChangesPanel({
           <PanelState
             kind="error"
             title="Couldn't load changes"
-            error={statusErr}
+            description={statusErrHuman}
+            // Only surface Details when the raw reason adds something the
+            // humanized line doesn't already say (avoids a redundant disclosure).
+            {...(statusErrRaw && statusErrRaw !== statusErrHuman
+              ? { details: statusErrRaw }
+              : {})}
             onRetry={() => void refetchStatus()}
             className="my-auto"
           />

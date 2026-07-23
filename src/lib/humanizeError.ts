@@ -40,6 +40,30 @@ export function humanizeError(err: unknown): string {
     s.includes("network is unreachable")
   )
     return "Network error — check your connection and try again.";
+  // Git's index / ref lock — another git process is mid-operation, or a crashed
+  // one left a stale `index.lock`. (The raw reason is still useful to a dev, so
+  // callers that want it — e.g. ChangesPanel — surface it behind a disclosure.)
+  if (
+    s.includes("unable to lock file") ||
+    s.includes("index.lock") ||
+    s.includes("could not read index")
+  )
+    return "Git's index is locked — another git process may still be running. Wait for it to finish, then try again.";
+  // App data store (SQLite) contention — transient; a retry usually clears it.
+  if (
+    s.includes("database is locked") ||
+    s.includes("db locked") ||
+    s.includes("database table is locked")
+  )
+    return "The app is busy saving data — give it a moment and try again.";
+  // Generic filesystem permission failure. Kept AFTER the git-auth publickey
+  // check above so an SSH-auth failure still maps to the credentials message.
+  if (
+    s.includes("permission denied") ||
+    s.includes("access is denied") ||
+    s.includes("operation not permitted")
+  )
+    return "Permission denied — check that you have access to this file or folder.";
 
   return raw || "Something went wrong.";
 }

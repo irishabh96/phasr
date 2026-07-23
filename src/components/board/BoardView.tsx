@@ -217,33 +217,42 @@ export function BoardView({
         autopilotDriving={autopilotDriving}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {COLUMNS.map(({ key, label }) => {
-          const columnCards = cards.filter((c) => c.column === key);
-          return (
-            <section
-              key={key}
-              data-testid={`board-column-${key}`}
-              className="flex min-h-0 flex-col gap-2.5"
-            >
-              <header className="flex items-center gap-2 px-0.5">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-(--color-text-muted)">
-                  {label}
-                </h3>
-                <span className="text-[11px] font-medium tabular-nums text-(--color-text-muted)">
-                  {columnCards.length}
-                </span>
-              </header>
-              <div className="flex flex-col gap-2.5">
-                {columnCards.length ? (
-                  columnCards.map((c) => c.render)
-                ) : (
-                  <EmptyLane hint={EMPTY_HINT[key]} />
-                )}
-              </div>
-            </section>
-          );
-        })}
+      {/* Four fixed lanes in a SINGLE horizontally-scrolling row (the
+          Linear/Trello model). Each lane floors at 264px and grows equally to
+          fill; once four lanes no longer fit (below ~1100px) the row scrolls
+          sideways instead of WRAPPING to a second grid row — so a tall lane can
+          never overflow onto the lane "below" it, because there is no row below.
+          Each lane also scrolls its own cards vertically when the board is
+          height-constrained, so cards never collide at any width. */}
+      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+        <div className="flex h-full gap-4">
+          {COLUMNS.map(({ key, label }) => {
+            const columnCards = cards.filter((c) => c.column === key);
+            return (
+              <section
+                key={key}
+                data-testid={`board-column-${key}`}
+                className="flex min-h-0 min-w-[264px] flex-1 flex-col gap-2.5"
+              >
+                <header className="flex shrink-0 items-center gap-2 px-0.5">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-(--color-text-muted)">
+                    {label}
+                  </h3>
+                  <span className="text-[11px] font-medium tabular-nums text-(--color-text-muted)">
+                    {columnCards.length}
+                  </span>
+                </header>
+                <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto">
+                  {columnCards.length ? (
+                    columnCards.map((c) => c.render)
+                  ) : (
+                    <EmptyLane hint={EMPTY_HINT[key]} />
+                  )}
+                </div>
+              </section>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

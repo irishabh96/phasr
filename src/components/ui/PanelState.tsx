@@ -22,6 +22,12 @@ type PanelStateProps =
       description?: string;
       /** Raw error, rendered via humanizeError(); never shown raw. */
       error?: unknown;
+      /**
+       * Optional raw reason tucked behind a "Details" disclosure — for surfaces
+       * where the unedited backend text is genuinely useful to a developer
+       * (e.g. a git `index.lock`). The heading/description stay humanized.
+       */
+      details?: string;
       /** Retry handler → renders an outline "Retry" GlassButton. */
       onRetry?: () => void;
       className?: string;
@@ -79,6 +85,7 @@ export function PanelState(props: PanelStateProps) {
     title = "Something went wrong",
     description,
     error,
+    details,
     onRetry,
     className,
   } = props;
@@ -99,6 +106,19 @@ export function PanelState(props: PanelStateProps) {
             Retry
           </GlassButton>
         </div>
+      ) : null}
+      {details ? (
+        <details
+          className="mt-3 w-full text-left text-[11.5px] text-(--color-text-muted)"
+          data-testid="panel-error-details"
+        >
+          <summary className="cursor-pointer select-none rounded-[4px] text-center hover:text-(--color-text-primary) focus-visible:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none">
+            Details
+          </summary>
+          <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-[8px] border border-(--glass-border-hairline) bg-(--color-bg-input) p-2 font-mono text-[10.5px] text-(--color-text-secondary)">
+            {details}
+          </pre>
+        </details>
       ) : null}
     </div>
   );

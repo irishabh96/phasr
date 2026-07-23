@@ -149,11 +149,17 @@ function HomeEntry({ isExpanded }: { isExpanded: boolean }) {
   const isActive = useRouterState({
     select: (s) => s.location.pathname === "/worklist",
   });
-  const { data: worklist } = useWorklist();
+  const { data: worklist, isError } = useWorklist();
   const liveness = useAllAgentLiveness();
-  const count = worklist
-    ? needsYouCount(buildWorklistItems(worklist, liveness, Date.now()))
-    : 0;
+  // Derive the badge from the SAME query state as the worklist surface. When the
+  // query is in error (even with stale data still cached), suppress the count —
+  // the badge must not confidently claim "N need you" while the surface it links
+  // to can't load them. No badge (rather than a stale number) is the honest tell;
+  // the error itself surfaces in the worklist body on open. (audit M4)
+  const count =
+    worklist && !isError
+      ? needsYouCount(buildWorklistItems(worklist, liveness, Date.now()))
+      : 0;
 
   return (
     <Link

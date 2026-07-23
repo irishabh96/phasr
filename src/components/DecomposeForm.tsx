@@ -530,56 +530,71 @@ export function DecomposeForm({
       )}
 
       {/* ── Footer — the mockup's `.modal-f`. ────────────────────────────── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--glass-border-hairline) pt-4">
-        <span
-          className="text-[12px] text-(--color-text-muted)"
-          data-testid="decompose-hint"
-        >
-          Nothing is created until you start.
-          {phase === "review" && contractCount > 0 && (
-            <>
-              {" "}
-              {contractCount} {contractCount === 1 ? "handoff" : "handoffs"}.
-            </>
-          )}
-        </span>
-
-        <div className="flex items-center gap-2">
-          {phase === "review" && !validation.ok && validation.reason && (
-            <span
-              className="max-w-[26ch] truncate text-[12px] text-(--color-warning)"
-              title={validation.reason}
-              data-testid="decompose-reason"
-            >
-              {validation.reason}
-            </span>
-          )}
-          {onCancel && (
-            <GlassButton variant="outline" size="sm" type="button" onClick={onCancel}>
-              Cancel
-            </GlassButton>
-          )}
-          <GlassButton
-            variant="primary"
-            size="sm"
-            type="submit"
-            disabled={!canStart}
-            data-testid="decompose-submit"
-            title={
-              phase === "review" && !validation.ok
-                ? validation.reason ?? undefined
-                : undefined
-            }
+      <div className="flex flex-col gap-3 border-t border-(--glass-border-hairline) pt-4">
+        {/* The blocking reason is the single most important disabled-state
+            message ("why is Start off?") — it gets its own full-width row above
+            the actions so a long reason WRAPS and reads in full, never an
+            ellipsis-clipped `…the role "front…`. (audit H3) */}
+        {phase === "review" && !validation.ok && validation.reason && (
+          <div
+            className="flex items-start gap-1.5 text-[12px] text-(--color-warning)"
+            data-testid="decompose-reason"
           >
-            {submitting
-              ? "Starting…"
-              : phase === "planning"
-                ? "Planning…"
-                : phase === "review"
-                  ? `Start ${n} ${n === 1 ? "agent" : "agents"}`
-                  : "Start"}
-            <ArrowRight className="size-3.5" aria-hidden="true" />
-          </GlassButton>
+            <AlertTriangle
+              className="mt-[1px] size-3.5 shrink-0"
+              aria-hidden="true"
+            />
+            <span className="min-w-0">{validation.reason}</span>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span
+            className="text-[12px] text-(--color-text-muted)"
+            data-testid="decompose-hint"
+          >
+            Nothing is created until you start.
+            {phase === "review" && contractCount > 0 && (
+              <>
+                {" "}
+                {contractCount} {contractCount === 1 ? "handoff" : "handoffs"}.
+              </>
+            )}
+          </span>
+
+          <div className="flex items-center gap-2">
+            {onCancel && (
+              <GlassButton
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={onCancel}
+              >
+                Cancel
+              </GlassButton>
+            )}
+            <GlassButton
+              variant="primary"
+              size="sm"
+              type="submit"
+              disabled={!canStart}
+              data-testid="decompose-submit"
+              title={
+                phase === "review" && !validation.ok
+                  ? validation.reason ?? undefined
+                  : undefined
+              }
+            >
+              {submitting
+                ? "Starting…"
+                : phase === "planning"
+                  ? "Planning…"
+                  : phase === "review"
+                    ? `Start ${n} ${n === 1 ? "agent" : "agents"}`
+                    : "Start"}
+              <ArrowRight className="size-3.5" aria-hidden="true" />
+            </GlassButton>
+          </div>
         </div>
       </div>
 

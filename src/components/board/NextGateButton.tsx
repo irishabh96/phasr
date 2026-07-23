@@ -92,6 +92,17 @@ export interface NextGateButtonProps {
   /** External pending (e.g. an integrate mutation's `isPending`) — belt + braces. */
   pending?: boolean;
   size?: "sm" | "md";
+  /**
+   * Visual weight of the ENABLED-PRIMARY gate (§D1, accent scarcity). `high`
+   * (default) is the loud coral FILL — reserved for the ONE primary on a surface
+   * (the epic milestone in `BoardParentHeader`, the single gate in the
+   * ticket-detail header). `low` renders a quiet coral TINT instead (soft 14%
+   * accent bg, coral glyph, neutral label) so a board of per-card gates does not
+   * spend coral five times over. Only the enabled-primary branch changes;
+   * disabled, neutral (autopilot), and terminal-success gates are identical
+   * either way, so honest-status semantics are preserved.
+   */
+  emphasis?: "high" | "low";
   className?: string;
   /** Optional confirm-copy overrides (else defaults per verb). */
   confirmOverride?: Partial<ReturnType<typeof confirmCopy>>;
@@ -115,6 +126,7 @@ export function NextGateButton({
   onBounce,
   pending,
   size = "sm",
+  emphasis = "high",
   className,
   confirmOverride,
 }: NextGateButtonProps) {
@@ -181,6 +193,7 @@ export function NextGateButton({
           gate={gate}
           size={size}
           busy={busy}
+          emphasis={emphasis}
           reasonId={reasonId}
           onClick={handleClick}
           className={className}
@@ -285,6 +298,7 @@ function GateButton({
   gate,
   size,
   busy,
+  emphasis,
   reasonId,
   onClick,
   className,
@@ -293,6 +307,7 @@ function GateButton({
   gate: NextGate;
   size: "sm" | "md";
   busy: boolean;
+  emphasis: "high" | "low";
   reasonId: string;
   onClick: () => void;
   className: string | undefined;
@@ -376,7 +391,46 @@ function GateButton({
     );
   }
 
-  // The one enabled primary — coral.
+  // Low-emphasis primary (a per-card gate) — a quiet coral TINT, not a fill, so a
+  // board of tickets does not spend coral on every card (§D1 accent scarcity).
+  // The loud coral FILL stays reserved for the ONE high-emphasis primary (the
+  // epic milestone / ticket-detail header). Still fully interactive: hover
+  // deepens the tint, the keyboard gets the standard coral focus ring, and the
+  // glyph carries the AA-tuned --color-accent-text so a whisper of coral marks
+  // "this is your move" (distinct from the neutral gray autopilot-owned gate).
+  if (emphasis === "low") {
+    const style: CSSProperties = {
+      background:
+        "color-mix(in oklab, var(--color-accent-500) 14%, var(--color-bg-surface))",
+      borderColor:
+        "color-mix(in oklab, var(--color-accent-500) 42%, transparent)",
+    };
+    return (
+      <button
+        type="button"
+        data-testid="next-gate"
+        data-gate-verb={gate.verb}
+        data-gate-enabled="true"
+        data-gate-emphasis="low"
+        disabled={busy}
+        onClick={onClick}
+        style={style}
+        className={cn(
+          common,
+          dims,
+          "border text-(--color-text-primary) transition-[background-color,border-color] duration-[120ms] ease-[var(--ease-glass)] [&>svg]:text-(--color-accent-text)",
+          "hover:[background:color-mix(in_oklab,var(--color-accent-500)_22%,var(--color-bg-surface))] hover:[border-color:color-mix(in_oklab,var(--color-accent-500)_60%,transparent)]",
+          "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+          "disabled:pointer-events-none disabled:opacity-40",
+          className,
+        )}
+      >
+        {children}
+      </button>
+    );
+  }
+
+  // The one enabled primary — coral fill (high emphasis).
   return (
     <GlassButton
       variant="primary"
