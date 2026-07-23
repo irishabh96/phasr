@@ -21,6 +21,13 @@ interface WorkspaceInnerTabBarProps {
   workspaceId: string;
   /** Subtask brief's comment count → the muted badge on the Comments pill (Page 04). */
   commentCount?: number;
+  /**
+   * The header is width-constrained (H2). Drop the tab labels and render each
+   * pill icon-only — CONSISTENTLY, so a squeezed label never truncates to a
+   * lone, ambiguous letter (M2). The full title stays one hover away via the
+   * pill's tooltip.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -37,6 +44,7 @@ interface WorkspaceInnerTabBarProps {
 export function WorkspaceInnerTabBar({
   workspaceId,
   commentCount,
+  compact = false,
 }: WorkspaceInnerTabBarProps) {
   const state = useUiStore((s) => s.innerTabs[workspaceId]);
   const setActiveInnerTab = useUiStore((s) => s.setActiveInnerTab);
@@ -87,6 +95,7 @@ export function WorkspaceInnerTabBar({
             key={tab.id}
             tab={tab}
             active={tab.id === activeTabId}
+            compact={compact}
             {...(tab.kind === "comments" && commentCount != null
               ? { count: commentCount }
               : {})}
@@ -138,19 +147,25 @@ function TabPill({
   tab,
   active,
   count,
+  compact,
   onActivate,
   onClose,
 }: {
   tab: InnerTab;
   active: boolean;
   count?: number;
+  compact: boolean;
   onActivate: () => void;
   onClose: () => void;
 }) {
   return (
     <div
       className={cn(
-        "group/tab flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] pl-2.5 pr-1",
+        // Icon-only when the toolbar is compact (M2) — the label is dropped
+        // CONSISTENTLY rather than truncated to a lone letter; the tooltip keeps
+        // the full title reachable. Roomy: label with truncation.
+        "group/tab flex h-8 shrink-0 items-center rounded-[8px]",
+        compact ? "gap-1 px-1.5" : "gap-1.5 pl-2.5 pr-1",
         "text-[12.5px] font-medium leading-none",
         "transition-colors duration-150",
         active
@@ -163,16 +178,19 @@ function TabPill({
           type="button"
           role="tab"
           aria-selected={active}
+          aria-label={compact ? tab.title : undefined}
           tabIndex={active ? 0 : -1}
           onClick={onActivate}
-          className="flex items-center gap-1.5 rounded-[6px] outline-none focus-visible:shadow-[var(--ring-focus)]"
+          className="flex min-w-0 items-center gap-1.5 rounded-[6px] outline-none focus-visible:shadow-[var(--ring-focus)]"
         >
           <TabIcon kind={tab.kind} active={active} />
-          <span className="max-w-[140px] truncate">{tab.title}</span>
+          {!compact && (
+            <span className="min-w-0 max-w-[140px] truncate">{tab.title}</span>
+          )}
           {count != null && count > 0 ? (
             <span
               data-testid="comments-tab-count"
-              className="text-[11px] text-(--color-text-muted)"
+              className="shrink-0 text-[11px] text-(--color-text-muted)"
             >
               {count}
             </span>
@@ -209,8 +227,8 @@ function TabIcon({
   // selected); a coral icon on top would double the accent. Keep the icon
   // neutral so coral stays scarce — reserved for the row's one next-gate.
   const cls = active
-    ? "text-(--color-text-primary)"
-    : "text-(--color-text-muted)";
+    ? "shrink-0 text-(--color-text-primary)"
+    : "shrink-0 text-(--color-text-muted)";
   if (kind === "brief") return <FileText size={11} className={cls} />;
   if (kind === "comments") return <MessageSquare size={11} className={cls} />;
   if (kind === "terminal") return <TerminalIcon size={11} className={cls} />;

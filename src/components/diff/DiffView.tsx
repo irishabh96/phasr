@@ -219,9 +219,19 @@ function DiffHeader({
 export function DiffModeToggle({
   mode,
   onChange,
+  splitDisabled = false,
+  splitDisabledTitle,
 }: {
   mode: DiffViewMode;
   onChange: (m: DiffViewMode) => void;
+  /**
+   * Disable the Split option — e.g. in the narrow (~360px) Changes panel where
+   * side-by-side halves each column into an unreadable, overlapping mess. Uses
+   * `aria-disabled` (not the native `disabled`) so the explanatory `title` still
+   * surfaces on hover; a truly-disabled button suppresses its own tooltip.
+   */
+  splitDisabled?: boolean;
+  splitDisabledTitle?: string;
 }) {
   const shortcut = SHORTCUTS.toggleDiffMode.display.join("");
   return (
@@ -229,9 +239,17 @@ export function DiffModeToggle({
       <GlassButton
         variant={mode === "side-by-side" ? "outline" : "ghost"}
         size="sm"
-        onClick={() => onChange("side-by-side")}
+        onClick={() => {
+          if (!splitDisabled) onChange("side-by-side");
+        }}
         aria-pressed={mode === "side-by-side"}
-        title={`Side-by-side (${shortcut})`}
+        aria-disabled={splitDisabled || undefined}
+        className={splitDisabled ? "opacity-40" : undefined}
+        title={
+          splitDisabled
+            ? (splitDisabledTitle ?? "Widen the panel to view side-by-side")
+            : `Side-by-side (${shortcut})`
+        }
       >
         <Columns2 size={12} />
         Split

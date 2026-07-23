@@ -35,7 +35,10 @@ export function BranchChip({ workspaceId, className }: BranchChipProps) {
             : `Branch ${label}`
       }
       className={cn(
-        "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2",
+        // Flex-SHRINKS in the header so the branch name truncates (native
+        // tooltip on the <code>) instead of shoving the primary gate off-screen
+        // (H2). A min-width floor keeps a few chars + the hover target visible.
+        "inline-flex h-6 min-w-[3.5rem] items-center gap-1.5 rounded-full px-2",
         "border border-(--glass-border-hairline)",
         "bg-[color-mix(in_oklab,var(--color-bg-elevated)_70%,transparent)]",
         "text-[11px] font-medium leading-none text-(--color-text-secondary)",

@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
+  ArrowDownToLine,
   Check,
   ChevronDown,
   ExternalLink,
@@ -25,9 +26,14 @@ import { useGateCommands } from "@/components/board/useGateCommands";
 import { ConfirmDialog, ErrorDialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
 import type { GateVerb } from "@/lib/deriveNextGate";
-import { useGitBranchStatus } from "@/lib/hooks/useGit";
+import {
+  useGitBranchStatus,
+  useGitFetch,
+  useGitSyncWithMain,
+} from "@/lib/hooks/useGit";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
+import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import {
   useArchiveWorkspace,
   useCheckWorkspaceDelete,
@@ -43,6 +49,13 @@ import type { LauncherKind, Workspace } from "@/lib/types";
 
 interface WorkspaceActionsMenuProps {
   workspace: Workspace;
+  /**
+   * The header is width-constrained and has folded the standalone Sync control
+   * away (H2). Surface a one-click "Sync with main" here (default strategy from
+   * settings) so the action stays reachable when the toolbar is compact — the
+   * full merge/rebase popover returns with the header Sync button once wide.
+   */
+  compact?: boolean;
 }
 
 interface ConfirmState {
@@ -53,14 +66,20 @@ interface ConfirmState {
   onConfirm: () => void;
 }
 
-export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
+export function WorkspaceActionsMenu({
+  workspace,
+  compact = false,
+}: WorkspaceActionsMenuProps) {
   const { data: repository } = useRepository(workspace.repositoryId);
   const { data: branchStatus } = useGitBranchStatus(workspace.id);
+  const { data: settings } = useUserSettings();
   const navigate = useNavigate();
   const archive = useArchiveWorkspace();
   const openPr = useOpenPullRequest();
   const checkDelete = useCheckWorkspaceDelete();
   const deleteWorkspace = useDeleteWorkspace();
+  const fetch = useGitFetch(workspace.id);
+  const sync = useGitSyncWithMain(workspace.id);
 
   // Lower-frequency header controls folded into this ⋯ overflow (M3): the repo
   // Run picker + the "Open in <app>" launchers, so the 40px ticket header keeps
@@ -225,6 +244,36 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
     });
   };
 
+  // Compact-only "Sync with main": the same gating as SyncButton (behind the
+  // merge target, not detached), run with the user's default strategy so the
+  // menu stays a single tap. The full strategy popover returns with the header
+  // Sync button once the toolbar has room.
+  const syncBehind = branchStatus?.behindOfTarget ?? 0;
+  const syncTarget = branchStatus?.targetRef ?? "main";
+  const syncBlockReason = !branchStatus
+    ? "Loading branch status…"
+    : branchStatus.detached
+      ? "Detached HEAD — checkout a branch to sync"
+      : syncBehind === 0
+        ? `Up to date with ${syncTarget}`
+        : null;
+  const syncBusy = fetch.isPending || sync.isPending;
+  const handleCompactSync = () => {
+    setOpen(false);
+    const strategy =
+      settings?.defaultMergeStrategy === "rebase" ? "rebase" : "merge";
+    void (async () => {
+      try {
+        await fetch.mutateAsync().catch(() => {
+          /* stale-ref failure surfaces on the sync call below */
+        });
+        await sync.mutateAsync(strategy);
+      } catch (err) {
+        showError("Couldn't sync with main", err);
+      }
+    })();
+  };
+
   // Local workspaces expose no gate / merge / PR / archive / delete here — the
   // destructive "Remove from Phasr" still lives in the sidebar's right-click
   // menu. They DO keep the utility Run + Open-in sections that used to sit in
@@ -263,6 +312,28 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
                       {...(cmd.reason ? { title: cmd.reason } : {})}
                     />
                   ))}
+                  <li
+                    className="my-1 h-px bg-(--glass-border-hairline)"
+                    aria-hidden
+                  />
+                </>
+              )}
+
+              {/* Sync with main, folded in from the header when the toolbar is
+                  compact (H2) so the primary gate is never pushed off-screen. */}
+              {compact && hasWorktree && !isLocalWorkspace && (
+                <>
+                  <MenuItem
+                    icon={<ArrowDownToLine size={12} />}
+                    label={
+                      syncBusy
+                        ? "Syncing…"
+                        : `Sync with ${syncTarget}${syncBehind > 0 ? ` (${syncBehind})` : ""}`
+                    }
+                    onClick={handleCompactSync}
+                    disabled={syncBusy || !!syncBlockReason}
+                    {...(syncBlockReason ? { title: syncBlockReason } : {})}
+                  />
                   <li
                     className="my-1 h-px bg-(--glass-border-hairline)"
                     aria-hidden

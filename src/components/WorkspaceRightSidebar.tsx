@@ -3,6 +3,7 @@ import { ChangesPanel } from "@/components/ChangesPanel";
 import { DiffModeToggle, type DiffViewMode } from "@/components/diff/DiffView";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { useGitStatus } from "@/lib/hooks/useGit";
+import { useElementWidth } from "@/lib/hooks/useElementWidth";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,14 @@ interface WorkspaceRightSidebarProps {
 }
 
 const DIFF_MODE_KEY = "phasr.diff.viewMode";
+
+/**
+ * Below this panel width, side-by-side is force-disabled and the diff renders
+ * inline regardless of the persisted pref: two ~half-width columns wrap real
+ * code into an overlapping, unreadable mess. Split stays available on the
+ * full-width diff route and once the user drags this panel wider than this.
+ */
+const SPLIT_MIN_WIDTH = 520;
 
 function readDiffMode(): DiffViewMode {
   // Inline (unified) is the default in this narrow (~380px) sidebar: side-by-side
@@ -39,6 +48,13 @@ export function WorkspaceRightSidebar({
     useUiStore((s) => s.rightPanelTab[workspaceId]) ?? "changes";
   const setTab = useUiStore((s) => s.setRightPanelTab);
 
+  // Measure THIS panel (user-resizable, 300–640px). Below SPLIT_MIN_WIDTH we
+  // force inline regardless of the persisted pref; above it we honor the pref.
+  // `null` (pre-measure) is treated as narrow so the first paint never flashes
+  // an overlapping split.
+  const [rootRef, panelWidth] = useElementWidth<HTMLDivElement>();
+  const canSplit = panelWidth !== null && panelWidth >= SPLIT_MIN_WIDTH;
+
   const [diffMode, setDiffMode] = useState<DiffViewMode>(readDiffMode);
   const handleDiffModeChange = useCallback((next: DiffViewMode) => {
     setDiffMode(next);
@@ -48,14 +64,23 @@ export function WorkspaceRightSidebar({
       /* ignore quota / sandboxed iframe */
     }
   }, []);
+
+  // The pref persists (so widening the panel restores the user's split), but
+  // the mode ACTUALLY rendered is gated on width — never side-by-side when the
+  // panel is too narrow to hold two readable columns.
+  const effectiveMode: DiffViewMode = canSplit ? diffMode : "inline";
+
   // ⌘\ flips split↔inline for every diff section at once. Skip when a text
   // field is focused (commit message) so typing a backslash never toggles it.
+  // A no-op below the split threshold — the panel can't render split there, so
+  // the shortcut leaves the persisted pref untouched (it re-applies once wide).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!matchShortcut(e, SHORTCUTS.toggleDiffMode)) return;
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (target?.isContentEditable) return;
+      if (!canSplit) return;
       e.preventDefault();
       handleDiffModeChange(
         diffMode === "side-by-side" ? "inline" : "side-by-side",
@@ -63,13 +88,13 @@ export function WorkspaceRightSidebar({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [diffMode, handleDiffModeChange]);
+  }, [canSplit, diffMode, handleDiffModeChange]);
 
   const changeCount = changes?.length ?? 0;
   const showToggle = activeTab === "changes" && changeCount > 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-(--color-border-subtle) pl-3 pr-2">
         <TabButton
           label="Changes"
@@ -84,7 +109,12 @@ export function WorkspaceRightSidebar({
         />
         {showToggle && (
           <div className="ml-auto">
-            <DiffModeToggle mode={diffMode} onChange={handleDiffModeChange} />
+            <DiffModeToggle
+              mode={effectiveMode}
+              onChange={handleDiffModeChange}
+              splitDisabled={!canSplit}
+              splitDisabledTitle="Widen the panel to view side-by-side"
+            />
           </div>
         )}
       </div>
@@ -92,7 +122,7 @@ export function WorkspaceRightSidebar({
         {activeTab === "changes" ? (
           <ChangesPanel
             workspaceId={workspaceId}
-            diffMode={diffMode}
+            diffMode={effectiveMode}
             onDiffModeChange={handleDiffModeChange}
           />
         ) : (

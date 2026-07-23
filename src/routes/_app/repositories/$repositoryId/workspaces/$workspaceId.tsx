@@ -31,6 +31,7 @@ import { WorkspaceInnerTabBar } from "@/components/WorkspaceInnerTabBar";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
 import { useBoard } from "@/lib/hooks/useBoard";
 import { blockingRoles } from "@/lib/deriveBoardState";
+import { useElementWidth } from "@/lib/hooks/useElementWidth";
 import { useGitStatus, useWatchWorkspaceGit } from "@/lib/hooks/useGit";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
@@ -44,6 +45,15 @@ import {
   useUiStore,
 } from "@/lib/store";
 import { cn } from "@/lib/utils";
+
+/**
+ * Below this header-row width, the low-priority toolbar controls (the pinned
+ * `dev` runner + the standalone Sync button) fold into the ⋯ overflow so the
+ * branch chip can flex-shrink and the single primary gate is NEVER pushed off
+ * the right edge (H2). Measured on the row itself, not the window, so a wider
+ * or collapsed left sidebar is accounted for.
+ */
+const HEADER_COMPACT_WIDTH = 940;
 
 function WorkspaceDetail() {
   const { repositoryId, workspaceId } = Route.useParams();
@@ -80,6 +90,11 @@ function WorkspaceDetail() {
   const rightPanelWidth = useUiStore((s) => s.rightPanelWidth);
   const setRightPanelWidth = useUiStore((s) => s.setRightPanelWidth);
   const [resizing, setResizing] = useState(false);
+  // Responsive header: fold low-priority controls into ⋯ below a width so the
+  // primary gate is never clipped (H2). Measured on the row (see constant).
+  const [headerRowRef, headerWidth] = useElementWidth<HTMLDivElement>();
+  const compactHeader =
+    headerWidth !== null && headerWidth < HEADER_COMPACT_WIDTH;
   const setActiveWorkspaceContext = useUiStore(
     (s) => s.setActiveWorkspaceContext,
   );
@@ -290,8 +305,14 @@ function WorkspaceDetail() {
         />
       )}
       <header className="flex shrink-0 flex-col border-b border-(--color-border-subtle)">
-        <div className="flex h-[var(--layout-header-height)] items-center gap-3 pl-4 pr-2">
-          <div className="flex shrink-0 items-center gap-2">
+        <div
+          ref={headerRowRef}
+          className="flex h-[var(--layout-header-height)] items-center gap-3 pl-4 pr-2"
+        >
+          {/* Left cluster flex-SHRINKS: the branch chip truncates (with its
+              native tooltip) so it yields room instead of shoving the gate off
+              the right edge. Status badge stays fixed-size. */}
+          <div className="flex min-w-0 items-center gap-2">
             {workspace.worktreePath && <BranchChip workspaceId={workspaceId} />}
             {/* Honest status — the SAME derivation the board card + sidebar use,
                 so a card and its detail can never disagree (board vs item). An
@@ -299,45 +320,58 @@ function WorkspaceDetail() {
                 board-aware `deriveBoardState` (working/idle/wedged · blocked ·
                 needs-review), never a raw "Running" `WorkspaceStatus`. */}
             {workspace.workspaceKind === "agent" && (
-              <AgentStatusBadge
-                workspaceId={workspaceId}
-                repositoryId={repositoryId}
-                changeCount={changeCount}
-              />
+              <div className="shrink-0">
+                <AgentStatusBadge
+                  workspaceId={workspaceId}
+                  repositoryId={repositoryId}
+                  changeCount={changeCount}
+                />
+              </div>
             )}
             {workspace.workspaceKind === "subtask" && (
-              <SubtaskStatusBadge
-                workspaceId={workspaceId}
-                repositoryId={repositoryId}
-                changeCount={changeCount}
-              />
+              <div className="shrink-0">
+                <SubtaskStatusBadge
+                  workspaceId={workspaceId}
+                  repositoryId={repositoryId}
+                  changeCount={changeCount}
+                />
+              </div>
             )}
           </div>
           <WorkspaceInnerTabBar
             workspaceId={workspaceId}
+            compact={compactHeader}
             {...(ticketBrief ? { commentCount: ticketBrief.commentCount } : {})}
           />
           <div className="flex shrink-0 items-center gap-1">
-            {/* Run/Open-in folded into the ⋯ overflow (M3) to de-densify this
-                40px row: branch · status · tabs · Changes · next gate · ⋯. The
-                pinned run pills (⌘1-9) stay for quick access. */}
-            <PinnedRunCommandsToolbar repositoryId={repositoryId} />
-            {workspace.worktreePath && workspace.workspaceKind !== "local" && (
-              <SyncButton workspaceId={workspaceId} />
+            {/* Low-priority controls (pinned `dev` runner + standalone Sync) fold
+                into the ⋯ overflow below HEADER_COMPACT_WIDTH so the gate stays
+                visible (H2). Both remain reachable there (Run section / the
+                compact Sync item). Run/Open-in already live in ⋯ (M3). */}
+            {!compactHeader && (
+              <>
+                <PinnedRunCommandsToolbar repositoryId={repositoryId} />
+                {workspace.worktreePath &&
+                  workspace.workspaceKind !== "local" && (
+                    <SyncButton workspaceId={workspaceId} />
+                  )}
+              </>
             )}
             {workspace.worktreePath && (
               <ChangesToggle
                 count={changeCount}
                 collapsed={rightPanelCollapsed}
                 onToggle={toggleRightPanel}
+                compact={compactHeader}
               />
             )}
             {/* The ticket's single derived next gate (Page 04): Request review /
-                Approve+Bounce / Validate — the one primary per §G1. */}
+                Approve+Bounce / Validate — the one primary per §G1. Always
+                visible; never folded away. */}
             {isSubtask && workspace.worktreePath && (
               <TicketNextGate workspace={workspace} />
             )}
-            <WorkspaceActionsMenu workspace={workspace} />
+            <WorkspaceActionsMenu workspace={workspace} compact={compactHeader} />
           </div>
         </div>
         {workspace.worktreePath && (
@@ -391,43 +425,59 @@ function ChangesToggle({
   count,
   collapsed,
   onToggle,
+  compact,
 }: {
   count: number;
   collapsed: boolean;
   onToggle: () => void;
+  compact: boolean;
 }) {
   const Icon = collapsed ? PanelRight : PanelRightClose;
   const shortcut = SHORTCUTS.toggleRightPanel.display.join("");
   const label = collapsed ? "Show changes" : "Hide changes";
+  // M3: when the panel is OPEN its own "Changes N | History" tab already owns
+  // the label + count, so the header button de-emphasizes to an icon-only
+  // "hide" affordance — removing the redundant second "Changes N" and freeing
+  // header width. Collapsed, it's the full labelled toggle that surfaces the
+  // count (the panel isn't there to show it) — except in a compact header,
+  // where it stays icon-only so it never crowds the primary gate (H2).
+  const iconOnly = !collapsed || compact;
   return (
     <GlassTooltip content={`${label} (${shortcut})`} side="bottom">
       <button
         type="button"
         onClick={onToggle}
-        aria-label={label}
+        aria-label={iconOnly ? `${label} (${count} changed)` : label}
         className={cn(
-          "relative flex h-8 items-center gap-1.5 rounded-[8px] px-2",
+          "relative flex h-8 items-center gap-1.5 rounded-[8px]",
           "text-[12px] text-(--color-text-secondary)",
           "transition-colors duration-150",
           "hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
           "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+          iconOnly
+            ? "w-8 justify-center"
+            : "px-2",
           !collapsed && "bg-(--color-bg-active) text-(--color-text-primary)",
         )}
       >
         <Icon size={13} />
-        <span className="leading-none">Changes</span>
-        {count > 0 && (
-          <span
-            className={cn(
-              "ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1",
-              // Neutral counter — coral is reserved for the single next-gate in
-              // this row (Validate), so the change count never competes with it.
-              "border border-(--color-border-default) bg-(--color-bg-elevated)",
-              "text-[10px] font-semibold leading-none text-(--color-text-secondary)",
+        {!iconOnly && (
+          <>
+            <span className="leading-none">Changes</span>
+            {count > 0 && (
+              <span
+                className={cn(
+                  "ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1",
+                  // Neutral counter — coral is reserved for the single next-gate
+                  // in this row (Validate), so the count never competes with it.
+                  "border border-(--color-border-default) bg-(--color-bg-elevated)",
+                  "text-[10px] font-semibold leading-none text-(--color-text-secondary)",
+                )}
+              >
+                {count > 99 ? "99+" : count}
+              </span>
             )}
-          >
-            {count > 99 ? "99+" : count}
-          </span>
+          </>
         )}
       </button>
     </GlassTooltip>
