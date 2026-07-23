@@ -14,10 +14,13 @@ interface WorkspaceRightSidebarProps {
 const DIFF_MODE_KEY = "phasr.diff.viewMode";
 
 function readDiffMode(): DiffViewMode {
-  if (typeof window === "undefined") return "side-by-side";
-  return window.localStorage.getItem(DIFF_MODE_KEY) === "inline"
-    ? "inline"
-    : "side-by-side";
+  // Inline (unified) is the default in this narrow (~380px) sidebar: side-by-side
+  // halves the width and wraps real code into an unreadable mess here. The user
+  // can still switch to side-by-side (persisted — e.g. after widening the panel).
+  if (typeof window === "undefined") return "inline";
+  return window.localStorage.getItem(DIFF_MODE_KEY) === "side-by-side"
+    ? "side-by-side"
+    : "inline";
 }
 
 /**
