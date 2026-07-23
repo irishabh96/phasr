@@ -106,7 +106,7 @@ test.describe("agent honest status (/design-test)", () => {
       "exit code 1",
     );
     await expect(page.getByTestId("agent-state-interrupted")).toContainText(
-      "interrupted on relaunch",
+      "when phasr last closed",
     );
   });
 

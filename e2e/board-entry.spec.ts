@@ -62,16 +62,12 @@ test.describe("New epic entry point (real app)", () => {
     const { errors } = await boot(page);
 
     // Enter a workspace-less repo (sidecar) so its home renders the
-    // CreateFirstWorkspacePane, which carries the visible "New epic" button.
+    // RepoEntryChoice onboarding surface, whose "New epic" card is a
+    // discoverable peer of the single-agent "New task" card — clearly separate
+    // from the single-agent create-first-workspace flow.
     await page.locator('[aria-label="sidecar"]').first().click();
-    await expect(
-      page.getByRole("heading", { name: "Create your first workspace" }),
-    ).toBeVisible({ timeout: 15_000 });
-
-    // The affordance is discoverable AND clearly separate from the single-agent
-    // "Create your first workspace" flow.
     const newEpic = page.getByRole("button", { name: "New epic in sidecar" });
-    await expect(newEpic).toBeVisible();
+    await expect(newEpic).toBeVisible({ timeout: 15_000 });
     await newEpic.click();
 
     // The shared Dialog shell + existing DecomposeForm open.

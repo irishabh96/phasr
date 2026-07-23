@@ -283,9 +283,14 @@ test.describe("Create first workspace pane", () => {
   }) => {
     const { errors } = await boot(page);
     await gotoRepo2(page);
+    // The empty-repo home lands on the RepoEntryChoice onboarding surface; the
+    // "New task" card reveals the two-step create-first-workspace form.
+    await page
+      .getByRole("button", { name: "New task in sidecar" })
+      .click({ timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "Create your first workspace" }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     await page.locator("#first-task-name").fill("add dark mode");
     const cont = page.getByRole("button", { name: /Continue/ });
