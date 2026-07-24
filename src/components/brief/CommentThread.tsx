@@ -110,7 +110,7 @@ export function CommentThread({
                   · {isAgent ? "agent" : "you"} · {ago} ago
                 </span>
               </div>
-              <div className="whitespace-pre-wrap text-[12.5px] text-(--color-text-secondary)">
+              <div className="whitespace-pre-wrap break-words text-[12.5px] text-(--color-text-secondary)">
                 {comment.body}
               </div>
             </div>

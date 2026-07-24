@@ -114,9 +114,12 @@ export function SectionEditor({
   const now = useNow(state.base.lastEditedAtMs != null);
   const meta = editedMeta(state.base, now);
 
+  // An empty section shows the full-width "Write {label}" CTA below, so the
+  // top-right Edit affordance would be a redundant second control for the same
+  // action — suppress it and let the CTA be the single, discoverable entry.
   const action = isEditing ? (
     <span className="text-[11px] text-(--color-accent-text)">Markdown</span>
-  ) : (
+  ) : isEmpty ? null : (
     <button
       type="button"
       onClick={() => dispatch({ type: "edit" })}

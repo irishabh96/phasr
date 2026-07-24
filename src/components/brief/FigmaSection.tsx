@@ -134,12 +134,13 @@ export function FigmaSection({
               className="group/figma flex items-center gap-3"
               data-testid="brief-figma-link"
             >
-              <div className="flex h-16 w-[110px] shrink-0 items-center justify-center rounded-(--radius-control) border border-(--color-border-default) bg-[linear-gradient(135deg,var(--color-bg-base),var(--color-bg-active))] text-(--color-cyan)">
+              <div className="flex h-16 w-[110px] shrink-0 items-center justify-center rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-elevated) text-(--color-cyan)">
                 <LayoutTemplate className="size-5" aria-hidden="true" />
               </div>
               <div className="min-w-0 flex-1">
                 <button
                   type="button"
+                  title={link.url}
                   onClick={() => void openUrl(link.url).catch(() => {})}
                   className="block max-w-full truncate text-left font-mono text-[11.5px] text-(--color-accent-text) hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
                 >

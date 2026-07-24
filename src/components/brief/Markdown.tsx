@@ -109,6 +109,27 @@ const components: Components = {
       {children}
     </blockquote>
   ),
+  hr: () => (
+    <hr className="my-3 border-0 border-t border-(--color-border-subtle)" />
+  ),
+  // GFM tables. remark-gfm emits bare <table>/<th>/<td>; without these they
+  // render as unstyled, border-less text with cells colliding. A collapsed
+  // hairline grid keeps a dense-but-legible table that reads as structure.
+  table: ({ children }) => (
+    <table className="my-3 w-full border-collapse text-[12px]">
+      {children}
+    </table>
+  ),
+  th: ({ children }) => (
+    <th className="border border-(--glass-border-hairline) bg-(--color-bg-input) px-2.5 py-1.5 text-left align-top font-semibold text-(--color-text-primary)">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-(--glass-border-hairline) px-2.5 py-1.5 align-top">
+      {children}
+    </td>
+  ),
 };
 
 export function Markdown({
@@ -122,7 +143,10 @@ export function Markdown({
     <div
       data-testid="brief-markdown"
       className={cn(
-        "text-[12.5px] leading-relaxed text-(--color-text-secondary)",
+        // `break-words` so a long unbreakable token (a URL, an inline
+        // `identifier_with_no_spaces`, a code fence label) wraps inside the
+        // reading column instead of clipping past the right edge.
+        "text-[12.5px] leading-relaxed break-words text-(--color-text-secondary)",
         className,
       )}
     >

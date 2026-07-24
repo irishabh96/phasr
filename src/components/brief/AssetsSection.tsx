@@ -119,7 +119,10 @@ function AssetThumb({
         </span>
       )}
 
-      <span className="relative z-10 w-full truncate bg-[color-mix(in_oklab,var(--color-bg-base)_55%,transparent)] px-1.5 py-0.5 font-mono text-[9.5px] text-(--color-text-secondary)">
+      <span
+        title={asset.name}
+        className="relative z-10 w-full truncate bg-[color-mix(in_oklab,var(--color-bg-base)_55%,transparent)] px-1.5 py-0.5 font-mono text-[9.5px] text-(--color-text-secondary)"
+      >
         {asset.name}
       </span>
 
