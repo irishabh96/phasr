@@ -168,7 +168,7 @@ export function NewProjectPane() {
             Back
           </button>
           <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
-            New Project
+            New project
           </h1>
         </header>
 
@@ -231,7 +231,7 @@ export function NewProjectPane() {
               htmlFor="empty-repo-name"
               className="block text-[12px] font-medium text-(--color-text-primary)"
             >
-              Repository Name
+              Repository name
             </label>
             <GlassInput
               id="empty-repo-name"
@@ -340,7 +340,7 @@ export function NewProjectPane() {
                   htmlFor="template-repo-name"
                   className="block text-[12px] font-medium text-(--color-text-primary)"
                 >
-                  Repository Name
+                  Repository name
                 </label>
                 <GlassInput
                   id="template-repo-name"

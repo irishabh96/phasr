@@ -33,8 +33,8 @@ export function NewTaskModal() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && clearPending()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
-        <Dialog.Content className="fixed left-1/2 top-[14vh] z-[190] w-[min(560px,calc(100vw-32px))] -translate-x-1/2 outline-none">
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Content className="fixed left-1/2 top-[14vh] z-(--z-modal) w-[min(560px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
             <header className="flex h-12 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>

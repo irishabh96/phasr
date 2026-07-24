@@ -197,9 +197,7 @@ export function NewTaskForm({
       </div>
 
       {error && (
-        <p className="truncate text-[11px] text-(--color-danger)" title={error}>
-          {error}
-        </p>
+        <p className="text-[11px] leading-snug text-(--color-danger)">{error}</p>
       )}
 
       <div className="flex items-center justify-end gap-2 pt-1">

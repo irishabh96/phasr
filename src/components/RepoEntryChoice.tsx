@@ -130,7 +130,7 @@ function ChoiceCard({
 
       <ArrowRight
         size={15}
-        className="shrink-0 text-(--color-text-muted) opacity-0 transition-opacity group-hover:opacity-100"
+        className="shrink-0 text-(--color-text-muted) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
       />
     </button>
   );

@@ -2,6 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -368,7 +370,8 @@ function Step1({
           type="submit"
           disabled={!canContinue}
         >
-          Continue →
+          Continue
+          <ArrowRight size={14} aria-hidden="true" />
         </GlassButton>
       </div>
     </form>
@@ -477,7 +480,8 @@ function Step2({
             type="button"
             onClick={onBack}
           >
-            ← Back
+            <ArrowLeft size={14} aria-hidden="true" />
+            Back
           </GlassButton>
           <GlassButton
             variant="primary"

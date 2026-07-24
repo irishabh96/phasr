@@ -405,7 +405,7 @@ test.describe("New project pane", () => {
     await bootApp(page);
     await page.goto("/new-project");
     await expect(
-      page.getByRole("heading", { name: "New Project" }),
+      page.getByRole("heading", { name: "New project" }),
     ).toBeVisible({ timeout: 20_000 });
     // Location seeds empty under the mock (homeDir → null); fill it.
     await page.getByPlaceholder("/Users/you/projects").fill("/tmp/projects");
