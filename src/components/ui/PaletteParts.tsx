@@ -1,5 +1,5 @@
 import { Command } from "cmdk";
-import { CornerDownLeft } from "lucide-react";
+import { ChevronsUpDown, CornerDownLeft } from "lucide-react";
 import { type ReactNode } from "react";
 import {
   GROUP_CLS,
@@ -51,7 +51,7 @@ export function PaletteShortcut({ keys }: { keys: string[] }) {
 export function PaletteFooter() {
   return (
     <div className={PALETTE_FOOTER_CLS}>
-      <FooterHint icon={<span className="text-[12px] leading-none">↕</span>} label="Navigate" />
+      <FooterHint icon={<ChevronsUpDown size={11} />} label="Navigate" />
       <FooterHint icon={<CornerDownLeft size={11} />} label="Select" />
       <FooterHint icon={<span className="text-[10px]">esc</span>} label="Close" boxed />
     </div>

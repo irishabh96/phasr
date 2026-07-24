@@ -93,14 +93,20 @@ export function RepoFileSearchModal() {
           </div>
 
           <Command.List className={PALETTE_LIST_CLS}>
-            {isLoading && (
+            {isLoading ? (
               <div className="px-3 py-6 text-center text-[12px] text-(--color-text-muted)">
-                Loading files…
+                Indexing files…
               </div>
+            ) : (
+              // Only offer the "no match" empty state once indexing has
+              // finished — otherwise a slow index shows "Indexing…" AND
+              // "No files match." stacked (contradictory copy).
+              <Command.Empty className="px-3 py-6 text-center text-[13px] text-(--color-text-muted)">
+                {query.trim()
+                  ? `No files match “${query.trim()}”.`
+                  : "No files in this repository."}
+              </Command.Empty>
             )}
-            <Command.Empty className="px-3 py-6 text-center text-[13px] text-(--color-text-muted)">
-              No files match.
-            </Command.Empty>
 
             {files && files.length > 0 && (
               <PaletteGroup heading="Files">

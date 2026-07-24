@@ -89,7 +89,7 @@ export function RenameWorkspaceModal() {
           placeholder="Workspace name"
         />
         {update.error && (
-          <p className="text-[11px] text-(--color-danger)">
+          <p role="alert" className="text-[11px] text-(--color-danger)">
             {humanizeError(update.error)}
           </p>
         )}

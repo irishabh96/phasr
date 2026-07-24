@@ -25,7 +25,7 @@ export const KBD_CLS =
  * paddings match exactly.
  */
 export const PALETTE_DIALOG_CLS =
-  "fixed inset-0 z-[200] flex items-start justify-center bg-(--color-bg-overlay) p-0 pt-[14vh] backdrop-blur-md";
+  "fixed inset-0 z-(--z-modal) flex items-start justify-center bg-(--color-bg-overlay) p-0 pt-[14vh] backdrop-blur-md";
 
 export const PALETTE_SHELL_CLS =
   "overflow-hidden rounded-[var(--radius-modal)] bg-(--glass-modal) backdrop-blur-xl animate-[modal-in_200ms_var(--ease-glass)]";

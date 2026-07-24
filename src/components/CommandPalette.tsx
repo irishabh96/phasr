@@ -205,7 +205,7 @@ export function CommandPalette() {
 
           <Command.List className={PALETTE_LIST_CLS}>
             <Command.Empty className="px-3 py-6 text-center text-[13px] text-(--color-text-muted)">
-              No matches.
+              {query.trim() ? `No results for “${query.trim()}”.` : "No matches."}
             </Command.Empty>
 
             {gate.hasContext && gate.commands.length > 0 && (

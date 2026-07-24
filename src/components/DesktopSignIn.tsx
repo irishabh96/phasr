@@ -203,7 +203,7 @@ export function DesktopSignIn() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-(--color-bg-base) px-6 text-(--color-text-primary)">
-      <section className="w-full max-w-[440px] rounded-lg border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
+      <section className="w-full max-w-[440px] rounded-(--radius-modal) border border-(--color-border-subtle) bg-(--color-bg-surface) p-6">
         <div className="mb-6 text-center">
           <PhasrWordmark />
           <h1 className="text-[1.25rem] font-semibold leading-tight">

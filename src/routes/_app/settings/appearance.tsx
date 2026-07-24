@@ -31,10 +31,13 @@ function AppearancePage() {
               <button
                 key={option}
                 type="button"
+                aria-pressed={active}
+                aria-label={`${option} theme${active ? " (current)" : ""}`}
                 onClick={() => setTheme(option)}
                 className={cn(
                   "glass-panel relative flex h-24 items-end justify-between p-5 text-left capitalize",
                   "transition-transform duration-150 hover:-translate-y-px",
+                  "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
                   active
                     ? "border-(--color-accent-500)"
                     : "hover:border-(--glass-border-strong)",

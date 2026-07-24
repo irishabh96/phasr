@@ -227,17 +227,17 @@ export function MergeToMainDialog({
         )}
 
         {error && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-danger)">
+          <p role="alert" className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-danger)">
             {error}
           </p>
         )}
         {conflictNote && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-text-primary)">
+          <p role="status" className="rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-text-primary)">
             {conflictNote}
           </p>
         )}
         {merge.isSuccess && merge.data?.kind === "clean" && (
-          <div className="flex items-center gap-2 rounded-md border border-[color-mix(in_oklab,var(--color-success)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-success)_8%,transparent)] px-3 py-2">
+          <div role="status" className="flex items-center gap-2 rounded-md border border-[color-mix(in_oklab,var(--color-success)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-success)_8%,transparent)] px-3 py-2">
             <Check
               size={14}
               className="shrink-0 text-(--color-success)"
