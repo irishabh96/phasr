@@ -214,7 +214,7 @@
   --chip-warning-fg: #b45309;
   --chip-danger-fg: #b91c1c;
   --color-info: #2563eb;
-  --color-accent-text: var(--color-accent-700); /* darker coral — AA on white */
+  --color-accent-text: var(--color-accent-800); /* darker coral — AA body 5.95:1 on white (accent-700 was 4.0:1, only AA-large) */
 
   /* Glass tokens — light variant. White-tinted instead of black-tinted. */
   --glass-rail: color-mix(in oklab, var(--color-bg-surface) 75%, transparent);

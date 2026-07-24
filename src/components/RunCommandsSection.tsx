@@ -11,7 +11,9 @@ import {
   useRunCommands,
   useUpdateRunCommand,
 } from "@/lib/hooks/useRunCommands";
+import { humanizeError } from "@/lib/humanizeError";
 import { useUiStore } from "@/lib/store";
+import { showToast } from "@/lib/toast";
 import type { RunCommand } from "@/lib/types";
 
 interface RunCommandsSectionProps {
@@ -84,6 +86,12 @@ export function RunCommandsSection({
       setName("");
       setCommand("");
       closeAdd();
+    } catch (err) {
+      showToast({
+        title: "Couldn't add the command",
+        intent: "error",
+        message: humanizeError(err),
+      });
     } finally {
       inFlightRef.current = false;
     }
@@ -101,11 +109,19 @@ export function RunCommandsSection({
   };
   const saveEdit = async (id: string) => {
     if (!editName.trim() || !editCommand.trim()) return;
-    await updateRC.mutateAsync({
-      id,
-      input: { name: editName.trim(), command: editCommand.trim() },
-    });
-    cancelEdit();
+    try {
+      await updateRC.mutateAsync({
+        id,
+        input: { name: editName.trim(), command: editCommand.trim() },
+      });
+      cancelEdit();
+    } catch (err) {
+      showToast({
+        title: "Couldn't save the command",
+        intent: "error",
+        message: humanizeError(err),
+      });
+    }
   };
 
   const sorted = useMemo(
@@ -317,6 +333,12 @@ export function RunCommandsSection({
           const target = deleteTarget;
           if (!target) return;
           deleteRC.mutate(target.id, {
+            onError: (err) =>
+              showToast({
+                title: "Couldn't delete the command",
+                intent: "error",
+                message: humanizeError(err),
+              }),
             onSettled: () => setDeleteTarget(null),
           });
         }}

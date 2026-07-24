@@ -88,9 +88,14 @@ export const GlassSelect = forwardRef<HTMLSelectElement, GlassSelectProps>(
           className={cn(
             inputBaseClasses,
             "h-9 cursor-pointer appearance-none pl-3 pr-9 text-[13px]",
-            // Hide the (unreliable) native value paint; the overlay span renders
-            // it. Keep the popup <option>s explicitly readable in both engines.
-            "text-transparent [&>option]:bg-(--color-bg-dropdown) [&>option]:text-(--color-text-primary)",
+            // Hide the native value paint; the overlay span renders it. NOTE:
+            // `text-transparent` (color) alone does NOT suppress the closed value
+            // — WebKit/Blink paint it via `-webkit-text-fill-color`, so it ghosts
+            // ~1-2px under the overlay. Kill that too. The <option>s reset their
+            // OWN fill (they'd otherwise inherit `transparent` and blank the
+            // popup) so the open menu stays readable in both engines.
+            "text-transparent [-webkit-text-fill-color:transparent]",
+            "[&>option]:bg-(--color-bg-dropdown) [&>option]:text-(--color-text-primary) [&>option]:[-webkit-text-fill-color:var(--color-text-primary)]",
             className,
           )}
           {...props}
