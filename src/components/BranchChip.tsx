@@ -1,6 +1,8 @@
 import { GitBranch, GitCommit } from "lucide-react";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { useGitBranchStatus } from "@/lib/hooks/useGit";
+import { useUiStore } from "@/lib/store";
+import { resolveTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 interface BranchChipProps {
@@ -20,6 +22,8 @@ interface BranchChipProps {
  */
 export function BranchChip({ workspaceId, className }: BranchChipProps) {
   const { data: status } = useGitBranchStatus(workspaceId);
+  const theme = useUiStore((s) => s.theme);
+  const isLight = resolveTheme(theme) === "light";
   if (!status) return null;
 
   const label = status.detached ? status.branch.slice(0, 7) : status.branch;
@@ -55,10 +59,24 @@ export function BranchChip({ workspaceId, className }: BranchChipProps) {
       {status.upstream && (status.ahead > 0 || status.behind > 0) && (
         <span className="flex shrink-0 items-center gap-1 text-(--color-text-muted)">
           {status.ahead > 0 && (
-            <span className="text-(--color-accent-text)">↑{status.ahead}</span>
+            // Small count text needs AA body (4.5:1) on the chip's near-white
+            // surface in light — accent-text (accent-700) only reaches 4:1
+            // there, so light steps to accent-800 (5.7:1). Dark keeps the pale
+            // accent-text (7.8:1 on the dark chip).
+            <span
+              className={
+                isLight
+                  ? "text-(--color-accent-800)"
+                  : "text-(--color-accent-text)"
+              }
+            >
+              ↑{status.ahead}
+            </span>
           )}
           {status.behind > 0 && (
-            <span className="text-(--color-warning)">↓{status.behind}</span>
+            // Use the AA-tuned soft-chip warning glyph token (light b45309 =
+            // 4.8:1) — raw --color-warning falls to 3.2:1 on white.
+            <span className="text-(--chip-warning-fg)">↓{status.behind}</span>
           )}
         </span>
       )}

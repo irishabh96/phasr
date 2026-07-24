@@ -249,7 +249,12 @@ export function WorkspaceActionsMenu({
   // menu stays a single tap. The full strategy popover returns with the header
   // Sync button once the toolbar has room.
   const syncBehind = branchStatus?.behindOfTarget ?? 0;
-  const syncTarget = branchStatus?.targetRef ?? "main";
+  // Friendly, prefix-stripped target name so this item matches the header Sync
+  // button's copy ("Sync with main", not "…origin/main").
+  const syncTarget = (branchStatus?.targetRef ?? "main").replace(
+    /^origin\//,
+    "",
+  );
   const syncBlockReason = !branchStatus
     ? "Loading branch status…"
     : branchStatus.detached

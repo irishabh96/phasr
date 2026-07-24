@@ -79,8 +79,12 @@ export function WorkspaceInnerTabBar({
     if (nextTab) setActiveInnerTab(workspaceId, nextTab.id);
   };
 
+  // Sizes to its CONTENT and shrinks with its internal scroll — it is NOT the
+  // flex spacer (a `flex-1` spacer follows it in the header). A flex-1 basis-0
+  // tab bar collapsed to width 0 under a gate-heavy right cluster at narrow
+  // widths, hiding every tab; content-sizing keeps them visible + scrollable.
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-1">
+    <div className="flex min-w-0 shrink items-center gap-1">
       {/* Pill track hugs its content so the "+" sits right after the last
           tab. It only scrolls (with the "+" pinned to its right edge, still
           reachable) once the tabs overflow the available width. */}

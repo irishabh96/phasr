@@ -343,6 +343,11 @@ function WorkspaceDetail() {
             compact={compactHeader}
             {...(ticketBrief ? { commentCount: ticketBrief.commentCount } : {})}
           />
+          {/* Flex spacer: pushes the action cluster to the right edge in wide
+              layouts and collapses to 0 when space is tight — so the tab bar
+              (content-sized, scrollable) is never squeezed to width 0 and the
+              shrink-0 action cluster is never clipped (H2). */}
+          <div aria-hidden className="min-w-0 flex-1" />
           <div className="flex shrink-0 items-center gap-1">
             {/* Low-priority controls (pinned `dev` runner + standalone Sync) fold
                 into the ⋯ overflow below HEADER_COMPACT_WIDTH so the gate stays

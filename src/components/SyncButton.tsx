@@ -65,13 +65,17 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
   // tooltip) so the action is always discoverable.
   const behind = status?.behindOfTarget ?? 0;
   const detached = !!status?.detached;
+  // Full ref (e.g. "origin/main") for the precise body line; a friendly, prefix-
+  // stripped name (e.g. "main"/"master") for titles + hints so a non-"main"
+  // default branch is named correctly and every surface stays consistent.
   const targetLabel = status?.targetRef ?? "main";
+  const targetName = targetLabel.replace(/^origin\//, "");
   const blockReason = !status
     ? "Loading branch status…"
     : detached
       ? "Detached HEAD — checkout a branch to sync"
       : behind === 0
-        ? `Up to date with ${targetLabel}`
+        ? `Up to date with ${targetName}`
         : null;
   const canSync = blockReason === null;
 
@@ -102,7 +106,7 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
         title={
           blockReason
             ? blockReason
-            : `Sync with ${targetLabel} (${behind} commit${behind === 1 ? "" : "s"} behind)`
+            : `Sync with ${targetName} (${behind} commit${behind === 1 ? "" : "s"} behind)`
         }
         disabled={busy || !canSync}
         className="gap-1"
@@ -116,7 +120,7 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
         <div className="absolute right-0 top-full z-50 mt-1.5 w-72 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
           <header className="border-b border-(--glass-border-hairline) px-3 py-2">
             <p className="text-[11px] uppercase tracking-[0.12em] text-(--color-text-muted)">
-              Sync with main
+              Sync with {targetName}
             </p>
             <p className="mt-0.5 text-[12px] text-(--color-text-secondary)">
               Pull{" "}
@@ -139,11 +143,14 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
               current={strategy}
               onSelect={setStrategy}
               label="Rebase"
-              hint="Replays this branch's commits on top of main."
+              hint={`Replays this branch's commits on top of ${targetName}.`}
             />
           </div>
           {error && (
-            <p className="border-t border-(--glass-border-hairline) px-3 py-2 text-[11px] text-(--color-danger)">
+            <p
+              role="alert"
+              className="border-t border-(--glass-border-hairline) px-3 py-2 text-[11px] text-(--color-danger)"
+            >
               {error}
             </p>
           )}
