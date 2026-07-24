@@ -1046,6 +1046,10 @@ fn append_jsonl_line(path: &Path, line: &str) -> io::Result<()> {
 /// `description`/`title`/`commentCount`. camelCase on the wire.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+// Read side of epic-docs. The write path (scaffold/write_section/figma/asset) is
+// wired in commands/board.rs; this read path is pending the epic BriefPanel
+// command. Tests pin its frozen wire shape, so keep it (allow-dead), don't drop.
+#[allow(dead_code)]
 pub struct EpicBrief {
     pub parent_id: String,
     pub prd: BriefSectionContent,
@@ -1075,6 +1079,7 @@ pub fn epic_dir(repo_root: &Path, parent_id: &str) -> Result<PathBuf, TicketErro
 /// Best-effort create the epic dir so the paths a pointer references exist even
 /// for an epic that was never scaffolded (mirrors `ensure_ticket_dir`). Returns
 /// the dir on success.
+#[allow(dead_code)] // read-path helper; wired with the epic BriefPanel (see EpicBrief).
 pub fn ensure_epic_dir(repo_root: &Path, parent_id: &str) -> Result<PathBuf, TicketError> {
     let dir = epic_dir(repo_root, parent_id)?;
     std::fs::create_dir_all(&dir)?;
@@ -1150,6 +1155,7 @@ pub fn add_epic_asset(
 /// Read the whole epic brief (`prd`/`trd`/`figma`/`assets`). Missing files →
 /// empty sections (never an error); no local checkout or a never-scaffolded epic
 /// → an empty brief. A traversal id IS an error (rejected before any fs touch).
+#[allow(dead_code)] // read-path entry; wired with the epic BriefPanel (see EpicBrief).
 pub fn read_epic_brief(
     repo_local_path: Option<&Path>,
     parent_id: &str,

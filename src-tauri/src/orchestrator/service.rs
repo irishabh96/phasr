@@ -2712,7 +2712,7 @@ mod tests {
         let repo_path = Path::new(repo.local_path.as_deref().unwrap());
         let workspaces = WorkspaceRepo::new(pool.clone());
         let board = BoardRepo::new(pool.clone());
-        let (parent_id, roles) = seed_decomposition(
+        let (_parent_id, roles) = seed_decomposition(
             &workspaces,
             &board,
             &repo.id,

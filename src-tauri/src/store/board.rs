@@ -173,6 +173,12 @@ impl BoardRepo {
     /// Assemble the whole board for one parent. Workspace rows come from
     /// `WorkspaceRepo` (that repo owns the `workspaces` SQL); the edges and
     /// contracts come from this repo's own tables.
+    ///
+    /// Test-only: this unscoped read exists so tests can assemble a board
+    /// without threading a `user_id`. Production always calls the owner-scoped
+    /// `get_board_for_user`, so gate it to test builds — the unscoped path never
+    /// reaches the shipping binary.
+    #[cfg(test)]
     pub async fn get_board(
         &self,
         workspaces: &WorkspaceRepo,

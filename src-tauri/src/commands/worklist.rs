@@ -322,7 +322,9 @@ mod tests {
     /// Insert a parent + two subtasks + one edge (backend → frontend) under
     /// `repo`, owned by `uid`. Returns the parent id.
     async fn seed_epic(
-        workspaces: &WorkspaceRepo,
+        // Persistence goes through `board.create_decomposition` (atomic parent +
+        // subtasks + edge), so the WorkspaceRepo handle isn't needed here.
+        _workspaces: &WorkspaceRepo,
         board: &BoardRepo,
         repo: &Repository,
         uid: &str,

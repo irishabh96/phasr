@@ -67,6 +67,11 @@ impl WorkspaceRepo {
     /// `parent` rows all have `parent_id = NULL`, so they are unaffected. For
     /// an ALL-rows enumeration (e.g. repository teardown, which must reach every
     /// subtask's PTY/worktree) use `list_all_by_repository`.
+    ///
+    /// Test-only today: the live sidebar reads the owner-scoped
+    /// `list_by_repository_for_user`; this unscoped variant is a test
+    /// convenience, so gate it to test builds.
+    #[cfg(test)]
     pub async fn list_by_repository(
         &self,
         repository_id: &str,
@@ -383,7 +388,10 @@ impl WorkspaceRepo {
         row.as_ref().map(row_to_workspace).transpose()
     }
 
-    /// Owner-scoped variant of `find_active_subtask`.
+    /// Owner-scoped variant of `find_active_subtask`. No caller yet — the
+    /// scheduler dedups (parent, role) via the unscoped `find_active_subtask`;
+    /// kept ready (allow-dead) for a future owner-scoped dedup site.
+    #[allow(dead_code)]
     pub async fn find_active_subtask_for_user(
         &self,
         parent_id: &str,
