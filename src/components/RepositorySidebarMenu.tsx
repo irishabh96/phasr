@@ -22,8 +22,9 @@ interface RepositorySidebarMenuProps {
 }
 
 /**
- * Wraps a sidebar repo row in a Radix dropdown. Clicking anywhere on
- * the row opens a glass menu with repository actions:
+ * Wraps a sidebar repo row in a Radix context menu. Left-click the row
+ * navigates to the repository entry; RIGHT-click opens a glass menu with
+ * repository actions:
  *
  *   1. Open project — navigates to the repository entry route.
  *   2. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
@@ -83,25 +84,25 @@ export function RepositorySidebarMenu({
         <ContextMenu.Portal>
           <ContextMenu.Content
             className={cn(
-              "z-[200] min-w-[180px] overflow-hidden p-1",
+              "z-(--z-dropdown) min-w-[180px] overflow-hidden p-1",
               "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
             )}
           >
-            <Item icon={<FolderOpen size={12} />} onSelect={onOpenProject}>
+            <Item icon={<FolderOpen size={13} />} onSelect={onOpenProject}>
               Open project
             </Item>
-            <Item icon={<Plus size={12} />} onSelect={onNewWorkspace}>
+            <Item icon={<Plus size={13} />} onSelect={onNewWorkspace}>
               New workspace
             </Item>
-            <Item icon={<GitFork size={12} />} onSelect={onNewEpic}>
+            <Item icon={<GitFork size={13} />} onSelect={onNewEpic}>
               New epic
             </Item>
-            <Item icon={<SettingsIcon size={12} />} onSelect={onOpenSettings}>
+            <Item icon={<SettingsIcon size={13} />} onSelect={onOpenSettings}>
               Settings
             </Item>
             <Separator />
             <Item
-              icon={<Trash2 size={12} />}
+              icon={<Trash2 size={13} />}
               onSelect={() => setConfirming(true)}
               danger
             >
@@ -181,9 +182,9 @@ function RemoveConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-[160] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
+          className="fixed left-1/2 top-1/2 z-(--z-modal) w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">

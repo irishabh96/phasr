@@ -27,8 +27,9 @@ interface WorkspaceSidebarMenuProps {
  *      terminal inner tab.
  *   2. Rename… — sets `pendingRenameWorkspaceId`; the shell-mounted
  *      RenameWorkspaceModal picks it up.
- *   3. Close workspace (danger) — opens a confirmation dialog. On
- *      confirm, calls deleteWorkspace which tears down the worktree
+ *   3. Close workspace / Remove workspace (danger) — label matches the kind
+ *      (an agent/subtask is torn down; a `local` is only unlinked). Opens a
+ *      confirmation dialog; on confirm, deleteWorkspace tears down the worktree
  *      and the workspace record.
  */
 export function WorkspaceSidebarMenu({
@@ -106,29 +107,34 @@ export function WorkspaceSidebarMenu({
         <ContextMenu.Portal>
           <ContextMenu.Content
             className={cn(
-              "z-[200] min-w-[180px] overflow-hidden p-1",
+              "z-(--z-dropdown) min-w-[180px] overflow-hidden p-1",
               "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
             )}
           >
             <Item
-              icon={<TerminalIcon size={12} />}
+              icon={<TerminalIcon size={13} />}
               onSelect={() => void onNewTerminal()}
             >
               New terminal
             </Item>
             <Item
-              icon={<Pencil size={12} />}
+              icon={<Pencil size={13} />}
               onSelect={() => requestRename(workspace.id)}
             >
               Rename…
             </Item>
             <Separator />
             <Item
-              icon={<Trash2 size={12} />}
+              icon={<Trash2 size={13} />}
               onSelect={() => void onCloseWorkspace()}
               danger
             >
-              Close workspace
+              {/* A `local` workspace is only unlinked (folder stays) — match the
+                  confirm dialog's "Remove" verb. An agent/subtask is genuinely
+                  torn down (worktree + branch), so it keeps "Close". */}
+              {workspace.workspaceKind === "local"
+                ? "Remove workspace"
+                : "Close workspace"}
             </Item>
           </ContextMenu.Content>
         </ContextMenu.Portal>
@@ -213,9 +219,9 @@ function CloseConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-[160] w-[min(460px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
+          className="fixed left-1/2 top-1/2 z-(--z-modal) w-[min(460px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">

@@ -169,16 +169,19 @@ function HomeEntry({ isExpanded }: { isExpanded: boolean }) {
       className={cn(
         "group/home flex items-center rounded-[10px]",
         isExpanded
-          ? "h-[38px] gap-2.5 pl-2.5 pr-2"
+          ? "h-[38px] gap-2.5 pl-3 pr-2"
           : "h-[38px] w-full justify-center",
         "outline-none transition-colors duration-150",
         "hover:bg-(--color-bg-hover)",
-        "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
+        "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         isActive && "bg-(--color-bg-selected)",
       )}
     >
       <GlassTooltip content="Home (⌘⇧H)" side="right" disabled={isExpanded}>
-        <span className="relative flex size-5 shrink-0 items-center justify-center">
+        {/* 28px icon column — matches the repo-row avatar footprint so the
+            "Home" label optically aligns with the repo names below it, and the
+            house glyph center sits on the same axis as the avatars. */}
+        <span className="relative flex size-7 shrink-0 items-center justify-center">
           <House
             size={16}
             className={cn(
@@ -196,7 +199,7 @@ function HomeEntry({ isExpanded }: { isExpanded: boolean }) {
         <>
           <span
             className={cn(
-              "min-w-0 flex-1 truncate text-[13.5px] font-medium leading-none",
+              "min-w-0 flex-1 truncate text-[14px] font-medium leading-none",
               isActive
                 ? "text-(--color-text-primary)"
                 : "text-(--color-text-secondary)",
@@ -265,7 +268,7 @@ function RepoBlock({
             isExpanded ? "pl-3 pr-1" : "justify-center",
             "outline-none transition-colors duration-150",
             "hover:bg-(--color-bg-hover)",
-            "focus-visible:bg-(--color-bg-hover) focus-visible:ring-1 focus-visible:ring-(--color-border-strong)",
+            "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
             "data-[state=open]:bg-(--color-bg-elevated)",
             // A repo header is a CONTAINER, never the open leaf — so it does NOT
             // take the coral selection tint just for being the ancestor of the
@@ -460,6 +463,11 @@ export function WorkspaceLink({
       <Link
         to="/repositories/$repositoryId/workspaces/$workspaceId"
         params={{ repositoryId: repoId, workspaceId: ws.id }}
+        aria-current={active ? "page" : undefined}
+        // Collapsed rail rows are icon-only (the tooltip is visual, not an
+        // accessible name), so name them explicitly there. Expanded rows keep
+        // their richer visible text (name + honest status) as the SR name.
+        aria-label={isExpanded ? undefined : ws.name}
         className={cn(
           "flex items-center rounded-[8px]",
           isExpanded
@@ -542,6 +550,7 @@ function SidebarFooter({
             <button
               type="button"
               onClick={onToggle}
+              aria-label="Collapse sidebar"
               className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <PanelLeftClose size={14} />
@@ -564,6 +573,7 @@ function SidebarFooter({
             <button
               type="button"
               onClick={onToggle}
+              aria-label="Expand sidebar"
               className="flex h-7 w-7 items-center justify-center rounded-[8px] text-(--color-text-muted) transition-colors duration-150 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <PanelLeft size={14} />

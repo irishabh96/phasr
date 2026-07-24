@@ -13,7 +13,7 @@ import {
  * mocked Tauri IPC and exercises the discoverable affordances a user reaches:
  *
  *   1. the repo-home pane's "New epic" button (CreateFirstWorkspacePane), and
- *   2. the sidebar repo context menu's "New epic (2 agents)" peer of
+ *   2. the sidebar repo context menu's "New epic" peer of
  *      "New workspace" (RepositorySidebarMenu),
  *
  * asserting each opens the shared Dialog + DecomposeForm, that the gate fires
@@ -102,18 +102,16 @@ test.describe("New epic entry point (real app)", () => {
     expect(bad, bad.join("\n---\n")).toHaveLength(0);
   });
 
-  test("sidebar repo menu 'New epic (2 agents)' opens the decompose form (peer of New workspace)", async ({
+  test("sidebar repo menu 'New epic' opens the decompose form (peer of New workspace)", async ({
     page,
   }) => {
     await boot(page);
 
-    // Right-click any repo row to reveal the context menu; "New epic (2 agents)"
-    // sits right below "New workspace" — the exact peer of the single-agent
-    // trigger, and semantically correct regardless of the repo's workspace count.
+    // Right-click any repo row to reveal the context menu; "New epic" sits right
+    // below "New workspace" — the exact peer of the single-agent trigger. (The
+    // ticket count is the planner's call, never a fixed "2 agents" in the label.)
     await page.locator('[aria-label="phasr"]').first().click({ button: "right" });
-    await page
-      .getByRole("menuitem", { name: "New epic (2 agents)" })
-      .click();
+    await page.getByRole("menuitem", { name: "New epic" }).click();
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
