@@ -28,8 +28,9 @@ interface RepositorySidebarMenuProps {
  *   1. Open project — navigates to the repository entry route.
  *   2. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
  *      NewTaskModal picks it up and opens (the single-agent path).
- *   3. New epic (2 agents) — sets `pendingDecomposeRepoId`; the shell-mounted
- *      DecomposeModal picks it up and opens (the multi-agent decomposition).
+ *   3. New epic — sets `pendingDecomposeRepoId`; the shell-mounted DecomposeModal
+ *      picks it up and opens (the planner-driven, multi-agent decomposition —
+ *      the ticket count is whatever the planner proposes, NOT a fixed 2).
  *   4. Settings — navigate to /repositories/<id>/settings.
  *   5. Remove project — opens a glass confirm dialog; on confirm,
  *      deletes only the DB row (local clone untouched).
@@ -93,7 +94,7 @@ export function RepositorySidebarMenu({
               New workspace
             </Item>
             <Item icon={<GitFork size={12} />} onSelect={onNewEpic}>
-              New epic (2 agents)
+              New epic
             </Item>
             <Item icon={<SettingsIcon size={12} />} onSelect={onOpenSettings}>
               Settings

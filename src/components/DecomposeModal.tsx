@@ -12,10 +12,11 @@ import { useUiStore } from "@/lib/store";
  *
  * Opened via `requestDecompose(repoId)`:
  *   - the "New epic" button on the repo home pane
- *   - the sidebar repo context menu → "New epic (2 agents)"
+ *   - the sidebar repo context menu → "New epic"
  *
  * Reuses the shared Radix `Dialog` shell (no bespoke chrome) and the existing
- * `DecomposeForm` (the "Start 2 agents" approval gate). On success, `onStarted`
+ * `DecomposeForm` (the "Start N agents" approval gate — N is whatever the
+ * planner proposes, not a fixed count). On success, `onStarted`
  * fires with the freshly-created `BoardState`; we close the dialog and navigate
  * to that parent's board so the user lands on the live task board.
  *
