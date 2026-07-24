@@ -52,8 +52,11 @@ export function AutopilotToggle({
           "group inline-flex items-center gap-2 rounded-full border px-2.5 py-1",
           "transition-colors duration-150 focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
           "disabled:opacity-50",
+          // On = a NEUTRAL elevated fill (never coral: autopilot is a mode, not a
+          // status). --color-bg-selected is a translucent CORAL tint, so it is
+          // deliberately NOT used here — bg-active keeps the "on" read honest-grey.
           enabled
-            ? "border-(--color-border-strong) bg-(--color-bg-selected)"
+            ? "border-(--color-border-strong) bg-(--color-bg-active)"
             : "border-(--color-border-default) bg-(--color-bg-surface) hover:bg-(--color-bg-hover)",
         )}
       >

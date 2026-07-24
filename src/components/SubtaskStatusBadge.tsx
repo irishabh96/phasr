@@ -143,14 +143,17 @@ function BlockedChip({ blockedOnRoles }: { blockedOnRoles: string[] }) {
     <span
       role="status"
       data-testid="subtask-blocked-chip"
-      className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-[12px] font-medium leading-none"
+      title={waiting}
+      className="inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-full px-2 text-[12px] font-medium leading-none"
     >
       <Lock
         className="size-[13px] shrink-0 text-(--color-text-muted)"
         aria-hidden="true"
       />
-      <span className="text-(--color-text-primary)">Blocked</span>
-      <span className="text-(--color-text-muted)">· {waiting}</span>
+      <span className="shrink-0 text-(--color-text-primary)">Blocked</span>
+      <span className="min-w-0 truncate text-(--color-text-muted)">
+        · {waiting}
+      </span>
     </span>
   );
 }

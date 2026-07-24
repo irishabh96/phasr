@@ -191,8 +191,13 @@ export function BoardCardView({
           its own action row so it never fights the status chips. LOW emphasis: a
           per-card enabled-primary gate renders as a quiet coral TINT (not a
           fill), reserving the loud coral fill for the epic milestone so a full
-          board doesn't spend accent on every card (§D1 accent scarcity). */}
-      {gate ? (
+          board doesn't spend accent on every card (§D1 accent scarcity).
+
+          A terminal-success gate (the disabled "Approved" pill) is SUPPRESSED
+          here: the status row's ApprovedChip already carries that word, so the
+          card never double-prints "Approved". The gate stays on the ticket-detail
+          header, where it isn't paired with the status chip. */}
+      {gate && !(gate.intent === "success" && !gate.enabled) ? (
         <div
           className="flex flex-wrap gap-1.5"
           // Nested interactive controls inside a clickable card — never open the
@@ -244,14 +249,17 @@ function BlockedChip({ blockedOnRoles }: { blockedOnRoles: string[] }) {
     <span
       role="status"
       data-testid="board-blocked-chip"
-      className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-[12px] font-medium leading-none"
+      title={waiting}
+      className="inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-full px-2 text-[12px] font-medium leading-none"
     >
       <Lock
         className="size-[13px] shrink-0 text-(--color-text-muted)"
         aria-hidden="true"
       />
-      <span className="text-(--color-text-primary)">Blocked</span>
-      <span className="text-(--color-text-muted)">· {waiting}</span>
+      <span className="shrink-0 text-(--color-text-primary)">Blocked</span>
+      <span className="min-w-0 truncate text-(--color-text-muted)">
+        · {waiting}
+      </span>
     </span>
   );
 }

@@ -313,10 +313,17 @@ function GateButton({
   className: string | undefined;
   children: ReactNode;
 }) {
+  // Metrics MIRROR GlassButton sm/md 1:1 (h/px/text/radius) so the hand-rolled
+  // pills (low-emphasis, disabled, success) sit pixel-flush next to the
+  // GlassButton branches (primary fill, neutral outline, the paired Bounce
+  // secondary) — no radius/size jump when a gate flips between coral-fill,
+  // coral-tint, outline, disabled, and success.
   const common =
-    "inline-flex items-center gap-1.5 whitespace-nowrap rounded-(--radius-control) font-medium";
+    "inline-flex items-center gap-1.5 whitespace-nowrap font-medium";
   const dims =
-    size === "sm" ? "h-8 px-3 text-[12px]" : "h-[38px] px-4 text-[13px]";
+    size === "sm"
+      ? "h-8 px-3 text-[13px] rounded-[8px]"
+      : "h-[38px] px-4 text-[14px] rounded-[10px]";
 
   // Terminal success pill (Approved / Shipped) — soft success, never coral.
   if (!gate.enabled && gate.intent === "success") {
@@ -421,7 +428,10 @@ function GateButton({
           "border text-(--color-text-primary) transition-[background-color,border-color] duration-[120ms] ease-[var(--ease-glass)] [&>svg]:text-(--color-accent-text)",
           "hover:[background:color-mix(in_oklab,var(--color-accent-500)_22%,var(--color-bg-surface))] hover:[border-color:color-mix(in_oklab,var(--color-accent-500)_60%,transparent)]",
           "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
-          "disabled:pointer-events-none disabled:opacity-40",
+          // Busy (the only disabled path for this branch) keeps the tint LEGIBLE:
+          // a 14% tint at opacity-40 washes the spinner + "Validating…" out, so
+          // hold at 70% — still clearly non-interactive, still readable.
+          "disabled:pointer-events-none disabled:opacity-70",
           className,
         )}
       >
