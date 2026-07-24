@@ -13,7 +13,11 @@ describe("DiffList", () => {
   it("renders one card per file", () => {
     render(<DiffList files={FILES} />);
     for (const f of FILES) {
-      expect(screen.getByText(f.path)).toBeInTheDocument();
+      // The header splits path into a truncatable directory + a pinned
+      // basename, so the FILENAME is always visible (asserted here) even when
+      // the directory would be ellipsised.
+      const base = f.path.split("/").pop()!;
+      expect(screen.getAllByText(base).length).toBeGreaterThan(0);
     }
   });
 
@@ -31,8 +35,9 @@ describe("DiffList", () => {
     // After collapse the same control becomes "Expand file".
     const expandBtn = screen.getByRole("button", { name: "Expand file" });
     expect(expandBtn).toHaveAttribute("aria-expanded", "false");
-    // The path is still visible (it's in the always-rendered header).
-    expect(screen.getByText(firstPath)).toBeInTheDocument();
+    // The filename is still visible (it's in the always-rendered header).
+    const base = firstPath.split("/").pop()!;
+    expect(screen.getAllByText(base).length).toBeGreaterThan(0);
   });
 
   it("respects defaultExpanded=false (all cards collapsed)", () => {

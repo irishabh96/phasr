@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { DiffList } from "@/components/diff/DiffList";
 import type { DiffCardFile } from "@/components/diff/DiffCard";
+import type { DiffViewMode } from "@/components/diff/DiffView";
 import { useGitCommitFiles } from "@/lib/hooks/useGit";
 import { tauri } from "@/lib/tauri";
 import type { Commit, CommitFileChange, FileStatus } from "@/lib/types";
@@ -11,6 +12,14 @@ import { cn } from "@/lib/utils";
 interface CommitCardProps {
   workspaceId: string;
   commit: Commit;
+  /**
+   * Width-gated diff view mode + setter, threaded from the sidebar so a
+   * commit's expanded diff honors the SAME split↔inline gate as the Changes
+   * panel — never side-by-side in a panel too narrow to hold two columns (B2).
+   * Omitted (standalone use) → the inner DiffList owns its own mode.
+   */
+  mode?: DiffViewMode;
+  onModeChange?: (m: DiffViewMode) => void;
 }
 
 /**
@@ -20,14 +29,20 @@ interface CommitCardProps {
  * the call swapped to gitCommitDiff so the diff is scoped to the
  * commit instead of the worktree state.
  */
-export function CommitCard({ workspaceId, commit }: CommitCardProps) {
+export function CommitCard({
+  workspaceId,
+  commit,
+  mode,
+  onModeChange,
+}: CommitCardProps) {
   const [expanded, setExpanded] = useState(false);
   return (
     <article className="overflow-hidden rounded-md border border-(--color-border-default) bg-(--color-bg-surface)">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-start gap-2 px-2.5 py-2 text-left hover:bg-(--color-bg-hover)"
+        aria-expanded={expanded}
+        className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left hover:bg-(--color-bg-hover) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
       >
         <span className="mt-[1px] text-(--color-text-muted)">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -41,19 +56,27 @@ export function CommitCard({ workspaceId, commit }: CommitCardProps) {
               {commit.subject}
             </span>
             {commit.parents.length > 1 && (
-              <span className="shrink-0 rounded-sm bg-(--color-bg-elevated) px-1 text-[9.5px] uppercase tracking-[0.06em] text-(--color-text-muted)">
+              <span className="shrink-0 rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-(--color-text-muted)">
                 merge
               </span>
             )}
           </div>
-          <p className="mt-0.5 text-[10.5px] text-(--color-text-muted)">
+          <p
+            className="mt-0.5 text-[10.5px] text-(--color-text-muted)"
+            title={formatAbsolute(commit.authorDate)}
+          >
             {commit.authorName} • {formatRelative(commit.authorDate)}
           </p>
         </div>
       </button>
       {expanded && (
         <div className={cn("border-t border-(--color-border-subtle) p-2")}>
-          <CommitDiffList workspaceId={workspaceId} sha={commit.sha} />
+          <CommitDiffList
+            workspaceId={workspaceId}
+            sha={commit.sha}
+            {...(mode ? { mode } : {})}
+            {...(onModeChange ? { onModeChange } : {})}
+          />
         </div>
       )}
     </article>
@@ -63,9 +86,13 @@ export function CommitCard({ workspaceId, commit }: CommitCardProps) {
 function CommitDiffList({
   workspaceId,
   sha,
+  mode,
+  onModeChange,
 }: {
   workspaceId: string;
   sha: string;
+  mode?: DiffViewMode;
+  onModeChange?: (m: DiffViewMode) => void;
 }) {
   const { data: files, isLoading, error } = useGitCommitFiles(workspaceId, sha);
   const cards = useCommitDiffFiles(workspaceId, sha, files ?? []);
@@ -96,6 +123,7 @@ function CommitDiffList({
       files={cards}
       defaultExpanded={3}
       onCopyPath={(p) => void navigator.clipboard?.writeText(p)}
+      {...(mode && onModeChange ? { mode, onModeChange } : {})}
     />
   );
 }
@@ -146,6 +174,17 @@ function mapStatus(s: FileStatus): FileStatus {
   // safety.
   if (s === "conflicted") return "other";
   return s;
+}
+
+/** Full, locale-aware timestamp for the row's hover title (the absolute time
+ *  behind the relative "2h ago"). */
+function formatAbsolute(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  return new Date(ms).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function formatRelative(iso: string): string {

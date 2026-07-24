@@ -382,10 +382,10 @@ function DiffMessage({
 function HunkHeader({ hunk }: { hunk: DiffHunk }) {
   return (
     <div className="flex items-center gap-3 bg-(--color-bg-elevated)/40 px-3 py-1 text-[11px] text-(--color-text-muted)">
-      <span className="font-mono">
+      <span className="shrink-0 whitespace-nowrap font-mono">
         @@ −{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
       </span>
-      {hunk.section && <span className="truncate">{hunk.section}</span>}
+      {hunk.section && <span className="min-w-0 truncate">{hunk.section}</span>}
     </div>
   );
 }

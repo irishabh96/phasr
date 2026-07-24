@@ -191,6 +191,11 @@ export function DiffCard({
       ? `${derived.oldPath} → ${derived.newPath}`
       : null;
   const pathLabel = renameLabel ?? file.path;
+  // Split path into directory + basename so the FILENAME is always visible:
+  // the directory truncates (ellipsis) while the basename stays pinned. Plain
+  // end-truncation would hide the most important part of the path.
+  const { dir, base } = splitPath(file.path);
+  const renamed = renameLabel ? splitPath(derived.newPath ?? file.path) : null;
 
   const [copied, setCopied] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -247,18 +252,29 @@ export function DiffCard({
         <button
           type="button"
           onClick={onToggle}
-          className="min-w-0 flex-1 cursor-pointer truncate rounded text-left text-[12.5px] font-medium text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+          className="flex min-w-0 flex-1 cursor-pointer items-baseline rounded text-left text-[12.5px] focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
           title={pathLabel}
         >
-          {renameLabel ? (
+          {renamed ? (
             <>
-              <span className="text-(--color-text-muted)">
-                {derived.oldPath} →{" "}
+              <span className="min-w-0 truncate text-(--color-text-muted)">
+                {derived.oldPath} → {renamed.dir}
               </span>
-              {derived.newPath}
+              <span className="shrink-0 font-medium text-(--color-text-primary)">
+                {renamed.base}
+              </span>
             </>
           ) : (
-            file.path
+            <>
+              {dir && (
+                <span className="min-w-0 truncate text-(--color-text-muted)">
+                  {dir}
+                </span>
+              )}
+              <span className="shrink-0 font-medium text-(--color-text-primary)">
+                {base}
+              </span>
+            </>
           )}
         </button>
 
@@ -411,6 +427,15 @@ export function DiffCard({
   );
 }
 
+/** Split a path into its trailing-slashed directory + basename. The basename
+ *  is rendered pinned (never truncated) so the filename stays visible. */
+function splitPath(p: string): { dir: string; base: string } {
+  const i = p.lastIndexOf("/");
+  return i >= 0
+    ? { dir: p.slice(0, i + 1), base: p.slice(i + 1) }
+    : { dir: "", base: p };
+}
+
 function IconButton({
   label,
   onClick,
@@ -530,8 +555,8 @@ function DiscardConfirm({
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md" />
-        <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(420px,calc(100vw-32px))] -translate-x-1/2 outline-none">
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[overlay-in_180ms_var(--ease-glass)]" />
+        <Dialog.Content className="fixed left-1/2 top-[30vh] z-(--z-modal) w-[min(420px,calc(100vw-32px))] -translate-x-1/2 outline-none data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]">
           <div className="glass-modal overflow-hidden">
             <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>
@@ -593,8 +618,8 @@ function ResolveConfirm({
   return (
     <Dialog.Root open={action !== null} onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md" />
-        <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 outline-none">
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[overlay-in_180ms_var(--ease-glass)]" />
+        <Dialog.Content className="fixed left-1/2 top-[30vh] z-(--z-modal) w-[min(440px,calc(100vw-32px))] -translate-x-1/2 outline-none data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]">
           <div className="glass-modal overflow-hidden">
             <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>

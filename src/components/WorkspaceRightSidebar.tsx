@@ -91,7 +91,12 @@ export function WorkspaceRightSidebar({
   }, [canSplit, diffMode, handleDiffModeChange]);
 
   const changeCount = changes?.length ?? 0;
-  const showToggle = activeTab === "changes" && changeCount > 0;
+  // Show the Split/Inline toggle whenever a diff can appear: the Changes tab
+  // (when there are changes) OR the History tab (an expanded commit renders a
+  // diff). Threading `effectiveMode` into History keeps commit diffs width-
+  // gated too, so they never render split in a panel too narrow (B2).
+  const showToggle =
+    (activeTab === "changes" && changeCount > 0) || activeTab === "history";
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col">
@@ -126,7 +131,11 @@ export function WorkspaceRightSidebar({
             onDiffModeChange={handleDiffModeChange}
           />
         ) : (
-          <HistoryPanel workspaceId={workspaceId} />
+          <HistoryPanel
+            workspaceId={workspaceId}
+            diffMode={effectiveMode}
+            onDiffModeChange={handleDiffModeChange}
+          />
         )}
       </div>
     </div>

@@ -40,6 +40,27 @@ export function humanizeError(err: unknown): string {
     s.includes("network is unreachable")
   )
     return "Network error — check your connection and try again.";
+  // Push rejected because the remote has commits the local branch doesn't —
+  // the user needs to pull / sync first. Checked before the generic
+  // "failed to push" so the actionable message wins.
+  if (
+    s.includes("non-fast-forward") ||
+    s.includes("fetch first") ||
+    s.includes("updates were rejected") ||
+    s.includes("tip of your current branch is behind")
+  )
+    return "The remote has commits you don't have yet — pull or sync first, then push again.";
+  // Push blocked by a branch-protection rule or a server-side hook.
+  if (
+    s.includes("pre-receive hook declined") ||
+    s.includes("remote rejected") ||
+    s.includes("protected branch") ||
+    s.includes("push declined")
+  )
+    return "The remote rejected the push — a branch protection rule or server-side hook blocked it.";
+  // Generic push failure (kept after the two specific cases above).
+  if (s.includes("failed to push some refs"))
+    return "Couldn't push some changes to the remote. Pull the latest changes, then try again.";
   // Git's index / ref lock — another git process is mid-operation, or a crashed
   // one left a stale `index.lock`. (The raw reason is still useful to a dev, so
   // callers that want it — e.g. ChangesPanel — surface it behind a disclosure.)

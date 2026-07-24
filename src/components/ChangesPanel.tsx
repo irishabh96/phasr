@@ -537,16 +537,8 @@ export function ChangesPanel({
                   ` (${branchStatus.ahead})`}
               </GlassButton>
             </div>
-            {commit.error && (
-              <p className="mt-2 text-[11px] text-(--color-danger)">
-                {humanizeError(commit.error)}
-              </p>
-            )}
-            {push.error && (
-              <p className="mt-2 text-[11px] text-(--color-danger)">
-                {humanizeError(push.error)}
-              </p>
-            )}
+            {commit.error && <InlineOpError error={commit.error} />}
+            {push.error && <InlineOpError error={push.error} />}
             {showPushSuccess && (
               <p className="mt-2 text-[11px] text-(--color-success)">Pushed.</p>
             )}
@@ -558,6 +550,33 @@ export function ChangesPanel({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Inline commit/push failure. Shows the humanized reason (role="alert" so a
+ * screen reader announces it), with the raw git text tucked behind a "Details"
+ * disclosure whenever it adds something the humanized line doesn't already say.
+ */
+function InlineOpError({ error }: { error: unknown }) {
+  const raw =
+    error instanceof Error ? error.message : error != null ? String(error) : "";
+  const human = humanizeError(error);
+  const showDetails = !!raw && raw.trim() !== human;
+  return (
+    <div role="alert" className="mt-2 text-[11px] text-(--color-danger)">
+      {human}
+      {showDetails && (
+        <details className="mt-1 text-(--color-text-muted)">
+          <summary className="cursor-pointer select-none rounded-[4px] hover:text-(--color-text-secondary) focus-visible:text-(--color-text-secondary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none">
+            Details
+          </summary>
+          <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded-[6px] border border-(--glass-border-hairline) bg-(--color-bg-input) p-2 font-mono text-[10.5px] text-(--color-text-secondary)">
+            {raw}
+          </pre>
+        </details>
+      )}
     </div>
   );
 }
