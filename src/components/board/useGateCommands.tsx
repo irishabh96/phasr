@@ -58,7 +58,7 @@ const VERB_DESC: Record<GateVerb, string> = {
   "request-review": "Send this ticket to the review lane",
   approve: "Approve the review — mark it integrate-eligible",
   bounce: "Bounce back with a comment for the agent",
-  integrate: "Merge every ready ticket into the epic's integration branch",
+  integrate: "Merge every ready ticket into the workflow's integration branch",
   ship: "Merge the integration branch into your default branch",
 };
 
@@ -162,7 +162,7 @@ export function useGateCommands({
         showToast({
           title: "Approved",
           intent: "success",
-          message: "Integrate-eligible from the epic.",
+          message: "Integrate-eligible from the workflow.",
         });
       }
     } catch (err) {
@@ -351,7 +351,7 @@ export function useGateCommands({
           open={confirmOpen}
           onOpenChange={setConfirmOpen}
           title="Integrate & review?"
-          description="This merges every ready ticket into the epic's integration branch, then opens the combined diff for review on the board."
+          description="This merges every ready ticket into the workflow's integration branch, then opens the combined diff for review on the board."
           confirmLabel="Integrate"
           pending={running}
           pendingLabel="Integrating…"

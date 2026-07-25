@@ -39,14 +39,14 @@ describe("RepoEntryChoice", () => {
       screen.getByRole("button", { name: "New task in phasr" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "New epic in phasr" }),
+      screen.getByRole("button", { name: "New workflow in phasr" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Open terminal in phasr" }),
     ).toBeInTheDocument();
   });
 
-  it("marks the epic as the optional / richer path", () => {
+  it("marks the workflow as the optional / richer path", () => {
     render(<RepoEntryChoice repo={makeRepository()} onNewTask={vi.fn()} />);
     expect(screen.getByText("Optional")).toBeInTheDocument();
   });
@@ -60,10 +60,10 @@ describe("RepoEntryChoice", () => {
     expect(openRepoInnerTerminalTab).not.toHaveBeenCalled();
   });
 
-  it("opens the decomposition (New epic) flow for the repo", () => {
+  it("opens the decomposition (New workflow) flow for the repo", () => {
     const onNewTask = vi.fn();
     render(<RepoEntryChoice repo={makeRepository()} onNewTask={onNewTask} />);
-    fireEvent.click(screen.getByRole("button", { name: "New epic in phasr" }));
+    fireEvent.click(screen.getByRole("button", { name: "New workflow in phasr" }));
     expect(requestDecompose).toHaveBeenCalledTimes(1);
     expect(requestDecompose).toHaveBeenCalledWith("repo-1");
     expect(onNewTask).not.toHaveBeenCalled();

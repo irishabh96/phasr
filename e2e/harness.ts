@@ -561,7 +561,7 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   };
 
   // A minimal but valid multi-agent BoardState (parent + backend→frontend
-  // subtasks + one edge) so the "New epic" entry point renders end-to-end:
+  // subtasks + one edge) so the "New workflow" entry point renders end-to-end:
   // start_decomposition resolves with parent id "parent-new"; get_board returns
   // the same shape keyed on whatever parentId the board route requests, so the
   // navigation lands on a live board rather than an empty/error state.

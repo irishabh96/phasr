@@ -149,7 +149,7 @@ export function HaltAutopilotButton({ className }: { className?: string }) {
         onOpenChange={setConfirmOpen}
         title="Halt autopilot everywhere?"
         description={
-          "This stops the driver across every epic immediately — no gate advances and any in-flight agent decision is rejected on arrival. It stays halted until you resume (there is no auto-resume)."
+          "This stops the driver across every workflow immediately — no gate advances and any in-flight agent decision is rejected on arrival. It stays halted until you resume (there is no auto-resume)."
         }
         confirmLabel="Halt autopilot"
         pending={killSwitch.isPending}

@@ -251,8 +251,8 @@ interface UiState {
   clearPendingNewWorkspace: () => void;
 
   /**
-   * Repo id whose "New epic" decomposition dialog is open, or null. Set by the
-   * "New epic" affordances (repo-home pane + sidebar context menu); the
+   * Repo id whose "New workflow" decomposition dialog is open, or null. Set by
+   * the "New workflow" affordances (repo-home pane + sidebar context menu); the
    * shell-mounted DecomposeModal picks it up and opens. Cleared when the dialog
    * closes or a decomposition is started. Progressive disclosure: this is a
    * SEPARATE slice from `pendingNewWorkspaceRepoId` so the single-agent "New

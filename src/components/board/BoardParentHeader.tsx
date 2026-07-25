@@ -20,7 +20,7 @@ import type { BoardState } from "@/lib/types";
 
 /**
  * The epic header (the decomposition itself). A single calm summary card:
- * a quiet "Epic" overline over the goal title, a muted meta line (ticket count ·
+ * a quiet "Workflow" overline over the goal title, a muted meta line (ticket count ·
  * contract progress), and — balanced on the right — the neutral Autopilot toggle
  * beside the epic's ONE derived next gate (Integrate → Ship, §G1/R7) via the
  * shared {@link NextGateButton}.
@@ -120,7 +120,7 @@ export function BoardParentHeader({
     >
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-(--color-text-muted)">
-          Epic
+          Workflow
         </span>
         <h2 className="truncate text-[15px] font-semibold leading-tight text-(--color-text-primary)">
           {goal}

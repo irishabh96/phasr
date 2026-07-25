@@ -518,7 +518,7 @@ function SubtaskBreadcrumb({
         className="-mx-1 flex items-center gap-1 rounded-[6px] px-1 py-0.5 text-(--color-text-muted) transition-colors duration-150 hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
       >
         <ChevronLeft size={13} aria-hidden="true" />
-        <span className="max-w-[32ch] truncate">{goal ?? "Epic"}</span>
+        <span className="max-w-[32ch] truncate">{goal ?? "Workflow"}</span>
       </Link>
       {role && (
         <>

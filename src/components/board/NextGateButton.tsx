@@ -60,7 +60,7 @@ function confirmCopy(verb: GateVerb): {
     return {
       title: "Ship to your main branch?",
       description:
-        "This merges the epic's integration branch into your default branch. Make sure you have reviewed the combined diff first.",
+        "This merges the workflow's integration branch into your default branch. Make sure you have reviewed the combined diff first.",
       confirmLabel: "Ship",
       destructive: true,
     };
@@ -68,7 +68,7 @@ function confirmCopy(verb: GateVerb): {
   return {
     title: "Integrate & review?",
     description:
-      "This merges every ready ticket into the epic's integration branch, then opens the combined diff for review before you ship.",
+      "This merges every ready ticket into the workflow's integration branch, then opens the combined diff for review before you ship.",
     confirmLabel: "Integrate",
     destructive: false,
   };

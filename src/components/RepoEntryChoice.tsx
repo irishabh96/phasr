@@ -21,7 +21,7 @@ interface RepoEntryChoiceProps {
  *
  *   1. New task     — one agent in an isolated worktree (`onNewTask` reveals
  *                     the existing two-step form → `tauri.startTask`).
- *   2. New epic     — the multi-agent decomposition (`requestDecompose` opens
+ *   2. New workflow — the multi-agent decomposition (`requestDecompose` opens
  *                     the shell-mounted DecomposeModal). Marked optional —
  *                     it's the richer path for a bigger goal.
  *   3. Open terminal — a plain shell in the repo with no agent
@@ -29,8 +29,8 @@ interface RepoEntryChoiceProps {
  *
  * Design: neutral glass cards; coral is spent only on the recommended
  * "New task" icon so the accent stays scarce. The recommended path ALSO
- * carries a neutral "Recommended" badge (mirroring "Optional" on the epic) so
- * the cue never rides hue alone (L5).
+ * carries a neutral "Recommended" badge (mirroring "Optional" on the workflow)
+ * so the cue never rides hue alone (L5).
  */
 export function RepoEntryChoice({ repo, onNewTask }: RepoEntryChoiceProps) {
   const requestDecompose = useUiStore((s) => s.requestDecompose);
@@ -60,9 +60,9 @@ export function RepoEntryChoice({ repo, onNewTask }: RepoEntryChoiceProps) {
         <ChoiceCard
           icon={GitFork}
           badge="Optional"
-          title="New epic"
+          title="New workflow"
           description="Split a bigger goal across agents that hand off through a shared contract."
-          aria-label={`New epic in ${repo.name}`}
+          aria-label={`New workflow in ${repo.name}`}
           onClick={() => requestDecompose(repo.id)}
         />
         <ChoiceCard

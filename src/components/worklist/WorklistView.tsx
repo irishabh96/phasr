@@ -111,7 +111,7 @@ function Header({
         />
         <GlassInput
           type="search"
-          aria-label="Search tickets, epics, repos"
+          aria-label="Search tickets, workflows, repos"
           placeholder="Search…"
           disabled={disabled}
           value={query ?? ""}
@@ -256,7 +256,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
               kind="empty"
               icon={<FolderGit2 />}
               title="Nothing here yet"
-              description="Add a repository, then start an epic or a quick task — your agents will show up here as they work."
+              description="Add a repository, then start a workflow or a quick task — your agents will show up here as they work."
               action={
                 <GlassButton
                   variant="primary"
@@ -334,7 +334,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
               setEpicFilter((cur) => (cur === epic.id ? null : epic.id))
             }
           >
-            <span className="text-(--color-text-muted)">epic</span>
+            <span className="text-(--color-text-muted)">workflow</span>
             {epic.name}
           </Chip>
         ))}

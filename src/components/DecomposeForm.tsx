@@ -538,7 +538,7 @@ export function DecomposeForm({
         </div>
       )}
 
-      {/* ── Epic brief (Phase 2b · E2) — optional shared context ──────────── */}
+      {/* ── Workflow brief (Phase 2b · E2) — optional shared context ──────── */}
       {phase === "review" && (
         <EpicBriefPanel
           open={briefOpen}
@@ -802,7 +802,7 @@ function TicketRow({
 
 /**
  * The optional epic-brief attach panel (Phase 2b · E2). A quiet, collapsible
- * "Epic brief · optional" section that reads as an intentional part of the review
+ * "Workflow brief · optional" section that reads as an intentional part of the review
  * flow, not a bolted-on box: at rest it's a single header row whose right edge
  * summarizes what's attached; expanded, it holds the four shared docs — PRD/TRD
  * markdown, Figma links, and staged files — every ticket inherits. Kept
@@ -866,7 +866,7 @@ function EpicBriefPanel({
           aria-hidden="true"
         />
         <span className="text-[13px] font-semibold text-(--color-text-primary)">
-          Epic brief
+          Workflow brief
         </span>
         <span className="rounded-full border border-(--glass-border-hairline) bg-(--color-bg-input) px-1.5 py-px text-[10px] font-medium uppercase tracking-[0.06em] text-(--color-text-muted)">
           optional
@@ -885,8 +885,8 @@ function EpicBriefPanel({
       {isOpen && (
         <div className="flex flex-col gap-5 border-t border-(--glass-border-hairline) px-4 pb-4 pt-4">
           <p className="text-[12px] leading-relaxed text-(--color-text-muted)">
-            Context the whole epic inherits — every ticket's agent starts with
-            these docs.
+            Context the whole workflow inherits — every ticket's agent starts
+            with these docs.
           </p>
 
           <BriefField
@@ -903,7 +903,7 @@ function EpicBriefPanel({
               autoGrow
               rows={3}
               data-testid="decompose-brief-prd"
-              aria-label="Epic PRD (markdown)"
+              aria-label="Workflow PRD (markdown)"
               placeholder="What every ticket should build toward — goals, requirements, constraints…"
               className="max-h-[32vh] font-mono text-[12px] leading-[1.6]"
             />
@@ -923,7 +923,7 @@ function EpicBriefPanel({
               autoGrow
               rows={3}
               data-testid="decompose-brief-trd"
-              aria-label="Epic TRD (markdown)"
+              aria-label="Workflow TRD (markdown)"
               placeholder="Shared technical decisions — interfaces, data shapes, conventions…"
               className="max-h-[32vh] font-mono text-[12px] leading-[1.6]"
             />

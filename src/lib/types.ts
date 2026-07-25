@@ -405,7 +405,7 @@ export interface FigmaLinkInput {
  * for the WHOLE epic, written to `<repo>/.phasr/epics/<parentId>/` at the gate
  * (before any subtask spawns) and inherited by every task's spawn prompt (E4).
  * All optional — omit them for a doc-less epic (a pre-2b caller is unchanged).
- * The "Epic brief" review-step panel (E2) populates them.
+ * The "Workflow brief" review-step panel (E2) populates them.
  */
 export interface DecompositionInput {
   repositoryId: string;

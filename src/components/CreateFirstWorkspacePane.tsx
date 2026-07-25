@@ -70,7 +70,7 @@ export function CreateFirstWorkspacePane({
   const branches = branchesQuery.data ?? [];
 
   // First-run onboarding: land on a calm three-way choice, not straight in a
-  // form. "New task" reveals the two-step form below; "New epic"/"Open
+  // form. "New task" reveals the two-step form below; "New workflow"/"Open
   // terminal" fire their own flows from the choice surface itself.
   const [mode, setMode] = useState<"choice" | "task">("choice");
   const [step, setStep] = useState<1 | 2>(1);

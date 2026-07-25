@@ -8,12 +8,12 @@ import {
 } from "./harness";
 
 /**
- * The REAL "New epic" entry point (S1 enablement). Unlike board.spec.ts (which
+ * The REAL "New workflow" entry point (S1 enablement). Unlike board.spec.ts (which
  * drives the dev-only /design-test harness), this boots the ACTUAL app with a
  * mocked Tauri IPC and exercises the discoverable affordances a user reaches:
  *
- *   1. the repo-home pane's "New epic" button (CreateFirstWorkspacePane), and
- *   2. the sidebar repo context menu's "New epic" peer of
+ *   1. the repo-home pane's "New workflow" button (CreateFirstWorkspacePane), and
+ *   2. the sidebar repo context menu's "New workflow" peer of
  *      "New workspace" (RepositorySidebarMenu),
  *
  * asserting each opens the shared Dialog + DecomposeForm, that the gate fires
@@ -55,25 +55,25 @@ async function planAndReview(
   await expect(dialog.getByTestId("decompose-ticket").first()).toBeVisible();
 }
 
-test.describe("New epic entry point (real app)", () => {
-  test("repo-home 'New epic' button opens the decompose form, then navigates to the board", async ({
+test.describe("New workflow entry point (real app)", () => {
+  test("repo-home 'New workflow' button opens the decompose form, then navigates to the board", async ({
     page,
   }) => {
     const { errors } = await boot(page);
 
     // Enter a workspace-less repo (sidecar) so its home renders the
-    // RepoEntryChoice onboarding surface, whose "New epic" card is a
+    // RepoEntryChoice onboarding surface, whose "New workflow" card is a
     // discoverable peer of the single-agent "New task" card — clearly separate
     // from the single-agent create-first-workspace flow.
     await page.locator('[aria-label="sidecar"]').first().click();
-    const newEpic = page.getByRole("button", { name: "New epic in sidecar" });
+    const newEpic = page.getByRole("button", { name: "New workflow in sidecar" });
     await expect(newEpic).toBeVisible({ timeout: 15_000 });
     await newEpic.click();
 
     // The shared Dialog shell + existing DecomposeForm open.
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText("New epic · sidecar")).toBeVisible();
+    await expect(dialog.getByText("New workflow · sidecar")).toBeVisible();
     const form = dialog.getByTestId("decompose-form");
     await expect(form).toBeVisible();
 
@@ -102,20 +102,58 @@ test.describe("New epic entry point (real app)", () => {
     expect(bad, bad.join("\n---\n")).toHaveLength(0);
   });
 
-  test("sidebar repo menu 'New epic' opens the decompose form (peer of New workspace)", async ({
+  test("a repo whose only workspace is the auto-seeded local terminal lands on the choice screen, not the terminal", async ({
+    page,
+  }) => {
+    // Reproduce a freshly-added repo: the backend `create_repository`
+    // auto-seeds a `local` (terminal) workspace, so listWorkspaces is NON-empty.
+    // useNavigateToRepoEntry must skip that local row and still route to the
+    // repo-home RepoEntryChoice screen — not drop the user into a bare terminal.
+    const f = makeFixtures();
+    const localTemplate = f.workspaces.find((w) => w.id === "ws-local");
+    if (!localTemplate) throw new Error("harness missing ws-local template");
+    f.workspaces.push({
+      ...localTemplate,
+      id: "ws-local-sidecar",
+      repositoryId: "repo-2",
+      name: "main",
+      worktreePath: "/Users/test/code/sidecar",
+    });
+    await boot(page, f);
+
+    // Enter sidecar (repo-2) — its ONLY workspace is the local terminal.
+    await page.locator('[aria-label="sidecar"]').first().click();
+
+    // Lands on the RepoEntryChoice onboarding (all three cards), NOT a terminal.
+    await expect(
+      page.getByRole("heading", { name: "sidecar is ready" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("button", { name: "New task in sidecar" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "New workflow in sidecar" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Open terminal in sidecar" }),
+    ).toBeVisible();
+    await expect(page).not.toHaveURL(/workspaces\//);
+  });
+
+  test("sidebar repo menu 'New workflow' opens the decompose form (peer of New workspace)", async ({
     page,
   }) => {
     await boot(page);
 
-    // Right-click any repo row to reveal the context menu; "New epic" sits right
+    // Right-click any repo row to reveal the context menu; "New workflow" sits right
     // below "New workspace" — the exact peer of the single-agent trigger. (The
     // ticket count is the planner's call, never a fixed "2 agents" in the label.)
     await page.locator('[aria-label="phasr"]').first().click({ button: "right" });
-    await page.getByRole("menuitem", { name: "New epic" }).click();
+    await page.getByRole("menuitem", { name: "New workflow" }).click();
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText("New epic · phasr")).toBeVisible();
+    await expect(dialog.getByText("New workflow · phasr")).toBeVisible();
     await expect(dialog.getByTestId("decompose-form")).toBeVisible();
 
     // Cancel closes without persisting anything (nothing fired before the gate).
@@ -144,12 +182,12 @@ test.describe("Epic node + subtask drill-in (Direction A)", () => {
 
     // The epic is a discoverable node in the sidebar (a peer of the workspace
     // list); its label carries the epic goal — meaning on text, not glyph alone.
-    const epicNode = page.locator(`[aria-label="Epic: ${EPIC_GOAL}"]`);
+    const epicNode = page.locator(`[aria-label="Workflow: ${EPIC_GOAL}"]`);
     await expect(epicNode.first()).toBeVisible({ timeout: 15_000 });
 
     // Progressive disclosure: exactly ONE epic node in the whole tree (repo-1's).
     // sidecar (repo-2) is a single-agent repo and contributes none.
-    await expect(page.locator('[aria-label^="Epic:"]')).toHaveCount(1);
+    await expect(page.locator('[aria-label^="Workflow:"]')).toHaveCount(1);
 
     // Collapsed by default (not the active epic) → the chevron expands it and
     // reveals the subtask rows (reused WorkspaceLink rows), no navigation.
@@ -218,7 +256,7 @@ test.describe("Epic node + subtask drill-in (Direction A)", () => {
   }) => {
     await boot(page);
     // Open the board directly via the epic node row (click, not the chevron).
-    await page.locator(`[aria-label="Epic: ${EPIC_GOAL}"]`).first().click();
+    await page.locator(`[aria-label="Workflow: ${EPIC_GOAL}"]`).first().click();
     await expect(page).toHaveURL(/repositories\/repo-1\/board\/epic-1/, {
       timeout: 10_000,
     });
@@ -249,7 +287,7 @@ test.describe("Epic node + subtask drill-in (Direction A)", () => {
     // The flat agent/local rows render exactly as before…
     await expect(page.getByText("add-feature", { exact: true })).toBeVisible();
     // …and there is NO epic group anywhere in the tree.
-    await expect(page.locator('[aria-label^="Epic:"]')).toHaveCount(0);
+    await expect(page.locator('[aria-label^="Workflow:"]')).toHaveCount(0);
 
     const bad = realErrors(errors);
     expect(bad, bad.join("\n---\n")).toHaveLength(0);

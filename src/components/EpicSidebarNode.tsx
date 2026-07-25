@@ -133,7 +133,7 @@ function EpicSidebarNode({
         <button
           type="button"
           onClick={openBoard}
-          aria-label={`Epic: ${goal}`}
+          aria-label={`Workflow: ${goal}`}
           aria-current={isActiveEpic ? "page" : undefined}
           className={cn(
             "flex h-7 w-7 items-center justify-center rounded-[8px]",
@@ -162,7 +162,7 @@ function EpicSidebarNode({
       <div
         role="button"
         tabIndex={0}
-        aria-label={`Epic: ${goal}`}
+        aria-label={`Workflow: ${goal}`}
         aria-current={isActiveEpic ? "page" : undefined}
         aria-expanded={expanded}
         onClick={openBoard}

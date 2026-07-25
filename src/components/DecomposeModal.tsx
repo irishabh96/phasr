@@ -7,12 +7,12 @@ import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 
 /**
- * Shell-mounted "New epic" modal — the REAL entry point into a multi-agent
+ * Shell-mounted "New workflow" modal — the REAL entry point into a multi-agent
  * decomposition (mirrors NewTaskModal for the single-agent flow).
  *
  * Opened via `requestDecompose(repoId)`:
- *   - the "New epic" button on the repo home pane
- *   - the sidebar repo context menu → "New epic"
+ *   - the "New workflow" card on the repo home pane
+ *   - the sidebar repo context menu → "New workflow"
  *
  * Reuses the shared Radix `Dialog` shell (no bespoke chrome) and the existing
  * `DecomposeForm` (the "Start N agents" approval gate — N is whatever the
@@ -41,7 +41,7 @@ export function DecomposeModal() {
       open={open}
       onOpenChange={(o) => !o && clearPending()}
       size="720px"
-      title={`New epic${repo ? ` · ${repo.name}` : ""}`}
+      title={`New workflow${repo ? ` · ${repo.name}` : ""}`}
       description="Split one goal into agents that hand off through published contracts. Review the plan the planner proposed, edit anything, then start them all at once."
     >
       {repoId && (

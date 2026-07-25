@@ -181,7 +181,7 @@ function deriveTicketGate(i: TicketGateInput): NextGate {
       "approve",
       "Approved",
       false,
-      "Ready to integrate from the epic",
+      "Ready to integrate from the workflow",
       "success",
       false,
     );
