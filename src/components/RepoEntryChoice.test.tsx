@@ -46,9 +46,9 @@ describe("RepoEntryChoice", () => {
     ).toBeInTheDocument();
   });
 
-  it("marks the workflow as the optional / richer path", () => {
+  it("marks the workflow with a 'New' badge", () => {
     render(<RepoEntryChoice repo={makeRepository()} onNewTask={vi.fn()} />);
-    expect(screen.getByText("Optional")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
   });
 
   it("fires onNewTask (single-agent task form) for New task", () => {
