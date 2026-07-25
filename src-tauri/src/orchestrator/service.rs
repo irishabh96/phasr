@@ -1082,20 +1082,34 @@ impl TaskOrchestrator {
             _ => brief,
         };
 
-        // Role persona (Phase 4): the LEADING segment. Derived purely from
-        // `role` (independent of the owner/CLI gate above), so a persona rides
-        // even for an ownerless/test spawn. An unmatched role → `None` → no
-        // segment → byte-identical to a pre-Phase-4 spawn. Trim + the shared
-        // `\n\n---\n\n` separator so it composes exactly like the sibling seeds.
-        let persona =
-            personas::persona_for_role(&role).map(|p| format!("{}\n\n---\n\n", p.trim()));
+        // Leading segment: the role persona (Phase 4) followed IMMEDIATELY by the
+        // ticket's own task, clearly labeled. The task rides at the FRONT (right
+        // behind the role) instead of the `base` slot, so the agent — and anyone
+        // reading the terminal — sees WHAT to build before the contract/brief/CLI
+        // orientation, rather than it being buried mid-prompt after the CLI block.
+        // Both parts derive purely from `role`/`subtask.prompt`, so an unmatched
+        // role or a blank prompt just drops its part (a fully-empty lead → None).
+        let persona = personas::persona_for_role(&role).map(|p| p.trim().to_string());
+        let task = subtask
+            .prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("## Your task\n\n{p}"));
+        let lead = match (persona, task) {
+            (Some(p), Some(t)) => Some(format!("{p}\n\n---\n\n{t}\n\n---\n\n")),
+            (Some(p), None) => Some(format!("{p}\n\n---\n\n")),
+            (None, Some(t)) => Some(format!("{t}\n\n---\n\n")),
+            (None, None) => None,
+        };
 
         let augmented_prompt = augment_prompt(
-            subtask.prompt.as_deref(),
+            // The task now LEADS (folded into `lead`), so the `base` slot is empty.
+            None,
             brief.as_deref(),
             producer_suffix.as_deref(),
             consumer_prefix.as_deref(),
-            persona.as_deref(),
+            lead.as_deref(),
         );
 
         // Interpolate the stored command template with the augmented prompt,
@@ -2559,6 +2573,13 @@ mod tests {
         );
         assert!(prompt.contains("`backend`"), "the seed names the producer role");
         assert!(prompt.contains("do the frontend"), "the base prompt is preserved");
+        // The ticket's task LEADS (labeled), ahead of the consumer contract +
+        // CLI orientation — so the agent sees WHAT to build first, not buried.
+        assert!(
+            prompt.contains("## Your task")
+                && prompt.find("## Your task").unwrap() < prompt.find("GET /widgets").unwrap(),
+            "the ticket's task must lead ahead of the contract/CLI orientation: {prompt}"
+        );
 
         // main + backend + frontend worktrees.
         assert_eq!(count_worktrees(repo_path), 3);
