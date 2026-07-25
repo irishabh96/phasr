@@ -370,6 +370,9 @@ export function DecomposeForm({
         <GlassInput
           id="decompose-goal"
           data-testid="decompose-goal"
+          // Locked while the planner runs — the goal is already captured and
+          // in flight, so editing it here would do nothing until a Re-plan.
+          disabled={phase === "planning"}
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           onKeyDown={(e) => {
