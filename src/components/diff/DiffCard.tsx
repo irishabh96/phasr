@@ -150,6 +150,11 @@ export function DiffCard({
   const hasCounts = file.adds !== undefined || file.removes !== undefined;
   const untracked =
     file.unstaged === "untracked" || file.staged === "untracked";
+  // No committed version (untracked OR staged-new) → `git restore` has no
+  // HEAD blob, the backend falls through to `git clean -fd`, and "discard"
+  // actually DELETES the file. Both the toolbar affordance and the confirm
+  // dialog must present it as a delete.
+  const deletesOnDiscard = untracked || file.staged === "added";
   const derived = useMemo(() => {
     if (hasCounts) {
       return {
@@ -362,15 +367,11 @@ export function DiffCard({
           )}
           {!isConflicted && onDiscard && (
             <IconButton
-              label={
-                file.unstaged === "untracked"
-                  ? "Delete untracked file"
-                  : "Discard changes"
-              }
+              label={deletesOnDiscard ? "Delete file" : "Discard changes"}
               tone="danger"
               onClick={() => setConfirmDiscard(true)}
             >
-              {file.unstaged === "untracked" ? (
+              {deletesOnDiscard ? (
                 <Trash2 size={13} />
               ) : (
                 <RotateCcw size={13} />
@@ -405,7 +406,7 @@ export function DiffCard({
       <DiscardConfirm
         open={confirmDiscard}
         path={file.path}
-        untracked={file.unstaged === "untracked"}
+        deletesFile={deletesOnDiscard}
         onConfirm={() => {
           setConfirmDiscard(false);
           onDiscard?.(file.path);
@@ -541,14 +542,18 @@ function CountsBadge({
 function DiscardConfirm({
   open,
   path,
-  untracked,
+  deletesFile,
   onConfirm,
   onCancel,
 }: {
   open: boolean;
   path: string;
-  /** Untracked files have no HEAD — discarding DELETES them from disk. */
-  untracked?: boolean;
+  /**
+   * Files with no committed version (untracked OR staged-new) have no HEAD
+   * blob to restore — the backend falls through to `git clean -fd`, so
+   * discarding DELETES them from disk. The copy must say so.
+   */
+  deletesFile?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -561,7 +566,7 @@ function DiscardConfirm({
             <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>
                 <h2 className="text-[13.5px] font-semibold leading-none">
-                  {untracked ? "Delete untracked file?" : "Discard changes?"}
+                  {deletesFile ? "Delete new file?" : "Discard changes?"}
                 </h2>
               </Dialog.Title>
               <div className="ml-auto">
@@ -581,8 +586,8 @@ function DiscardConfirm({
                 <code className="font-mono text-(--color-text-primary)">
                   {path}
                 </code>{" "}
-                {untracked
-                  ? "isn't tracked by git — discarding permanently deletes it from disk. This cannot be undone."
+                {deletesFile
+                  ? "has no committed version — discarding permanently deletes it from disk. This cannot be undone."
                   : "will be reset to HEAD, discarding all changes. This cannot be undone."}
               </div>
             </Dialog.Description>
@@ -591,7 +596,7 @@ function DiscardConfirm({
                 Cancel
               </GlassButton>
               <GlassButton variant="danger" size="sm" onClick={onConfirm}>
-                {untracked ? "Delete file" : "Discard"}
+                {deletesFile ? "Delete file" : "Discard"}
               </GlassButton>
             </footer>
           </div>

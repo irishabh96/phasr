@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { DiffList } from "@/components/diff/DiffList";
 import { SAMPLE_DIFF_LIST } from "@/components/diff/sampleDiffs";
@@ -69,6 +69,27 @@ describe("DiffList", () => {
     expect(screen.getByText("Discard changes?")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(onDiscard).toHaveBeenCalledWith(FILES[0]!.path);
+  });
+
+  // Files with no committed version (untracked OR staged-new) are DELETED by
+  // discard (`git restore` has no HEAD blob → backend falls to `git clean`).
+  // The confirm must say "delete", never "reset to HEAD".
+  it.each([
+    ["staged new file", { staged: "added" as const }],
+    ["untracked file", { unstaged: "untracked" as const }],
+  ])("discard confirm says DELETE for a %s", (_label, status) => {
+    const onDiscard = vi.fn();
+    const file = { ...FILES[0]!, ...status };
+    render(<DiffList files={[file]} onDiscard={onDiscard} />);
+    fireEvent.click(screen.getByLabelText("Delete file"));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Delete new file?")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/permanently deletes it from disk/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/reset to HEAD/)).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete file" }));
+    expect(onDiscard).toHaveBeenCalledWith(file.path);
   });
 
   it("toggles split/inline mode globally when ⌘\\ is pressed", () => {
