@@ -9,7 +9,7 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  retries: process.env.CI ? 2 : 0,
   reporter: [["list"]],
   use: {
     baseURL: "http://localhost:1420",
@@ -19,7 +19,7 @@ export default defineConfig({
   webServer: {
     command: "pnpm dev",
     url: "http://localhost:1420",
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
 });

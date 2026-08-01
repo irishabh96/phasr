@@ -6,11 +6,11 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [master, rebuild]
+    branches: [master, rebuild, feat/task-board]
 
 jobs:
   web:
-    name: Web — typecheck + build
+    name: Web — typecheck + test + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +22,35 @@ jobs:
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm build
-      # `pnpm test` skipped — re-enable once test files exist.
-      # - run: pnpm test
+
+  e2e:
+    name: Web — Playwright e2e
+    runs-on: ubuntu-latest
+    env:
+      # The suite runs against the mocked-IPC dev server; these only need to
+      # EXIST so main.tsx mounts the router instead of the config-error screen.
+      # The Clerk key decodes to clerk.example.com — clerk-js never loads and
+      # the auth gate is the mocked Rust session, not Clerk.
+      VITE_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+      VITE_SUPABASE_URL: https://stub.supabase.co
+      VITE_SUPABASE_ANON_KEY: ci-stub-anon-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium --with-deps
+      - run: pnpm exec playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
 
   rust:
     name: Rust — check + test
