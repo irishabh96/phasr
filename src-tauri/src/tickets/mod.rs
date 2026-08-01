@@ -437,7 +437,7 @@ fn warn_if_phasr_gitignored(repo_root: &Path) {
         return;
     };
     if contents.lines().any(line_ignores_phasr) {
-        eprintln!(
+        log::warn!(
             "phasr: repository `{}` gitignores `.phasr/` — ticket briefs won't be \
              versioned with the code (they are meant to ship in the PR). Consider \
              un-ignoring `.phasr/tickets/`.",

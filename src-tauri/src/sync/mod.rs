@@ -186,7 +186,7 @@ async fn sync_once(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError
     macro_rules! step {
         ($label:expr, $fut:expr) => {
             if let Err(err) = $fut.await {
-                eprintln!("[cloud-sync] step `{}` failed: {err}", $label);
+                log::warn!("[cloud-sync] step `{}` failed: {err}", $label);
                 if first_err.is_none() {
                     first_err = Some(err);
                 }

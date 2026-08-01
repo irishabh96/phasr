@@ -471,7 +471,7 @@ impl AutopilotDriver {
                 );
                 self.board_events.notify(parent_id);
             }
-            Err(e) => eprintln!("autopilot: failed to append bounce comment: {e}"),
+            Err(e) => log::warn!("autopilot: failed to append bounce comment: {e}"),
         }
     }
 
@@ -789,7 +789,7 @@ impl AutopilotDriver {
         let mut map = read_fired_map(repo_root, parent_id);
         map.insert(key.to_string(), hash);
         if let Err(e) = write_fired_map(repo_root, parent_id, &map) {
-            eprintln!("autopilot: failed to persist last-fired marker for {parent_id}: {e}");
+            log::error!("autopilot: failed to persist last-fired marker for {parent_id}: {e}");
         }
     }
 
@@ -940,12 +940,12 @@ fn write_bounce_marker(repo_root: &Path, ticket_id: &str, at_ms: i64) {
     };
     if let Some(dir) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("autopilot: failed to create bounce-marker dir: {e}");
+            log::error!("autopilot: failed to create bounce-marker dir: {e}");
             return;
         }
     }
     if let Err(e) = std::fs::write(&path, b"") {
-        eprintln!("autopilot: failed to write bounce marker: {e}");
+        log::error!("autopilot: failed to write bounce marker: {e}");
     }
 }
 
@@ -954,7 +954,7 @@ fn write_bounce_marker(repo_root: &Path, ticket_id: &str, at_ms: i64) {
 fn append_audit(repo_root: &Path, parent_id: &str, message: &str) {
     let dir = autopilot_dir(repo_root);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("autopilot: failed to create audit dir: {e}");
+        log::warn!("autopilot: failed to create audit dir: {e}");
         return;
     }
     let line = format!("{}\tautopilot\t{}\n", Utc::now().to_rfc3339(), message);
@@ -962,10 +962,10 @@ fn append_audit(repo_root: &Path, parent_id: &str, message: &str) {
     match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(line.as_bytes()) {
-                eprintln!("autopilot: failed to append audit line: {e}");
+                log::warn!("autopilot: failed to append audit line: {e}");
             }
         }
-        Err(e) => eprintln!("autopilot: failed to open audit log: {e}"),
+        Err(e) => log::warn!("autopilot: failed to open audit log: {e}"),
     }
 }
 

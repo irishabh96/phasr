@@ -114,13 +114,13 @@ impl WorktreeWatchRegistry {
         let mut debouncer = match debouncer {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[fswatch] couldn't build debouncer for {workspace_id}: {e}");
+                log::warn!("[fswatch] couldn't build debouncer for {workspace_id}: {e}");
                 return;
             }
         };
 
         if let Err(e) = debouncer.watcher().watch(&path, RecursiveMode::Recursive) {
-            eprintln!(
+            log::warn!(
                 "[fswatch] watch failed for {workspace_id} at {}: {e}",
                 path.display()
             );
@@ -208,7 +208,7 @@ impl TicketWatchRegistry {
         let mut debouncer = match debouncer {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[fswatch] couldn't build ticket debouncer for {ticket_id}: {e}");
+                log::warn!("[fswatch] couldn't build ticket debouncer for {ticket_id}: {e}");
                 return;
             }
         };
@@ -216,7 +216,7 @@ impl TicketWatchRegistry {
         // Non-recursive: we only care about the three text section files directly
         // under the ticket dir; `assets/` writes must never raise a section event.
         if let Err(e) = debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
-            eprintln!(
+            log::warn!(
                 "[fswatch] ticket watch failed for {ticket_id} at {}: {e}",
                 dir.display()
             );

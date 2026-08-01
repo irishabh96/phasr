@@ -34,6 +34,26 @@ pub fn run() {
     let cloud_sync_state = Arc::new(sync::CloudSyncState::default());
 
     tauri::Builder::default()
+        // Logging first, so every later plugin/setup failure is captured. A
+        // bundled .app has no visible stderr — the rotating LogDir file
+        // (~/Library/Logs/<bundle-id>/phasr.log) is the only way a user can
+        // hand us diagnostics.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("phasr".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                // sqlx logs every statement at Debug and slow queries at Warn;
+                // keep the file signal-only.
+                .level_for("sqlx", log::LevelFilter::Warn)
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .build(),
+        )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -366,7 +386,7 @@ async fn initialize_database_state(
                 });
                 tauri::async_runtime::spawn(orchestrator::ipc_server::serve(listener, cli_server));
             }
-            Err(err) => eprintln!(
+            Err(err) => log::error!(
                 "phasr: failed to bind CLI socket at {} ({err}); agents can't self-advance the board this session",
                 socket.display()
             ),
@@ -440,14 +460,14 @@ async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: 
                     )
                     .await
                 {
-                    eprintln!(
+                    log::warn!(
                         "failed to recover orphaned running workspace {}: {err}",
                         workspace.id
                     );
                 }
             }
         }
-        Err(err) => eprintln!("failed to list running workspaces during startup recovery: {err}"),
+        Err(err) => log::warn!("failed to list running workspaces during startup recovery: {err}"),
     }
 
     match repository_repo.list().await {
@@ -461,14 +481,14 @@ async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: 
                     continue;
                 }
                 if let Err(err) = crate::git::prune_worktrees(path) {
-                    eprintln!(
+                    log::warn!(
                         "failed to prune git worktrees for repository {}: {err}",
                         repository.id
                     );
                 }
             }
         }
-        Err(err) => eprintln!("failed to list repositories during startup recovery: {err}"),
+        Err(err) => log::warn!("failed to list repositories during startup recovery: {err}"),
     }
 }
 

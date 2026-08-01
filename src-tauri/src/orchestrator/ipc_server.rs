@@ -161,7 +161,7 @@ mod unix_impl {
                     });
                 }
                 Err(err) => {
-                    eprintln!("phasr cli ipc: accept failed: {err}");
+                    log::warn!("phasr cli ipc: accept failed: {err}");
                     break;
                 }
             }
@@ -176,7 +176,7 @@ mod unix_impl {
         let mut reader = BufReader::new(read_half);
         let mut line = String::new();
         if let Err(err) = reader.read_line(&mut line).await {
-            eprintln!("phasr cli ipc: read failed: {err}");
+            log::warn!("phasr cli ipc: read failed: {err}");
             return;
         }
 

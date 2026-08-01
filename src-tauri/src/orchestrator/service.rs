@@ -713,7 +713,7 @@ impl TaskOrchestrator {
         let running = match self.workspaces.list_by_status(WorkspaceStatus::Running).await {
             Ok(rows) => rows,
             Err(err) => {
-                eprintln!("liveness poll: failed to list running workspaces: {err}");
+                log::warn!("liveness poll: failed to list running workspaces: {err}");
                 return;
             }
         };
@@ -827,7 +827,7 @@ impl TaskOrchestrator {
         let parents = match self.workspaces.list_parents().await {
             Ok(parents) => parents,
             Err(err) => {
-                eprintln!("scheduler: failed to list parents: {err}");
+                log::warn!("scheduler: failed to list parents: {err}");
                 return;
             }
         };
@@ -844,7 +844,7 @@ impl TaskOrchestrator {
             let subtasks = match self.workspaces.list_by_parent(&parent.id).await {
                 Ok(subtasks) => subtasks,
                 Err(err) => {
-                    eprintln!("scheduler: list_by_parent({}) failed: {err}", parent.id);
+                    log::warn!("scheduler: list_by_parent({}) failed: {err}", parent.id);
                     continue;
                 }
             };
@@ -865,7 +865,7 @@ impl TaskOrchestrator {
             let deps = match board.list_dependencies(&parent.id).await {
                 Ok(deps) => deps,
                 Err(err) => {
-                    eprintln!("scheduler: list_dependencies({}) failed: {err}", parent.id);
+                    log::warn!("scheduler: list_dependencies({}) failed: {err}", parent.id);
                     continue;
                 }
             };
@@ -874,7 +874,7 @@ impl TaskOrchestrator {
             let contracts = match board.list_contracts(&parent.id).await {
                 Ok(contracts) => contracts,
                 Err(err) => {
-                    eprintln!("scheduler: list_contracts({}) failed: {err}", parent.id);
+                    log::warn!("scheduler: list_contracts({}) failed: {err}", parent.id);
                     continue;
                 }
             };
@@ -914,7 +914,7 @@ impl TaskOrchestrator {
                     .spawn_ready_subtask(&plan.parent, subtask, &plan.deps, &plan.contracts, config)
                     .await
                 {
-                    eprintln!(
+                    log::warn!(
                         "scheduler: failed to spawn subtask {} ({:?}): {err}",
                         subtask.id, subtask.role
                     );
@@ -952,7 +952,7 @@ impl TaskOrchestrator {
                 // A row exists but isn't published yet — stamp it (bridge firing).
                 Ok(Some(existing)) => {
                     if let Err(err) = board.mark_contract_published(&existing.id, now).await {
-                        eprintln!("scheduler: mark_contract_published failed: {err}");
+                        log::warn!("scheduler: mark_contract_published failed: {err}");
                     }
                 }
                 // No row yet — mirror the file as a freshly-published contract.
@@ -965,10 +965,10 @@ impl TaskOrchestrator {
                     );
                     contract.published_at = Some(now);
                     if let Err(err) = board.insert_contract(&contract).await {
-                        eprintln!("scheduler: insert_contract failed: {err}");
+                        log::warn!("scheduler: insert_contract failed: {err}");
                     }
                 }
-                Err(err) => eprintln!("scheduler: find_contract failed: {err}"),
+                Err(err) => log::warn!("scheduler: find_contract failed: {err}"),
             }
         }
     }
@@ -1249,7 +1249,7 @@ fn gather_contract_seeds(
                 role: contract.role.clone(),
                 content,
             }),
-            Err(err) => eprintln!(
+            Err(err) => log::warn!(
                 "scheduler: failed to read contract {}: {err}",
                 contract.contract_path
             ),

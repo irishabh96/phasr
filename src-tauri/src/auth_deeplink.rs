@@ -44,7 +44,7 @@ where
             continue;
         }
 
-        eprintln!("received Clerk auth callback deep link");
+        log::info!("received Clerk auth callback deep link");
 
         if let Some(state) = app.try_state::<AuthDeepLinkState>() {
             *state
@@ -54,7 +54,7 @@ where
         }
 
         if let Err(err) = app.emit(AUTH_CALLBACK_EVENT, AuthCallbackPayload { url }) {
-            eprintln!("failed to emit auth callback event: {err}");
+            log::error!("failed to emit auth callback event: {err}");
         }
     }
 }
