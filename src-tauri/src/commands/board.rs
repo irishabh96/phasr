@@ -638,7 +638,7 @@ async fn write_epic_docs(
     // Scaffold the folder + templates first (idempotent); provided sections are
     // overwritten below, un-provided ones keep the template (= "not written yet").
     if let Err(err) = tickets::scaffold_epic(repo_root, parent_id) {
-        eprintln!("board: failed to scaffold epic folder for {parent_id}: {err}");
+        log::warn!("board: failed to scaffold epic folder for {parent_id}: {err}");
     }
 
     // A throwaway registry: the gate write is a FIRST write, before any editor or
@@ -651,7 +651,7 @@ async fn write_epic_docs(
             if let Err(err) =
                 tickets::write_epic_section(&registry, repo_root, parent_id, section, content, None)
             {
-                eprintln!("board: failed to write epic {section:?} for {parent_id}: {err}");
+                log::warn!("board: failed to write epic {section:?} for {parent_id}: {err}");
             }
         }
     }
@@ -660,7 +660,7 @@ async fn write_epic_docs(
         if let Err(err) =
             tickets::add_epic_figma_link(repo_root, parent_id, &link.url, link.label.as_deref())
         {
-            eprintln!("board: failed to add epic figma link for {parent_id}: {err}");
+            log::warn!("board: failed to add epic figma link for {parent_id}: {err}");
         }
     }
 
@@ -669,7 +669,7 @@ async fn write_epic_docs(
         if let Err(err) =
             tickets::add_epic_asset(repo_root, parent_id, std::path::Path::new(path), &assets_root)
         {
-            eprintln!("board: failed to copy epic asset `{path}` for {parent_id}: {err}");
+            log::warn!("board: failed to copy epic asset `{path}` for {parent_id}: {err}");
         }
     }
 }
@@ -703,7 +703,7 @@ async fn scaffold_ticket_folders(
             &subtask.name,
             description,
         ) {
-            eprintln!("board: failed to scaffold ticket folder for {}: {err}", subtask.id);
+            log::warn!("board: failed to scaffold ticket folder for {}: {err}", subtask.id);
         }
     }
 }
@@ -1174,7 +1174,13 @@ fn topological_subtask_order(
         order.push(node);
         if let Some(children) = adjacency.get(node) {
             for &child in children {
-                let d = indegree.get_mut(child).expect("child is a known subtask");
+                // Adjacency only holds edges whose both endpoints are subtasks
+                // (filtered above), so `child` is always present — but this is
+                // a UI-reachable command handler, so a graph inconsistency must
+                // degrade to a skipped edge, never a panic.
+                let Some(d) = indegree.get_mut(child) else {
+                    continue;
+                };
                 *d -= 1;
                 if *d == 0 {
                     queue.push_back(child);
@@ -2377,5 +2383,32 @@ mod tests {
             topological_subtask_order(&[backend, frontend], &[edge, back_edge]),
             Err(BoardCmdError::InvalidDecomposition(_))
         ));
+    }
+
+    // Stray edges (an endpoint that isn't one of this parent's subtasks — a
+    // deleted row, a cross-parent edge, a corrupted graph) must be ignored,
+    // never panic the Integrate path.
+    #[test]
+    fn topological_subtask_order_ignores_stray_edges() {
+        let repo = "r";
+        let mut backend = Workspace::new(repo.into(), "backend".into(), "cmd".into());
+        backend.id = "backend".into();
+        let mut frontend = Workspace::new(repo.into(), "frontend".into(), "cmd".into());
+        frontend.id = "frontend".into();
+        let edge = WorkspaceDependency::new("p".into(), "backend".into(), "frontend".into());
+        // Both directions of missing endpoints: unknown producer into a known
+        // consumer, and a known producer into an unknown (e.g. deleted) consumer.
+        let stray_in = WorkspaceDependency::new("p".into(), "ghost".into(), "frontend".into());
+        let stray_out = WorkspaceDependency::new("p".into(), "backend".into(), "ghost".into());
+
+        let order = topological_subtask_order(
+            &[frontend.clone(), backend.clone()],
+            &[edge, stray_in, stray_out],
+        )
+        .unwrap();
+        assert_eq!(
+            order.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            vec!["backend".to_string(), "frontend".to_string()]
+        );
     }
 }
