@@ -25,7 +25,30 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' https://*.clerk.accounts.dev https://*.clerk.com",
+        "connect-src": "'self' ipc: http://ipc.localhost https://*.clerk.accounts.dev https://*.clerk.com https://clerk-telemetry.com https://*.supabase.co wss://*.supabase.co https://*.ingest.us.sentry.io https://*.ingest.sentry.io",
+        "img-src": "'self' asset: http://asset.localhost data: blob: https://img.clerk.com https://*.clerk.accounts.dev",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self' https://*.clerk.accounts.dev https://*.clerk.com",
+        "object-src": "'none'",
+        "base-uri": "'self'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' https://*.clerk.accounts.dev https://*.clerk.com",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420 https://*.clerk.accounts.dev https://*.clerk.com https://clerk-telemetry.com https://*.supabase.co wss://*.supabase.co https://*.ingest.us.sentry.io https://*.ingest.sentry.io",
+        "img-src": "'self' asset: http://asset.localhost data: blob: https://img.clerk.com https://*.clerk.accounts.dev",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self' https://*.clerk.accounts.dev https://*.clerk.com",
+        "object-src": "'none'",
+        "base-uri": "'self'"
+      }
     }
   },
   "plugins": {
