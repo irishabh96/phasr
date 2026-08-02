@@ -1,0 +1,193 @@
+{
+  "$comment": "THE shared gate-ladder parity fixture (phase5a spec §3 — 'mandatory, HARDENED'). Consumed by BOTH src/lib/deriveNextGate.test.ts (asserts `fe`) and src-tauri/…/autopilot/policy.rs tests (asserts `autopilot`), so the FE button ladder and the autopilot policy cannot silently diverge: a semantic change edits THIS file and both suites re-verify. `fe: null` marks a Rust-only row (the FE input cannot represent it, e.g. mergeInProgress). Divergences-by-design are named in row comments — they are contract, not drift.",
+  "tickets": [
+    {
+      "name": "blocked names its producers",
+      "input": { "state": "blocked", "review": null, "validate": null, "checksConfigured": false, "blockedOn": ["backend"] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": false, "reason": "Waiting for backend", "intent": "neutral", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "blocked with no known producers",
+      "input": { "state": "blocked", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": false, "reason": "Waiting for upstream", "intent": "neutral", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "in review (requested) — Approve is the human gate",
+      "input": { "state": "in-review", "review": { "state": "requested", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "approve", "label": "Approve", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:needs-review"
+    },
+    {
+      "name": "raw review=requested before the state folds (dual check)",
+      "input": { "state": "idle", "review": { "state": "requested", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "approve", "label": "Approve", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:needs-review"
+    },
+    {
+      "name": "approved — ticket-terminal (Done lane); epic Integrate takes over",
+      "input": { "state": "done", "review": { "state": "approved", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "approve", "label": "Approved", "enabled": false, "reason": "Ready to integrate from the workflow", "intent": "success", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "bounced, no checks — FE offers the re-work forward gate; autopilot parks (divergence-by-design)",
+      "input": { "state": "qas-changes-requested", "review": { "state": "changes-requested", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:changes-requested"
+    },
+    {
+      "name": "bounced, checks configured but never run",
+      "input": { "state": "qas-changes-requested", "review": { "state": "changes-requested", "atMs": 1000 }, "validate": null, "checksConfigured": true, "blockedOn": [] },
+      "fe": { "verb": "validate", "label": "Validate", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:changes-requested"
+    },
+    {
+      "name": "bounced with a red validate — review stop outranks validate stop",
+      "input": { "state": "qas-changes-requested", "review": { "state": "changes-requested", "atMs": 1000 }, "validate": { "passed": false, "atMs": 2000, "failingCount": 2 }, "checksConfigured": true, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": false, "reason": "Fix 2 failing checks", "intent": "neutral", "confirm": false },
+      "autopilot": "human-stop:changes-requested"
+    },
+    {
+      "name": "working — FE allows an early review request; autopilot never interrupts (divergence-by-design)",
+      "input": { "state": "working", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "idle — same forward gate; autopilot leaves it alone",
+      "input": { "state": "idle", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "wedged — FE keeps the forward gate; autopilot parks for the human",
+      "input": { "state": "wedged", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:wedged"
+    },
+    {
+      "name": "failed — FE keeps the forward gate; autopilot parks for the human",
+      "input": { "state": "failed", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:failed"
+    },
+    {
+      "name": "needs-review, no checks configured",
+      "input": { "state": "needs-review", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "auto:request-review"
+    },
+    {
+      "name": "needs-review, checks configured, never validated",
+      "input": { "state": "needs-review", "review": null, "validate": null, "checksConfigured": true, "blockedOn": [] },
+      "fe": { "verb": "validate", "label": "Validate", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "auto:validate"
+    },
+    {
+      "name": "needs-review, validate passed",
+      "input": { "state": "needs-review", "review": null, "validate": { "passed": true, "atMs": 2000, "failingCount": 0 }, "checksConfigured": true, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "auto:request-review"
+    },
+    {
+      "name": "needs-review, validate failed (plural reason)",
+      "input": { "state": "needs-review", "review": null, "validate": { "passed": false, "atMs": 2000, "failingCount": 2 }, "checksConfigured": true, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": false, "reason": "Fix 2 failing checks", "intent": "neutral", "confirm": false },
+      "autopilot": "human-stop:validate-failing"
+    },
+    {
+      "name": "needs-review, validate failed (singular reason)",
+      "input": { "state": "needs-review", "review": null, "validate": { "passed": false, "atMs": 2000, "failingCount": 1 }, "checksConfigured": true, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": false, "reason": "Fix 1 failing check", "intent": "neutral", "confirm": false },
+      "autopilot": "human-stop:validate-failing"
+    },
+    {
+      "name": "unreviewed clean exit (done, board-derived needs-review upstream) rides the forward ladder",
+      "input": { "state": "done", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "auto:request-review"
+    },
+    {
+      "name": "no checks configured ignores a stale red validate",
+      "input": { "state": "needs-review", "review": null, "validate": { "passed": false, "atMs": 2000, "failingCount": 2 }, "checksConfigured": false, "blockedOn": [] },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "auto:request-review"
+    },
+    {
+      "name": "autopilot-on epic downgrades an AUTO gate to neutral (still enabled, I4)",
+      "input": { "state": "needs-review", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [], "autopilotEnabled": true },
+      "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "neutral", "confirm": false },
+      "autopilot": "auto:request-review"
+    },
+    {
+      "name": "autopilot-on epic NEVER downgrades the human Approve gate",
+      "input": { "state": "in-review", "review": { "state": "requested", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [], "autopilotEnabled": true },
+      "fe": { "verb": "approve", "label": "Approve", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "human-stop:needs-review"
+    }
+  ],
+  "epics": [
+    {
+      "name": "zero tickets — never integrable, even vacuously approved (I7)",
+      "input": { "ticketCount": 0, "integrable": false, "integrated": false, "shipped": false, "allApproved": true, "mergeInProgress": false },
+      "fe": { "verb": "integrate", "label": "Integrate when ready", "enabled": false, "reason": "No tickets to integrate yet.", "intent": "neutral", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "tickets not yet eligible",
+      "input": { "ticketCount": 3, "integrable": false, "integrated": false, "shipped": false, "allApproved": false, "mergeInProgress": false },
+      "fe": { "verb": "integrate", "label": "Integrate when ready", "enabled": false, "reason": "Integration unlocks once every ticket is ready for review.", "intent": "neutral", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "fully approved — the human button and autopilot agree",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": false, "shipped": false, "allApproved": true, "mergeInProgress": false },
+      "fe": { "verb": "integrate", "label": "Integrate & review", "enabled": true, "reason": null, "intent": "primary", "confirm": true },
+      "autopilot": "auto:integrate"
+    },
+    {
+      "name": "lenient-vs-strict: eligible-but-unapproved — the human MAY integrate, autopilot MUST NOT (divergence-by-design, I7)",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": false, "shipped": false, "allApproved": false, "mergeInProgress": false },
+      "fe": { "verb": "integrate", "label": "Integrate & review", "enabled": true, "reason": null, "intent": "primary", "confirm": true },
+      "autopilot": "none"
+    },
+    {
+      "name": "integrated — Ship is ALWAYS the human's (I1)",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": true, "shipped": false, "allApproved": true, "mergeInProgress": false, "baseBranch": "main" },
+      "fe": { "verb": "ship", "label": "Ship to main", "enabled": true, "reason": null, "intent": "primary", "confirm": true },
+      "autopilot": "human-stop:ship"
+    },
+    {
+      "name": "integrated, unknown base branch",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": true, "shipped": false, "allApproved": true, "mergeInProgress": false },
+      "fe": { "verb": "ship", "label": "Ship", "enabled": true, "reason": null, "intent": "primary", "confirm": true },
+      "autopilot": "human-stop:ship"
+    },
+    {
+      "name": "shipped — terminal",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": true, "shipped": true, "allApproved": true, "mergeInProgress": false, "baseBranch": "main" },
+      "fe": { "verb": "ship", "label": "Shipped", "enabled": false, "reason": "Merged into main", "intent": "success", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "merge in progress — top-precedence human stop (I2); the FE input cannot represent it",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": false, "shipped": false, "allApproved": true, "mergeInProgress": true },
+      "fe": null,
+      "autopilot": "human-stop:merge-in-progress"
+    },
+    {
+      "name": "autopilot-on epic downgrades the AUTO Integrate to neutral",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": false, "shipped": false, "allApproved": true, "mergeInProgress": false, "autopilotEnabled": true },
+      "fe": { "verb": "integrate", "label": "Integrate & review", "enabled": true, "reason": null, "intent": "neutral", "confirm": true },
+      "autopilot": "auto:integrate"
+    },
+    {
+      "name": "autopilot-on epic NEVER downgrades Ship",
+      "input": { "ticketCount": 3, "integrable": true, "integrated": true, "shipped": false, "allApproved": true, "mergeInProgress": false, "baseBranch": "main", "autopilotEnabled": true },
+      "fe": { "verb": "ship", "label": "Ship to main", "enabled": true, "reason": null, "intent": "primary", "confirm": true },
+      "autopilot": "human-stop:ship"
+    }
+  ]
+}

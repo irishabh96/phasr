@@ -171,8 +171,11 @@ pub enum TicketState {
     InReview,
     /// `review=changes-requested` — re-opened, carrying the bounce reason.
     QasChangesRequested,
-    /// A cleanly-exited subtask before the derivation folds it to `needs-review`.
-    /// Treated identically to `NeedsReview` here (ready for the forward ladder).
+    /// `review=approved` — the ticket-level TERMINAL state (the FE Done lane),
+    /// OR a cleanly-exited subtask before the derivation folds it to
+    /// `needs-review`. Either way the ladder treats it like `NeedsReview` for
+    /// the forward gates; the approved case short-circuits to Nothing at the
+    /// review check before this state is ever consulted.
     Done,
 }
 
@@ -910,5 +913,189 @@ mod tests {
         assert_eq!(SafeVerb::Validate.as_str(), "validate");
         assert_eq!(SafeVerb::RequestReview.as_str(), "request-review");
         assert_eq!(SafeVerb::Integrate.as_str(), "integrate");
+    }
+
+    // ── Shared gate-ladder parity fixture (spec §3 — "mandatory, HARDENED") ──
+    //
+    // e2e/fixtures/gate-ladder.json is the ONE table both ladders answer to:
+    // this test asserts the `autopilot` half of every row, and the FE suite
+    // (src/lib/deriveNextGate.test.ts) asserts the `fe` half of the SAME rows.
+    // Mutating a row must fail BOTH suites — the anti-drift guarantee. FE-only
+    // fields (`fe`, `integrable`, `baseBranch`, `autopilotEnabled`) are ignored
+    // here; `mergeInProgress`/`allApproved` are Rust-only and ignored there.
+
+    const GATE_LADDER_FIXTURE: &str =
+        include_str!("../../../../e2e/fixtures/gate-ladder.json");
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FixtureReview {
+        state: String,
+        at_ms: i64,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FixtureValidate {
+        passed: bool,
+        at_ms: i64,
+        failing_count: usize,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FixtureTicketInput {
+        state: String,
+        review: Option<FixtureReview>,
+        validate: Option<FixtureValidate>,
+        checks_configured: bool,
+        blocked_on: Vec<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FixtureEpicInput {
+        ticket_count: usize,
+        integrated: bool,
+        shipped: bool,
+        all_approved: bool,
+        merge_in_progress: bool,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct FixtureTicketRow {
+        name: String,
+        input: FixtureTicketInput,
+        autopilot: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct FixtureEpicRow {
+        name: String,
+        input: FixtureEpicInput,
+        autopilot: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        tickets: Vec<FixtureTicketRow>,
+        epics: Vec<FixtureEpicRow>,
+    }
+
+    fn fixture_ticket_state(s: &str) -> TicketState {
+        match s {
+            "blocked" => TicketState::Blocked,
+            "working" => TicketState::Working,
+            "idle" => TicketState::Idle,
+            "wedged" => TicketState::Wedged,
+            "failed" => TicketState::Failed,
+            "needs-review" => TicketState::NeedsReview,
+            "in-review" => TicketState::InReview,
+            "qas-changes-requested" => TicketState::QasChangesRequested,
+            "done" => TicketState::Done,
+            other => panic!("fixture: unknown ticket state `{other}`"),
+        }
+    }
+
+    fn fixture_review_state(s: &str) -> ReviewLadderState {
+        match s {
+            "requested" => ReviewLadderState::Requested,
+            "approved" => ReviewLadderState::Approved,
+            "changes-requested" => ReviewLadderState::ChangesRequested,
+            other => panic!("fixture: unknown review state `{other}`"),
+        }
+    }
+
+    fn fixture_stop_reason(s: &str) -> StopReason {
+        match s {
+            "needs-review" => StopReason::NeedsReview,
+            "changes-requested" => StopReason::ChangesRequested,
+            "validate-failing" => StopReason::ValidateFailing,
+            "wedged" => StopReason::Wedged,
+            "failed" => StopReason::Failed,
+            "ship" => StopReason::Ship,
+            "merge-in-progress" => StopReason::MergeInProgress,
+            other => panic!("fixture: unknown stop reason `{other}`"),
+        }
+    }
+
+    fn fixture_safe_verb(s: &str) -> SafeVerb {
+        match s {
+            "validate" => SafeVerb::Validate,
+            "request-review" => SafeVerb::RequestReview,
+            "integrate" => SafeVerb::Integrate,
+            other => panic!("fixture: unknown safe verb `{other}`"),
+        }
+    }
+
+    #[test]
+    fn gate_ladder_fixture_ticket_rows_match_policy() {
+        let fixture: Fixture =
+            serde_json::from_str(GATE_LADDER_FIXTURE).expect("fixture parses");
+        assert!(!fixture.tickets.is_empty(), "fixture has ticket rows");
+        for row in &fixture.tickets {
+            let state = TicketGateState {
+                state: fixture_ticket_state(&row.input.state),
+                review: row.input.review.as_ref().map(|r| ReviewSnapshot {
+                    state: fixture_review_state(&r.state),
+                    at_ms: r.at_ms,
+                }),
+                validate: row.input.validate.as_ref().map(|v| ValidateSnapshot {
+                    passed: v.passed,
+                    at_ms: v.at_ms,
+                    failing_count: v.failing_count,
+                }),
+                checks_configured: row.input.checks_configured,
+                blocked_on: row.input.blocked_on.clone(),
+            };
+            let expected = match row.autopilot.as_str() {
+                "none" => None,
+                s if s.starts_with("auto:") => {
+                    Some(AutoAction::Auto(fixture_safe_verb(&s["auto:".len()..])))
+                }
+                s if s.starts_with("human-stop:") => Some(AutoAction::HumanStop(
+                    fixture_stop_reason(&s["human-stop:".len()..]),
+                )),
+                other => panic!("fixture: unknown expected action `{other}`"),
+            };
+            assert_eq!(
+                next_auto_action(&state),
+                expected,
+                "ticket fixture row `{}` diverged from the policy ladder",
+                row.name
+            );
+        }
+    }
+
+    #[test]
+    fn gate_ladder_fixture_epic_rows_match_policy() {
+        let fixture: Fixture =
+            serde_json::from_str(GATE_LADDER_FIXTURE).expect("fixture parses");
+        assert!(!fixture.epics.is_empty(), "fixture has epic rows");
+        for row in &fixture.epics {
+            let state = EpicGateState {
+                ticket_count: row.input.ticket_count,
+                all_approved: row.input.all_approved,
+                merge_in_progress: row.input.merge_in_progress,
+                integrated: row.input.integrated,
+                shipped: row.input.shipped,
+            };
+            let expected = match row.autopilot.as_str() {
+                "none" => None,
+                s if s.starts_with("auto:") => {
+                    Some(EpicAction::Auto(fixture_safe_verb(&s["auto:".len()..])))
+                }
+                s if s.starts_with("human-stop:") => Some(EpicAction::HumanStop(
+                    fixture_stop_reason(&s["human-stop:".len()..]),
+                )),
+                other => panic!("fixture: unknown expected action `{other}`"),
+            };
+            assert_eq!(
+                next_epic_action(&state),
+                expected,
+                "epic fixture row `{}` diverged from the policy ladder",
+                row.name
+            );
+        }
     }
 }

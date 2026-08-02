@@ -471,3 +471,126 @@ describe("failingCheckCount", () => {
     expect(failingCheckCount(validateResult({ passed: true }))).toBe(0);
   });
 });
+
+// ── Shared gate-ladder parity fixture (phase5a §3 — "mandatory, HARDENED") ──
+//
+// e2e/fixtures/gate-ladder.json is the ONE table both ladders answer to: this
+// block asserts the `fe` half against `deriveNextGate`, and the Rust policy
+// tests (src-tauri/…/autopilot/policy.rs) assert the `autopilot` half of the
+// SAME rows. Mutating a row must fail BOTH suites — that is the anti-drift
+// guarantee. Rows with `fe: null` are Rust-only (inputs the FE cannot
+// represent, e.g. mergeInProgress).
+
+import { readFileSync } from "node:fs";
+
+interface FixtureGate {
+  verb: string;
+  label: string;
+  enabled: boolean;
+  reason: string | null;
+  intent: string;
+  confirm: boolean;
+}
+
+interface FixtureTicketRow {
+  name: string;
+  input: {
+    state: BoardCardState;
+    review: { state: ReviewRecord["state"]; atMs: number } | null;
+    validate: { passed: boolean; atMs: number; failingCount: number } | null;
+    checksConfigured: boolean;
+    blockedOn: string[];
+    autopilotEnabled?: boolean;
+  };
+  fe: FixtureGate | null;
+}
+
+interface FixtureEpicRow {
+  name: string;
+  input: {
+    ticketCount: number;
+    integrable: boolean;
+    integrated: boolean;
+    shipped: boolean;
+    baseBranch?: string;
+    autopilotEnabled?: boolean;
+  };
+  fe: FixtureGate | null;
+}
+
+// vitest's root is the repo root, and jsdom rewrites `import.meta.url` to a
+// non-file scheme — a cwd-relative read is the stable way to reach the fixture.
+const fixture = JSON.parse(
+  readFileSync("e2e/fixtures/gate-ladder.json", "utf-8"),
+) as { tickets: FixtureTicketRow[]; epics: FixtureEpicRow[] };
+
+/** Adapt a fixture validate slice to the FE ValidateResult (checks synthesized
+ *  so `failingCheckCount` reproduces the fixture's count exactly). */
+function fixtureValidate(
+  v: NonNullable<FixtureTicketRow["input"]["validate"]>,
+): ValidateResult {
+  const failing = Array.from({ length: v.failingCount }, (_, i) => ({
+    name: `check-${i}`,
+    command: `cmd-${i}`,
+    passed: false,
+    exitCode: 1,
+    tailOutput: "",
+  }));
+  const checks = v.passed
+    ? [{ name: "check-0", command: "cmd-0", passed: true, exitCode: 0, tailOutput: "" }]
+    : failing;
+  return { subtaskId: "sub-1", checks, passed: v.passed, ranAtMs: v.atMs };
+}
+
+describe("gate-ladder parity fixture (FE half)", () => {
+  for (const row of fixture.tickets) {
+    if (!row.fe) continue;
+    const expected = row.fe;
+    it(`ticket: ${row.name}`, () => {
+      const g = deriveNextGate({
+        kind: "ticket",
+        state: row.input.state,
+        review: row.input.review
+          ? {
+              subtaskId: "sub-1",
+              state: row.input.review.state,
+              by: "you",
+              comment: null,
+              atMs: row.input.review.atMs,
+              validatePassed: true,
+            }
+          : null,
+        validate: row.input.validate
+          ? fixtureValidate(row.input.validate)
+          : null,
+        checksConfigured: row.input.checksConfigured,
+        blockedOn: row.input.blockedOn,
+        ...(row.input.autopilotEnabled !== undefined
+          ? { autopilotEnabled: row.input.autopilotEnabled }
+          : {}),
+      });
+      expect(g).toEqual(expected);
+    });
+  }
+
+  for (const row of fixture.epics) {
+    if (!row.fe) continue;
+    const expected = row.fe;
+    it(`epic: ${row.name}`, () => {
+      const g = deriveNextGate({
+        kind: "epic",
+        ticketCount: row.input.ticketCount,
+        integrable: row.input.integrable,
+        integrated: row.input.integrated,
+        shipped: row.input.shipped,
+        ...(row.input.baseBranch !== undefined
+          ? { baseBranch: row.input.baseBranch }
+          : {}),
+        ...(row.input.autopilotEnabled !== undefined
+          ? { autopilotEnabled: row.input.autopilotEnabled }
+          : {}),
+      });
+      expect(g).toEqual(expected);
+    });
+  }
+});
