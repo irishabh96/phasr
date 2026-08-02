@@ -573,6 +573,16 @@ pub(crate) async fn ship_epic_inner(
     let lock = repo_locks.for_repository(&parent.repository_id);
     let _guard = lock.lock().await;
     let outcome = blocking_board_git(move || {
+        // Land on the default branch FIRST, then settle phasr's own `.phasr/`
+        // docs there (they live untracked in the main checkout, and since
+        // Phase 6 the integration branch tracks the same paths — git would
+        // otherwise refuse to overwrite them). Ordering matters: the settle
+        // commit must never land on whatever branch happened to be checked
+        // out. `merge_to`'s own checkout is then a no-op.
+        git::checkout_branch(&main_repo, &default_branch)?;
+        if tickets::settle_phasr_docs_in_checkout(&main_repo) {
+            log::info!("ship: committed workflow docs onto {default_branch}");
+        }
         git::merge_to(&main_repo, &default_branch, &integration_branch, strategy)
     })
     .await?;
@@ -2780,6 +2790,101 @@ mod tests {
         // The one-click recovery: abort restores a clean main checkout.
         git::merge_abort(repo_path).unwrap();
         assert_eq!(git::merge_in_progress(repo_path).unwrap(), git::InProgress::None);
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // REGRESSION (found by the Phase 11 real-repo drive, invisible to every
+    // mocked test): phasr scaffolds its OWN `.phasr/` docs into the user's main
+    // checkout as UNTRACKED files, and Ship's clean-tree precheck counted them
+    // as a dirty tree — so Ship failed on EVERY decomposed workflow with
+    // "working tree has uncommitted changes". Since Phase 6 the integration
+    // branch also TRACKS those paths, so the merge itself would then refuse to
+    // overwrite them. Ship must settle its own docs and land.
+    #[tokio::test]
+    async fn ship_epic_lands_with_phasrs_own_untracked_docs_in_the_checkout() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "b\n", "backend work");
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, Some("phasr/backend"), None)
+                .await;
+
+        // Exactly what the decompose gate writes into the MAIN checkout.
+        let epic_docs = repo_path.join(".phasr/epics").join(&parent.id);
+        std::fs::create_dir_all(&epic_docs).unwrap();
+        std::fs::write(epic_docs.join("prd.md"), "# PRD\n").unwrap();
+        assert!(
+            !Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap()
+                .stdout
+                .is_empty(),
+            "the checkout is dirty with phasr's own untracked docs"
+        );
+
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .unwrap();
+        let outcome = ship_epic_inner(
+            &parent.id,
+            "user-a",
+            MergeStrategy::Merge,
+            &workspaces,
+            &repos,
+            &repo_locks,
+        )
+        .await
+        .expect("ship must land despite phasr's own untracked docs");
+        assert!(matches!(outcome, ShipOutcome::Clean { .. }));
+        assert!(repo_path.join("backend.txt").exists(), "the work landed");
+        // The docs are now TRACKED on the default branch — settled, not lost.
+        let tracked = String::from_utf8(
+            Command::new("git")
+                .args(["ls-files", ".phasr"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert!(tracked.contains("prd.md"), "docs settled onto the branch: {tracked}");
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // A genuinely dirty tree (TRACKED modifications) must still refuse — the
+    // relaxed precheck only forgives untracked files.
+    #[tokio::test]
+    async fn ship_epic_still_refuses_a_tracked_dirty_checkout() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "b\n", "backend work");
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, Some("phasr/backend"), None)
+                .await;
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .unwrap();
+
+        // The user has real uncommitted work in a TRACKED file.
+        std::fs::write(repo_path.join("README.md"), "my uncommitted edit\n").unwrap();
+
+        let err = ship_epic_inner(
+            &parent.id,
+            "user-a",
+            MergeStrategy::Merge,
+            &workspaces,
+            &repos,
+            &repo_locks,
+        )
+        .await
+        .expect_err("a tracked-dirty checkout must still block");
+        assert!(err.to_string().contains("uncommitted changes"));
 
         cleanup_integration(repo_path, &parent);
     }

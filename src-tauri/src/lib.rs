@@ -13,6 +13,7 @@ mod pty;
 mod store;
 mod sync;
 mod tickets;
+mod real_loop;
 mod worktree_gc;
 
 use std::path::Path;

@@ -1131,24 +1131,35 @@ pub fn commit_epic_docs_into(
         return Ok(false);
     }
 
+    Ok(stage_and_commit_phasr(
+        worktree,
+        &format!("phasr: workflow docs for {epic_name}"),
+    ))
+}
+
+/// Stage `.phasr/` in `dir` and commit it as `phasr <phasr@local>`, returning
+/// whether a commit landed. Shared by the integrate-time docs commit and the
+/// Ship-time settle below.
+///
+/// Plain `add` — NEVER `-f`: a user who gitignored `.phasr/` chose local-only
+/// docs and we respect it (the add simply stages nothing). `diff --cached
+/// --quiet` exits 0 when nothing is staged, so an unchanged re-run commits
+/// nothing (idempotent).
+fn stage_and_commit_phasr(dir: &Path, message: &str) -> bool {
     let run = |args: &[&str]| -> std::io::Result<std::process::Output> {
         std::process::Command::new("git")
             .args(args)
-            .current_dir(worktree)
+            .current_dir(dir)
             .output()
     };
-    // Plain `add` — NEVER `-f`: a user who gitignored `.phasr/` chose local-only
-    // docs, and we respect it (the add just stages nothing).
     let _ = run(&["add", ".phasr"]);
-    // `diff --cached --quiet` exits 0 when NOTHING is staged → no commit.
     let staged = run(&["diff", "--cached", "--quiet"])
         .map(|o| !o.status.success())
         .unwrap_or(false);
     if !staged {
-        return Ok(false);
+        return false;
     }
-    let message = format!("phasr: workflow docs for {epic_name}");
-    let committed = run(&[
+    run(&[
         "-c",
         "user.name=phasr",
         "-c",
@@ -1158,11 +1169,28 @@ pub fn commit_epic_docs_into(
         "commit",
         "-q",
         "-m",
-        &message,
+        message,
     ])
     .map(|o| o.status.success())
-    .unwrap_or(false);
-    Ok(committed)
+    .unwrap_or(false)
+}
+
+/// Settle phasr's OWN docs in the MAIN checkout before Ship merges into it.
+///
+/// `.phasr/{epics,tickets}/` is scaffolded into the user's main checkout as
+/// UNTRACKED files, and since Phase 6 the integration branch TRACKS those same
+/// paths — so `git merge` would refuse ("untracked working tree files would be
+/// overwritten"). Committing them onto the default branch first is lossless
+/// (whatever the user last edited is what gets committed) and turns a blocked
+/// merge into an ordinary content merge; any genuine divergence then surfaces
+/// as a normal conflict the Ship dialog already handles.
+///
+/// Caller MUST already be on the branch it wants the commit on.
+pub fn settle_phasr_docs_in_checkout(repo_root: &Path) -> bool {
+    if !repo_root.join(".phasr").is_dir() {
+        return false;
+    }
+    stage_and_commit_phasr(repo_root, "phasr: workflow docs")
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {

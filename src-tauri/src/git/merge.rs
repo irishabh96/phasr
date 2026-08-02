@@ -297,8 +297,20 @@ fn resolve_git_dir(cwd: &Path) -> Result<std::path::PathBuf, GitError> {
     }
 }
 
+/// Refuse a merge-to only for TRACKED modifications — `--untracked-files=no`.
+///
+/// It used to use a bare `--porcelain`, which counts untracked (`??`) entries
+/// too. phasr scaffolds its OWN `.phasr/{epics,tickets}/` docs into the user's
+/// main checkout, so that stricter read made phasr's own metadata block Ship
+/// on every decomposed workflow — caught only once a real end-to-end drive ran
+/// against a real clone (the mocked suite returns `{kind:"clean"}`).
+///
+/// Untracked files are not this precheck's business: `git checkout`/`git merge`
+/// refuse on their own, with a precise message, when an untracked file would
+/// actually be overwritten. The precheck exists to turn a confusing
+/// dirty-tracked-tree failure into a clear one, nothing more.
 fn require_clean_worktree(cwd: &Path) -> Result<(), GitError> {
-    let stdout = run_git(cwd, &["status", "--porcelain"])?;
+    let stdout = run_git(cwd, &["status", "--porcelain", "--untracked-files=no"])?;
     if stdout.trim().is_empty() {
         Ok(())
     } else {
@@ -306,6 +318,17 @@ fn require_clean_worktree(cwd: &Path) -> Result<(), GitError> {
             "working tree has uncommitted changes — stash or commit first".into(),
         ))
     }
+}
+
+/// Check out `branch` (resolving `origin/<branch>` when only the remote-tracking
+/// ref exists), leaving the working tree on it. Used by Ship to land on the
+/// default branch BEFORE settling phasr's own docs, so that settle commit can
+/// never land on an unrelated branch.
+pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<(), GitError> {
+    require_clean_worktree(repo_path)?;
+    let resolved = resolve_target(repo_path, branch)?;
+    run_git(repo_path, &["checkout", &resolved])?;
+    Ok(())
 }
 
 fn require_clean_index(cwd: &Path) -> Result<(), GitError> {
@@ -559,15 +582,42 @@ mod tests {
         assert!(dir.path().join("feat.txt").exists());
     }
 
+    // A TRACKED modification is real uncommitted work — refuse, so a merge can
+    // never clobber it.
     #[test]
-    fn merge_to_refuses_dirty_worktree() {
+    fn merge_to_refuses_a_tracked_dirty_worktree() {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
-        std::fs::write(dir.path().join("dirty.txt"), "uncommitted").unwrap();
+        std::fs::write(dir.path().join("README.md"), "edited, not committed\n").unwrap();
         let err = merge_to(dir.path(), "main", "main", MergeStrategy::FastForward).unwrap_err();
         match err {
             GitError::CommandFailed(msg) => assert!(msg.contains("uncommitted")),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // UNTRACKED files do NOT block (this test used to assert the opposite, which
+    // was the bug): phasr scaffolds its own `.phasr/` docs into the user's main
+    // checkout, so counting untracked entries made Ship impossible on every
+    // decomposed workflow. Git itself refuses — precisely — if an untracked file
+    // would actually be overwritten.
+    #[test]
+    fn merge_to_allows_untracked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        checkout(dir.path(), "feature", true);
+        add_commit(dir.path(), "feat.txt", "feat\n", "feature work");
+        checkout(dir.path(), "main", false);
+        std::fs::create_dir_all(dir.path().join(".phasr/epics/e1")).unwrap();
+        std::fs::write(dir.path().join(".phasr/epics/e1/prd.md"), "# PRD\n").unwrap();
+
+        let outcome = merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward)
+            .expect("untracked files must not block a merge");
+        assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+        assert!(dir.path().join("feat.txt").exists());
+        assert!(
+            dir.path().join(".phasr/epics/e1/prd.md").exists(),
+            "the untracked docs are left exactly as they were"
+        );
     }
 }
