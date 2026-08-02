@@ -93,6 +93,10 @@ pub enum ReviewCmdError {
     /// A bounce with no (or a blank) comment — the reason is required (SAFe
     /// iteration authority; the agent reads it on re-work).
     MissingComment,
+    /// Stage B optimistic concurrency: the caller's expected `review.at_ms`
+    /// no longer matches the record on disk — someone (usually the human)
+    /// acted first, and the stale verdict must NOT overwrite theirs.
+    ReviewChanged,
 }
 
 impl From<StoreError> for ReviewCmdError {
@@ -128,6 +132,10 @@ impl std::fmt::Display for ReviewCmdError {
             Self::Board(e) => write!(f, "{e}"),
             Self::NotASubtask(msg) => write!(f, "{msg}"),
             Self::MissingComment => write!(f, "a bounce-back needs a comment explaining what to change"),
+            Self::ReviewChanged => write!(
+                f,
+                "the review changed since this verdict was prepared — reload; nothing was overwritten"
+            ),
         }
     }
 }
@@ -236,6 +244,7 @@ pub async fn resolve_review(
         // A bounce re-engages the producing agent through the live orchestrator
         // (deliver the change request into its PTY / honest stop if it exited).
         Some(&*orchestrator as &(dyn ReworkReengager + Send + Sync)),
+        None,
     )
     .await?;
 
@@ -379,13 +388,26 @@ pub(crate) async fn resolve_review_inner(
     // worklist read test — leaving those byte-identical to the pre-rework behavior.
     // `Send + Sync` so the trait object can be held across the command's `.await`s.
     rework: Option<&(dyn ReworkReengager + Send + Sync)>,
+    // Stage B optimistic concurrency (§0.5): the `review.at_ms` this verdict
+    // was prepared against. `Some` on the QAS path (the reviewer's grant pins
+    // the review it was spawned FOR); a mismatch means someone — usually the
+    // human — acted first, and the stale verdict is REJECTED, never merged.
+    // `None` (every human/legacy path) skips the check — back-compatible.
+    expected_at_ms: Option<i64>,
 ) -> Result<Board, ReviewCmdError> {
     let parent_id = subtask_parent(subtask)?;
     let repo_root = owned_repo_root(repositories, &subtask.repository_id).await?;
 
+    let current = read_review_record(&repo_root, &subtask.id)?;
+    if let Some(expected) = expected_at_ms {
+        if current.as_ref().map(|r| r.at_ms) != Some(expected) {
+            return Err(ReviewCmdError::ReviewChanged);
+        }
+    }
+
     // Carry the last known validate snapshot forward (from the existing review if
     // present, else the current validate.json) so it isn't lost on resolve.
-    let validate_passed = read_review_record(&repo_root, &subtask.id)?
+    let validate_passed = current
         .map(|r| r.validate_passed)
         .unwrap_or_else(|| read_validate_passed(&repo_root, &subtask.id));
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -715,6 +737,7 @@ mod tests {
         resolve_review_inner(
             frontend, "user-a", "qas-agent", ReviewDecision::Bounce, Some("tighten the diff"),
             &workspaces, &board, &repos, &registry, None,
+            None,
         )
         .await
         .unwrap();
@@ -758,6 +781,7 @@ mod tests {
 
         resolve_review_inner(
             frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry, None,
+            None,
         )
         .await
         .unwrap();
@@ -785,6 +809,7 @@ mod tests {
             &repos,
             &registry,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -811,6 +836,7 @@ mod tests {
         assert!(matches!(
             resolve_review_inner(
                 frontend, "user-a", "you", ReviewDecision::Bounce, None, &workspaces, &board, &repos, &registry, None,
+                None,
             )
             .await,
             Err(ReviewCmdError::MissingComment)
@@ -818,6 +844,7 @@ mod tests {
         assert!(matches!(
             resolve_review_inner(
                 frontend, "user-a", "you", ReviewDecision::Bounce, Some("   "), &workspaces, &board, &repos, &registry, None,
+                None,
             )
             .await,
             Err(ReviewCmdError::MissingComment)
@@ -852,6 +879,7 @@ mod tests {
         // Approve the frontend; write a validate.json for the backend by hand.
         resolve_review_inner(
             frontend, "user-a", "you", ReviewDecision::Approve, None, &workspaces, &board, &repos, &registry, None,
+            None,
         )
         .await
         .unwrap();
@@ -934,6 +962,7 @@ mod tests {
             &repos,
             &registry,
             Some(&orchestrator as &(dyn ReworkReengager + Send + Sync)),
+            None,
         )
         .await
         .unwrap();
@@ -996,6 +1025,7 @@ mod tests {
             &repos,
             &registry,
             Some(&orchestrator as &(dyn ReworkReengager + Send + Sync)),
+            None,
         )
         .await
         .unwrap();

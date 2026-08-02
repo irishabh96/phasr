@@ -771,6 +771,14 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { kind: "clean", message: "Merged cleanly" };
       case "start_ticket":
         return null;
+      case "set_require_human_approval": {
+        // Mirror the real command: the refreshed board carries the new flag.
+        const b = makeBoard(a?.parentId ?? "epic-1");
+        return {
+          ...b,
+          parent: { ...b.parent, requireHumanApproval: !!a?.required },
+        };
+      }
       case "read_epic_brief":
         return {
           parentId: a?.parentId ?? "epic-1",

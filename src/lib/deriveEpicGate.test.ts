@@ -33,6 +33,8 @@ function subtask(overrides: Partial<Workspace>): Workspace {
     parentId: "parent-1",
     role: "frontend",
     autopilotEnabled: false,
+    requireHumanApproval: true,
+    reviewsSubtaskId: null,
     updatedAt: iso(0),
     ...overrides,
   };

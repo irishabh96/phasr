@@ -37,7 +37,7 @@ fn run() -> i32 {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() {
         eprintln!(
-            "usage: phasr <request-review|comment|new-ticket|update-status|validate> [options]"
+            "usage: phasr <request-review|comment|new-ticket|update-status|validate|approve|request-changes> [options]"
         );
         return 2;
     }
@@ -64,6 +64,9 @@ fn run() -> i32 {
             "--prompt" => Some("prompt"),
             "--after" => Some("after"),
             "--body" => Some("body"),
+            // Stage B reviewer verbs: the bounce reason (`request-changes`)
+            // and an optional approval note.
+            "--comment" => Some("comment"),
             _ => None,
         };
         if let Some(key) = arg_key {

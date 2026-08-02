@@ -227,6 +227,25 @@ mod unix_impl {
             ));
         }
 
+        // 2.5 Stage B kind gate (§0.5): a token speaks ONLY its kind's verbs.
+        //     A fooled producer can't approve itself; a reviewer can't grow
+        //     the epic or publish contracts. Structural, before any routing.
+        let is_reviewer_verb = matches!(request.verb.as_str(), "approve" | "request-changes");
+        match (grant.kind, is_reviewer_verb) {
+            (crate::orchestrator::cli_tokens::GrantKind::Producer, true) => {
+                return Err(
+                    "not authorized: a producer token cannot deliver review verdicts".to_string(),
+                );
+            }
+            (crate::orchestrator::cli_tokens::GrantKind::Reviewer, false) => {
+                return Err(
+                    "not authorized: a reviewer token speaks only approve / request-changes"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+
         // 3. Route. Each verb reuses the SAME `_inner` the Tauri command uses, then
         //    announces the epic so the board re-fetches live.
         let result = match request.verb.as_str() {
@@ -293,6 +312,92 @@ mod unix_impl {
                 )
                 .map_err(|e| e.to_string())?;
                 serde_json::to_value(comment).map_err(|e| e.to_string())?
+            }
+            // ── Stage B reviewer verbs (§0.5) ────────────────────────────
+            // The verdict path: scoped to the ONE review the token was minted
+            // for, re-verified server-side (I6 — a red validate can't be
+            // approved past), and concurrency-checked (`expected_at_ms`) so a
+            // human who acted first always wins. Attributed "qas-agent",
+            // never "you".
+            "approve" | "request-changes" => {
+                let scope = grant
+                    .reviews
+                    .as_ref()
+                    .ok_or_else(|| "not authorized: reviewer token carries no review scope".to_string())?;
+                let reviewed = server
+                    .workspaces
+                    .get_for_user(&scope.subtask_id, &grant.user_id)
+                    .await
+                    .map_err(|_| "reviewed ticket not found".to_string())?;
+
+                let decision = if request.verb == "approve" {
+                    // I6: the verdict is re-verified HERE, not trusted from the
+                    // reviewer — checks configured + a non-passing (or absent)
+                    // validate can never be approved past by a fooled agent.
+                    let checks_configured = server
+                        .run_commands
+                        .list_by_repository_for_user(&reviewed.repository_id, &grant.user_id)
+                        .await
+                        .map(|cmds| cmds.iter().any(|c| c.run_in_validate))
+                        .unwrap_or(false);
+                    if checks_configured {
+                        let repo_root =
+                            owned_repo_root(&server.repositories, &reviewed.repository_id).await?;
+                        let passed = crate::tickets::read_gate_file(
+                            std::path::Path::new(&repo_root),
+                            &reviewed.id,
+                            crate::tickets::GateFile::Validate,
+                        )
+                        .ok()
+                        .flatten()
+                        .and_then(|raw| {
+                            serde_json::from_str::<crate::orchestrator::ValidateResult>(&raw).ok()
+                        })
+                        .map(|v| v.passed)
+                        .unwrap_or(false);
+                        if !passed {
+                            return Err(
+                                "approve rejected (I6): this repo has validate checks and the \
+                                 ticket's latest validate is not passing"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    crate::commands::review::ReviewDecision::Approve
+                } else {
+                    crate::commands::review::ReviewDecision::Bounce
+                };
+                let comment = request
+                    .args
+                    .get("comment")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+
+                crate::commands::review::resolve_review_inner(
+                    &reviewed,
+                    &grant.user_id,
+                    "qas-agent",
+                    decision,
+                    comment,
+                    &server.workspaces,
+                    &server.board,
+                    &server.repositories,
+                    &server.write_registry,
+                    // No rework seam over the socket: a QAS bounce parks the
+                    // ticket for the human ladder (v1 never auto-re-spawns).
+                    None,
+                    // The concurrency base: the exact review this reviewer was
+                    // spawned FOR. Stale → ReviewChanged, nothing overwritten.
+                    Some(scope.review_at_ms),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                serde_json::json!({
+                    "verb": request.verb,
+                    "subtaskId": scope.subtask_id,
+                    "by": "qas-agent",
+                })
             }
             "validate" => {
                 let result = crate::commands::validate::run_and_persist_validate(
@@ -546,6 +651,221 @@ mod unix_impl {
             .await;
             assert!(!inactive.ok);
             assert!(inactive.error.unwrap().contains("not active"));
+        }
+
+        // ── Stage B (§0.5): the reviewer verbs + the kind gate ──────────────
+
+        /// Spawn a REVIEWER row + its scoped token for `reviewed_id`, after
+        /// putting that ticket into review at `at_ms`.
+        async fn reviewer_token(
+            server: &Arc<CliServer>,
+            reviewed_id: &str,
+            parent_id: &str,
+            at_ms: i64,
+        ) -> String {
+            let reviewed = server.workspaces.get(reviewed_id).await.unwrap();
+            let mut reviewer = crate::domain::Workspace::new(
+                reviewed.repository_id.clone(),
+                "QAS review".into(),
+                "claude".into(),
+            );
+            reviewer.workspace_kind = crate::domain::WorkspaceKind::Reviewer;
+            reviewer.reviews_subtask_id = Some(reviewed_id.to_string());
+            server
+                .workspaces
+                .insert_for_user(&reviewer, "user-a")
+                .await
+                .unwrap();
+            server
+                .workspaces
+                .update(
+                    &reviewer.id,
+                    WorkspaceUpdate {
+                        status: Some(WorkspaceStatus::Running),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            server
+                .tokens
+                .mint_reviewer(&reviewer.id, "user-a", parent_id, reviewed_id, at_ms)
+        }
+
+        /// Put `subtask_id` into review and return the written `review.at_ms`.
+        async fn request_review_at(server: &Arc<CliServer>, subtask_id: &str) -> i64 {
+            let subtask = server.workspaces.get(subtask_id).await.unwrap();
+            crate::commands::review::request_review_inner(
+                &subtask,
+                "user-a",
+                "agent",
+                &server.workspaces,
+                &server.board,
+                &server.repositories,
+                &server.write_registry,
+                &server.scheduler_config,
+            )
+            .await
+            .unwrap();
+            let repo = server
+                .repositories
+                .get(&subtask.repository_id)
+                .await
+                .unwrap();
+            let root = repo.local_path.unwrap();
+            let raw = crate::tickets::read_gate_file(
+                std::path::Path::new(&root),
+                subtask_id,
+                crate::tickets::GateFile::Review,
+            )
+            .unwrap()
+            .unwrap();
+            serde_json::from_str::<crate::commands::review::ReviewRecord>(&raw)
+                .unwrap()
+                .at_ms
+        }
+
+        // A reviewer token approves the ticket it was spawned for, attributed
+        // "qas-agent" — never the human "you".
+        #[tokio::test]
+        async fn reviewer_token_approves_its_ticket_as_qas_agent() {
+            let (server, subtask_id, parent_id, dir) = running_board().await;
+            let sock = dir.path().join("phasr.sock");
+            let listener = bind(&sock).unwrap();
+            tokio::spawn(serve(listener, server.clone()));
+
+            let at_ms = request_review_at(&server, &subtask_id).await;
+            let token = reviewer_token(&server, &subtask_id, &parent_id, at_ms).await;
+
+            let res = round_trip(
+                &sock,
+                serde_json::json!({ "token": token, "verb": "approve", "args": {} }),
+            )
+            .await;
+            assert!(res.ok, "approve failed: {:?}", res.error);
+
+            let repo_root = server
+                .repositories
+                .get(&server.workspaces.get(&subtask_id).await.unwrap().repository_id)
+                .await
+                .unwrap()
+                .local_path
+                .unwrap();
+            let raw = crate::tickets::read_gate_file(
+                std::path::Path::new(&repo_root),
+                &subtask_id,
+                crate::tickets::GateFile::Review,
+            )
+            .unwrap()
+            .unwrap();
+            let record: crate::commands::review::ReviewRecord =
+                serde_json::from_str(&raw).unwrap();
+            assert!(matches!(
+                record.state,
+                crate::commands::review::ReviewState::Approved
+            ));
+            assert_eq!(record.by, "qas-agent", "never masked as the human");
+        }
+
+        // The kind gate is structural in BOTH directions: a producer token
+        // can't deliver a verdict, and a reviewer token can't grow the epic.
+        #[tokio::test]
+        async fn the_grant_kind_gate_rejects_cross_kind_verbs() {
+            let (server, subtask_id, parent_id, dir) = running_board().await;
+            let sock = dir.path().join("phasr.sock");
+            let listener = bind(&sock).unwrap();
+            tokio::spawn(serve(listener, server.clone()));
+
+            let producer = server.tokens.mint(&subtask_id, "user-a", &parent_id);
+            let denied = round_trip(
+                &sock,
+                serde_json::json!({ "token": producer, "verb": "approve", "args": {} }),
+            )
+            .await;
+            assert!(!denied.ok);
+            assert!(
+                denied.error.unwrap().contains("cannot deliver review verdicts"),
+                "a fooled producer must never approve itself"
+            );
+
+            let at_ms = request_review_at(&server, &subtask_id).await;
+            let reviewer = reviewer_token(&server, &subtask_id, &parent_id, at_ms).await;
+            let denied = round_trip(
+                &sock,
+                serde_json::json!({
+                    "token": reviewer,
+                    "verb": "new-ticket",
+                    "args": { "role": "docs", "prompt": "write docs" }
+                }),
+            )
+            .await;
+            assert!(!denied.ok);
+            assert!(denied
+                .error
+                .unwrap()
+                .contains("speaks only approve / request-changes"));
+        }
+
+        // Optimistic concurrency: if the HUMAN resolves first, the reviewer's
+        // stale verdict is rejected — their decision is never overwritten.
+        #[tokio::test]
+        async fn a_human_who_acts_first_beats_a_stale_qas_verdict() {
+            let (server, subtask_id, parent_id, dir) = running_board().await;
+            let sock = dir.path().join("phasr.sock");
+            let listener = bind(&sock).unwrap();
+            tokio::spawn(serve(listener, server.clone()));
+
+            let at_ms = request_review_at(&server, &subtask_id).await;
+            let token = reviewer_token(&server, &subtask_id, &parent_id, at_ms).await;
+
+            // The human bounces while the reviewer is still reading.
+            let subtask = server.workspaces.get(&subtask_id).await.unwrap();
+            crate::commands::review::resolve_review_inner(
+                &subtask,
+                "user-a",
+                "you",
+                crate::commands::review::ReviewDecision::Bounce,
+                Some("not yet — tighten the error handling"),
+                &server.workspaces,
+                &server.board,
+                &server.repositories,
+                &server.write_registry,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let stale = round_trip(
+                &sock,
+                serde_json::json!({ "token": token, "verb": "approve", "args": {} }),
+            )
+            .await;
+            assert!(!stale.ok, "a stale verdict must not land");
+            assert!(stale.error.unwrap().contains("review changed"));
+
+            // The human's decision stands, untouched.
+            let repo_root = server
+                .repositories
+                .get(&subtask.repository_id)
+                .await
+                .unwrap()
+                .local_path
+                .unwrap();
+            let raw = crate::tickets::read_gate_file(
+                std::path::Path::new(&repo_root),
+                &subtask_id,
+                crate::tickets::GateFile::Review,
+            )
+            .unwrap()
+            .unwrap();
+            let record: crate::commands::review::ReviewRecord =
+                serde_json::from_str(&raw).unwrap();
+            assert!(matches!(
+                record.state,
+                crate::commands::review::ReviewState::ChangesRequested
+            ));
+            assert_eq!(record.by, "you");
         }
 
         // `new-ticket` over the socket grows the token's OWN epic and returns the

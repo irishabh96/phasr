@@ -44,6 +44,28 @@ pub struct CliGrant {
     pub subtask_id: String,
     pub user_id: String,
     pub parent_id: String,
+    /// Stage B (§0.5): what this token's holder IS. Producer tokens speak the
+    /// five producer verbs; Reviewer tokens speak ONLY approve /
+    /// request-changes. Cross-kind verbs are rejected at dispatch, so a fooled
+    /// producer can't approve itself and a reviewer can't grow the epic.
+    pub kind: GrantKind,
+    /// Reviewer-only: the ticket under review + the `review.at_ms` the
+    /// reviewer was spawned FOR. The at_ms is the optimistic-concurrency base:
+    /// a verdict lands only if the review is UNCHANGED since the spawn (a
+    /// human acting first wins, the stale QAS verdict is rejected).
+    pub reviews: Option<ReviewerScope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantKind {
+    Producer,
+    Reviewer,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewerScope {
+    pub subtask_id: String,
+    pub review_at_ms: i64,
 }
 
 /// The two runtime paths the scheduler injects into a spawned subtask's env so
@@ -84,6 +106,39 @@ impl CliTokenRegistry {
                 subtask_id: subtask_id.to_string(),
                 user_id: user_id.to_string(),
                 parent_id: parent_id.to_string(),
+                kind: GrantKind::Producer,
+                reviews: None,
+            },
+        );
+        token
+    }
+
+    /// Mint a Stage B REVIEWER token: `reviewer_id` is the reviewer's own
+    /// workspace row (liveness-gated at dispatch like any agent); the scope
+    /// pins the reviewed ticket AND the exact `review.at_ms` the verdict is
+    /// valid against. Same replace-on-remint semantics as `mint`.
+    pub fn mint_reviewer(
+        &self,
+        reviewer_id: &str,
+        user_id: &str,
+        parent_id: &str,
+        reviewed_subtask_id: &str,
+        review_at_ms: i64,
+    ) -> String {
+        let token = Uuid::new_v4().to_string();
+        let mut guard = self.tokens.lock();
+        guard.retain(|_, grant| grant.subtask_id != reviewer_id);
+        guard.insert(
+            token.clone(),
+            CliGrant {
+                subtask_id: reviewer_id.to_string(),
+                user_id: user_id.to_string(),
+                parent_id: parent_id.to_string(),
+                kind: GrantKind::Reviewer,
+                reviews: Some(ReviewerScope {
+                    subtask_id: reviewed_subtask_id.to_string(),
+                    review_at_ms,
+                }),
             },
         );
         token

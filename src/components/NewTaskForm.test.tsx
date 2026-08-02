@@ -61,6 +61,8 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     parentId: null,
     role: null,
     autopilotEnabled: false,
+    requireHumanApproval: true,
+    reviewsSubtaskId: null,
     updatedAt: "2026-01-01T00:00:01Z",
     ...overrides,
   };

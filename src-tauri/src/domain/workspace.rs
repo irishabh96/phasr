@@ -75,6 +75,12 @@ pub enum WorkspaceKind {
     /// One agent run inside a decomposition. A real PTY agent exactly like
     /// `Agent`, but tied to a `parent_id` + `role`. Board state, never synced.
     Subtask,
+    /// A Stage B QAS reviewer (spec §0.5): a real PTY agent spawned by the
+    /// autopilot driver to review ONE ticket (`reviews_subtask_id`). NOT a
+    /// board card (`parent_id` stays NULL), owns no branch/worktree of its
+    /// own, and is excluded from every integrate/worklist/sidebar surface.
+    /// Local-only, never synced.
+    Reviewer,
 }
 
 impl WorkspaceKind {
@@ -84,6 +90,7 @@ impl WorkspaceKind {
             Self::Local => "local",
             Self::Parent => "parent",
             Self::Subtask => "subtask",
+            Self::Reviewer => "reviewer",
         }
     }
 
@@ -93,6 +100,7 @@ impl WorkspaceKind {
             "local" => Self::Local,
             "parent" => Self::Parent,
             "subtask" => Self::Subtask,
+            "reviewer" => Self::Reviewer,
             _ => return None,
         })
     }
@@ -109,7 +117,7 @@ impl WorkspaceKind {
     /// honest status. `Parent` (no PTY) and `Local` (no liveness model) are
     /// excluded.
     pub fn runs_agent(self) -> bool {
-        matches!(self, Self::Agent | Self::Subtask)
+        matches!(self, Self::Agent | Self::Subtask | Self::Reviewer)
     }
 }
 
@@ -154,6 +162,14 @@ pub struct Workspace {
     /// rows are never synced (the `workspace_kind='agent'` PUSH filter), so this
     /// needs no sync change. Defaults `false` (opt-in per epic).
     pub autopilot_enabled: bool,
+    /// Stage B (§0.5): when FALSE on a `parent`, the autopilot driver spawns a
+    /// QAS reviewer for each review-requested ticket instead of parking at
+    /// "Needs you: review". DEFAULTS TRUE — hands-off is an explicit per-epic
+    /// opt-out of the human gate; Ship stays human regardless (migration 0017).
+    pub require_human_approval: bool,
+    /// Set only on a `reviewer` row: the ticket this QAS agent reviews
+    /// (migration 0017). `None` on every other kind.
+    pub reviews_subtask_id: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -181,6 +197,8 @@ impl Workspace {
             shipped_at: None,
             interrupted_at: None,
             autopilot_enabled: false,
+            require_human_approval: true,
+            reviews_subtask_id: None,
             updated_at: now,
         }
     }

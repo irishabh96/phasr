@@ -225,6 +225,9 @@ async fn list_worklist_inner(
                 // Unreachable (the `parent_id IS NULL` filter drops subtasks);
                 // matched exhaustively so a new kind can't silently slip through.
                 WorkspaceKind::Subtask => {}
+                // A Stage B QAS reviewer is backstage machinery, never a
+                // worklist row — its verdict lands on the TICKET it reviews.
+                WorkspaceKind::Reviewer => {}
             }
         }
     }
@@ -530,6 +533,7 @@ mod tests {
             &board,
             &repos,
             &registry,
+            None,
             None,
         )
         .await

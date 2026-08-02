@@ -103,6 +103,8 @@ function mockWs(overrides: Partial<Workspace> & { id: string }): Workspace {
     parentId: "parent-1",
     role: null,
     autopilotEnabled: false,
+    requireHumanApproval: true,
+    reviewsSubtaskId: null,
     updatedAt: isoAgo(0),
     ...overrides,
   };

@@ -20,6 +20,12 @@
       "autopilot": "human-stop:needs-review"
     },
     {
+      "name": "STAGE B: in review with the human gate OFF — autopilot spawns a QAS reviewer; the FE still offers the human Approve (I4: never a dead end)",
+      "input": { "state": "in-review", "review": { "state": "requested", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [], "requireHumanApproval": false },
+      "fe": { "verb": "approve", "label": "Approve", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "agent:spawn-reviewer"
+    },
+    {
       "name": "raw review=requested before the state folds (dual check)",
       "input": { "state": "idle", "review": { "state": "requested", "atMs": 1000 }, "validate": null, "checksConfigured": false, "blockedOn": [] },
       "fe": { "verb": "approve", "label": "Approve", "enabled": true, "reason": null, "intent": "primary", "confirm": false },

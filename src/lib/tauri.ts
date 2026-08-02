@@ -362,6 +362,11 @@ export const tauri = {
   // for the halted banner.
   setAutopilot: (parentId: string, enabled: boolean) =>
     invoke<BoardState>("set_autopilot", { parentId, enabled }),
+  // Stage B (§0.5): the per-workflow HUMAN review gate. `required: true` is the
+  // default on every workflow (Stage A exactly); `false` opts this workflow
+  // into QAS auto-review. Ship stays human either way.
+  setRequireHumanApproval: (parentId: string, required: boolean) =>
+    invoke<BoardState>("set_require_human_approval", { parentId, required }),
   setAutopilotKillSwitch: (halted: boolean) =>
     invoke<void>("set_autopilot_kill_switch", { halted }),
   getAutopilotState: () =>

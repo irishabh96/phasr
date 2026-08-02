@@ -8,6 +8,7 @@ import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { EpicBriefDialog } from "@/components/board/EpicBriefDialog";
 import { AutopilotToggle } from "@/components/board/AutopilotToggle";
+import { ReviewGateToggle } from "@/components/board/ReviewGateToggle";
 import { NextGateButton } from "@/components/board/NextGateButton";
 import { IntegrationDiff } from "@/components/board/IntegrationDiff";
 import { deriveNextGate, type NextGate } from "@/lib/deriveNextGate";
@@ -16,7 +17,10 @@ import {
   isIntegrationConflict,
   useIntegrateParent,
 } from "@/lib/hooks/useBoard";
-import { useSetAutopilot } from "@/lib/hooks/useAutopilot";
+import {
+  useSetAutopilot,
+  useSetRequireHumanApproval,
+} from "@/lib/hooks/useAutopilot";
 import { useGitPushDefaultBranch } from "@/lib/hooks/useGit";
 import { useOpenPullRequest } from "@/lib/hooks/useWorkspaces";
 import { useRepository } from "@/lib/hooks/useRepositories";
@@ -54,6 +58,7 @@ export function BoardParentHeader({
   const queryClient = useQueryClient();
   const integrate = useIntegrateParent(board.parent.id);
   const setAutopilot = useSetAutopilot(board.parent.id);
+  const setReviewGate = useSetRequireHumanApproval(board.parent.id);
   const pushMain = useGitPushDefaultBranch(board.parent.repositoryId);
   const openPr = useOpenPullRequest();
   const { data: repository } = useRepository(board.parent.repositoryId);
@@ -254,6 +259,23 @@ export function BoardParentHeader({
             </GlassTooltip>
           </>
         ) : null}
+        {/* Stage B: who approves. Only meaningful while autopilot drives. */}
+        {autopilotEnabled && (
+          <ReviewGateToggle
+            required={board.parent.requireHumanApproval}
+            pending={setReviewGate.isPending}
+            onChange={(next) =>
+              setReviewGate.mutate(next, {
+                onError: (err) =>
+                  showToast({
+                    title: "Couldn't change the review gate",
+                    intent: "error",
+                    message: humanizeError(err),
+                  }),
+              })
+            }
+          />
+        )}
         <NextGateButton
           gate={headerGate}
           size="sm"

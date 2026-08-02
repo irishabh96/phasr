@@ -60,6 +60,8 @@ function subtask(overrides: Partial<Workspace> & { id: string }): Workspace {
     parentId: "epic-1",
     role: "frontend",
     autopilotEnabled: false,
+    requireHumanApproval: true,
+    reviewsSubtaskId: null,
     updatedAt: iso(0),
     ...overrides,
   };

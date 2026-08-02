@@ -26,6 +26,9 @@ pub struct WorkspaceUpdate {
     /// Autopilot per-epic toggle (migration 0015). Local-only; set by
     /// `set_autopilot`.
     pub autopilot_enabled: Option<bool>,
+    /// Stage B human gate (migration 0017). Local-only; set by
+    /// `set_require_human_approval`. Defaults ON at insert.
+    pub require_human_approval: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -83,7 +86,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND parent_id IS NULL AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -106,7 +109,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND user_id = ? AND parent_id IS NULL AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -131,7 +134,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -142,6 +145,30 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
+    /// Stage B: the ONE live QAS reviewer for a ticket, if any — the driver's
+    /// spawn dedup ("one active reviewer per ticket") and the resolution
+    /// cleanup both key on this.
+    pub async fn find_active_reviewer(
+        &self,
+        reviewed_subtask_id: &str,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
+                    branch, worktree_path, exit_code, parent_id, role,
+                    created_at, started_at, finished_at, archived_at, interrupted_at,
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
+             FROM workspaces
+             WHERE workspace_kind = 'reviewer' AND reviews_subtask_id = ?
+               AND status = 'running' AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(reviewed_subtask_id)
+        .fetch_optional(&self.db)
+        .await?;
+        row.as_ref().map(row_to_workspace).transpose()
+    }
+
     /// The subtasks of one `parent`, oldest first. Backs `BoardRepo::get_board`
     /// and the scheduler's per-parent ready/blocked evaluation.
     pub async fn list_by_parent(&self, parent_id: &str) -> Result<Vec<Workspace>, StoreError> {
@@ -149,7 +176,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE parent_id = ? AND deleted_at IS NULL
              ORDER BY created_at ASC",
@@ -170,7 +197,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE parent_id = ? AND user_id = ? AND deleted_at IS NULL
              ORDER BY created_at ASC",
@@ -190,7 +217,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE status = ? AND deleted_at IS NULL
              ORDER BY updated_at DESC",
@@ -214,7 +241,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE workspace_kind = 'parent' AND deleted_at IS NULL
              ORDER BY created_at DESC",
@@ -229,7 +256,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -250,7 +277,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
         )
@@ -286,7 +313,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND workspace_kind = 'local' AND deleted_at IS NULL
              LIMIT 1",
@@ -316,7 +343,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -343,7 +370,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -376,7 +403,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE parent_id = ? AND role = ? AND workspace_kind = 'subtask'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -405,7 +432,7 @@ impl WorkspaceRepo {
             "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
                     branch, worktree_path, exit_code, parent_id, role,
                     created_at, started_at, finished_at, archived_at, interrupted_at,
-                    autopilot_enabled, shipped_at, updated_at
+                    autopilot_enabled, require_human_approval, reviews_subtask_id, shipped_at, updated_at
              FROM workspaces
              WHERE parent_id = ? AND role = ? AND user_id = ? AND workspace_kind = 'subtask'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
@@ -476,6 +503,9 @@ impl WorkspaceRepo {
         if let Some(autopilot_enabled) = patch.autopilot_enabled {
             current.autopilot_enabled = autopilot_enabled;
         }
+        if let Some(require_human_approval) = patch.require_human_approval {
+            current.require_human_approval = require_human_approval;
+        }
         current.updated_at = Utc::now();
 
         sqlx::query(
@@ -483,7 +513,8 @@ impl WorkspaceRepo {
                 name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 started_at = ?, finished_at = ?, archived_at = ?, shipped_at = ?,
-                interrupted_at = ?, autopilot_enabled = ?, updated_at = ?,
+                interrupted_at = ?, autopilot_enabled = ?, require_human_approval = ?,
+                updated_at = ?,
                 dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
              WHERE id = ?",
         )
@@ -501,6 +532,7 @@ impl WorkspaceRepo {
         .bind(current.shipped_at.map(|dt| dt.to_rfc3339()))
         .bind(current.interrupted_at.map(|dt| dt.to_rfc3339()))
         .bind(current.autopilot_enabled as i64)
+        .bind(current.require_human_approval as i64)
         .bind(current.updated_at.to_rfc3339())
         .bind(id)
         .execute(&self.db)
@@ -601,9 +633,9 @@ where
             id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
             branch, worktree_path, exit_code, parent_id, role,
             created_at, started_at, finished_at, archived_at, shipped_at, interrupted_at,
-            autopilot_enabled, updated_at,
+            autopilot_enabled, require_human_approval, reviews_subtask_id, updated_at,
             synced_at, dirty
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
     )
     .bind(&workspace.id)
     .bind(user_id)
@@ -626,6 +658,8 @@ where
     .bind(workspace.shipped_at.map(|dt| dt.to_rfc3339()))
     .bind(workspace.interrupted_at.map(|dt| dt.to_rfc3339()))
     .bind(workspace.autopilot_enabled as i64)
+    .bind(workspace.require_human_approval as i64)
+    .bind(&workspace.reviews_subtask_id)
     .bind(workspace.updated_at.to_rfc3339())
     .bind(dirty)
     .execute(executor)
@@ -677,6 +711,8 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         shipped_at: parse_optional_timestamp(row.try_get("shipped_at")?, "shipped_at")?,
         interrupted_at: parse_optional_timestamp(row.try_get("interrupted_at")?, "interrupted_at")?,
         autopilot_enabled: row.try_get::<i64, _>("autopilot_enabled")? != 0,
+        require_human_approval: row.try_get::<i64, _>("require_human_approval")? != 0,
+        reviews_subtask_id: row.try_get("reviews_subtask_id")?,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,
     })
 }

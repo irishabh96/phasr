@@ -33,7 +33,12 @@ export interface Workspace {
    * enum (`domain/workspace.rs`). Progressive disclosure: `parent`/`subtask`
    * rows never appear in the flat sidebar list — the board is their home.
    */
-  workspaceKind: "agent" | "local" | "parent" | "subtask";
+  /**
+   * `reviewer` is a Stage B QAS agent (spec §0.5): backstage machinery, NOT a
+   * board card — it carries `reviewsSubtaskId`, no `parentId`, and is filtered
+   * out of the sidebar/worklist/board surfaces.
+   */
+  workspaceKind: "agent" | "local" | "parent" | "subtask" | "reviewer";
   name: string;
   prompt: string | null;
   agent: Agent | null;
@@ -84,6 +89,16 @@ export interface Workspace {
    * "Autopilot driving" instead of masquerading as coral "Needs you".
    */
   autopilotEnabled: boolean;
+  /**
+   * Stage B (§0.5): the per-workflow human review gate. TRUE (the default on
+   * every workflow) keeps Approve a human decision — Stage A exactly. FALSE is
+   * the explicit hands-off opt-out: autopilot spawns a QAS reviewer per
+   * requested review. Ship stays human regardless. Meaningful only on a
+   * `parent`; LOCAL-ONLY (migration 0017).
+   */
+  requireHumanApproval: boolean;
+  /** Set only on a `reviewer` row: the ticket this QAS agent reviews. */
+  reviewsSubtaskId: string | null;
   updatedAt: string;
 }
 

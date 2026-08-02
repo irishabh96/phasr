@@ -39,6 +39,8 @@ function boardRow(over: Record<string, unknown>) {
     parentId: "epic-1",
     role: null,
     autopilotEnabled: false,
+    requireHumanApproval: true,
+    reviewsSubtaskId: null,
     updatedAt: NOW,
     ...over,
   };

@@ -63,6 +63,8 @@ function ws(overrides: Partial<Workspace> & { id: string }): Workspace {
     parentId: "epic-1",
     role: null,
     autopilotEnabled: false,
+    requireHumanApproval: true,
+    reviewsSubtaskId: null,
     updatedAt: iso(0),
     ...overrides,
   };

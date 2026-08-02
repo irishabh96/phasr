@@ -125,9 +125,9 @@ pub struct TaskTerminalSubscription {
 /// at boot via `with_cli`); `None` under `cargo test`, so scheduled spawns inject
 /// NOTHING and stay byte-identical to pre-CLI behavior.
 #[derive(Clone)]
-struct CliSeam {
-    tokens: Arc<CliTokenRegistry>,
-    config: CliSpawnConfig,
+pub(crate) struct CliSeam {
+    pub(crate) tokens: Arc<CliTokenRegistry>,
+    pub(crate) config: CliSpawnConfig,
 }
 
 /// The orchestrator itself. Hand it the dependencies it needs and call
@@ -828,17 +828,22 @@ impl TaskOrchestrator {
         board_events: Arc<super::board_events::BoardEventBus>,
         autopilot_state: crate::store::AutopilotStateRepo,
     ) {
-        let driver = Arc::new(super::autopilot::AutopilotDriver::new(
-            self.workspaces.clone(),
-            board,
-            self.repositories.clone(),
-            run_commands,
-            self.repo_locks.clone(),
-            write_registry,
-            board_events,
-            autopilot_state,
-            self.runtime.clone(),
-        ));
+        let driver = Arc::new(
+            super::autopilot::AutopilotDriver::new(
+                self.workspaces.clone(),
+                board,
+                self.repositories.clone(),
+                run_commands,
+                self.repo_locks.clone(),
+                write_registry,
+                board_events,
+                autopilot_state,
+                self.runtime.clone(),
+            )
+            // Stage B: the reviewer spawn injects PHASR_* like any producer
+            // spawn — same seam, `None` under cargo test.
+            .with_cli_seam(self.cli.clone()),
+        );
         driver.spawn();
     }
 

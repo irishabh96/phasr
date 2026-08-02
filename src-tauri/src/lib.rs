@@ -208,6 +208,7 @@ pub fn run() {
             commands::board::integrate_parent,
             commands::board::ship_epic,
             commands::board::start_ticket,
+            commands::autopilot::set_require_human_approval,
             commands::tickets::read_epic_brief,
             commands::tickets::write_epic_section,
             commands::workspaces::archive_epic,

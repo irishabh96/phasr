@@ -48,6 +48,24 @@ export function useSetAutopilot(parentId: string) {
 }
 
 /**
+ * Stage B (§0.5): flip this workflow's HUMAN review gate. Required (the
+ * default) = every Approve is yours. Turning it off lets autopilot spawn a QAS
+ * reviewer per requested review — Ship stays human regardless.
+ */
+export function useSetRequireHumanApproval(parentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (required: boolean) =>
+      tauri.setRequireHumanApproval(parentId, required),
+    onSuccess: (board) => {
+      queryClient.setQueryData(boardKeys.detail(parentId), board);
+      queryClient.invalidateQueries({ queryKey: boardKeys.detail(parentId) });
+      queryClient.invalidateQueries({ queryKey: worklistKeys.all });
+    },
+  });
+}
+
+/**
  * Flip the GLOBAL persisted kill switch (`set_autopilot_kill_switch`) — the 2am
  * panic button (halt) and its single explicit un-halt ("Resume", §5). A true
  * halt: no auto-resume, so we simply re-read the persisted state after either

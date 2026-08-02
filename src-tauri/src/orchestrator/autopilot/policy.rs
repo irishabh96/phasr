@@ -11,10 +11,13 @@
 //! - **`Auto(ship)` is a COMPILE ERROR.** `SafeVerb` has NO `Ship` variant, so an
 //!   `AutoAction`/`EpicAction` can never represent auto-shipping (invariant I1).
 //!   Ship is always a HUMAN-STOP (`StopReason::Ship`).
-//! - **Classes are `Auto(SafeVerb)` | `HumanStop(StopReason)` only.** There is NO
-//!   `Agent` class in Stage A: the Approve gate is ALWAYS a HUMAN-STOP
-//!   (`in-review(requested)` → `HumanStop(NeedsReview)`), so the entire QAS
-//!   auto-approve attack surface is absent (spec §0.5).
+//! - **The Approve gate is a HUMAN-STOP unless the epic opts out.** With the
+//!   DEFAULT-ON `require_human_approval` the classes are exactly Stage A's
+//!   `Auto(SafeVerb)` | `HumanStop(StopReason)`. Stage B's `Agent(SpawnReviewer)`
+//!   appears ONLY behind that per-epic opt-out (§0.5) — and even then the driver
+//!   never fires the verdict: a spawned reviewer argues it over the socket, where
+//!   it is re-verified (I6) and concurrency-checked against the review it was
+//!   spawned for.
 //! - **The strict integrate predicate (I7):** `Auto(Integrate)` requires EVERY
 //!   ticket `review=approved` AND `ticket_count >= 1` — the empty set is NOT
 //!   vacuously integrable (`all()` over zero tickets must be false).
@@ -127,13 +130,27 @@ impl StopReason {
     }
 }
 
+/// A gate delegated to a spawned AGENT (Stage B, §0.5) — distinct from `Auto`
+/// (the driver fires those itself) and from `HumanStop` (parked for the
+/// human). The only member is the QAS reviewer spawn: the review VERDICT is
+/// never auto-fired by the driver — an agent argues for it over the socket,
+/// where the verdict is re-verified (I6) and concurrency-checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGate {
+    SpawnReviewer,
+}
+
 /// One ticket's next auto-action. `Nothing` is represented by `Option::None` at
-/// the call site (`next_auto_action -> Option<AutoAction>`), so this enum carries
-/// ONLY the two real classes — there is no `Agent` variant in Stage A.
+/// the call site (`next_auto_action -> Option<AutoAction>`). The `Agent` class
+/// exists ONLY behind the per-epic `require_human_approval == false` opt-out
+/// (Stage B); with the default-ON human gate the ladder is byte-identical to
+/// Stage A.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoAction {
     /// Fire this SAFE verb directly (validate | request-review).
     Auto(SafeVerb),
+    /// Spawn a delegated agent for this gate (Stage B — QAS review).
+    Agent(AgentGate),
     /// Park at "Needs you" and always offer the action (I4).
     HumanStop(StopReason),
 }
@@ -248,6 +265,11 @@ pub struct TicketGateState {
     pub validate: Option<ValidateSnapshot>,
     /// ≥1 `RunCommand` with `run_in_validate` — Validate can actually run.
     pub checks_configured: bool,
+    /// Stage B (§0.5): the owning epic's human gate. TRUE (the default) keeps
+    /// the Approve gate a HUMAN-STOP — Stage A exactly. FALSE delegates the
+    /// review to a spawned QAS agent (`Agent(SpawnReviewer)`). Part of
+    /// `state_hash`: flipping the toggle IS a ladder transition.
+    pub require_human_approval: bool,
     /// COSMETIC: the producer roles a blocked ticket waits on (the disabled
     /// reason text). NOT a ladder branch input and NOT part of `state_hash` —
     /// mirrors `deriveNextGate` using `blockedOn` for the reason string only.
@@ -285,14 +307,23 @@ pub fn next_auto_action(state: &TicketGateState) -> Option<AutoAction> {
         return None;
     }
 
-    // 1. In review (requested) → the Approve gate. STAGE A: the Approve gate is
-    //    ALWAYS a HUMAN-STOP — there is NO QAS auto-approve path (spec §0.5). We
-    //    also honor a raw `review=requested` even if the derived state hasn't
-    //    folded to `in-review` yet (mirrors deriveNextGate's dual check).
+    // 1. In review (requested) → the Approve gate. With the DEFAULT-ON human
+    //    gate this is a HUMAN-STOP — Stage A exactly. Only the per-epic
+    //    `require_human_approval == false` opt-out (Stage B, §0.5) delegates
+    //    it to a spawned QAS reviewer — and even then the driver never fires
+    //    the verdict itself: the reviewer argues it over the socket, where I6
+    //    re-verifies validate and the at_ms concurrency check protects a
+    //    human who acted first. We also honor a raw `review=requested` even
+    //    if the derived state hasn't folded to `in-review` yet (mirrors
+    //    deriveNextGate's dual check).
     if matches!(state.state, InReview)
         || matches!(state.review, Some(r) if r.state == ReviewLadderState::Requested)
     {
-        return Some(AutoAction::HumanStop(StopReason::NeedsReview));
+        return Some(if state.require_human_approval {
+            AutoAction::HumanStop(StopReason::NeedsReview)
+        } else {
+            AutoAction::Agent(AgentGate::SpawnReviewer)
+        });
     }
 
     // 2. Changes requested (bounced) → a human decides the re-work (§2). v1 does
@@ -391,11 +422,15 @@ impl TicketGateState {
             None => "none".to_string(),
         };
         let canonical = format!(
-            "t|{}|checks={}|review={}|validate={}",
+            "t|{}|checks={}|review={}|validate={}|human={}",
             self.state.as_str(),
             self.checks_configured,
             review,
             validate,
+            // Stage B: flipping the human gate IS a ladder transition — a
+            // parked NeedsReview must re-derive (to SpawnReviewer) when the
+            // founder opts out, so the durable dedup can't suppress it.
+            self.require_human_approval,
         );
         fnv1a(canonical.as_bytes())
     }
@@ -440,6 +475,8 @@ mod tests {
             review: None,
             validate: None,
             checks_configured: false,
+            // Stage A default everywhere: the human gate is ON.
+            require_human_approval: true,
             blocked_on: Vec::new(),
         }
     }
@@ -740,6 +777,10 @@ mod tests {
                             review: rv,
                             validate: vl,
                             checks_configured: checks,
+                            // The safety sweep runs against Stage A's
+                            // default-ON gate; Stage B's single delegated row
+                            // is covered by its own tests above.
+                            require_human_approval: true,
                             blocked_on: Vec::new(),
                         });
                     }
@@ -780,6 +821,10 @@ mod tests {
                 // A HUMAN-STOP or Nothing is always a safe downgrade of whatever the
                 // human ladder offers — never MORE aggressive.
                 Some(AutoAction::HumanStop(_)) | None => {}
+                // Unreachable in this sweep (every combo is Stage A's
+                // human-gate-ON), and a delegated review is by construction
+                // never MORE aggressive than the human ladder's Approve.
+                Some(AutoAction::Agent(_)) => {}
             }
 
             // The converse guard: wherever the human ladder offers the coral
@@ -839,6 +884,7 @@ mod tests {
             review: Some(review(ReviewLadderState::Requested)),
             validate: Some(validate(false)),
             checks_configured: true,
+            require_human_approval: true,
             blocked_on: Vec::new(),
         };
         let h = base.state_hash();
@@ -907,6 +953,86 @@ mod tests {
         assert_ne!(fnv1a(b""), fnv1a(b"a"));
     }
 
+    // ── Stage B (§0.5): the Agent class behind the per-epic opt-out ─────────
+
+    // The DEFAULT-ON human gate keeps in-review a HUMAN-STOP (Stage A exactly);
+    // only `require_human_approval: false` delegates it to a spawned reviewer.
+    #[test]
+    fn in_review_delegates_to_a_reviewer_only_when_the_human_gate_is_off() {
+        let mut s = ticket(TicketState::InReview);
+        s.review = Some(review(ReviewLadderState::Requested));
+        assert_eq!(
+            next_auto_action(&s),
+            Some(AutoAction::HumanStop(StopReason::NeedsReview)),
+            "default: the founder approves"
+        );
+
+        s.require_human_approval = false;
+        assert_eq!(
+            next_auto_action(&s),
+            Some(AutoAction::Agent(AgentGate::SpawnReviewer)),
+            "opted out: a QAS reviewer is spawned to argue the verdict"
+        );
+    }
+
+    // Stage B changes ONLY the review gate. Every other row — including the
+    // bounce park and the forward AUTO ladder — is byte-identical with the
+    // gate off, so opting out can never widen what autopilot fires itself.
+    #[test]
+    fn the_opt_out_touches_no_other_ladder_row() {
+        for state in [
+            TicketState::Blocked,
+            TicketState::Working,
+            TicketState::Idle,
+            TicketState::Wedged,
+            TicketState::Failed,
+            TicketState::NeedsReview,
+            TicketState::QasChangesRequested,
+            TicketState::Done,
+        ] {
+            let mut human = ticket(state);
+            let mut delegated = ticket(state);
+            delegated.require_human_approval = false;
+            assert_eq!(
+                next_auto_action(&human),
+                next_auto_action(&delegated),
+                "state {state:?} must not change with the review gate"
+            );
+            // …and the same holds with a bounced review layered on.
+            human.review = Some(review(ReviewLadderState::ChangesRequested));
+            delegated.review = Some(review(ReviewLadderState::ChangesRequested));
+            assert_eq!(next_auto_action(&human), next_auto_action(&delegated));
+        }
+    }
+
+    // Ship is structurally human in BOTH stages — `SafeVerb` has no Ship
+    // variant, and the epic ladder never grows an Agent class.
+    #[test]
+    fn ship_is_never_delegated_in_stage_b() {
+        let e = EpicGateState {
+            ticket_count: 3,
+            all_approved: true,
+            merge_in_progress: false,
+            integrated: true,
+            shipped: false,
+        };
+        assert_eq!(
+            next_epic_action(&e),
+            Some(EpicAction::HumanStop(StopReason::Ship))
+        );
+    }
+
+    // Flipping the gate IS a ladder transition: the fingerprint must move, or
+    // the durable dedup would suppress the re-derive to SpawnReviewer.
+    #[test]
+    fn the_review_gate_is_part_of_the_state_hash() {
+        let mut s = ticket(TicketState::InReview);
+        s.review = Some(review(ReviewLadderState::Requested));
+        let with_human = s.state_hash();
+        s.require_human_approval = false;
+        assert_ne!(s.state_hash(), with_human);
+    }
+
     // SafeVerb → CLI verb names (the driver's dedup key + audit thread).
     #[test]
     fn safe_verb_cli_names() {
@@ -946,6 +1072,8 @@ mod tests {
     #[serde(rename_all = "camelCase")]
     struct FixtureTicketInput {
         state: String,
+        #[serde(default)]
+        require_human_approval: Option<bool>,
         review: Option<FixtureReview>,
         validate: Option<FixtureValidate>,
         checks_configured: bool,
@@ -1046,6 +1174,9 @@ mod tests {
                     failing_count: v.failing_count,
                 }),
                 checks_configured: row.input.checks_configured,
+                // The shared fixture's rows are Stage A (human gate ON);
+                // Stage B rows carry `requireHumanApproval: false`.
+                require_human_approval: row.input.require_human_approval.unwrap_or(true),
                 blocked_on: row.input.blocked_on.clone(),
             };
             let expected = match row.autopilot.as_str() {
@@ -1056,6 +1187,7 @@ mod tests {
                 s if s.starts_with("human-stop:") => Some(AutoAction::HumanStop(
                     fixture_stop_reason(&s["human-stop:".len()..]),
                 )),
+                "agent:spawn-reviewer" => Some(AutoAction::Agent(AgentGate::SpawnReviewer)),
                 other => panic!("fixture: unknown expected action `{other}`"),
             };
             assert_eq!(

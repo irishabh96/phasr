@@ -121,6 +121,43 @@ pub async fn set_autopilot(
     Ok(assembled.into())
 }
 
+/// Stage B (§0.5): flip the per-epic HUMAN gate. `required == true` (the
+/// default, on every epic ever created) keeps Approve a human decision —
+/// Stage A exactly. `false` is the explicit hands-off opt-out: the driver
+/// spawns a QAS reviewer per requested review. Ship stays human regardless
+/// (SafeVerb has no Ship variant — structural).
+#[tauri::command]
+pub async fn set_require_human_approval(
+    parent_id: String,
+    required: bool,
+    workspaces: State<'_, WorkspaceRepo>,
+    board: State<'_, BoardRepo>,
+    session: State<'_, Arc<SessionState>>,
+    board_events: State<'_, Arc<BoardEventBus>>,
+) -> Result<BoardState, AutopilotCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let parent = workspaces.get_for_user(&parent_id, &current.user_id).await?;
+    if parent.workspace_kind != WorkspaceKind::Parent {
+        return Err(AutopilotCmdError::NotAnEpic(format!(
+            "workspace `{parent_id}` is not an epic; the review gate is a per-epic toggle"
+        )));
+    }
+    workspaces
+        .update(
+            &parent.id,
+            WorkspaceUpdate {
+                require_human_approval: Some(required),
+                ..Default::default()
+            },
+        )
+        .await?;
+    board_events.notify(&parent_id);
+    let assembled = board
+        .get_board_for_user(&workspaces, &parent_id, &current.user_id)
+        .await?;
+    Ok(assembled.into())
+}
+
 /// Flip the GLOBAL persisted kill switch — a TRUE halt that survives a
 /// crash/reboot (§5). Process-wide (one panic-button stops every epic), so it is
 /// NOT owner-scoped — just the signed-in gate. There is NO auto-resume; the FE
