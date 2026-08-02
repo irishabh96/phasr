@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { boardKeys } from "@/lib/hooks/useBoard";
+import { worklistKeys } from "@/lib/hooks/useWorklist";
 import { tauri } from "@/lib/tauri";
 import type { Workspace } from "@/lib/types";
 
@@ -100,6 +102,27 @@ export function useArchiveWorkspace() {
 export function useOpenPullRequest() {
   return useMutation({
     mutationFn: (id: string) => tauri.openPullRequest(id),
+  });
+}
+
+/**
+ * Archive a whole workflow (parent + every ticket): worktrees reclaimed,
+ * branches kept, rows stamped archived. The sidebar filters archived parents
+ * out and the worklist retires their tickets, so the workspace list + worklist
+ * both re-derive.
+ */
+export function useArchiveEpic() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ parentId }: { parentId: string; repositoryId: string }) =>
+      tauri.archiveEpic(parentId),
+    onSuccess: (_archived, { parentId, repositoryId }) => {
+      queryClient.invalidateQueries({
+        queryKey: workspaceKeys.byRepository(repositoryId),
+      });
+      queryClient.invalidateQueries({ queryKey: worklistKeys.all });
+      queryClient.invalidateQueries({ queryKey: boardKeys.detail(parentId) });
+    },
   });
 }
 

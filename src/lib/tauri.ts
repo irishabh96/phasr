@@ -183,6 +183,11 @@ export const tauri = {
   checkWorkspaceDelete: (id: string) =>
     invoke<WorkspaceDeleteCheck>("check_workspace_delete", { id }),
   deleteWorkspace: (id: string) => invoke<void>("delete_workspace", { id }),
+  // Archive a whole workflow: children + parent stamped archived, worktrees
+  // reclaimed, branches KEPT, CLI grants dead. Delete (above) on a parent
+  // cascades the children too — rows, worktrees AND branches.
+  archiveEpic: (parentId: string) =>
+    invoke<Workspace>("archive_epic", { parentId }),
   watchWorkspace: (id: string) => invoke<void>("watch_workspace", { id }),
   unwatchWorkspace: (id: string) => invoke<void>("unwatch_workspace", { id }),
 

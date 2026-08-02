@@ -788,6 +788,12 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         };
       case "check_workspace_delete":
         return { hasUnpushedCommits: false };
+      case "archive_epic": {
+        const parent = f.workspaces.find((w) => w.id === a?.parentId);
+        return parent
+          ? { ...parent, status: "archived", archivedAt: NOW }
+          : null;
+      }
       case "archive_workspace":
       case "delete_workspace":
       case "delete_repository":

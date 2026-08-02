@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import { WorkspaceLink } from "@/components/AppSidebar";
+import { EpicSidebarMenu } from "@/components/EpicSidebarMenu";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { agentStatusMeta, isLiveState } from "@/components/ui/agentStatusMeta";
 import { useAllAgentLiveness } from "@/lib/agentLiveness";
@@ -21,11 +22,10 @@ import type { Workspace } from "@/lib/types";
  * verbatim). Progressive disclosure: a repo with zero epics renders nothing, so
  * the single-agent tree stays pixel-identical.
  *
- * TODO(deferred — needs product/backend calls): an epic right-click menu
- * (`EpicSidebarMenu`: rename/open board), relaunch board-restore (persist the
- * last-open board like `lastWorkspace`), and epic delete/cascade (removing a
- * parent must also unwind its subtask worktrees). Out of scope for this
- * connective-tissue pass.
+ * Right-click = `EpicSidebarMenu` (open board / rename / archive / delete,
+ * with the archive+delete cascades landing in Phase 3 of the completion
+ * program). Still deferred: relaunch board-restore (persist the last-open
+ * board like `lastWorkspace`).
  */
 export function RepoEpics({
   repoId,
@@ -126,39 +126,44 @@ function EpicSidebarNode({
       params: { repositoryId: repoId, parentId: epic.id },
     });
 
+  const subtaskIds = subtasks.map((s) => s.id);
+
   // Narrow icon rail: just the epic glyph (click → board), tooltip = goal.
   if (!isExpanded) {
     return (
-      <GlassTooltip content={goal} side="right">
-        <button
-          type="button"
-          onClick={openBoard}
-          aria-label={`Workflow: ${goal}`}
-          aria-current={isActiveEpic ? "page" : undefined}
-          className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-[8px]",
-            "transition-colors duration-150 hover:bg-(--color-bg-elevated)",
-            "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
-            isBoardOpen && "bg-(--color-bg-selected)",
-          )}
-        >
-          <GitFork
-            size={14}
-            className={
-              isBoardOpen
-                ? "text-(--color-accent-text)"
-                : isActiveEpic
-                  ? "text-(--color-text-secondary)"
-                  : "text-(--color-text-muted)"
-            }
-          />
-        </button>
-      </GlassTooltip>
+      <EpicSidebarMenu epic={epic} subtaskIds={subtaskIds}>
+        <GlassTooltip content={goal} side="right">
+          <button
+            type="button"
+            onClick={openBoard}
+            aria-label={`Workflow: ${goal}`}
+            aria-current={isActiveEpic ? "page" : undefined}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-[8px]",
+              "transition-colors duration-150 hover:bg-(--color-bg-elevated)",
+              "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+              isBoardOpen && "bg-(--color-bg-selected)",
+            )}
+          >
+            <GitFork
+              size={14}
+              className={
+                isBoardOpen
+                  ? "text-(--color-accent-text)"
+                  : isActiveEpic
+                    ? "text-(--color-text-secondary)"
+                    : "text-(--color-text-muted)"
+              }
+            />
+          </button>
+        </GlassTooltip>
+      </EpicSidebarMenu>
     );
   }
 
   return (
     <div className="flex flex-col">
+      <EpicSidebarMenu epic={epic} subtaskIds={subtaskIds}>
       <div
         role="button"
         tabIndex={0}
@@ -215,6 +220,7 @@ function EpicSidebarNode({
           <ExpandIcon size={12} />
         </button>
       </div>
+      </EpicSidebarMenu>
 
       {expanded && subtasks.length > 0 && (
         <div className="mt-0.5 ml-1.5 flex flex-col gap-0.5 border-l border-(--glass-border-hairline) pl-2">
