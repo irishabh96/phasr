@@ -401,6 +401,116 @@ pub async fn integrate_parent(
     Ok(assembled.into())
 }
 
+/// The Ship gate's outcome. `Clean` also stamped `shipped_at` on the parent —
+/// the epic's terminal milestone is now a FACT, not the old FE derivation
+/// (`integrated && aheadOfTarget === 0`) that silently un-shipped an epic the
+/// moment any later commit landed on the default branch. `Conflicts` left the
+/// repository's MAIN checkout mid-merge; recovery is the repo-scoped pair
+/// `git_repo_merge_in_progress` / `git_repo_abort_merge` (the workspace-scoped
+/// resolver only operates inside worktrees).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ShipOutcome {
+    Clean { message: String },
+    Conflicts { files: Vec<String> },
+}
+
+/// Ship an integrated workflow: merge the parent's integration branch into the
+/// repository's default branch in the MAIN checkout. LOCAL MERGE ONLY by
+/// decision — push and Open-PR are separate explicit post-ship actions, never
+/// bundled into Ship. Ship is always human (autopilot's `SafeVerb` has no Ship
+/// variant, invariant I1).
+#[tauri::command]
+pub async fn ship_epic(
+    parent_id: String,
+    strategy: MergeStrategy,
+    workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
+    session: State<'_, Arc<SessionState>>,
+    board_events: State<'_, Arc<BoardEventBus>>,
+) -> Result<ShipOutcome, BoardCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let outcome = ship_epic_inner(
+        &parent_id,
+        &current.user_id,
+        strategy,
+        &workspaces,
+        &repositories,
+        &repo_locks,
+    )
+    .await?;
+    if matches!(outcome, ShipOutcome::Clean { .. }) {
+        // The parent row gained `shipped_at` — move the open board/index live.
+        board_events.notify(&parent_id);
+    }
+    Ok(outcome)
+}
+
+/// Owner-scoped Ship core (`get_for_user`), split out so tests and the real
+/// end-to-end drive exercise the exact command path.
+pub(crate) async fn ship_epic_inner(
+    parent_id: &str,
+    user_id: &str,
+    strategy: MergeStrategy,
+    workspaces: &WorkspaceRepo,
+    repositories: &RepositoryRepo,
+    repo_locks: &RepoLockRegistry,
+) -> Result<ShipOutcome, BoardCmdError> {
+    let parent = workspaces.get_for_user(parent_id, user_id).await?;
+    if parent.workspace_kind != WorkspaceKind::Parent {
+        return Err(BoardCmdError::Git(GitError::CommandFailed(
+            "only a workflow (parent) can be shipped".into(),
+        )));
+    }
+    let integration_branch = parent.branch.clone().ok_or_else(|| {
+        BoardCmdError::Git(GitError::CommandFailed(
+            "workflow has no integration branch yet — integrate first".into(),
+        ))
+    })?;
+    let repository = repositories.get(&parent.repository_id).await?;
+    let main_repo = repository
+        .local_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            BoardCmdError::Git(GitError::CommandFailed(
+                "repository has no local path".into(),
+            ))
+        })?;
+    let default_branch = repository.default_branch.clone();
+
+    // Same discipline as `git_merge_to_main` (F6): the merge checks out the
+    // default branch in the SHARED main checkout, touching the same
+    // `.git/index`/refs every worktree-add/branch-delete touches — serialize
+    // via the per-repo lock, held across the blocking git call.
+    let lock = repo_locks.for_repository(&parent.repository_id);
+    let _guard = lock.lock().await;
+    let outcome = blocking_board_git(move || {
+        git::merge_to(&main_repo, &default_branch, &integration_branch, strategy)
+    })
+    .await?;
+    drop(_guard);
+
+    match outcome {
+        MergeOutcome::Clean { message } => {
+            // The milestone becomes durable state. Stamped ONLY on Clean — a
+            // conflicted ship leaves the epic unshipped until resolved/aborted.
+            workspaces
+                .update(
+                    parent_id,
+                    WorkspaceUpdate {
+                        shipped_at: Some(Some(chrono::Utc::now())),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            Ok(ShipOutcome::Clean { message })
+        }
+        MergeOutcome::Conflicts { files } => Ok(ShipOutcome::Conflicts { files }),
+    }
+}
+
 /// The combined file LIST for the "Integration review" (P0-1). After a CLEAN
 /// `integrate_parent`, every subtask merge is already committed, so the parent
 /// integration worktree is CLEAN — the worktree-based `git_status` returns
@@ -2410,5 +2520,170 @@ mod tests {
             order.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
             vec!["backend".to_string(), "frontend".to_string()]
         );
+    }
+
+    // ── ship_epic (Phase 2, completion program) ─────────────────────────────
+
+    // A clean Ship merges the integration branch into main IN THE MAIN CHECKOUT,
+    // stamps `shipped_at` (the durable milestone), and leaves no merge in
+    // progress. Ship is LOCAL-ONLY by decision — no push is attempted.
+    #[tokio::test]
+    async fn ship_epic_clean_merges_into_main_and_stamps_shipped_at() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "backend\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "frontend\n", "frontend work");
+        let (parent, _b, _f) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .unwrap();
+
+        let outcome = ship_epic_inner(
+            &parent.id,
+            "user-a",
+            MergeStrategy::Merge,
+            &workspaces,
+            &repos,
+            &repo_locks,
+        )
+        .await
+        .expect("a non-conflicting ship must succeed");
+        assert!(matches!(outcome, ShipOutcome::Clean { .. }));
+
+        // Both subtasks' changes landed on main, in the MAIN checkout.
+        assert!(repo_path.join("backend.txt").exists());
+        assert!(repo_path.join("frontend.txt").exists());
+        assert_eq!(git::merge_in_progress(repo_path).unwrap(), git::InProgress::None);
+        // The milestone is a durable FACT on the parent row.
+        let parent_row = workspaces.get_for_user(&parent.id, "user-a").await.unwrap();
+        assert!(
+            parent_row.shipped_at.is_some(),
+            "a clean ship must stamp shipped_at"
+        );
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // A conflicted Ship leaves the MAIN checkout mid-merge (recoverable via the
+    // repo-scoped abort), and must NOT stamp `shipped_at` — the epic stays
+    // unshipped until the human resolves or aborts.
+    #[tokio::test]
+    async fn ship_epic_conflict_leaves_main_mid_merge_and_never_stamps() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "backend\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "frontend\n", "frontend work");
+        let (parent, _b, _f) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let repo_locks = RepoLockRegistry::new();
+        integrate_parent_inner(&parent.id, "user-a", &workspaces, &board, &repos, &repo_locks)
+            .await
+            .unwrap();
+
+        // Main moves with a CONFLICTING backend.txt (add/add) before the ship.
+        std::fs::write(repo_path.join("backend.txt"), "conflicting on main\n").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "main moved"])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+
+        let outcome = ship_epic_inner(
+            &parent.id,
+            "user-a",
+            MergeStrategy::Merge,
+            &workspaces,
+            &repos,
+            &repo_locks,
+        )
+        .await
+        .expect("a conflicted ship is an outcome, not an error");
+        let ShipOutcome::Conflicts { files } = outcome else {
+            panic!("expected Conflicts");
+        };
+        assert!(files.contains(&"backend.txt".to_string()));
+
+        // Mid-merge in the MAIN checkout; shipped_at untouched.
+        assert!(matches!(
+            git::merge_in_progress(repo_path).unwrap(),
+            git::InProgress::Merge { .. }
+        ));
+        let parent_row = workspaces.get_for_user(&parent.id, "user-a").await.unwrap();
+        assert!(
+            parent_row.shipped_at.is_none(),
+            "a conflicted ship must NOT stamp shipped_at"
+        );
+
+        // The one-click recovery: abort restores a clean main checkout.
+        git::merge_abort(repo_path).unwrap();
+        assert_eq!(git::merge_in_progress(repo_path).unwrap(), git::InProgress::None);
+
+        cleanup_integration(repo_path, &parent);
+    }
+
+    // Ship without a prior Integrate is a clear, calm error — never a silent
+    // no-op and never a merge of nothing.
+    #[tokio::test]
+    async fn ship_epic_requires_integration_first() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let repo_locks = RepoLockRegistry::new();
+
+        let err = ship_epic_inner(
+            &parent.id,
+            "user-a",
+            MergeStrategy::Merge,
+            &workspaces,
+            &repos,
+            &repo_locks,
+        )
+        .await
+        .expect_err("un-integrated parent must not ship");
+        assert!(
+            err.to_string().contains("integrate first"),
+            "the error names the missing step: {err}"
+        );
+    }
+
+    // P0-1 owner scoping: another account cannot ship someone else's workflow.
+    #[tokio::test]
+    async fn ship_epic_is_scoped_to_the_owner() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let (parent, _b, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let repo_locks = RepoLockRegistry::new();
+
+        assert!(matches!(
+            ship_epic_inner(
+                &parent.id,
+                "user-b",
+                MergeStrategy::Merge,
+                &workspaces,
+                &repos,
+                &repo_locks,
+            )
+            .await,
+            Err(BoardCmdError::Store(StoreError::NotFound))
+        ));
     }
 }

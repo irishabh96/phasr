@@ -133,6 +133,10 @@ pub struct Workspace {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// Set only on a `parent`: when `ship_epic` landed the integration branch
+    /// on the default branch (migration 0016). A FACT, not a derivation — it
+    /// survives base moving ahead, unlike the old `aheadOfTarget === 0` read.
+    pub shipped_at: Option<DateTime<Utc>>,
     /// Set only when this `running` row was orphaned by an app relaunch
     /// (recovery sweep in `lib.rs::recover_startup_state`). Distinguishes a
     /// relaunch-orphan from a calm user `stop_task` — both otherwise land
@@ -170,6 +174,7 @@ impl Workspace {
             started_at: None,
             finished_at: None,
             archived_at: None,
+            shipped_at: None,
             interrupted_at: None,
             autopilot_enabled: false,
             updated_at: now,

@@ -502,10 +502,12 @@ impl AutopilotDriver {
             merge_in_progress: self.parent_merge_in_progress(parent),
             // The parent carries an integration branch (set by a prior integrate).
             integrated: parent.branch.is_some(),
-            // Stage A: we don't compute "merged to base" here — once integrated we
-            // PARK at Ship (HumanStop) until the human ships. The durable park dedup
-            // audits that Ship park exactly once, never per 3s tick.
-            shipped: false,
+            // The durable Ship milestone (migration 0016, stamped by `ship_epic`
+            // on a clean merge). A shipped epic derives to Nothing — the driver
+            // stops parking it at Ship on every boot sweep. Pre-0016 epics
+            // (shipped before the column existed) still park once at Ship; the
+            // durable park dedup keeps that to exactly one audit line.
+            shipped: parent.shipped_at.is_some(),
         };
         let hash = estate.state_hash();
 

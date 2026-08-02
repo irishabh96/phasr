@@ -370,6 +370,93 @@ pub async fn git_merge_in_progress(
     blocking_git(move || git::merge_in_progress(&cwd)).await
 }
 
+/// The repository's MAIN checkout path (where Ship merges land). The
+/// workspace-scoped twins above operate on worktrees; a conflicted Ship lives
+/// in the main checkout, which no workspace id reaches — hence this repo-scoped
+/// trio (`ship_epic` recovery).
+async fn repo_main_path(
+    repositories: &RepositoryRepo,
+    repository_id: &str,
+) -> Result<PathBuf, GitCmdError> {
+    let repository = repositories.get(repository_id).await?;
+    repository
+        .local_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            GitCmdError::Git(GitError::CommandFailed(
+                "repository has no local path".into(),
+            ))
+        })
+}
+
+#[tauri::command]
+pub async fn git_repo_merge_in_progress(
+    repository_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<InProgress, GitCmdError> {
+    session.require()?;
+    let cwd = repo_main_path(&repositories, &repository_id).await?;
+    blocking_git(move || git::merge_in_progress(&cwd)).await
+}
+
+/// Abort a merge stopped mid-flight in the repository's MAIN checkout — the
+/// one-click recovery from a conflicted Ship (restores a clean default-branch
+/// checkout; the integration branch is untouched, so Ship can be retried).
+/// Mutates the shared checkout → serialized on the per-repo lock like every
+/// other main-checkout mutation (F6).
+#[tauri::command]
+pub async fn git_repo_abort_merge(
+    repository_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), GitCmdError> {
+    session.require()?;
+    let cwd = repo_main_path(&repositories, &repository_id).await?;
+    let lock = repo_locks.for_repository(&repository_id);
+    let _guard = lock.lock().await;
+    blocking_git(move || git::merge_abort(&cwd)).await
+}
+
+/// Push the repository's DEFAULT branch from the MAIN checkout — the explicit
+/// post-Ship action (Ship itself is local-merge-only by decision). No PR link:
+/// this pushes the base branch itself.
+#[tauri::command]
+pub async fn git_push_default_branch(
+    repository_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<GitPushOutcome, GitCmdError> {
+    session.require()?;
+    let repository = repositories.get(&repository_id).await?;
+    if repository.remote_url.is_none() {
+        return Err(GitCmdError::Git(GitError::CommandFailed(
+            "repository has no `origin` remote configured".into(),
+        )));
+    }
+    let cwd = repository
+        .local_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            GitCmdError::Git(GitError::CommandFailed(
+                "repository has no local path".into(),
+            ))
+        })?;
+    let branch = repository.default_branch.clone();
+    {
+        let branch = branch.clone();
+        blocking_git(move || git::push(&cwd, "origin", &branch)).await?;
+    }
+    Ok(GitPushOutcome {
+        branch,
+        pull_request_url: None,
+        provider: None,
+    })
+}
+
 #[tauri::command]
 pub async fn git_abort_merge(
     workspace_id: String,
