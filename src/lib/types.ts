@@ -47,6 +47,13 @@ export interface Workspace {
   finishedAt: string | null;
   archivedAt: string | null;
   /**
+   * Set only on a `parent` (workflow) row: when `ship_epic` landed the
+   * integration branch on the default branch (migration 0016). A durable FACT —
+   * unlike the old `aheadOfTarget === 0` derivation it survives base moving
+   * ahead. LOCAL-ONLY (board rows never sync). ISO-8601 UTC.
+   */
+  shippedAt: string | null;
+  /**
    * Set only when this `running` row was orphaned by an app relaunch and
    * swept to `stopped` during startup recovery (`lib.rs::recover_startup_state`).
    * Mirrors the machine-local `interrupted_at` column (never synced). The
@@ -264,6 +271,18 @@ export interface BranchStatus {
 export type MergeStrategy = "merge" | "squash" | "fastForward" | "rebase";
 
 export type MergeOutcome =
+  | { kind: "clean"; message: string }
+  | { kind: "conflicts"; files: string[] };
+
+/**
+ * `ship_epic`'s outcome. `clean` also stamped `shippedAt` on the parent row
+ * (the durable Ship milestone). `conflicts` left the repository's MAIN
+ * checkout mid-merge — recover via the repo-scoped
+ * `git_repo_merge_in_progress` / `git_repo_abort_merge` pair (the
+ * workspace-scoped resolver only operates inside worktrees). Ship is
+ * local-merge-only by decision; push + Open-PR are separate explicit actions.
+ */
+export type ShipOutcome =
   | { kind: "clean"; message: string }
   | { kind: "conflicts"; files: string[] };
 

@@ -154,18 +154,18 @@ export function useResolveReview(parentId: string) {
 }
 
 /**
- * Ship an integrated epic (Phase 3 R7): merge the parent's integration branch
- * into the repo's default branch via the EXISTING `git_merge_to_main` (the
- * parent id is a valid workspace id carrying the integration branch). A conflict
- * resolves with `{ kind:"conflicts" }` — the caller routes it into the existing
- * `MergeToMainDialog` surface (no new conflict UI). Invalidates the board so the
- * "shipped" (terminal) state re-derives.
+ * Ship an integrated workflow: `ship_epic` merges the parent's integration
+ * branch into the repo's default branch in the MAIN checkout and — on `clean`
+ * — stamps the durable `shippedAt` milestone on the parent row. Local-merge
+ * ONLY by decision: push / Open-PR are separate explicit post-ship actions in
+ * the dialog. A `conflicts` outcome leaves the MAIN checkout mid-merge; the
+ * dialog offers the repo-scoped Abort recovery. Invalidates the board so the
+ * "Shipped" (terminal) state re-derives from the new fact.
  */
 export function useShipEpic(parentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (strategy: MergeStrategy = "merge") =>
-      tauri.gitMergeToMain(parentId, strategy),
+    mutationFn: (strategy: MergeStrategy) => tauri.shipEpic(parentId, strategy),
     onSuccess: () => {
       invalidateBoard(queryClient, parentId);
       queryClient.invalidateQueries({

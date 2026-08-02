@@ -30,13 +30,17 @@ function BoardRoute() {
   const { data: runCommands } = useRunCommands(repositoryId);
   const checksConfigured = (runCommands ?? []).some((c) => c.runInValidate);
 
-  // "Shipped" = the parent carries an integration branch AND that branch is
-  // merged into base (§R6 — no new column). Only read once integrated.
+  // "Shipped" is primarily the durable `shippedAt` FACT stamped by `ship_epic`
+  // (migration 0016) — it survives base moving ahead. The old derivation
+  // (integrated && aheadOfTarget === 0) stays as back-compat for epics shipped
+  // before the column existed.
   const integrated = !!board?.parent.branch;
   const { data: parentBranch } = useGitBranchStatus(
     integrated ? parentId : undefined,
   );
-  const shipped = integrated && parentBranch?.aheadOfTarget === 0;
+  const shipped =
+    board?.parent.shippedAt != null ||
+    (integrated && parentBranch?.aheadOfTarget === 0);
 
   const subtaskIds = useMemo(
     () => board?.subtasks.map((s) => s.id) ?? [],

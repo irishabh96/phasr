@@ -30,6 +30,7 @@ import type {
   Repository,
   RunCommand,
   RunningTaskInfo,
+  ShipOutcome,
   StartedTask,
   UserSettings,
   Workspace,
@@ -232,6 +233,16 @@ export const tauri = {
     invoke<InProgress>("git_merge_in_progress", { workspaceId }),
   gitAbortMerge: (workspaceId: string) =>
     invoke<void>("git_abort_merge", { workspaceId }),
+  // Repo-scoped twins of the two above, for the MAIN checkout (a conflicted
+  // Ship lives there — no workspace id reaches it).
+  gitRepoMergeInProgress: (repositoryId: string) =>
+    invoke<InProgress>("git_repo_merge_in_progress", { repositoryId }),
+  gitRepoAbortMerge: (repositoryId: string) =>
+    invoke<void>("git_repo_abort_merge", { repositoryId }),
+  // Push the repository's default branch from the MAIN checkout — the explicit
+  // post-Ship action.
+  gitPushDefaultBranch: (repositoryId: string) =>
+    invoke<GitPushOutcome>("git_push_default_branch", { repositoryId }),
   gitContinueMerge: (workspaceId: string) =>
     invoke<MergeOutcome>("git_continue_merge", { workspaceId }),
   gitResolveConflict: (workspaceId: string, path: string, side: ConflictSide) =>
@@ -286,6 +297,11 @@ export const tauri = {
   // parent id (spec claim #6).
   integrateParent: (parentId: string) =>
     invoke<BoardState>("integrate_parent", { parentId }),
+  // Ship the workflow: merge the integration branch into the default branch in
+  // the MAIN checkout. Local-merge-only by decision — push/Open-PR are the
+  // separate explicit follow-ups below. `clean` stamps `shippedAt` durably.
+  shipEpic: (parentId: string, strategy: MergeStrategy) =>
+    invoke<ShipOutcome>("ship_epic", { parentId, strategy }),
   // Combined review for a CLEAN integration (P0-1). After `integrate_parent`
   // the worktree is clean, so a worktree-based review shows EMPTY — these read
   // the integration BRANCH against its base instead, so the review shows what

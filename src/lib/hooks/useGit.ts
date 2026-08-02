@@ -250,6 +250,27 @@ export function useGitAbortMerge(workspaceId: string) {
   });
 }
 
+/**
+ * Abort a merge stopped mid-flight in the repository's MAIN checkout — the
+ * one-click recovery from a conflicted Ship (`ship_epic`). Repo-scoped: a
+ * conflicted Ship lives in the main checkout, which no workspace id reaches.
+ */
+export function useGitRepoAbortMerge(repositoryId: string) {
+  return useMutation({
+    mutationFn: () => tauri.gitRepoAbortMerge(repositoryId),
+  });
+}
+
+/**
+ * Push the repository's default branch from the MAIN checkout — the explicit
+ * post-Ship action (Ship itself never pushes, by decision).
+ */
+export function useGitPushDefaultBranch(repositoryId: string) {
+  return useMutation({
+    mutationFn: () => tauri.gitPushDefaultBranch(repositoryId),
+  });
+}
+
 export function useGitContinueMerge(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({

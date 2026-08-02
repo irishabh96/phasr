@@ -55,6 +55,7 @@ function subtask(overrides: Partial<Workspace> & { id: string }): Workspace {
     startedAt: null,
     finishedAt: null,
     archivedAt: null,
+    shippedAt: null,
     interruptedAt: null,
     parentId: "epic-1",
     role: "frontend",

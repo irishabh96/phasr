@@ -28,6 +28,7 @@ function subtask(overrides: Partial<Workspace>): Workspace {
     startedAt: iso(60_000),
     finishedAt: null,
     archivedAt: null,
+    shippedAt: null,
     interruptedAt: null,
     parentId: "parent-1",
     role: "frontend",

@@ -51,6 +51,7 @@ export function makeFixtures() {
     startedAt: NOW,
     finishedAt: null,
     archivedAt: null,
+    shippedAt: null,
     updatedAt: NOW,
   };
   const workspaces = [
@@ -766,6 +767,18 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "git_merge_to_main":
       case "git_sync_with_main":
         return { kind: "clean", message: "Merged cleanly" };
+      case "ship_epic":
+        return { kind: "clean", message: "Merged cleanly" };
+      case "git_repo_merge_in_progress":
+        return { kind: "none" };
+      case "git_repo_abort_merge":
+        return null;
+      case "git_push_default_branch":
+        return {
+          branch: f.repositories[0]?.defaultBranch ?? "main",
+          pullRequestUrl: null,
+          provider: null,
+        };
       case "open_pull_request":
         return {
           url: "https://github.com/acme/phasr/pull/1",

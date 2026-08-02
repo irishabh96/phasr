@@ -1,6 +1,10 @@
 import { useState } from "react";
+import { ExternalLink, Loader2, UploadCloud } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@/components/ui/Dialog";
 import { ChangesPanel } from "@/components/ChangesPanel";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { AutopilotToggle } from "@/components/board/AutopilotToggle";
 import { NextGateButton } from "@/components/board/NextGateButton";
@@ -12,6 +16,8 @@ import {
   useIntegrateParent,
 } from "@/lib/hooks/useBoard";
 import { useSetAutopilot } from "@/lib/hooks/useAutopilot";
+import { useGitPushDefaultBranch } from "@/lib/hooks/useGit";
+import { useOpenPullRequest } from "@/lib/hooks/useWorkspaces";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useQueryClient } from "@tanstack/react-query";
 import { humanizeError } from "@/lib/humanizeError";
@@ -47,6 +53,8 @@ export function BoardParentHeader({
   const queryClient = useQueryClient();
   const integrate = useIntegrateParent(board.parent.id);
   const setAutopilot = useSetAutopilot(board.parent.id);
+  const pushMain = useGitPushDefaultBranch(board.parent.repositoryId);
+  const openPr = useOpenPullRequest();
   const { data: repository } = useRepository(board.parent.repositoryId);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewMode, setReviewMode] = useState<"clean" | "conflict">("clean");
@@ -154,6 +162,82 @@ export function BoardParentHeader({
             })
           }
         />
+        {/* Post-ship, the explicit publish follow-ups live HERE durably (the
+            Ship dialog is transient — closing it must not orphan them). Quiet
+            ghosts beside the terminal pill; remote repos only; never coral. */}
+        {shipped && repository?.remoteUrl ? (
+          <>
+            <GlassTooltip
+              content={`Push ${repository.defaultBranch} to origin`}
+              side="bottom"
+            >
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                data-testid="board-push-main"
+                onClick={() =>
+                  pushMain.mutate(undefined, {
+                    onSuccess: (out) =>
+                      showToast({
+                        title: `Pushed ${out.branch} to origin`,
+                        intent: "success",
+                      }),
+                    onError: (err) =>
+                      showToast({
+                        title: "Push failed",
+                        intent: "error",
+                        message: humanizeError(err),
+                      }),
+                  })
+                }
+                disabled={pushMain.isPending}
+              >
+                {pushMain.isPending ? (
+                  <Loader2 size={13} className="animate-spin" aria-hidden />
+                ) : (
+                  <UploadCloud size={13} aria-hidden />
+                )}
+                Push
+              </GlassButton>
+            </GlassTooltip>
+            <GlassTooltip
+              content="Push the integration branch and open a compare page"
+              side="bottom"
+            >
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                data-testid="board-open-pr"
+                onClick={() =>
+                  openPr.mutate(board.parent.id, {
+                    onSuccess: async (out) => {
+                      await openUrl(out.url);
+                      showToast({
+                        title: `Opened ${out.provider} compare page`,
+                        intent: "success",
+                        message: `${out.headBranch} → ${out.baseBranch}`,
+                      });
+                    },
+                    onError: (err) =>
+                      showToast({
+                        title: "Couldn't open a PR",
+                        intent: "error",
+                        message: humanizeError(err),
+                      }),
+                  })
+                }
+                disabled={openPr.isPending}
+              >
+                {openPr.isPending ? (
+                  <Loader2 size={13} className="animate-spin" aria-hidden />
+                ) : (
+                  <ExternalLink size={13} aria-hidden />
+                )}
+                PR
+              </GlassButton>
+            </GlassTooltip>
+          </>
+        ) : null}
         <NextGateButton
           gate={headerGate}
           size="sm"
