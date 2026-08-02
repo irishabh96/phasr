@@ -39,6 +39,7 @@ export function RepoEpics({
   activeParentId: string | null;
   isExpanded: boolean;
 }) {
+  const navigate = useNavigate();
   const workspaces = useWorkspaces(repoId);
   const all = workspaces.data ?? [];
   const epics = all
@@ -67,6 +68,26 @@ export function RepoEpics({
           : "items-center",
       )}
     >
+      {isExpanded && (
+        <button
+          type="button"
+          data-testid="sidebar-workflows-link"
+          onClick={() =>
+            void navigate({
+              to: "/repositories/$repositoryId/board",
+              params: { repositoryId: repoId },
+            })
+          }
+          className={cn(
+            "flex h-6 items-center rounded-[6px] px-2 text-left",
+            "text-[10.5px] font-semibold uppercase tracking-[0.12em] text-(--color-text-muted)",
+            "transition-colors duration-150 hover:bg-(--color-bg-elevated) hover:text-(--color-text-secondary)",
+            "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+          )}
+        >
+          Workflows
+        </button>
+      )}
       {epics.map((epic) => (
         <EpicSidebarNode
           key={epic.id}

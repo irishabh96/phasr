@@ -40,6 +40,21 @@ export function BoardBreadcrumb({
       <span aria-hidden="true" className="text-(--color-text-muted)">
         /
       </span>
+      <Link
+        to="/repositories/$repositoryId/board"
+        params={{ repositoryId }}
+        data-testid="board-breadcrumb-workflows"
+        className={cn(
+          "-mx-1 rounded-[6px] px-1 py-0.5 text-(--color-text-muted)",
+          "transition-colors duration-150 hover:text-(--color-text-primary)",
+          "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+        )}
+      >
+        Workflows
+      </Link>
+      <span aria-hidden="true" className="text-(--color-text-muted)">
+        /
+      </span>
       <span
         aria-current="page"
         title={goal}
