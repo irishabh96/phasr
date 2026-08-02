@@ -435,12 +435,17 @@ describe("buildWorklistItems — M4: a subtask's review decision moves the hones
     expect(ticket.bucket).toBe("needs-you");
   });
 
-  it("an approved ticket collapses back to needs-review (integrate-eligible)", () => {
+  it("an approved ticket is done — settled in Recent, never 'merged into main'", () => {
     const items = buildWorklistItems(
       reviewedWorklist({ state: "approved", atMs: NOW - 30_000 }),
       NO_LIVENESS,
       NOW,
     );
-    expect(items.find((i) => i.id === "ticket")!.state).toBe("needs-review");
+    const ticket = items.find((i) => i.id === "ticket")!;
+    expect(ticket.state).toBe("done");
+    // Approved leaves "Needs you": the next actionable is the EPIC's Integrate.
+    expect(ticket.bucket).toBe("recent");
+    // done means accepted here, not merged — the sub-line must not claim main.
+    expect(ticket.merged).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ import type {
 import { Eye, Lock } from "lucide-react";
 import { AgentStatusBadgeView } from "@/components/AgentStatusBadge";
 import {
+  ApprovedChip,
   ChangesRequestedChip,
   InReviewChip,
 } from "@/components/board/GateChips";
@@ -121,7 +122,11 @@ export function WorklistRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-2.5 pl-2">
-        {isAgentUiState(item.state) ? (
+        {item.parentId && item.state === "done" ? (
+          // An epic subtask only reaches `done` via review APPROVAL — say the
+          // precise word. (A loose agent's `done` stays the honest Done badge.)
+          <ApprovedChip />
+        ) : isAgentUiState(item.state) ? (
           <AgentStatusBadgeView
             state={item.state}
             since={item.since}

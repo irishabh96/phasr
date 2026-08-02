@@ -308,7 +308,7 @@ describe("deriveBoardState", () => {
       expect(r.state).toBe("qas-changes-requested");
     });
 
-    it("review 'approved' → needs-review (integrate-eligible)", () => {
+    it("review 'approved' → done (accepted — the ticket-level terminal state)", () => {
       const backend = subtask({
         id: BACKEND,
         status: "running",
@@ -321,7 +321,10 @@ describe("deriveBoardState", () => {
         NOW,
         rec("approved"),
       );
-      expect(r.state).toBe("needs-review");
+      // Approval supersedes even a live PTY: the work was accepted, so the card
+      // lands in the Done lane (still integrate-eligible for the epic gate).
+      expect(r.state).toBe("done");
+      expect(boardColumn(r.state)).toBe("done");
     });
 
     it("no review passed → unchanged P0 behavior (backward compatible)", () => {

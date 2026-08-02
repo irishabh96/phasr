@@ -42,7 +42,7 @@ export type WorklistBucket =
  *     qas-changes-requested                       → needs-you
  *   working | idle | resolving                    → running
  *   blocked                                        → waiting
- *   done | stopped                                 → recent
+ *   done (approved / clean loose exit) | stopped   → recent
  *
  * The Phase 3 review buckets both surface to the human: `in-review` awaits the
  * reviewer's Approve/Bounce, and `qas-changes-requested` was bounced back and
@@ -198,7 +198,10 @@ export function buildWorklistItems(
         epicName,
         parentId: board.parent.id,
         branch: subtask.branch,
-        merged: state === "done",
+        // A subtask's `done` means "review approved" — NOT merged. The epic's
+        // Integrate/Ship happen at the parent level, so the "merged into main"
+        // sub-line would be a lie here; the row keeps its branch instead.
+        merged: false,
         blockedOnRoles:
           state === "blocked" ? blockingRoles(subtask, board) : [],
         exitCode: subtask.exitCode,

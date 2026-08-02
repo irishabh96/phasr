@@ -627,10 +627,16 @@ impl AutopilotDriver {
         now_ms: i64,
     ) -> TicketState {
         // 0. The review decision layers over everything (a file, never a status).
+        //    Approved = the ticket-level terminal state (FE Done lane). Policy
+        //    output is unchanged — `next_auto_action` short-circuits on the raw
+        //    `review=approved` before consulting the state — but the persisted
+        //    `state_hash` for an approved ticket changes ("needs-review" →
+        //    "done"), so one already-parked epic may re-log a single audit line
+        //    after upgrade.
         match review {
             Some(ReviewLadderState::Requested) => return TicketState::InReview,
             Some(ReviewLadderState::ChangesRequested) => return TicketState::QasChangesRequested,
-            Some(ReviewLadderState::Approved) => return TicketState::NeedsReview,
+            Some(ReviewLadderState::Approved) => return TicketState::Done,
             None => {}
         }
         // 1. A published contract is the strongest "finished its job" signal — past

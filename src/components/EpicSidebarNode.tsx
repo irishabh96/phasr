@@ -298,5 +298,8 @@ function boardStateLabel(state: BoardCardState): string {
   if (state === "needs-review") return "Ready for review";
   if (state === "in-review") return "In review";
   if (state === "qas-changes-requested") return "Changes requested";
+  // In a board context `done` only comes from review approval (the rollup
+  // currently derives without review, but a review-fed caller must not lie).
+  if (state === "done") return "Approved";
   return agentStatusMeta(state).label;
 }

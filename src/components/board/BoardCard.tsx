@@ -159,7 +159,12 @@ export function BoardCardView({
 
       {/* Status — quiet. Only status carries semantic color. */}
       <div className="flex flex-wrap items-center gap-1.5">
-        {isAgentUiState(state) ? (
+        {review?.state === "approved" ? (
+          // Approved derives to `done` (an AgentUiState), so this must come
+          // BEFORE the honest-badge branch or the card would read a generic
+          // "Done" instead of the precise "Approved".
+          <ApprovedChip />
+        ) : isAgentUiState(state) ? (
           <AgentStatusBadgeView
             state={state}
             since={since}
@@ -171,8 +176,6 @@ export function BoardCardView({
           <InReviewChip />
         ) : state === "qas-changes-requested" ? (
           <ChangesRequestedChip comment={review?.comment ?? null} />
-        ) : review?.state === "approved" ? (
-          <ApprovedChip />
         ) : (
           <ReviewChip />
         )}

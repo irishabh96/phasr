@@ -25,12 +25,18 @@ import type {
  *
  * Phase 3 (§R2 / §A5) layers the review decision (`review.json`) on TOP as two
  * more derived-only buckets — still never a stored `WorkspaceStatus` (invariant
- * #10). `approved` collapses back into `needs-review` (it is integrate-eligible):
+ * #10):
  *
  * - `in-review`             — `review.state:"requested"` — in the Review lane,
  *                             awaiting the reviewer's Approve / Bounce-back.
  * - `qas-changes-requested` — `review.state:"changes-requested"` — re-opened to
  *                             In progress, carrying the neutral bounce chip.
+ *
+ * `approved` derives to `done` — the ticket-level TERMINAL state (accepted
+ * work, the Done lane). Approval is the ticket's acceptance gate; the epic-level
+ * Integrate/Ship milestones live on the parent header, not on ticket cards. In a
+ * BOARD context `done` therefore always means "review approved" (an agent's
+ * honest clean exit derives to `needs-review` — finished ≠ accepted).
  */
 export type BoardCardState =
   | AgentUiState
@@ -90,7 +96,7 @@ function isBlocked(subtask: Workspace, board: BoardGraph): boolean {
  *   0. review.json decision (Phase 3, §R2) — supersedes the honest lane:
  *        "requested"          → `in-review`               (Review lane)
  *        "changes-requested"  → `qas-changes-requested`   (re-opened → In progress)
- *        "approved"           → `needs-review`            (integrate-eligible)
+ *        "approved"           → `done`                    (accepted — Done lane)
  *   1. published contract → `needs-review`  (handoff complete, strongest signal)
  *   2. honest `done`      → `needs-review`  (clean exit = ready for review)
  *   3. pending + unsatisfied incoming edge → `blocked`
@@ -121,8 +127,10 @@ export function deriveBoardState(
       return { state: "qas-changes-requested", since: agent.since };
     }
     if (review.state === "approved") {
-      // Approved stays in Review, marked integrate-eligible (`needs-review`).
-      return { state: "needs-review", since: agent.since };
+      // Approved = accepted — the ticket-level terminal state (Done lane).
+      // Still integrate-eligible; the epic's Integrate reads review.json, not
+      // this lane.
+      return { state: "done", since: agent.since };
     }
   }
 
@@ -186,7 +194,9 @@ export function boardColumn(state: BoardCardState): BoardColumn {
     case "needs-review":
     case "in-review":
       return "review";
-    // Integrated (P0: only the parent lands here once integration ships).
+    // Approved — accepted work, the ticket-level terminal state. (In a board
+    // context `done` is only ever produced by review approval; an honest
+    // clean exit derives to `needs-review` above.)
     case "done":
       return "done";
   }

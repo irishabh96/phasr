@@ -267,7 +267,7 @@ test.describe("gate flows + live invalidation (real app)", () => {
     await approve.click();
 
     // resolve_review fires with the approve decision, and the ticket becomes
-    // integrate-eligible (the Approved chip, still in the Review lane).
+    // integrate-eligible (the Approved chip).
     await expect
       .poll(async () =>
         (await calls(page)).some(
@@ -280,6 +280,13 @@ test.describe("gate flows + live invalidation (real app)", () => {
     await expect(backend.getByTestId("approved-chip")).toBeVisible({
       timeout: 10_000,
     });
+    // Approved = accepted — the card lands in the DONE lane (the ticket-level
+    // terminal state; the epic's Integrate lives in the parent header). This
+    // is the assertion whose absence let the Done lane stay structurally
+    // unreachable for four phases.
+    await expect(
+      page.getByTestId("board-column-done").getByTestId("approved-chip"),
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test("Bounce-back requires a comment, fires resolve_review(bounce), and re-opens the ticket", async ({
