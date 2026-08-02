@@ -50,8 +50,12 @@ impl WorkspaceStatus {
             // is the intended path.
             (Running, Stopped | Completed | Failed | Archived) => true,
             (Stopped, Running | Archived | Failed) => true,
-            (Completed, Archived) => true,
-            (Failed, Archived | Pending) => true,
+            // Completed/Failed → Running is the HUMAN-initiated rework respawn
+            // (a bounce on an exited producer re-spawns it in its own worktree,
+            // `respawn_for_rework`). Safe: that path only fires when the PTY is
+            // provably dead, so no live process gets its row yanked.
+            (Completed, Running | Archived) => true,
+            (Failed, Running | Archived | Pending) => true,
             (Archived, Pending) => true,
             (a, b) if a == b => true,
             _ => false,
@@ -195,7 +199,18 @@ mod tests {
     #[test]
     fn rejects_illegal_transition() {
         assert!(!WorkspaceStatus::Pending.can_transition_to(WorkspaceStatus::Completed));
-        assert!(!WorkspaceStatus::Completed.can_transition_to(WorkspaceStatus::Running));
+        // Archived is the retirement state — only the explicit un-archive
+        // (→ Pending) leaves it, never a direct revival.
+        assert!(!WorkspaceStatus::Archived.can_transition_to(WorkspaceStatus::Running));
+    }
+
+    // Completed/Failed → Running is LEGAL since Phase 5: the human-bounce
+    // respawn (`respawn_for_rework`) revives an exited producer, and the path
+    // only fires when the PTY is provably dead.
+    #[test]
+    fn rework_respawn_transitions_are_legal() {
+        assert!(WorkspaceStatus::Completed.can_transition_to(WorkspaceStatus::Running));
+        assert!(WorkspaceStatus::Failed.can_transition_to(WorkspaceStatus::Running));
     }
 
     #[test]

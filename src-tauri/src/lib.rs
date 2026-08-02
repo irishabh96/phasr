@@ -207,6 +207,7 @@ pub fn run() {
             commands::board::publish_contract,
             commands::board::integrate_parent,
             commands::board::ship_epic,
+            commands::board::start_ticket,
             commands::workspaces::archive_epic,
             commands::board::board_integration_diff,
             commands::board::board_integration_file_diff,

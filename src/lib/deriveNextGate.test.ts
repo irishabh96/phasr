@@ -500,6 +500,7 @@ interface FixtureTicketRow {
     validate: { passed: boolean; atMs: number; failingCount: number } | null;
     checksConfigured: boolean;
     blockedOn: string[];
+    queued?: boolean;
     autopilotEnabled?: boolean;
   };
   fe: FixtureGate | null;
@@ -565,6 +566,7 @@ describe("gate-ladder parity fixture (FE half)", () => {
           : null,
         checksConfigured: row.input.checksConfigured,
         blockedOn: row.input.blockedOn,
+        ...(row.input.queued !== undefined ? { queued: row.input.queued } : {}),
         ...(row.input.autopilotEnabled !== undefined
           ? { autopilotEnabled: row.input.autopilotEnabled }
           : {}),
@@ -593,4 +595,31 @@ describe("gate-ladder parity fixture (FE half)", () => {
       expect(g).toEqual(expected);
     });
   }
+});
+
+describe("the Start override (queued) — the shapes the fixture's bilingual rows can't carry", () => {
+  it("a pending-ready ticket (derived state 'stopped') gets Start", () => {
+    // The REAL derived state for a pending row is `stopped`
+    // (deriveAgentState); the shared fixture uses `idle` as its bilingual
+    // stand-in because the Rust TicketState has no `stopped` — this locks the
+    // true FE shape.
+    const g = deriveNextGate(ticket({ state: "stopped", queued: true }));
+    expect(g).toEqual({
+      verb: "start",
+      label: "Start",
+      enabled: true,
+      reason: null,
+      intent: "primary",
+      confirm: false,
+    });
+  });
+
+  it("blocked always wins over a mis-flagged queued (no Start upstream)", () => {
+    const g = deriveNextGate(
+      ticket({ state: "blocked", queued: true, blockedOn: ["backend"] }),
+    );
+    expect(g.verb).toBe("request-review");
+    expect(g.enabled).toBe(false);
+    expect(g.reason).toBe("Waiting for backend");
+  });
 });

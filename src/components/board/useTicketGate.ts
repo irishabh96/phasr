@@ -11,6 +11,7 @@ import {
   useBoardGates,
   useRequestReview,
   useResolveReview,
+  useStartTicket,
   useValidateTicket,
 } from "@/lib/hooks/useBoard";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
@@ -88,6 +89,7 @@ export function useTicketGate(
   const validate = useValidateTicket(parentId ?? "");
   const requestReview = useRequestReview(parentId ?? "");
   const resolveReview = useResolveReview(parentId ?? "");
+  const startTicket = useStartTicket(parentId ?? "");
 
   if (!workspace || !isSubtask || !parentId || !board) return null;
 
@@ -106,6 +108,8 @@ export function useTicketGate(
     review,
     checksConfigured,
     blockedOn,
+    // Ready-but-unscheduled (pending, edges satisfied) → the Start override.
+    queued: workspace.status === "pending" && state !== "blocked",
     // The owning epic's autopilot flag rides on the already-fetched board DTO
     // (`board.parent` is this ticket's epic). Threading it downgrades an
     // autopilot-owned AUTO gate (Validate / Request-review) from coral primary
@@ -127,10 +131,15 @@ export function useTicketGate(
           : null;
 
   const pending =
-    validate.isPending || requestReview.isPending || resolveReview.isPending;
+    validate.isPending ||
+    requestReview.isPending ||
+    resolveReview.isPending ||
+    startTicket.isPending;
 
   const run = (verb: GateVerb): Promise<unknown> => {
     switch (verb) {
+      case "start":
+        return startTicket.mutateAsync(workspace.id);
       case "validate":
         return validate.mutateAsync(workspace.id);
       case "request-review":

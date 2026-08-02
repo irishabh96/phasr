@@ -116,6 +116,18 @@
       "autopilot": "auto:request-review"
     },
     {
+      "name": "queued (pending, edges satisfied) — the manual Start override; the scheduler owns routine spawning so autopilot never starts",
+      "input": { "state": "idle", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [], "queued": true },
+      "fe": { "verb": "start", "label": "Start", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "none"
+    },
+    {
+      "name": "queued under an autopilot-on epic — Start is NEVER downgraded (not an AUTO verb; clicking is explicit human intent)",
+      "input": { "state": "idle", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [], "queued": true, "autopilotEnabled": true },
+      "fe": { "verb": "start", "label": "Start", "enabled": true, "reason": null, "intent": "primary", "confirm": false },
+      "autopilot": "none"
+    },
+    {
       "name": "autopilot-on epic downgrades an AUTO gate to neutral (still enabled, I4)",
       "input": { "state": "needs-review", "review": null, "validate": null, "checksConfigured": false, "blockedOn": [], "autopilotEnabled": true },
       "fe": { "verb": "request-review", "label": "Request review", "enabled": true, "reason": null, "intent": "neutral", "confirm": false },

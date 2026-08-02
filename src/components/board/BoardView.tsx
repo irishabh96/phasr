@@ -18,6 +18,7 @@ import {
 import {
   useRequestReview,
   useResolveReview,
+  useStartTicket,
   useValidateTicket,
 } from "@/lib/hooks/useBoard";
 import { useNavigate } from "@tanstack/react-router";
@@ -88,6 +89,7 @@ export function BoardView({
   const validate = useValidateTicket(board.parent.id);
   const requestReview = useRequestReview(board.parent.id);
   const resolveReview = useResolveReview(board.parent.id);
+  const startTicket = useStartTicket(board.parent.id);
 
   const reviewFor = (id: string): ReviewRecord | undefined =>
     gates?.reviews.find((r) => r.subtaskId === id);
@@ -98,6 +100,8 @@ export function BoardView({
   // comment); the button surfaces it as a paired secondary.
   const runTicketGate = (verb: string, subtaskId: string): Promise<unknown> => {
     switch (verb) {
+      case "start":
+        return startTicket.mutateAsync(subtaskId);
       case "validate":
         return validate.mutateAsync(subtaskId);
       case "request-review":
@@ -144,6 +148,8 @@ export function BoardView({
       review: review ?? null,
       checksConfigured,
       blockedOn: blockedOnRoles,
+      // Ready-but-unscheduled → the manual Start override (Phase 5).
+      queued: subtask.status === "pending" && state !== "blocked",
       autopilotEnabled,
     });
 
@@ -151,6 +157,7 @@ export function BoardView({
     const gatePending =
       (validate.isPending && validate.variables === subtask.id) ||
       (requestReview.isPending && requestReview.variables === subtask.id) ||
+      (startTicket.isPending && startTicket.variables === subtask.id) ||
       (resolveReview.isPending &&
         resolveReview.variables?.subtaskId === subtask.id);
 

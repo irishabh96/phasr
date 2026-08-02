@@ -973,6 +973,128 @@ impl TaskOrchestrator {
         }
     }
 
+    /// True while this task id owns a live PTY. The human-bounce respawn path
+    /// probes this AFTER `resolve_review` ran: a live handle means the change
+    /// request was typed into the running agent, a dead one means the ticket
+    /// needs `respawn_for_rework`.
+    pub fn has_live_task(&self, task_id: &str) -> bool {
+        self.runtime.get(task_id).is_some()
+    }
+
+    /// Manually start ONE ready subtask now — the human Start gate (Phase 5 of
+    /// the completion program). The scheduler owns routine spawning; this is
+    /// the explicit override for "I want THIS ticket running now", so it
+    /// deliberately bypasses the tick cap. The caller (commands/board.rs)
+    /// verified readiness (Pending + every incoming edge satisfied) — the
+    /// status guard + `spawn_ready_subtask`'s under-lock idempotency re-check
+    /// still make a scheduler race harmless (one of the two spawns no-ops).
+    pub async fn start_subtask_now(
+        &self,
+        parent: &Workspace,
+        subtask: &Workspace,
+        deps: &[WorkspaceDependency],
+        contracts: &[WorkspaceContract],
+        config: &SchedulerConfig,
+    ) -> Result<(), OrchestratorError> {
+        if subtask.status != WorkspaceStatus::Pending {
+            return Err(OrchestratorError::AlreadyFinished(
+                subtask.status.as_str().into(),
+            ));
+        }
+        self.spawn_ready_subtask(parent, subtask, deps, contracts, config)
+            .await
+    }
+
+    /// Re-spawn an EXITED producer to act on a human bounce (Phase 5). The
+    /// agent re-enters its OWN worktree (`cwd_for_task` recreates a missing
+    /// one) running its persisted command — the original brief/handoff prompt
+    /// is already baked into `workspace.command` by `spawn_ready_subtask` —
+    /// and the CHANGE REQUEST rides as the delivered initial prompt (the same
+    /// TUI-ready delivery a fresh spawn uses). The CLI grant is re-minted
+    /// (minting for the same subtask invalidates the old token, §R5).
+    ///
+    /// Guarded to the dead-PTY case: a live handle means the pipe path already
+    /// delivered, so this no-ops rather than double-spawn. Autopilot NEVER
+    /// calls this — re-work stays a human decision (Stage A §2).
+    pub async fn respawn_for_rework(
+        &self,
+        task_id: &str,
+        feedback: &str,
+    ) -> Result<(), OrchestratorError> {
+        if self.runtime.get(task_id).is_some() {
+            return Ok(());
+        }
+        let workspace = self.workspaces.get(task_id).await?;
+        let cwd = self.cwd_for_task(&workspace).await?;
+
+        let prompt = format!(
+            "## Change requested\n\nThe reviewer bounced this ticket back with \
+             the following change request:\n\n{feedback}\n\nAct on it in this \
+             worktree — your brief and earlier instructions still stand (re-read \
+             the ticket brief if you need the full context). When the rework is \
+             done, hand off again: validate and re-request review."
+        );
+
+        // Re-mint the CLI grant so the respawned producer can self-advance the
+        // board again (mint-for-same-subtask invalidates the previous token).
+        let cli_env = match &self.cli {
+            Some(cli) => match self.workspaces.owner_id(task_id).await.ok().flatten() {
+                Some(user_id) => {
+                    let parent_id = workspace.parent_id.clone().unwrap_or_default();
+                    let token = cli.tokens.mint(task_id, &user_id, &parent_id);
+                    vec![
+                        (
+                            "PHASR_BIN".to_string(),
+                            cli.config.bin_path.to_string_lossy().into_owned(),
+                        ),
+                        (
+                            "PHASR_SOCK".to_string(),
+                            cli.config.socket_path.to_string_lossy().into_owned(),
+                        ),
+                        ("PHASR_TOKEN".to_string(), token),
+                    ]
+                }
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+
+        let now = Utc::now();
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    started_at: Some(Some(now)),
+                    exit_code: Some(None),
+                    finished_at: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let command = if workspace.command.trim().is_empty() {
+            None
+        } else {
+            Some(workspace.command.clone())
+        };
+        let handle =
+            self.runtime
+                .spawn(task_id.to_string(), command, Some(prompt), cwd, 24, 80, cli_env)?;
+
+        self.broadcast_status(TaskStatusEvent {
+            task_id: task_id.to_string(),
+            repository_id: updated.repository_id.clone(),
+            status: WorkspaceStatus::Running,
+            exit_code: None,
+            derived_state: None,
+            last_activity_at: None,
+        });
+        self.spawn_exit_watcher(task_id.to_string(), updated.repository_id, handle);
+        Ok(())
+    }
+
     /// Spawn one READY subtask: mint its worktree+branch, seed its handoff
     /// prompt (B5), transition it `Pending → Running`, spawn its PTY, and attach
     /// the exit-watcher. REUSES `start_task`'s spawn internals verbatim (the
@@ -2879,5 +3001,88 @@ mod tests {
         );
 
         cleanup_board(&orchestrator, &workspaces, &parent_id).await;
+    }
+
+    // ── respawn_for_rework (Phase 5, completion program) ────────────────────
+
+    // A human bounce on an EXITED producer revives it: same row, same
+    // worktree, status back to Running with a live PTY — and a second call
+    // while it's alive no-ops instead of double-spawning.
+    #[tokio::test]
+    async fn respawn_for_rework_revives_a_completed_producer_in_its_worktree() {
+        let (orchestrator, repositories, pool, dir) = fresh_orchestrator().await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let repo_dir = dir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repository = Repository::new(
+            "repo".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repository.default_branch = "main".into();
+        repositories.insert(&repository).await.unwrap();
+
+        // A finished producer with a REAL worktree (`cat` idles forever, so the
+        // respawned PTY stays observably alive).
+        let mut ws = Workspace::new(repository.id.clone(), "ticket".into(), "cat".into());
+        ws.workspace_kind = WorkspaceKind::Subtask;
+        ws.parent_id = Some("parent-x".into());
+        ws.role = Some("backend".into());
+        let worktree = dir.path().join("wt");
+        let branch = "phasr/rework-test";
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                worktree.to_str().unwrap(),
+                "main",
+            ])
+            .current_dir(&repo_dir)
+            .status()
+            .unwrap();
+        ws.branch = Some(branch.into());
+        ws.worktree_path = Some(worktree.to_string_lossy().into_owned());
+        workspaces.insert(&ws).await.unwrap();
+        for status in [WorkspaceStatus::Running, WorkspaceStatus::Completed] {
+            workspaces
+                .update(
+                    &ws.id,
+                    crate::store::WorkspaceUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(!orchestrator.has_live_task(&ws.id), "producer is dead");
+        orchestrator
+            .respawn_for_rework(&ws.id, "fix the spacing in the header")
+            .await
+            .expect("respawn must succeed on a completed row");
+
+        assert!(orchestrator.has_live_task(&ws.id), "respawn owns a live PTY");
+        let row = workspaces.get(&ws.id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Running);
+        assert_eq!(row.exit_code, None);
+        assert_eq!(
+            row.worktree_path.as_deref(),
+            Some(worktree.to_str().unwrap()),
+            "the respawn re-enters the SAME worktree"
+        );
+
+        // While alive, a second respawn is a no-op — never a double spawn.
+        orchestrator
+            .respawn_for_rework(&ws.id, "another note")
+            .await
+            .expect("live-handle respawn must no-op");
+
+        let _ = orchestrator.stop_task(&ws.id).await;
     }
 }

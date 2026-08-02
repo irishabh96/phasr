@@ -58,6 +58,14 @@ export interface TicketGateInput {
   /** Producer roles a blocked ticket is waiting on (for the disabled reason). */
   blockedOn?: readonly string[];
   /**
+   * A `pending` ticket whose incoming edges are ALL satisfied but which the
+   * scheduler hasn't picked up yet (queued behind the tick/cap). Its one next
+   * gate is the manual Start override (Phase 5 — the verb existed since
+   * Phase 3 and was never derivable). Derived by the caller from
+   * `status === "pending"` + the derived state not being `blocked`.
+   */
+  queued?: boolean;
+  /**
    * The owning epic has autopilot ON (Phase 5a, Stage A). When true and the
    * derived gate is an AUTO step autopilot will fire itself (Validate /
    * Request-review), its `intent` is downgraded from `primary` (coral) to
@@ -166,6 +174,14 @@ function deriveTicketGate(i: TicketGateInput): NextGate {
       "neutral",
       false,
     );
+  }
+
+  // 0.5. Ready-but-unscheduled → the manual Start override (never
+  //      autopilot-owned: the scheduler owns routine spawning, so `start` is
+  //      absent from AUTOPILOT_AUTO_VERBS and keeps its coral primary even
+  //      under an autopilot-on epic — clicking it is explicit human intent).
+  if (i.queued) {
+    return gate("start", "Start", true, null, "primary", false);
   }
 
   // 1. In review (requested) → the reviewer's gate: Approve (primary). The

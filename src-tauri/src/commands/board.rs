@@ -447,6 +447,92 @@ pub async fn ship_epic(
     Ok(outcome)
 }
 
+/// The human Start gate (Phase 5 of the completion program): spawn ONE ready
+/// ticket now instead of waiting for the scheduler's next tick/cap slot. The
+/// `start` verb existed in the FE ladder since Phase 3 and was never
+/// derivable — a queued ticket showed a passive waiting pane with no
+/// override. Readiness is verified here (Pending + every incoming edge
+/// satisfied); a not-ready ticket gets a calm error naming who it waits on.
+#[tauri::command]
+pub async fn start_ticket(
+    subtask_id: String,
+    workspaces: State<'_, WorkspaceRepo>,
+    board: State<'_, BoardRepo>,
+    orchestrator: State<'_, crate::orchestrator::TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+    board_events: State<'_, Arc<BoardEventBus>>,
+) -> Result<(), BoardCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let subtask = workspaces
+        .get_for_user(&subtask_id, &current.user_id)
+        .await?;
+    let Some(parent_id) = subtask.parent_id.clone() else {
+        return Err(BoardCmdError::NotASubtask(subtask_id));
+    };
+    let parent = workspaces
+        .get_for_user(&parent_id, &current.user_id)
+        .await?;
+    let siblings = workspaces
+        .list_by_parent_for_user(&parent_id, &current.user_id)
+        .await?;
+    let deps = board.list_dependencies(&parent_id).await?;
+    let contracts = board.list_contracts(&parent_id).await?;
+
+    if let Some(reason) = blocked_start_reason(&subtask, &siblings, &deps, &contracts) {
+        return Err(BoardCmdError::InvalidDecomposition(reason));
+    }
+
+    orchestrator
+        .start_subtask_now(
+            &parent,
+            &subtask,
+            &deps,
+            &contracts,
+            &crate::orchestrator::SchedulerConfig::default(),
+        )
+        .await
+        .map_err(|e| BoardCmdError::Git(GitError::CommandFailed(e.to_string())))?;
+    board_events.notify(&parent_id);
+    Ok(())
+}
+
+/// Why a manual Start can't fire right now, or `None` when the ticket is
+/// ready. PURE, and readiness is THE scheduler's own `ready_subtask_ids`
+/// derivation — never a second definition of "ready". The reason names the
+/// unpublished producers ("Waiting for backend") so the error is the same
+/// calm copy the disabled gate shows.
+pub(crate) fn blocked_start_reason(
+    subtask: &Workspace,
+    siblings: &[Workspace],
+    deps: &[WorkspaceDependency],
+    contracts: &[WorkspaceContract],
+) -> Option<String> {
+    let ready = crate::orchestrator::ready_subtask_ids(siblings, deps, contracts);
+    if ready.contains(&subtask.id) {
+        return None;
+    }
+    let waiting_on: Vec<String> = deps
+        .iter()
+        .filter(|e| e.to_subtask_id == subtask.id)
+        .filter(|e| {
+            !contracts
+                .iter()
+                .any(|c| c.subtask_id == e.from_subtask_id && c.published_at.is_some())
+        })
+        .filter_map(|e| {
+            siblings
+                .iter()
+                .find(|s| s.id == e.from_subtask_id)
+                .map(|s| s.role.clone().unwrap_or_else(|| s.name.clone()))
+        })
+        .collect();
+    Some(if waiting_on.is_empty() {
+        "This ticket isn't ready to start".to_string()
+    } else {
+        format!("Waiting for {}", waiting_on.join(", "))
+    })
+}
+
 /// Owner-scoped Ship core (`get_for_user`), split out so tests and the real
 /// end-to-end drive exercise the exact command path.
 pub(crate) async fn ship_epic_inner(
@@ -2519,6 +2605,45 @@ mod tests {
         assert_eq!(
             order.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
             vec!["backend".to_string(), "frontend".to_string()]
+        );
+    }
+
+    // ── start_ticket readiness (Phase 5, completion program) ────────────────
+
+    // The manual Start guard speaks the scheduler's own readiness derivation
+    // and names the unpublished producers in its reason.
+    #[tokio::test]
+    async fn blocked_start_reason_names_the_unpublished_producers() {
+        let (workspaces, board, _repos, repo, _tmp) = fresh_with_git().await;
+        let (_parent, backend, frontend) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        // seed_board leaves backend Running; a manual Start targets a PENDING row.
+        let siblings = vec![backend.clone(), frontend.clone()];
+        let deps = board.list_dependencies(&frontend.parent_id.clone().unwrap()).await.unwrap();
+
+        // frontend waits on backend (no contract yet) → the reason names it.
+        let reason = blocked_start_reason(&frontend, &siblings, &deps, &[]);
+        assert_eq!(reason.as_deref(), Some("Waiting for backend"));
+
+        // backend itself has no incoming edges — but it isn't Pending (Running),
+        // so it's not startable either; the generic reason applies.
+        let reason = blocked_start_reason(&backend, &siblings, &deps, &[]);
+        assert_eq!(reason.as_deref(), Some("This ticket isn't ready to start"));
+
+        // With backend's contract published, frontend becomes ready → None.
+        let mut contract = WorkspaceContract::new(
+            frontend.parent_id.clone().unwrap(),
+            backend.id.clone(),
+            "backend".into(),
+            "/tmp/contract.md".into(),
+        );
+        contract.published_at = Some(chrono::Utc::now());
+        let mut pending_frontend = frontend.clone();
+        pending_frontend.status = WorkspaceStatus::Pending;
+        let siblings = vec![backend.clone(), pending_frontend.clone()];
+        assert_eq!(
+            blocked_start_reason(&pending_frontend, &siblings, &deps, &[contract]),
+            None
         );
     }
 

@@ -307,6 +307,10 @@ export const tauri = {
   // separate explicit follow-ups below. `clean` stamps `shippedAt` durably.
   shipEpic: (parentId: string, strategy: MergeStrategy) =>
     invoke<ShipOutcome>("ship_epic", { parentId, strategy }),
+  // The manual Start override: spawn one READY ticket now instead of waiting
+  // for the scheduler's next tick/cap slot.
+  startTicket: (subtaskId: string) =>
+    invoke<void>("start_ticket", { subtaskId }),
   // Combined review for a CLEAN integration (P0-1). After `integrate_parent`
   // the worktree is clean, so a worktree-based review shows EMPTY — these read
   // the integration BRANCH against its base instead, so the review shows what

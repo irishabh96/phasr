@@ -239,6 +239,38 @@ pub async fn resolve_review(
     )
     .await?;
 
+    // Phase 5 (completion program): a HUMAN bounce on a DEAD producer
+    // re-spawns it in its own worktree with the change request as the
+    // delivered prompt — request-changes on a finished ticket stops being a
+    // soft dead end. The `_inner` already left its honest "could not be
+    // delivered" note; the respawn appends its own truthful line, so the
+    // comment thread reads as a timeline, never a rewrite. Autopilot/QAS
+    // bounces never reach this branch (this command is the human path).
+    if matches!(decision, ReviewDecision::Bounce) && !orchestrator.has_live_task(&subtask_id) {
+        match orchestrator
+            .respawn_for_rework(&subtask_id, comment.as_deref().unwrap_or_default())
+            .await
+        {
+            Ok(()) => {
+                if let Ok(repository) = repositories.get(&subtask.repository_id).await {
+                    if let Some(repo_root) = repository.local_path.as_deref() {
+                        let _ = add_comment(
+                            std::path::Path::new(repo_root),
+                            &subtask.id,
+                            "phasr",
+                            LastEditedBy::Agent,
+                            "Re-spawned the producing agent with your change \
+                             request — it is re-reading the ticket now.",
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                log::warn!("bounce respawn failed for {subtask_id}: {err}");
+            }
+        }
+    }
+
     if let Some(parent_id) = subtask.parent_id.as_deref() {
         board_events.notify(parent_id);
     }

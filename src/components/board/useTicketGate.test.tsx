@@ -27,6 +27,7 @@ vi.mock("@/lib/hooks/useBoard", () => ({
   useValidateTicket: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useRequestReview: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useResolveReview: () => ({ isPending: false, mutateAsync: vi.fn() }),
+  useStartTicket: () => ({ isPending: false, mutateAsync: vi.fn() }),
 }));
 
 vi.mock("@/lib/hooks/useRunCommands", () => ({

@@ -769,6 +769,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { kind: "clean", message: "Merged cleanly" };
       case "ship_epic":
         return { kind: "clean", message: "Merged cleanly" };
+      case "start_ticket":
+        return null;
       case "git_repo_merge_in_progress":
         return { kind: "none" };
       case "git_repo_abort_merge":

@@ -113,6 +113,19 @@ export function useValidateTicket(parentId: string) {
 }
 
 /**
+ * The manual Start override (Phase 5): spawn one READY ticket now instead of
+ * waiting for the scheduler. The backend re-verifies readiness and answers a
+ * not-ready ticket with the calm "Waiting for <roles>" reason.
+ */
+export function useStartTicket(parentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (subtaskId: string) => tauri.startTicket(subtaskId),
+    onSuccess: () => invalidateBoard(queryClient, parentId),
+  });
+}
+
+/**
  * Request review (Phase 3 R2): writes `review.json{requested}` (and, for a
  * producer, composes `publish_contract` server-side so dependents unblock).
  * Returns the refreshed board — seed it, then invalidate so the derived Review
