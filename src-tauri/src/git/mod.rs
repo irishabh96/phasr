@@ -26,8 +26,9 @@ pub use files::list_files;
 pub use init::init_repo;
 pub use log::{commit_files, log as git_log_query, Commit, CommitFileChange, LogOptions};
 pub use merge::{
-    abort as merge_abort, continue_after_resolution as merge_continue, has_unpushed_commits,
-    in_progress as merge_in_progress, merge_into, merge_to, set_resolution as merge_set_resolution,
+    abort as merge_abort, branch_fully_merged, continue_after_resolution as merge_continue,
+    has_unpushed_commits, in_progress as merge_in_progress, merge_into, merge_to,
+    set_resolution as merge_set_resolution,
     ConflictSide, InProgress, MergeOutcome, MergeStrategy,
 };
 pub use naming::{

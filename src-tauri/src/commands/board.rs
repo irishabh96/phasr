@@ -2665,6 +2665,201 @@ mod tests {
         );
     }
 
+    // ── archive_epic / delete cascade (Phase 3, completion program) ─────────
+
+    /// Give one seeded subtask a REAL worktree dir (git worktree add) so the
+    /// teardown paths have something true to remove.
+    async fn attach_worktree(
+        workspaces: &WorkspaceRepo,
+        repo_path: &Path,
+        base: &Path,
+        ws_id: &str,
+        branch: &str,
+    ) -> std::path::PathBuf {
+        let dir = base.join(ws_id);
+        let status = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                dir.to_str().unwrap(),
+                branch,
+            ])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git worktree add failed");
+        workspaces
+            .update(
+                ws_id,
+                crate::store::WorkspaceUpdate {
+                    worktree_path: Some(Some(dir.to_string_lossy().into_owned())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        dir
+    }
+
+    fn branch_exists(repo_path: &Path, branch: &str) -> bool {
+        Command::new("git")
+            .args(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")])
+            .current_dir(repo_path)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    // Archive cascade: children + parent stamped archived, worktrees removed,
+    // BRANCHES KEPT (refs protect the work), CLI grants invalidated, rows
+    // truthful (worktree_path nulled).
+    #[tokio::test]
+    async fn archive_epic_removes_worktrees_keeps_branches_invalidates_tokens() {
+        let (workspaces, board, repos, repo, tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "b\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "f\n", "frontend work");
+        let (parent, backend, frontend) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let wt_base = tmp.path().join("worktrees");
+        std::fs::create_dir_all(&wt_base).unwrap();
+        let backend_wt =
+            attach_worktree(&workspaces, repo_path, &wt_base, &backend.id, "phasr/backend").await;
+
+        let tokens = crate::orchestrator::CliTokenRegistry::new();
+        let token = tokens.mint(&backend.id, "user-a", &parent.id);
+        let repo_locks = RepoLockRegistry::new();
+
+        let archived = crate::commands::workspaces::archive_epic_inner(
+            &parent.id,
+            "user-a",
+            None,
+            None,
+            &workspaces,
+            &repos,
+            &repo_locks,
+            &tokens,
+        )
+        .await
+        .expect("archive must succeed");
+
+        assert_eq!(archived.status, WorkspaceStatus::Archived);
+        assert!(archived.archived_at.is_some());
+        let b = workspaces.get(&backend.id).await.unwrap();
+        let f = workspaces.get(&frontend.id).await.unwrap();
+        assert_eq!(b.status, WorkspaceStatus::Archived);
+        assert_eq!(f.status, WorkspaceStatus::Archived);
+        assert_eq!(b.worktree_path, None, "rows must not point at dead paths");
+        assert!(!backend_wt.exists(), "the child worktree is reclaimed");
+        assert!(
+            branch_exists(repo_path, "phasr/backend"),
+            "archive KEEPS branches — refs protect the work"
+        );
+        assert!(
+            tokens.resolve(&token).is_none(),
+            "an archived ticket's CLI grant must die with it"
+        );
+    }
+
+    // Delete cascade: a parent takes its children's rows, worktrees AND
+    // branches with it — before this, children orphaned with dangling
+    // parent_ids, invisible to every UI, leaking worktrees forever.
+    #[tokio::test]
+    async fn delete_workspace_cascades_the_whole_workflow() {
+        let (workspaces, board, repos, repo, tmp) = fresh_with_git().await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        commit_on_branch(repo_path, "phasr/backend", "backend.txt", "b\n", "backend work");
+        commit_on_branch(repo_path, "phasr/frontend", "frontend.txt", "f\n", "frontend work");
+        let (parent, backend, frontend) = seed_board_with_branches(
+            &workspaces,
+            &board,
+            &repo.id,
+            Some("phasr/backend"),
+            Some("phasr/frontend"),
+        )
+        .await;
+        let wt_base = tmp.path().join("worktrees");
+        std::fs::create_dir_all(&wt_base).unwrap();
+        let backend_wt =
+            attach_worktree(&workspaces, repo_path, &wt_base, &backend.id, "phasr/backend").await;
+
+        let tokens = crate::orchestrator::CliTokenRegistry::new();
+        let repo_locks = RepoLockRegistry::new();
+        crate::commands::workspaces::delete_workspace_inner(
+            &parent.id,
+            None,
+            None,
+            &workspaces,
+            &repos,
+            &repo_locks,
+            &tokens,
+        )
+        .await
+        .expect("delete must succeed");
+
+        assert!(matches!(
+            workspaces.get(&parent.id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(matches!(
+            workspaces.get(&backend.id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(matches!(
+            workspaces.get(&frontend.id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(!backend_wt.exists(), "child worktrees go with the delete");
+        assert!(
+            !branch_exists(repo_path, "phasr/backend"),
+            "delete removes the refs too — that is its contract"
+        );
+    }
+
+    // Guard rails: only a parent archives, and only its owner may.
+    #[tokio::test]
+    async fn archive_epic_rejects_non_parents_and_other_owners() {
+        let (workspaces, board, repos, repo, _tmp) = fresh_with_git().await;
+        let (parent, backend, _f) =
+            seed_board_with_branches(&workspaces, &board, &repo.id, None, None).await;
+        let tokens = crate::orchestrator::CliTokenRegistry::new();
+        let repo_locks = RepoLockRegistry::new();
+
+        let err = crate::commands::workspaces::archive_epic_inner(
+            &backend.id,
+            "user-a",
+            None,
+            None,
+            &workspaces,
+            &repos,
+            &repo_locks,
+            &tokens,
+        )
+        .await
+        .expect_err("a subtask is not archivable as a workflow");
+        assert!(err.to_string().contains("only a workflow"));
+
+        assert!(crate::commands::workspaces::archive_epic_inner(
+            &parent.id,
+            "user-b",
+            None,
+            None,
+            &workspaces,
+            &repos,
+            &repo_locks,
+            &tokens,
+        )
+        .await
+        .is_err());
+    }
+
     // P0-1 owner scoping: another account cannot ship someone else's workflow.
     #[tokio::test]
     async fn ship_epic_is_scoped_to_the_owner() {

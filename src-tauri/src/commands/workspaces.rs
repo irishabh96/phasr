@@ -5,13 +5,57 @@ use serde::Deserialize;
 use tauri::{Manager, State};
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::{Agent, Workspace, WorkspaceStatus};
+use crate::domain::{Agent, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::fswatch::WorktreeWatchRegistry;
 use crate::git;
-use crate::orchestrator::RepoLockRegistry;
+use crate::orchestrator::{BoardEventBus, CliTokenRegistry, RepoLockRegistry};
 use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
+
+/// Kill the PTY, stop the watcher, and tear down ONE workspace row's git
+/// artifacts: the worktree always; the branch only when `delete_branch`
+/// (Delete removes refs; Archive preserves them — REFS, not worktrees, are
+/// what protect work). Holds the per-repo lock across the git mutations (F6).
+/// `runtime`/`watchers` ride as Options so the `_inner` flows stay testable
+/// without a Tauri AppHandle.
+async fn teardown_workspace_git(
+    runtime: Option<&TaskRuntime>,
+    watchers: Option<&WorktreeWatchRegistry>,
+    repositories: &RepositoryRepo,
+    repo_locks: &RepoLockRegistry,
+    workspace: &Workspace,
+    delete_branch: bool,
+) {
+    if let Some(watchers) = watchers {
+        watchers.stop(&workspace.id);
+    }
+    if let Some(runtime) = runtime {
+        if let Some(handle) = runtime.get(&workspace.id) {
+            let _ = handle.kill();
+            runtime.drop_task(&workspace.id);
+        }
+    }
+    // A `local` row owns no git artifacts (it IS the user's checkout).
+    if workspace.workspace_kind.is_local() {
+        return;
+    }
+    if let Ok(repository) = repositories.get(&workspace.repository_id).await {
+        if let Some(repo_path) = repository.local_path.as_deref() {
+            let repo_path = PathBuf::from(repo_path);
+            let lock = repo_locks.for_repository(&workspace.repository_id);
+            let _guard = lock.lock().await;
+            if let Some(worktree_path) = workspace.worktree_path.as_deref() {
+                let _ = git::remove_worktree(&repo_path, &PathBuf::from(worktree_path));
+            }
+            if delete_branch {
+                if let Some(branch) = workspace.branch.as_deref() {
+                    let _ = git::branch_delete(&repo_path, branch);
+                }
+            }
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -353,42 +397,147 @@ pub async fn delete_workspace(
     repositories: State<'_, RepositoryRepo>,
     repo_locks: State<'_, Arc<RepoLockRegistry>>,
     watchers: State<'_, Arc<WorktreeWatchRegistry>>,
+    cli_tokens: State<'_, Arc<CliTokenRegistry>>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), WorkspaceCmdError> {
     session.require()?;
-    watchers.stop(&id);
-    let workspace = repo.get(&id).await.ok();
-
-    if let Some(workspace) = workspace.as_ref() {
-        if let Some(runtime) = app.try_state::<Arc<TaskRuntime>>() {
-            if let Some(handle) = runtime.get(&workspace.id) {
-                let _ = handle.kill();
-                runtime.drop_task(&workspace.id);
-            }
-        }
-        if workspace.workspace_kind.is_local() {
-            return Ok(repo.delete(&id).await?);
-        }
-        if let Ok(repository) = repositories.get(&workspace.repository_id).await {
-            if let Some(repo_path) = repository.local_path.as_deref() {
-                let repo_path = PathBuf::from(repo_path);
-                // F6: worktree-remove + branch-delete both mutate the shared
-                // repo's `.git/worktrees`/refs; hold the per-repo lock across
-                // both so they can't race a concurrent worktree-add or merge.
-                let lock = repo_locks.for_repository(&workspace.repository_id);
-                let _guard = lock.lock().await;
-                if let Some(worktree_path) = workspace.worktree_path.as_deref() {
-                    let _ = git::remove_worktree(&repo_path, &PathBuf::from(worktree_path));
-                }
-                if let Some(branch) = workspace.branch.as_deref() {
-                    let _ = git::branch_delete(&repo_path, branch);
-                }
-            }
-        }
-    }
-
-    repo.delete(&id).await?;
+    let runtime = app.try_state::<Arc<TaskRuntime>>();
+    delete_workspace_inner(
+        &id,
+        runtime.as_deref().map(Arc::as_ref),
+        Some(watchers.inner().as_ref()),
+        &repo,
+        &repositories,
+        &repo_locks,
+        &cli_tokens,
+    )
+    .await?;
     sync_state.request_sync();
     Ok(())
+}
+
+/// Delete core, split for testability (no AppHandle). A `parent` CASCADES:
+/// every child subtask's PTY/worktree/branch/row/token goes first — before
+/// this, deleting a workflow left N orphaned children whose `parent_id`
+/// dangled, unreachable by any UI, their worktrees leaking forever.
+pub(crate) async fn delete_workspace_inner(
+    id: &str,
+    runtime: Option<&TaskRuntime>,
+    watchers: Option<&WorktreeWatchRegistry>,
+    repo: &WorkspaceRepo,
+    repositories: &RepositoryRepo,
+    repo_locks: &RepoLockRegistry,
+    cli_tokens: &CliTokenRegistry,
+) -> Result<(), WorkspaceCmdError> {
+    let workspace = repo.get(id).await.ok();
+
+    if let Some(workspace) = workspace.as_ref() {
+        if workspace.workspace_kind == WorkspaceKind::Parent {
+            if let Ok(children) = repo.list_by_parent(id).await {
+                for child in &children {
+                    teardown_workspace_git(
+                        runtime,
+                        watchers,
+                        repositories,
+                        repo_locks,
+                        child,
+                        true,
+                    )
+                    .await;
+                    cli_tokens.invalidate_subtask(&child.id);
+                    let _ = repo.delete(&child.id).await;
+                }
+            }
+        }
+        teardown_workspace_git(runtime, watchers, repositories, repo_locks, workspace, true)
+            .await;
+        cli_tokens.invalidate_subtask(id);
+    } else if let Some(watchers) = watchers {
+        // Row already gone — still drop any stale watcher keyed on the id.
+        watchers.stop(id);
+    }
+
+    repo.delete(id).await?;
+    Ok(())
+}
+
+/// Archive a whole workflow: every child ticket + the parent, worktrees
+/// removed, BRANCHES KEPT (refs preserve the work; removing refs is Delete's
+/// job), CLI grants invalidated, rows stamped `archived`. The sidebar and
+/// worklist retire archived rows, and the boot GC never has to guess about
+/// them again. Owner-scoped.
+#[tauri::command]
+pub async fn archive_epic(
+    parent_id: String,
+    app: tauri::AppHandle,
+    repo: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
+    repo_locks: State<'_, Arc<RepoLockRegistry>>,
+    watchers: State<'_, Arc<WorktreeWatchRegistry>>,
+    cli_tokens: State<'_, Arc<CliTokenRegistry>>,
+    board_events: State<'_, Arc<BoardEventBus>>,
+    session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<CloudSyncState>>,
+) -> Result<Workspace, WorkspaceCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let runtime = app.try_state::<Arc<TaskRuntime>>();
+    let archived = archive_epic_inner(
+        &parent_id,
+        &current.user_id,
+        runtime.as_deref().map(Arc::as_ref),
+        Some(watchers.inner().as_ref()),
+        &repo,
+        &repositories,
+        &repo_locks,
+        &cli_tokens,
+    )
+    .await?;
+    board_events.notify(&parent_id);
+    sync_state.request_sync();
+    Ok(archived)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn archive_epic_inner(
+    parent_id: &str,
+    user_id: &str,
+    runtime: Option<&TaskRuntime>,
+    watchers: Option<&WorktreeWatchRegistry>,
+    repo: &WorkspaceRepo,
+    repositories: &RepositoryRepo,
+    repo_locks: &RepoLockRegistry,
+    cli_tokens: &CliTokenRegistry,
+) -> Result<Workspace, WorkspaceCmdError> {
+    let parent = repo.get_for_user(parent_id, user_id).await?;
+    if parent.workspace_kind != WorkspaceKind::Parent {
+        return Err(WorkspaceCmdError::Git(git::GitError::CommandFailed(
+            "only a workflow (parent) can be archived".into(),
+        )));
+    }
+
+    let now = chrono::Utc::now();
+    let archive_patch = || WorkspaceUpdate {
+        status: Some(WorkspaceStatus::Archived),
+        archived_at: Some(Some(now)),
+        // The worktree is gone — the row must not point at a dead path (the
+        // relaunch self-heal only recreates worktrees for RUNNING rows, and
+        // the GC keys off truthful rows).
+        worktree_path: Some(None),
+        ..Default::default()
+    };
+
+    let children = repo.list_by_parent_for_user(parent_id, user_id).await?;
+    for child in &children {
+        teardown_workspace_git(runtime, watchers, repositories, repo_locks, child, false).await;
+        cli_tokens.invalidate_subtask(&child.id);
+        // Archived is legal from every status (the PTY was killed above); an
+        // already-archived child is a no-op re-stamp.
+        repo.update(&child.id, archive_patch()).await?;
+    }
+
+    // The parent's integration worktree goes too; its integration BRANCH
+    // stays (it may be shipped, or the user may still want the ref).
+    teardown_workspace_git(runtime, watchers, repositories, repo_locks, &parent, false).await;
+    Ok(repo.update(parent_id, archive_patch()).await?)
 }

@@ -321,6 +321,19 @@ fn require_clean_index(cwd: &Path) -> Result<(), GitError> {
     }
 }
 
+/// True when every commit of `branch` is reachable from `into` — the branch
+/// carries no work that isn't already merged. Used by the worktree GC's safety
+/// predicate. CONSERVATIVE on failure: an unknown ref / any git error reads as
+/// "not merged" (kept), never as permission to delete.
+pub fn branch_fully_merged(repo_path: &Path, branch: &str, into: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", branch, into])
+        .current_dir(repo_path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -33,7 +33,9 @@ use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
 use crate::commands::review::{read_board_reviews, ReviewCmdError, ReviewRecord, ReviewState};
-use crate::domain::{Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceKind};
+use crate::domain::{
+    Workspace, WorkspaceContract, WorkspaceDependency, WorkspaceKind, WorkspaceStatus,
+};
 use crate::store::{Board, BoardRepo, RepositoryRepo, StoreError, WorkspaceRepo};
 
 // ── wire DTOs (the frozen §C.3 contract; camelCase on the wire) ──────────────
@@ -210,7 +212,11 @@ async fn list_worklist_inner(
             .await?;
         for ws in top {
             match ws.workspace_kind {
-                // Each parent (epic container) is assembled into a full board.
+                // Each parent (epic container) is assembled into a full board —
+                // except an ARCHIVED workflow, which is retired: its tickets
+                // must stop bucketing into the worklist forever (the workflows
+                // index's Completed section is where it lives on).
+                WorkspaceKind::Parent if ws.status == WorkspaceStatus::Archived => {}
                 WorkspaceKind::Parent => parent_ids.push(ws.id),
                 // Single-agent work: a standalone agent, or the always-present
                 // `local` row. The frozen §C.3 contract includes both — the FE's

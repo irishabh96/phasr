@@ -13,6 +13,7 @@ mod pty;
 mod store;
 mod sync;
 mod tickets;
+mod worktree_gc;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -206,6 +207,7 @@ pub fn run() {
             commands::board::publish_contract,
             commands::board::integrate_parent,
             commands::board::ship_epic,
+            commands::workspaces::archive_epic,
             commands::board::board_integration_diff,
             commands::board::board_integration_file_diff,
             commands::validate::validate_ticket,
@@ -298,6 +300,23 @@ async fn initialize_database_state(
     let repository_repo = RepositoryRepo::new(pool.clone());
     let workspace_repo = WorkspaceRepo::new(pool.clone());
     recover_startup_state(&workspace_repo, &repository_repo).await;
+    // Reclaim abandoned worktrees (E4) BEFORE the orchestrator spawns —
+    // nothing else touches repos yet, so the sweep needs no repo locks. The
+    // production base path is injected here so recovery tests (and the GC's
+    // own suite) never go near the real ~/.phasr/worktrees.
+    let gc = worktree_gc::sweep_orphaned_worktrees(
+        &workspace_repo,
+        &repository_repo,
+        &git::default_worktree_base_path(),
+    )
+    .await;
+    if gc.removed > 0 {
+        log::info!(
+            "worktree GC: reclaimed {} abandoned worktree(s), kept {}",
+            gc.removed,
+            gc.kept
+        );
+    }
 
     // One registry shared between the orchestrator (guards `git worktree
     // add` in start_task) and the command layer (guards create_workspace /
