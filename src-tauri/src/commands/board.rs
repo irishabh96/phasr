@@ -1333,6 +1333,25 @@ pub(crate) async fn integrate_parent_inner(
     }
     drop(guard);
 
+    // Docs ship with code (Phase 6 of the completion program): commit the
+    // workflow's `.phasr` docs (epic PRD/TRD + every ticket's brief/comments)
+    // onto the integration branch, authored as `phasr`. BEST-EFFORT — docs
+    // durability is additive, never a gate on a clean integration. Idempotent
+    // (an unchanged re-integration stages nothing); a user-gitignored
+    // `.phasr/` is respected (the add no-ops).
+    let subtask_ids: Vec<String> = ordered.iter().map(|s| s.id.clone()).collect();
+    match tickets::commit_epic_docs_into(
+        &worktree_path,
+        &repo_path,
+        parent_id,
+        &parent.name,
+        &subtask_ids,
+    ) {
+        Ok(true) => log::info!("integrate: committed workflow docs for {parent_id}"),
+        Ok(false) => {}
+        Err(err) => log::warn!("integrate: docs commit failed for {parent_id}: {err}"),
+    }
+
     // Clean integration — the parent now carries the combined branch/worktree.
     Ok(board.get_board_for_user(workspaces, parent_id, user_id).await?)
 }

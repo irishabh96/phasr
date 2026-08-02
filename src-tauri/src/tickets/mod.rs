@@ -1076,6 +1076,109 @@ pub fn epic_dir(repo_root: &Path, parent_id: &str) -> Result<PathBuf, TicketErro
     doc_dir(repo_root, BriefScope::Epic, parent_id)
 }
 
+/// Copy this workflow's docs (`.phasr/epics/<parent>/` + each
+/// `.phasr/tickets/<sid>/`, with the scaffolded root `.gitignore`s) into the
+/// integration WORKTREE and commit them there as `phasr` — so the docs ride
+/// the integration branch through Ship/PR and survive a `git clean -fdx` in
+/// the main checkout (the phase2 §562 recorded limitation / phase2b OD7).
+///
+/// Semantics the caller relies on:
+/// - `Ok(true)`  = a docs commit landed on the integration branch.
+/// - `Ok(false)` = nothing to commit — no docs on disk, an unchanged re-run
+///   (idempotent re-integration), or the USER's own `.gitignore` excludes
+///   `.phasr/` (respected: `git add` skips ignored paths, we never `-f`).
+/// - `.meta.json` (the local-only authorship sidecar) never rides along — the
+///   scaffolded `.phasr/{tickets,epics}/.gitignore` (`**/.meta.json`) is
+///   copied FIRST, so git's own ignore handling filters it.
+/// - BEST-EFFORT at the call site: a failure logs and never fails a clean
+///   integration (docs durability is additive, not a gate).
+pub fn commit_epic_docs_into(
+    worktree: &Path,
+    repo_root: &Path,
+    parent_id: &str,
+    epic_name: &str,
+    subtask_ids: &[String],
+) -> Result<bool, TicketError> {
+    let mut copied_any = false;
+
+    // Root .gitignores first (they make the commit filter correct).
+    for root in ["epics", "tickets"] {
+        let src = repo_root.join(".phasr").join(root).join(".gitignore");
+        if src.is_file() {
+            let dst = worktree.join(".phasr").join(root).join(".gitignore");
+            if let Some(dir) = dst.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+
+    if let Ok(src) = epic_dir(repo_root, parent_id) {
+        if src.is_dir() {
+            copy_dir_recursive(&src, &epic_dir(worktree, parent_id)?)?;
+            copied_any = true;
+        }
+    }
+    for sid in subtask_ids {
+        if let Ok(src) = ticket_dir(repo_root, sid) {
+            if src.is_dir() {
+                copy_dir_recursive(&src, &ticket_dir(worktree, sid)?)?;
+                copied_any = true;
+            }
+        }
+    }
+    if !copied_any {
+        return Ok(false);
+    }
+
+    let run = |args: &[&str]| -> std::io::Result<std::process::Output> {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(worktree)
+            .output()
+    };
+    // Plain `add` — NEVER `-f`: a user who gitignored `.phasr/` chose local-only
+    // docs, and we respect it (the add just stages nothing).
+    let _ = run(&["add", ".phasr"]);
+    // `diff --cached --quiet` exits 0 when NOTHING is staged → no commit.
+    let staged = run(&["diff", "--cached", "--quiet"])
+        .map(|o| !o.status.success())
+        .unwrap_or(false);
+    if !staged {
+        return Ok(false);
+    }
+    let message = format!("phasr: workflow docs for {epic_name}");
+    let committed = run(&[
+        "-c",
+        "user.name=phasr",
+        "-c",
+        "user.email=phasr@local",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        &message,
+    ])
+    .map(|o| o.status.success())
+    .unwrap_or(false);
+    Ok(committed)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Best-effort create the epic dir so the paths a pointer references exist even
 /// for an epic that was never scaffolded (mirrors `ensure_ticket_dir`). Returns
 /// the dir on success.
@@ -2022,5 +2125,118 @@ mod tests {
         assert!(json["trd"].is_object());
         assert!(json["assets"].is_array());
         assert!(json["figma"].is_array());
+    }
+
+    // ── commit_epic_docs_into (Phase 6, completion program) ─────────────────
+
+    fn git_in(dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+    }
+
+    fn init_worktree_repo(dir: &Path) {
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "tester"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            assert!(git_in(dir, &args).status.success());
+        }
+        std::fs::write(dir.join("code.txt"), "code\n").unwrap();
+        assert!(git_in(dir, &["add", "-A"]).status.success());
+        assert!(git_in(dir, &["commit", "-qm", "code"]).status.success());
+    }
+
+    fn seed_source_docs(repo_root: &Path) {
+        let epics = repo_root.join(".phasr/epics");
+        let tickets = repo_root.join(".phasr/tickets");
+        std::fs::create_dir_all(epics.join("p1")).unwrap();
+        std::fs::create_dir_all(tickets.join("s1")).unwrap();
+        std::fs::write(epics.join(".gitignore"), "**/.meta.json\n").unwrap();
+        std::fs::write(tickets.join(".gitignore"), "**/.meta.json\n").unwrap();
+        std::fs::write(epics.join("p1/prd.md"), "# PRD\n").unwrap();
+        std::fs::write(tickets.join("s1/ticket.md"), "# Ticket\n").unwrap();
+        std::fs::write(tickets.join("s1/.meta.json"), "{}").unwrap();
+    }
+
+    // Docs land on the integration branch as a phasr-authored commit; the
+    // local-only .meta.json sidecar never rides; an unchanged re-run stages
+    // nothing (idempotent re-integration).
+    #[test]
+    fn commit_epic_docs_lands_filters_meta_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        seed_source_docs(&repo_root);
+        let worktree = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        init_worktree_repo(&worktree);
+
+        let committed = commit_epic_docs_into(
+            &worktree,
+            &repo_root,
+            "p1",
+            "checkout",
+            &["s1".to_string()],
+        )
+        .unwrap();
+        assert!(committed, "docs must land");
+
+        let files = String::from_utf8(git_in(&worktree, &["ls-files"]).stdout).unwrap();
+        assert!(files.contains(".phasr/epics/p1/prd.md"));
+        assert!(files.contains(".phasr/tickets/s1/ticket.md"));
+        assert!(
+            !files.contains(".meta.json"),
+            "the authorship sidecar is local-only and must never ride"
+        );
+        let author = String::from_utf8(
+            git_in(&worktree, &["log", "-1", "--format=%an <%ae> %s"]).stdout,
+        )
+        .unwrap();
+        assert!(author.contains("phasr <phasr@local>"), "authored as phasr: {author}");
+        assert!(author.contains("workflow docs for checkout"));
+
+        // Unchanged re-run → nothing staged, no empty commit.
+        let again = commit_epic_docs_into(
+            &worktree,
+            &repo_root,
+            "p1",
+            "checkout",
+            &["s1".to_string()],
+        )
+        .unwrap();
+        assert!(!again, "an unchanged re-integration must not commit");
+    }
+
+    // A user who gitignored `.phasr/` chose local-only docs — respected: the
+    // plain `git add` stages nothing and no commit lands.
+    #[test]
+    fn commit_epic_docs_respects_a_user_gitignored_phasr() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        seed_source_docs(&repo_root);
+        let worktree = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        init_worktree_repo(&worktree);
+        std::fs::write(worktree.join(".gitignore"), ".phasr/\n").unwrap();
+        assert!(git_in(&worktree, &["add", ".gitignore"]).status.success());
+        assert!(git_in(&worktree, &["commit", "-qm", "ignore phasr"]).status.success());
+
+        let committed = commit_epic_docs_into(
+            &worktree,
+            &repo_root,
+            "p1",
+            "checkout",
+            &["s1".to_string()],
+        )
+        .unwrap();
+        assert!(!committed, "a user-gitignored .phasr/ is respected, never -f'd");
+        let files = String::from_utf8(git_in(&worktree, &["ls-files"]).stdout).unwrap();
+        assert!(!files.contains(".phasr/"));
     }
 }
