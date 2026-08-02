@@ -109,6 +109,10 @@ pub struct PtyHandle {
     /// legitimately drift; the poller only ever compares two wall-clock
     /// samples, so a monotonic clock isn't required here.
     last_activity: Arc<AtomicI64>,
+    /// The spawned login shell's OS pid (E-P1-T1) — the root of the process
+    /// subtree the CPU liveness sampler measures. `None` if the platform
+    /// couldn't report one (the sampler then degrades to output-recency-only).
+    pid: Option<u32>,
 }
 
 impl PtyHandle {
@@ -189,6 +193,10 @@ impl PtyHandle {
         // wait-thread mutex. The waiter parks on `wait()` while
         // holding the mutex; without this, `kill()` would deadlock.
         let killer = child.clone_killer();
+        // E-P1-T1: the login shell's PID, captured before the wait thread owns
+        // the child. The CPU liveness sampler walks this pid's SUBTREE (the
+        // agent + its build/tool children) — the shell itself mostly sleeps.
+        let pid = child.process_id();
         drop(pty_pair.slave);
 
         let master = pty_pair.master;
@@ -215,6 +223,7 @@ impl PtyHandle {
             // Spawn time counts as the first "activity" so the agent reads
             // Working during its startup before any prompt output arrives.
             last_activity: Arc::new(AtomicI64::new(now_ms())),
+            pid,
         });
 
         // Schedule the agent command + optional prompt as keystrokes into the
@@ -374,6 +383,11 @@ impl PtyHandle {
     /// pump.
     pub fn last_activity_ms(&self) -> i64 {
         self.last_activity.load(Ordering::Relaxed)
+    }
+
+    /// The shell subtree's root pid for the CPU liveness sampler (E-P1-T1).
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     /// Backdate the activity stamp to simulate an agent that has been silent

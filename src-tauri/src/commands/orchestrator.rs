@@ -201,6 +201,10 @@ struct TaskStatusPayload {
     /// ISO-8601 UTC timestamp of the agent's last output; the frontend
     /// counts "Ns ago" upward from it locally between events.
     last_activity_at: Option<String>,
+    /// E-P1: subtree CPU activity over the last poll — lets the badge say
+    /// "Working · busy" for a quiet-but-computing agent. Additive; `false`
+    /// whenever the sensor degrades.
+    busy: bool,
 }
 
 fn event_payload(event: &TaskStatusEvent) -> TaskStatusPayload {
@@ -211,5 +215,6 @@ fn event_payload(event: &TaskStatusEvent) -> TaskStatusPayload {
         exit_code: event.exit_code,
         derived_state: event.derived_state.map(|d| d.as_str().to_string()),
         last_activity_at: event.last_activity_at.map(|dt| dt.to_rfc3339()),
+        busy: event.busy,
     }
 }

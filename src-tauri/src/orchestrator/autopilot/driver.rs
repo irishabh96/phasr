@@ -686,7 +686,10 @@ impl AutopilotDriver {
                     None => (false, now_ms),
                 };
                 let elapsed = Duration::from_millis((now_ms - last_ms).max(0) as u64);
-                classify(elapsed, has_handle, &self.thresholds)
+                // The driver's I3 re-check is a coarse SAFETY layer — it never
+                // CPU-samples (that's the liveness poller's job), so `false`
+                // here means "output-recency only", the conservative read.
+                classify(elapsed, has_handle, false, &self.thresholds)
             }
             // A relaunch orphan (recovery set `interrupted_at`) is honest-Wedged; a
             // calm user-stop / pending / archived isn't producing and isn't past

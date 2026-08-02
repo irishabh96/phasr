@@ -36,7 +36,8 @@ export function setAgentLiveness(taskId: string, next: AgentLiveness) {
   if (
     prev &&
     prev.derivedState === next.derivedState &&
-    prev.lastActivityAt === next.lastActivityAt
+    prev.lastActivityAt === next.lastActivityAt &&
+    (prev.busy ?? false) === (next.busy ?? false)
   ) {
     return;
   }

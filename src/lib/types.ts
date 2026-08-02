@@ -185,6 +185,12 @@ export interface TaskStatusPayload {
    * events. `null` on exit-watcher / plain lifecycle events.
    */
   lastActivityAt: string | null;
+  /**
+   * E-P1: subtree CPU activity over the last poll — why a quiet agent can
+   * honestly stay Working ("busy, no output"). `false` on non-poller events
+   * and whenever the sensor degrades.
+   */
+  busy: boolean;
 }
 
 export interface PathValidation {

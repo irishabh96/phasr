@@ -158,11 +158,18 @@ export function agentActivityText(args: {
   since: number | null;
   changeCount?: number | null | undefined;
   exitCode?: number | null | undefined;
+  /** E-P1: subtree CPU is hot — a QUIET agent stays honestly Working. */
+  busy?: boolean | undefined;
 }): string | null {
-  const { state, since, changeCount, exitCode } = args;
+  const { state, since, changeCount, exitCode, busy } = args;
   const ago = since != null ? formatDuration(since) : null;
   switch (state) {
     case "working":
+      // A busy-but-quiet agent (long build, thinking model) says WHY it is
+      // still Working despite the silence — the E-P1 honesty payoff.
+      if (busy && since != null && since >= 30_000) {
+        return `busy, no output ${ago}`;
+      }
       return ago ? `active ${ago} ago` : "active";
     case "idle":
       return ago ? `quiet ${ago}` : "quiet";

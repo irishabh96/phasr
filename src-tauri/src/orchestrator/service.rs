@@ -35,7 +35,7 @@ use crate::store::{BoardRepo, RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
 use super::cli_tokens::{CliSpawnConfig, CliTokenRegistry};
 use super::error::OrchestratorError;
-use super::liveness::{classify, DerivedState, LivenessThresholds, LIVENESS_POLL_INTERVAL};
+use super::liveness::{classify, DerivedState, LivenessThresholds, CPU_BUSY_THRESHOLD_NS, LIVENESS_POLL_INTERVAL};
 use super::repo_locks::RepoLockRegistry;
 use super::personas;
 use super::scheduler::{
@@ -77,6 +77,12 @@ pub struct TaskStatusEvent {
     /// poller transitions so the frontend can count "Ns ago" upward locally
     /// between events (no per-second bus traffic).
     pub last_activity_at: Option<DateTime<Utc>>,
+    /// E-P1: the agent's process subtree was burning CPU over the last poll
+    /// interval — the reason a quiet agent can honestly stay `Working`
+    /// ("busy, no output"). Always `false` on non-poller events and whenever
+    /// the sampler degrades (no pid / non-macOS / sampling failure) — the
+    /// sensor only ever ADDS confidence.
+    pub busy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +319,7 @@ impl TaskOrchestrator {
             // `Working` derived state on its next tick.
             derived_state: None,
             last_activity_at: None,
+            busy: false,
         });
 
         self.spawn_exit_watcher(task_id.clone(), updated.repository_id.clone(), pty_handle);
@@ -383,6 +390,7 @@ impl TaskOrchestrator {
             exit_code: None,
             derived_state: None,
             last_activity_at: None,
+            busy: false,
         });
         Ok(())
     }
@@ -467,6 +475,7 @@ impl TaskOrchestrator {
             exit_code: None,
             derived_state: None,
             last_activity_at: None,
+            busy: false,
         });
 
         self.spawn_exit_watcher(task_id.to_string(), updated.repository_id, handle.clone());
@@ -667,6 +676,7 @@ impl TaskOrchestrator {
                                 // consumers keying off `status` are unaffected.
                                 derived_state: Some(DerivedState::for_exit(exit_code)),
                                 last_activity_at: None,
+                                busy: false,
                             });
                         }
                         break;
@@ -691,10 +701,14 @@ impl TaskOrchestrator {
             // Per-task memory of the last derived state so we only emit on a
             // change — the bus carries transitions, never one event per tick.
             let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+            // E-P1: per-task cumulative subtree CPU ns from the previous tick,
+            // so each pass measures a DELTA over one poll interval.
+            let mut last_cpu_ns: HashMap<String, u64> = HashMap::new();
             let mut interval = tokio::time::interval(LIVENESS_POLL_INTERVAL);
             loop {
                 interval.tick().await;
-                this.run_liveness_tick(&mut last_derived, &thresholds).await;
+                this.run_liveness_tick(&mut last_derived, &mut last_cpu_ns, &thresholds)
+                    .await;
             }
         });
     }
@@ -708,6 +722,7 @@ impl TaskOrchestrator {
     async fn run_liveness_tick(
         &self,
         last_derived: &mut HashMap<String, DerivedState>,
+        last_cpu_ns: &mut HashMap<String, u64>,
         thresholds: &LivenessThresholds,
     ) {
         let running = match self.workspaces.list_by_status(WorkspaceStatus::Running).await {
@@ -736,12 +751,25 @@ impl TaskOrchestrator {
 
             // A running row with no live PTY = an orphan → classify() reads it
             // as Wedged, never a confident Working.
-            let (has_handle, last_activity_ms) = match self.runtime.get(&task_id) {
-                Some(handle) => (true, handle.last_activity_ms()),
-                None => (false, now_ms),
+            let (has_handle, last_activity_ms, pid) = match self.runtime.get(&task_id) {
+                Some(handle) => (true, handle.last_activity_ms(), handle.pid()),
+                None => (false, now_ms, None),
+            };
+            // E-P1: subtree CPU delta over the last poll. First sample for a
+            // task establishes the baseline (busy=false); any degrade (no pid,
+            // sampler failure, non-macOS) is busy=false — P0 behavior exactly.
+            let cpu_busy = match pid.and_then(super::cpu_macos::sample_subtree_cpu_ns) {
+                Some(total) => match last_cpu_ns.insert(task_id.clone(), total) {
+                    Some(prev) => total.saturating_sub(prev) > CPU_BUSY_THRESHOLD_NS,
+                    None => false,
+                },
+                None => {
+                    last_cpu_ns.remove(&task_id);
+                    false
+                }
             };
             let elapsed = Duration::from_millis((now_ms - last_activity_ms).max(0) as u64);
-            let derived = classify(elapsed, has_handle, thresholds);
+            let derived = classify(elapsed, has_handle, cpu_busy, thresholds);
 
             if last_derived.get(&task_id) != Some(&derived) {
                 last_derived.insert(task_id.clone(), derived);
@@ -752,13 +780,15 @@ impl TaskOrchestrator {
                     exit_code: None,
                     derived_state: Some(derived),
                     last_activity_at: DateTime::<Utc>::from_timestamp_millis(last_activity_ms),
+                    busy: cpu_busy,
                 });
             }
         }
 
-        // Forget tasks that have left `running` (exit/stop) so the map can't
+        // Forget tasks that have left `running` (exit/stop) so the maps can't
         // grow without bound and a later re-run of the same id starts fresh.
         last_derived.retain(|task_id, _| still_running.contains(task_id));
+        last_cpu_ns.retain(|task_id, _| still_running.contains(task_id));
     }
 
     // ===== Scheduler (E2-T2): dependency-aware fan-out =====
@@ -1090,6 +1120,7 @@ impl TaskOrchestrator {
             exit_code: None,
             derived_state: None,
             last_activity_at: None,
+            busy: false,
         });
         self.spawn_exit_watcher(task_id.to_string(), updated.repository_id, handle);
         Ok(())
@@ -1331,6 +1362,7 @@ impl TaskOrchestrator {
             // real agent kind, `runs_agent()`).
             derived_state: None,
             last_activity_at: None,
+            busy: false,
         });
 
         self.spawn_exit_watcher(subtask.id.clone(), updated.repository_id.clone(), pty_handle);
@@ -2222,6 +2254,7 @@ mod tests {
             wedged: Duration::from_secs(2),
         };
         let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        let mut last_cpu: HashMap<String, u64> = HashMap::new();
         let mut rx = orchestrator.subscribe_status();
         drain_pending(&mut rx); // the `running` lifecycle event from start_task
 
@@ -2230,10 +2263,10 @@ mod tests {
         // Silent ~1.5s → Idle. Two ticks; only the first is a transition.
         handle.set_last_activity_ms(now - 1_500);
         orchestrator
-            .run_liveness_tick(&mut last_derived, &thresholds)
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &thresholds)
             .await;
         orchestrator
-            .run_liveness_tick(&mut last_derived, &thresholds)
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &thresholds)
             .await;
         let idle = try_recv_derived(&mut rx).expect("an idle transition");
         assert_eq!(idle.derived_state, Some(DerivedState::Idle));
@@ -2251,10 +2284,10 @@ mod tests {
         // Silent ~2.5s → Wedged. Again exactly one transition.
         handle.set_last_activity_ms(now - 2_500);
         orchestrator
-            .run_liveness_tick(&mut last_derived, &thresholds)
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &thresholds)
             .await;
         orchestrator
-            .run_liveness_tick(&mut last_derived, &thresholds)
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &thresholds)
             .await;
         let wedged = try_recv_derived(&mut rx).expect("a wedged transition");
         assert_eq!(wedged.derived_state, Some(DerivedState::Wedged));
@@ -2267,7 +2300,7 @@ mod tests {
         orchestrator.stop_task(&task_id).await.unwrap();
         drain_pending(&mut rx); // the `stopped` lifecycle event (derived None)
         orchestrator
-            .run_liveness_tick(&mut last_derived, &thresholds)
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &thresholds)
             .await;
         assert!(
             try_recv_derived(&mut rx).is_none(),
@@ -2294,8 +2327,9 @@ mod tests {
         let mut rx = orchestrator.subscribe_status();
         let thresholds = LivenessThresholds::default();
         let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        let mut last_cpu: HashMap<String, u64> = HashMap::new();
         orchestrator
-            .run_liveness_tick(&mut last_derived, &thresholds)
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &thresholds)
             .await;
 
         let ev = try_recv_derived(&mut rx).expect("a wedged transition for the orphan row");
@@ -2319,8 +2353,9 @@ mod tests {
 
         let mut rx = orchestrator.subscribe_status();
         let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        let mut last_cpu: HashMap<String, u64> = HashMap::new();
         orchestrator
-            .run_liveness_tick(&mut last_derived, &LivenessThresholds::default())
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &LivenessThresholds::default())
             .await;
 
         assert!(
@@ -2351,8 +2386,9 @@ mod tests {
 
         let mut rx = orchestrator.subscribe_status();
         let mut last_derived: HashMap<String, DerivedState> = HashMap::new();
+        let mut last_cpu: HashMap<String, u64> = HashMap::new();
         orchestrator
-            .run_liveness_tick(&mut last_derived, &LivenessThresholds::default())
+            .run_liveness_tick(&mut last_derived, &mut last_cpu, &LivenessThresholds::default())
             .await;
 
         let ev = try_recv_derived(&mut rx)

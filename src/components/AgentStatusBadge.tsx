@@ -34,16 +34,19 @@ export function AgentStatusBadgeView({
   since,
   changeCount,
   exitCode,
+  busy,
   onRestart,
 }: {
   state: AgentUiState;
   since: number | null;
   changeCount?: number | null;
   exitCode?: number | null;
+  /** E-P1: CPU-hot-but-quiet — the Working copy explains the silence. */
+  busy?: boolean;
   onRestart?: () => void;
 }) {
   const meta = agentStatusMeta(state);
-  const activity = agentActivityText({ state, since, changeCount, exitCode });
+  const activity = agentActivityText({ state, since, changeCount, exitCode, busy });
   const isSoft = meta.tier === "soft";
   const showRestart = onRestart != null && RECOVERABLE.has(state);
 
@@ -147,6 +150,7 @@ export function AgentStatusBadge({
       state={state}
       since={since}
       exitCode={workspace.exitCode}
+      busy={live?.busy ?? false}
       {...(changeCount != null ? { changeCount } : {})}
       onRestart={restart}
     />

@@ -35,6 +35,12 @@ pub const WEDGED_THRESHOLD: Duration = Duration::from_secs(180);
 /// 60/180 s scale a 5 s cadence is well inside the noise floor.
 pub const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// E-P1: minimum subtree CPU over one poll interval to count as "busy" —
+/// ~5% of a single core across the 5 s poll (250 ms of CPU time). Low enough
+/// that a genuinely-computing agent always clears it, high enough that an
+/// idle shell's housekeeping never does.
+pub const CPU_BUSY_THRESHOLD_NS: u64 = 250_000_000;
+
 /// The honest, *derived* runtime state of an agent. Not persisted, not a
 /// `WorkspaceStatus` variant.
 ///
@@ -116,10 +122,19 @@ impl Default for LivenessThresholds {
 pub fn classify(
     elapsed: Duration,
     has_live_handle: bool,
+    cpu_busy: bool,
     thresholds: &LivenessThresholds,
 ) -> DerivedState {
     if !has_live_handle {
         return DerivedState::Wedged;
+    }
+    // E-P1: a quiet agent whose process subtree is BURNING CPU is honestly
+    // Working (a long build, a thinking model) — output-recency alone can't
+    // tell it from wedged. `cpu_busy` is false whenever the sampler degrades
+    // (no pid / non-macOS / failure), which reproduces the P0 behavior
+    // exactly — the sensor only ever ADDS confidence.
+    if cpu_busy {
+        return DerivedState::Working;
     }
     if elapsed < thresholds.idle {
         DerivedState::Working
@@ -150,29 +165,71 @@ mod tests {
         let t = thresholds();
 
         // Fresh output → Working.
-        assert_eq!(classify(Duration::ZERO, true, &t), DerivedState::Working);
+        assert_eq!(classify(Duration::ZERO, true, false, &t), DerivedState::Working);
         assert_eq!(
-            classify(Duration::from_secs(59), true, &t),
+            classify(Duration::from_secs(59), true, false, &t),
             DerivedState::Working
         );
 
         // At exactly the idle boundary we are no longer Working (`<` idle).
         assert_eq!(
-            classify(Duration::from_secs(60), true, &t),
+            classify(Duration::from_secs(60), true, false, &t),
             DerivedState::Idle
         );
         assert_eq!(
-            classify(Duration::from_secs(179), true, &t),
+            classify(Duration::from_secs(179), true, false, &t),
             DerivedState::Idle
         );
 
         // At exactly the wedged boundary we escalate (`<` wedged is false).
         assert_eq!(
-            classify(Duration::from_secs(180), true, &t),
+            classify(Duration::from_secs(180), true, false, &t),
             DerivedState::Wedged
         );
         assert_eq!(
-            classify(Duration::from_secs(10_000), true, &t),
+            classify(Duration::from_secs(10_000), true, false, &t),
+            DerivedState::Wedged
+        );
+    }
+
+    // E-P1: a silent agent whose subtree is burning CPU is honestly Working —
+    // a long build / a thinking model must never read as Wedged.
+    #[test]
+    fn busy_cpu_suppresses_wedged() {
+        let t = thresholds();
+        assert_eq!(
+            classify(Duration::from_secs(10_000), true, true, &t),
+            DerivedState::Working
+        );
+        assert_eq!(
+            classify(Duration::from_secs(60), true, true, &t),
+            DerivedState::Working
+        );
+    }
+
+    // E-P1: zero CPU changes nothing — a long-silent, zero-CPU agent still
+    // wedges (the sensor only ever ADDS confidence; `false` == P0 exactly,
+    // which is also the degrade path when sampling returns None).
+    #[test]
+    fn idle_zero_cpu_still_wedges_and_none_degrades_to_p0() {
+        let t = thresholds();
+        assert_eq!(
+            classify(Duration::from_secs(180), true, false, &t),
+            DerivedState::Wedged
+        );
+        assert_eq!(
+            classify(Duration::from_secs(61), true, false, &t),
+            DerivedState::Idle
+        );
+    }
+
+    // E-P1 precedence: a dead handle outranks a (stale/racing) busy claim —
+    // a row with no process behind it is Wedged, full stop.
+    #[test]
+    fn dead_handle_outranks_busy() {
+        let t = thresholds();
+        assert_eq!(
+            classify(Duration::ZERO, false, true, &t),
             DerivedState::Wedged
         );
     }
@@ -182,9 +239,9 @@ mod tests {
     #[test]
     fn no_live_handle_is_always_wedged() {
         let t = thresholds();
-        assert_eq!(classify(Duration::ZERO, false, &t), DerivedState::Wedged);
+        assert_eq!(classify(Duration::ZERO, false, false, &t), DerivedState::Wedged);
         assert_eq!(
-            classify(Duration::from_secs(1_000_000), false, &t),
+            classify(Duration::from_secs(1_000_000), false, false, &t),
             DerivedState::Wedged
         );
     }

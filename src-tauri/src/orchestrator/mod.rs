@@ -11,6 +11,7 @@ mod board_events;
 mod cli_tokens;
 mod error;
 pub mod ipc_server;
+mod cpu_macos;
 mod liveness;
 mod personas;
 mod planner;

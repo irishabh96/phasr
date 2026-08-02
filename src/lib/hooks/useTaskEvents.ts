@@ -27,7 +27,7 @@ export function useTaskEvents() {
     let cancelled = false;
 
     void listen<TaskStatusPayload>("phasr://task-status", (event) => {
-      const { taskId, repositoryId, status, derivedState, lastActivityAt } =
+      const { taskId, repositoryId, status, derivedState, lastActivityAt, busy } =
         event.payload;
 
       // Honest-status liveness (Step 0 — S0.1): feed the module store the
@@ -41,7 +41,11 @@ export function useTaskEvents() {
         derivedState === "idle" ||
         derivedState === "wedged"
       ) {
-        setAgentLiveness(taskId, { derivedState, lastActivityAt });
+        setAgentLiveness(taskId, {
+          derivedState,
+          lastActivityAt,
+          busy: busy ?? false,
+        });
       } else if (status !== "running" && status !== "pending") {
         clearAgentLiveness(taskId);
       }

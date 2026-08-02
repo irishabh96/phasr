@@ -29,6 +29,13 @@ export interface AgentLiveness {
   derivedState: DerivedAgentState;
   /** ISO-8601 UTC of last output; the "Ns ago" counter reads from it. */
   lastActivityAt: string | null;
+  /**
+   * E-P1: the agent's process subtree was burning CPU over the last poll —
+   * why a long-quiet agent can honestly stay Working ("busy, no output").
+   * Additive; absent/false whenever the sensor degrades (non-macOS, no pid,
+   * sampling failure) — exactly the P0 output-recency behavior.
+   */
+  busy?: boolean;
 }
 
 export interface AgentStateResult {
