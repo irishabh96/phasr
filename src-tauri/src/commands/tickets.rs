@@ -132,6 +132,63 @@ pub async fn write_ticket_section(
     // No `request_sync()`: ticket briefs live on-disk, not in a syncable table.
 }
 
+// ── E5: the epic-brief edit surface (Phase 8, completion program) ────────────
+
+/// Read the workflow-level brief (PRD/TRD + assets/figma). Owner-scoped via
+/// the repository; a repo with no local checkout → an empty brief (never an
+/// error). Until now these docs were WRITE-ONCE at decompose time — the Rust
+/// halves existed with a single gate caller and no read/edit surface.
+#[tauri::command]
+pub async fn read_epic_brief(
+    repository_id: String,
+    parent_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<crate::tickets::EpicBrief, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let repo_root = owned_repo_root(&repositories, &repository_id, &current.user_id).await?;
+    Ok(crate::tickets::read_epic_brief(
+        repo_root.as_deref(),
+        &parent_id,
+        &default_ticket_assets_root(),
+    )?)
+}
+
+/// Write one workflow-brief section with the SAME optimistic-concurrency
+/// contract as `write_ticket_section` (`saved` | `conflict{onDisk}` — nothing
+/// is ever clobbered on a stale base).
+#[tauri::command]
+pub async fn write_epic_section(
+    repository_id: String,
+    parent_id: String,
+    section: BriefSection,
+    content: String,
+    base_mtime_ms: Option<i64>,
+    repositories: State<'_, RepositoryRepo>,
+    registry: State<'_, Arc<TicketWriteRegistry>>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<WriteSectionResult, TicketCmdError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let Some(repo_root) =
+        owned_repo_root(&repositories, &repository_id, &current.user_id).await?
+    else {
+        return Err(TicketCmdError::Ticket(
+            crate::tickets::TicketError::RepositoryHasNoLocalPath,
+        ));
+    };
+    // Ensure the dir exists for an epic created before scaffolding (or whose
+    // docs were never attached) — an edit must not fail on a missing folder.
+    let _ = crate::tickets::ensure_epic_dir(&repo_root, &parent_id);
+    Ok(crate::tickets::write_epic_section(
+        &registry,
+        &repo_root,
+        &parent_id,
+        section,
+        &content,
+        base_mtime_ms,
+    )?)
+}
+
 // ── T5-BE: assets ────────────────────────────────────────────────────────────
 
 /// List every asset for a ticket (in-repo + app-data), owner-scoped. A repo with

@@ -16,7 +16,7 @@ function AppearancePage() {
           Appearance
         </h2>
         <p className="mt-1.5 text-[12px] text-(--color-text-muted)">
-          Theme applies across devices once cloud sync runs.
+          Theme syncs across your devices.
         </p>
       </header>
 

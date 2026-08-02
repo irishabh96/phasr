@@ -566,6 +566,18 @@ export interface TicketBrief {
 }
 
 /**
+ * The workflow-level brief (E5): the epic PRD/TRD every ticket inherits, plus
+ * its attachments. No description/comments — the epic has neither (A1).
+ */
+export interface EpicBrief {
+  parentId: string;
+  prd: BriefSectionContent;
+  trd: BriefSectionContent;
+  assets: TicketAsset[];
+  figma: FigmaLink[];
+}
+
+/**
  * Result of `write_ticket_section`. `saved` returns the freshly-written section
  * (its new `mtimeMs` becomes the next optimistic base); `conflict` means the
  * `baseMtimeMs` was stale — the FE shows Reload (take `onDisk`) / Keep-mine

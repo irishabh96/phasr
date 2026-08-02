@@ -348,7 +348,7 @@ function WorklistLoaded({ worklist }: { worklist: WorklistState }) {
               kind="empty"
               icon={<Search />}
               title="No matching tickets"
-              description="No ticket, epic, or repo matches those filters. Clear the search or a chip to see everything."
+              description="No ticket, workflow, or repo matches those filters. Clear the search or a chip to see everything."
             />
           </div>
         ) : (

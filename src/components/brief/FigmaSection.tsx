@@ -28,9 +28,10 @@ function shortUrl(url: string): string {
 
 /**
  * The Figma section (mockup Page 04) — link-only v1 (open decision #5): a
- * neutral link chip + placeholder thumbnail per linked file, an "Add link"
- * inline form, and per-id remove. Broken/opaque links degrade gracefully (we
- * never fetch a preview). Pure & prop-driven for `/design-test`.
+ * neutral link chip per linked file, an "Add link" inline form, and per-id
+ * remove. Link-chips-only by design — no thumbnails: broken/opaque links
+ * degrade gracefully (we never fetch a preview). Pure & prop-driven for
+ * `/design-test`.
  */
 export function FigmaSection({
   links,

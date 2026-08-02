@@ -11,7 +11,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { label: "Account", to: "/settings/account", icon: <UserCircle size={13} /> },
   { label: "Appearance", to: "/settings/appearance", icon: <Palette size={13} /> },
-  { label: "Run commands", to: "/settings/repositories", icon: <FolderGit2 size={13} /> },
+  { label: "Repositories", to: "/settings/repositories", icon: <FolderGit2 size={13} /> },
 ];
 
 function SettingsLayout() {

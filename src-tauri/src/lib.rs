@@ -208,6 +208,8 @@ pub fn run() {
             commands::board::integrate_parent,
             commands::board::ship_epic,
             commands::board::start_ticket,
+            commands::tickets::read_epic_brief,
+            commands::tickets::write_epic_section,
             commands::workspaces::archive_epic,
             commands::board::board_integration_diff,
             commands::board::board_integration_file_diff,

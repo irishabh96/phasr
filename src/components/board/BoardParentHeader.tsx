@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { ExternalLink, Loader2, UploadCloud } from "lucide-react";
+import { BookOpen, ExternalLink, Loader2, UploadCloud } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@/components/ui/Dialog";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
+import { EpicBriefDialog } from "@/components/board/EpicBriefDialog";
 import { AutopilotToggle } from "@/components/board/AutopilotToggle";
 import { NextGateButton } from "@/components/board/NextGateButton";
 import { IntegrationDiff } from "@/components/board/IntegrationDiff";
@@ -59,6 +60,7 @@ export function BoardParentHeader({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewMode, setReviewMode] = useState<"clean" | "conflict">("clean");
   const [shipOpen, setShipOpen] = useState(false);
+  const [briefOpen, setBriefOpen] = useState(false);
 
   const ticketCount = board.subtasks.length;
   const done = board.contracts.filter((c) => c.publishedAt != null).length;
@@ -145,6 +147,20 @@ export function BoardParentHeader({
       </div>
 
       <div className="flex shrink-0 items-center gap-2.5">
+        {/* E5: the workflow brief is editable AFTER decompose (it was
+            write-once at the gate). Quiet ghost — reading/correcting docs is
+            routine, never the epic's coral moment. */}
+        <GlassTooltip content="Edit the workflow brief (PRD/TRD)" side="bottom">
+          <GlassButton
+            variant="ghost"
+            size="sm"
+            data-testid="board-epic-brief"
+            onClick={() => setBriefOpen(true)}
+          >
+            <BookOpen size={13} aria-hidden />
+            Brief
+          </GlassButton>
+        </GlassTooltip>
         <AutopilotToggle
           enabled={autopilotEnabled}
           driving={autopilotDriving}
@@ -274,6 +290,13 @@ export function BoardParentHeader({
         workspace={board.parent}
         open={shipOpen}
         onClose={() => setShipOpen(false)}
+      />
+
+      <EpicBriefDialog
+        repositoryId={board.parent.repositoryId}
+        parentId={board.parent.id}
+        open={briefOpen}
+        onClose={() => setBriefOpen(false)}
       />
     </div>
   );

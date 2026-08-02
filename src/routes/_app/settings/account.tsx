@@ -75,16 +75,6 @@ function ClerkAccountPage() {
         </div>
       </GlassPanel>
 
-      <GlassPanel className="p-5">
-        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
-          Sessions
-        </div>
-        <p className="mt-2 text-[12px] text-(--color-text-secondary)">
-          In-app session listing and "Sign out everywhere" land in a later settings pass. For now,
-          signing out below ends this device's session.
-        </p>
-      </GlassPanel>
-
       <div>
         <GlassButton
           variant="danger"

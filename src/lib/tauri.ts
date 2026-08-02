@@ -38,6 +38,7 @@ import type {
   WorkspaceStatus,
   WorklistState,
   BriefSection,
+  EpicBrief,
   FigmaLink,
   TicketAsset,
   TicketBrief,
@@ -394,6 +395,24 @@ export const tauri = {
     invoke<WriteSectionResult>("write_ticket_section", {
       repositoryId,
       ticketId,
+      section,
+      content,
+      baseMtimeMs,
+    }),
+  // E5: the workflow-level brief, readable + editable AFTER decompose (it was
+  // write-once at the gate until Phase 8 of the completion program).
+  readEpicBrief: (repositoryId: string, parentId: string) =>
+    invoke<EpicBrief>("read_epic_brief", { repositoryId, parentId }),
+  writeEpicSection: (
+    repositoryId: string,
+    parentId: string,
+    section: BriefSection,
+    content: string,
+    baseMtimeMs: number | null,
+  ) =>
+    invoke<WriteSectionResult>("write_epic_section", {
+      repositoryId,
+      parentId,
       section,
       content,
       baseMtimeMs,

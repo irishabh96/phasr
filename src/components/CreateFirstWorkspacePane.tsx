@@ -188,7 +188,7 @@ export function CreateFirstWorkspacePane({
               size="sm"
               onClick={() => requestGitInit(repo.id)}
             >
-              Initialize git
+              Initialize Git
             </GlassButton>
           </div>
         )}

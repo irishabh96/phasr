@@ -771,6 +771,24 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { kind: "clean", message: "Merged cleanly" };
       case "start_ticket":
         return null;
+      case "read_epic_brief":
+        return {
+          parentId: a?.parentId ?? "epic-1",
+          prd: { content: "# Epic PRD", mtimeMs: 1000, lastEditedBy: null, lastEditedAtMs: null },
+          trd: { content: "", mtimeMs: null, lastEditedBy: null, lastEditedAtMs: null },
+          assets: [],
+          figma: [],
+        };
+      case "write_epic_section":
+        return {
+          kind: "saved",
+          section: {
+            content: a?.content ?? "",
+            mtimeMs: 2000,
+            lastEditedBy: "you",
+            lastEditedAtMs: 2000,
+          },
+        };
       case "git_repo_merge_in_progress":
         return { kind: "none" };
       case "git_repo_abort_merge":

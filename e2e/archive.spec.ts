@@ -80,3 +80,32 @@ test.describe("Workflow context menu (sidebar)", () => {
     await expect(page.getByRole("dialog")).toContainText(/Rename/);
   });
 });
+
+test.describe("Workflow brief (E5)", () => {
+  test("the board header's Brief opens the editable PRD/TRD and saves a section", async ({
+    page,
+  }) => {
+    await boot(page);
+    await page.goto("/repositories/repo-1/board/epic-1");
+    await page.getByTestId("board-epic-brief").click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Workflow brief");
+    // Loaded from read_epic_brief — the fixture PRD renders for editing.
+    const prd = dialog.getByRole("textbox", { name: "PRD content" });
+    await expect(prd).toHaveValue("# Epic PRD");
+
+    await prd.fill("# Epic PRD\n\nSharper scope.");
+    await dialog.getByRole("button", { name: "Save" }).first().click();
+    await expect
+      .poll(async () => {
+        const all = await calls(page);
+        const c = all.find((x) => x.cmd === "write_epic_section");
+        return c && (c.args as { section?: string }).section;
+      })
+      .toBe("prd");
+    await expect(
+      dialog.getByRole("button", { name: /Saved/ }),
+    ).toBeVisible();
+  });
+});

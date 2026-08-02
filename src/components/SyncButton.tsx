@@ -1,13 +1,13 @@
 import { ArrowDownToLine, ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { StrategyRadioGroup } from "@/components/ui/StrategyRadioGroup";
 import {
   useGitBranchStatus,
   useGitFetch,
   useGitSyncWithMain,
 } from "@/lib/hooks/useGit";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
-import { cn } from "@/lib/utils";
 import type { MergeStrategy } from "@/lib/types";
 
 interface SyncButtonProps {
@@ -131,19 +131,23 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
             </p>
           </header>
           <div className="p-2">
-            <StrategyRow
-              value="merge"
-              current={strategy}
-              onSelect={setStrategy}
-              label="Merge"
-              hint="Creates a merge commit on this branch."
-            />
-            <StrategyRow
-              value="rebase"
-              current={strategy}
-              onSelect={setStrategy}
-              label="Rebase"
-              hint={`Replays this branch's commits on top of ${targetName}.`}
+            <StrategyRadioGroup
+              legend="Strategy"
+              options={[
+                {
+                  value: "merge",
+                  label: "Merge",
+                  hint: "Creates a merge commit on this branch.",
+                },
+                {
+                  value: "rebase",
+                  label: "Rebase",
+                  hint: `Replays this branch's commits on top of ${targetName}.`,
+                },
+              ]}
+              value={strategy === "rebase" ? "rebase" : "merge"}
+              onChange={setStrategy}
+              disabled={busy}
             />
           </div>
           {error && (
@@ -173,45 +177,3 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
   );
 }
 
-function StrategyRow({
-  value,
-  current,
-  onSelect,
-  label,
-  hint,
-}: {
-  value: MergeStrategy;
-  current: MergeStrategy;
-  onSelect: (v: MergeStrategy) => void;
-  label: string;
-  hint: string;
-}) {
-  const selected = value === current;
-  return (
-    <button
-      type="button"
-      onClick={() => onSelect(value)}
-      className={cn(
-        "flex w-full items-start gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors duration-100",
-        "hover:bg-(--color-bg-hover)",
-        selected && "bg-(--color-bg-active)",
-      )}
-    >
-      <span
-        className={cn(
-          "mt-[3px] inline-block h-3 w-3 shrink-0 rounded-full border",
-          selected
-            ? "border-(--color-accent-500) bg-(--color-accent-500)"
-            : "border-(--glass-border-hairline)",
-        )}
-        aria-hidden
-      />
-      <span className="flex flex-1 flex-col gap-0.5">
-        <span className="text-[12.5px] leading-none text-(--color-text-primary)">
-          {label}
-        </span>
-        <span className="text-[11px] text-(--color-text-muted)">{hint}</span>
-      </span>
-    </button>
-  );
-}
