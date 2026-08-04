@@ -52,7 +52,8 @@ export function NoteComposer({
   }, [focusRequest, autoFocus]);
 
   const trimmed = draft.trim();
-  const canSave = trimmed.length > 0 && trimmed.length <= MAX_NOTE_LEN && !saving;
+  const canSave =
+    trimmed.length > 0 && trimmed.length <= MAX_NOTE_LEN && !saving;
   const atCap = trimmed.length > MAX_NOTE_LEN;
 
   const save = async () => {
@@ -90,7 +91,7 @@ export function NoteComposer({
   };
 
   return (
-    <div className="mx-2 my-1">
+    <div className="mx-2 my-1 flex flex-col gap-2">
       <textarea
         ref={fieldRef}
         value={draft}
@@ -117,7 +118,7 @@ export function NoteComposer({
       {saveError && (
         <div
           role="alert"
-          className="mt-1 flex items-center justify-between gap-2 rounded-[6px] bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-2 py-1.5"
+          className="flex items-center justify-between gap-2 rounded-[6px] bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-2 py-1.5"
         >
           <span className="min-w-0 truncate text-[12px] text-(--color-danger-text)">
             {saveError}
@@ -133,39 +134,39 @@ export function NoteComposer({
         </div>
       )}
 
-      {/* The keys are discoverable from the tooltip and the canvas row;
-          a permanent hint line under the field is noise you read once. */}
-      <div className="mt-2 flex h-8 items-center justify-end gap-2 px-0">
-        <div className="flex items-center gap-2">
-          {trimmed.length > COUNTER_THRESHOLD && (
-            <span
-              className={cn(
-                "text-[11px] leading-none tabular-nums",
-                atCap
-                  ? "text-(--color-danger-text)"
-                  : "text-(--color-text-muted)",
-              )}
-              {...(atCap
-                ? {
-                    title: `Notes are limited to ${MAX_NOTE_LEN.toLocaleString()} characters`,
-                  }
-                : {})}
-            >
-              {trimmed.length.toLocaleString()} / {MAX_NOTE_LEN.toLocaleString()}
-            </span>
-          )}
-          <GlassButton
-            variant="primary"
-            size="sm"
-            disabled={!canSave}
-            {...(trimmed.length === 0
-              ? { title: "Write something to save" }
+      {/* The keys are taught by the canvas row and the + tooltip; a
+          permanent hint line under the field is noise you read once.
+          Fixed h-8 so the block doesn't jitter when the counter appears;
+          right edge aligns with the field's outline, not row content. */}
+      <div className="flex h-8 items-center justify-end gap-2">
+        {trimmed.length > COUNTER_THRESHOLD && (
+          <span
+            className={cn(
+              "text-[11px] leading-none tabular-nums",
+              atCap
+                ? "text-(--color-danger-text)"
+                : "text-(--color-text-muted)",
+            )}
+            {...(atCap
+              ? {
+                  title: `Notes are limited to ${MAX_NOTE_LEN.toLocaleString()} characters`,
+                }
               : {})}
-            onClick={() => void save()}
           >
-            {saving ? "Saving…" : "Save note"}
-          </GlassButton>
-        </div>
+            {trimmed.length.toLocaleString()} / {MAX_NOTE_LEN.toLocaleString()}
+          </span>
+        )}
+        <GlassButton
+          variant="primary"
+          size="sm"
+          disabled={!canSave}
+          {...(trimmed.length === 0
+            ? { title: "Write something to save" }
+            : {})}
+          onClick={() => void save()}
+        >
+          {saving ? "Saving…" : "Save note"}
+        </GlassButton>
       </div>
       <div ref={liveRef} aria-live="polite" className="sr-only" />
     </div>

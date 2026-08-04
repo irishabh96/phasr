@@ -2,7 +2,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   FolderGit2,
   MoreHorizontal,
-  SquareChevronRight,
+  Play,
   Terminal as TerminalIcon,
   Zap,
 } from "lucide-react";
@@ -18,17 +18,23 @@ import { cn } from "@/lib/utils";
 /** A first line longer than this is a paragraph, not a title. */
 const TITLE_MAX = 120;
 
+/**
+ * The origin glyph is now the SOLE categorical signal (the word was
+ * dropped), so it takes the tonal promotion the label gave up. `Play`
+ * for run commands, not a boxed chevron — that reads identically to the
+ * terminal chevron at this size.
+ */
 function OriginIcon({ kind }: { kind: Note["originKind"] }) {
-  const cls = "shrink-0 text-(--color-text-muted)";
+  const cls = "shrink-0 text-(--color-text-secondary)";
   switch (kind) {
     case "workspace":
-      return <Zap size={11} className={cls} />;
+      return <Zap size={12} className={cls} />;
     case "terminal":
-      return <TerminalIcon size={11} className={cls} />;
+      return <TerminalIcon size={12} className={cls} />;
     case "runCommand":
-      return <SquareChevronRight size={11} className={cls} />;
+      return <Play size={12} className={cls} />;
     case "repository":
-      return <FolderGit2 size={11} className={cls} />;
+      return <FolderGit2 size={12} className={cls} />;
   }
 }
 
@@ -36,6 +42,12 @@ export interface NoteRowProps {
   note: Note;
   /** Whether the origin workspace still exists (live-resolved by the panel). */
   originWorkspaceAlive: boolean;
+  /**
+   * Follows the group header: named-day buckets ("Today", "Mon 12 Jul")
+   * already give the date, so the row shows clock time; month/year
+   * buckets need the date instead. Never duplicates the header.
+   */
+  stamp: "time" | "date";
   /** Roving tabindex: the one row that is in the tab order. */
   focusable: boolean;
   onFocusRow: () => void;
@@ -53,6 +65,7 @@ export interface NoteRowProps {
 export function NoteRow({
   note,
   originWorkspaceAlive,
+  stamp,
   focusable,
   onFocusRow,
   onSave,
@@ -78,8 +91,7 @@ export function NoteRow({
   useLayoutEffect(() => {
     const el = bodyRef.current;
     if (!el || editing) return;
-    const measure = () =>
-      setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    const measure = () => setOverflowing(el.scrollHeight > el.clientHeight + 1);
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -162,7 +174,7 @@ export function NoteRow({
           note.originWorkspaceName
             ? `, ${note.originWorkspaceName}${originWorkspaceAlive ? "" : " (workspace removed)"}`
             : ""
-        }`}
+        }, ${formatAbsolute(note.createdAt)}`}
         className={cn(
           "group mx-2 my-1 flex flex-col gap-1.5 rounded-[8px] px-2 py-2",
           "transition-colors duration-100",
@@ -172,7 +184,7 @@ export function NoteRow({
         )}
       >
         {editing ? (
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-2">
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -208,16 +220,14 @@ export function NoteRow({
                 </GlassButton>
               </div>
             )}
-            <div className="flex h-6 items-center justify-between gap-2">
-              <span className="text-[11px] leading-none text-(--color-text-muted)">
-                ⌘↵ save · esc discard
-              </span>
+            <div className="flex h-6 items-center justify-end gap-2">
               <div className="flex items-center gap-1.5">
                 <GlassButton
                   variant="ghost"
                   size="sm"
                   className="!h-6 px-2 text-[11px]"
                   disabled={saving}
+                  title="Discard (Esc)"
                   onClick={cancelEdit}
                 >
                   Cancel
@@ -227,7 +237,7 @@ export function NoteRow({
                   size="sm"
                   className="!h-6 px-2 text-[11px]"
                   disabled={!canSave || saving}
-                  {...(!canSave ? { title: "No changes to save" } : {})}
+                  title={canSave ? "Save (⌘↵)" : "No changes to save"}
                   onClick={() => void save()}
                 >
                   {saving ? "Saving…" : "Save"}
@@ -278,105 +288,95 @@ export function NoteRow({
             {/* Provenance renders only once the note actually exists —
                 on an optimistic row its absence is the "not yet saved"
                 signal, and its arrival is the confirmation. */}
-            {!pending && (
-              <div className="flex h-6 items-center gap-2">
-                {/* Icon-only origin: the glyph already says agent vs
-                    terminal vs run-command vs repo. The full label
-                    ("Terminal 2") lives in its tooltip so the detail is
-                    available without being shouted on every row. */}
-                <GlassTooltip content={note.originLabel} side="top">
-                  <span
-                    tabIndex={0}
-                    className="flex shrink-0 items-center rounded-[4px] focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
-                  >
-                    <OriginIcon kind={note.originKind} />
+            {/* The meta line keeps its height on a pending row (content
+                hidden, not absent) so the provenance arriving on save
+                doesn't shove the list — the receipt fades in, in place.
+                Two tonal groups: [origin: icon + ref] … [when: time].
+                None of these are tab stops — the panel runs a roving
+                tabindex, and the row's aria-label carries all of this
+                text for keyboard and screen-reader users. */}
+            <div
+              className={cn(
+                "flex h-6 items-center gap-1.5",
+                "transition-opacity duration-[var(--duration-glass)] motion-reduce:transition-none",
+                pending && "pointer-events-none opacity-0",
+              )}
+              aria-hidden={pending}
+            >
+              <GlassTooltip content={note.originLabel} side="top">
+                <span className="flex h-6 w-4 shrink-0 items-center justify-center">
+                  <OriginIcon kind={note.originKind} />
+                </span>
+              </GlassTooltip>
+              {note.originWorkspaceName &&
+                (originWorkspaceAlive ? (
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-secondary)">
+                    {note.originWorkspaceName}
                   </span>
-                </GlassTooltip>
-                {note.originWorkspaceName &&
-                  (originWorkspaceAlive ? (
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted)">
+                ) : (
+                  <GlassTooltip
+                    content="This workspace no longer exists."
+                    side="top"
+                  >
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted) line-through">
                       {note.originWorkspaceName}
+                      <span className="sr-only"> (workspace removed)</span>
                     </span>
-                  ) : (
-                    <GlassTooltip
-                      content="This workspace no longer exists."
-                      side="top"
-                    >
-                      {/* tabIndex so the explanation is reachable by
-                          keyboard — Radix's trigger doesn't add one. */}
-                      <span
-                        tabIndex={0}
-                        className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted) line-through focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
-                      >
-                        {note.originWorkspaceName}
-                        <span className="sr-only"> (workspace removed)</span>
-                      </span>
-                    </GlassTooltip>
-                  ))}
-                {!note.originWorkspaceName && <span className="flex-1" />}
-                {/* Every note carries a stamp — clock time within today,
-                    the date beyond it. A note is a receipt of work; when
-                    it was written is part of judging whether it's still
-                    true. Full date-time on hover/focus. */}
-                <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
-                  <time
-                    dateTime={note.createdAt}
-                    tabIndex={0}
-                    className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
-                  >
-                    {formatNoteStamp(note.createdAt)}
+                  </GlassTooltip>
+                ))}
+              {!note.originWorkspaceName && <span className="flex-1" />}
+              <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
+                <div className="flex shrink-0 items-center gap-1 text-[11px] leading-none text-(--color-text-muted)">
+                  <time dateTime={note.createdAt} className="font-mono">
+                    {formatNoteStamp(note.createdAt, stamp)}
                   </time>
-                </GlassTooltip>
-                {edited && (
-                  <span className="shrink-0 text-[11px] leading-none text-(--color-text-muted)">
-                    edited
-                  </span>
-                )}
-                <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
-                  <DropdownMenu.Trigger asChild>
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      aria-label="Note actions"
-                      className={cn(
-                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px]",
-                        "text-(--color-text-muted) transition-opacity",
-                        "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
-                        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-                        "data-[state=open]:opacity-100",
-                      )}
+                  {edited && <span>· edited</span>}
+                </div>
+              </GlassTooltip>
+              <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label="Note actions"
+                    className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px]",
+                      "text-(--color-text-muted) transition-opacity",
+                      "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
+                      "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                      "data-[state=open]:opacity-100",
+                    )}
+                  >
+                    <MoreHorizontal size={14} />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    align="end"
+                    sideOffset={6}
+                    className="glass-modal z-(--z-popover) min-w-[160px] overflow-hidden p-1"
+                  >
+                    <MenuItem onSelect={beginEdit} hint="↵">
+                      Edit
+                    </MenuItem>
+                    <MenuItem
+                      onSelect={() =>
+                        void navigator.clipboard
+                          ?.writeText(note.body)
+                          .catch(() => {})
+                      }
+                      hint="⌘C"
                     >
-                      <MoreHorizontal size={14} />
-                    </button>
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Portal>
-                    <DropdownMenu.Content
-                      align="end"
-                      sideOffset={6}
-                      className="glass-modal z-(--z-popover) min-w-[160px] overflow-hidden p-1"
-                    >
-                      <MenuItem onSelect={beginEdit} hint="↵">
-                        Edit
-                      </MenuItem>
-                      <MenuItem
-                        onSelect={() =>
-                          void navigator.clipboard
-                            ?.writeText(note.body)
-                            .catch(() => {})
-                        }
-                        hint="⌘C"
-                      >
-                        Copy text
-                      </MenuItem>
-                      <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
-                      <MenuItem onSelect={onDelete} hint="⌫" danger>
-                        Delete…
-                      </MenuItem>
-                    </DropdownMenu.Content>
-                  </DropdownMenu.Portal>
-                </DropdownMenu.Root>
-              </div>
-            )}
+                      Copy text
+                    </MenuItem>
+                    <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
+                    <MenuItem onSelect={onDelete} hint="⌫" danger>
+                      Delete…
+                    </MenuItem>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            </div>
           </>
         )}
       </article>

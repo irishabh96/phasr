@@ -208,6 +208,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                     <NoteRow
                       key={note.id}
                       note={note}
+                      stamp={group.spansDays ? "date" : "time"}
                       originWorkspaceAlive={
                         !note.originWorkspaceId ||
                         liveWorkspaceIds.has(note.originWorkspaceId)

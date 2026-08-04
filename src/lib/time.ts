@@ -71,35 +71,42 @@ export function formatDayStamp(iso: string): string {
 }
 
 /**
- * The stamp shown on every note. Within today the useful precision is
- * the clock ("14:32" — which agent run was this?); older than that the
- * day is what you're orienting by, and the group header already carries
- * the coarse bucket.
+ * The stamp shown on every note. `mode` follows the group header: a
+ * bucket that names one exact day (Today / Yesterday / "Mon 12 Jul")
+ * already tells you the date, so the row adds clock precision; a bucket
+ * that spans days (a month, a year) needs the date instead.
+ *
+ * 24h on purpose — it matches `git log`, `journalctl`, and terminal
+ * output, and gives a fixed 5-char column so the right edge stays
+ * straight next to "12 Jun".
  */
-export function formatNoteStamp(iso: string): string {
+export function formatNoteStamp(iso: string, mode: "time" | "date"): string {
   const date = Date.parse(iso);
-  if (Number.isNaN(date)) return "";
-  const d = new Date(date);
-  const now = new Date();
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  if (sameDay)
-    return d.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-  return formatDayStamp(iso);
+  if (Number.isNaN(date)) return "—";
+  if (mode === "date") return formatDayStamp(iso);
+  return new Date(date).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
 }
 
-/** Full local date-time, for tooltips over relative timestamps. */
+/**
+ * Full local date-time, for tooltips over relative timestamps. Pinned to
+ * 24h so the tooltip can't contradict the row it explains (`timeStyle`
+ * is locale-driven and would render 00:30 as "12:30 AM" on en-US).
+ */
 export function formatAbsolute(iso: string): string {
   const date = Date.parse(iso);
   if (Number.isNaN(date)) return iso;
+  // Explicit components, not dateStyle: Intl forbids combining
+  // dateStyle/timeStyle with hour/minute, and we need the 24h pin.
   return new Date(date).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
   });
 }

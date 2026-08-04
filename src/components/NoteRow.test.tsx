@@ -30,6 +30,7 @@ function renderRow(
       <NoteRow
         note={note}
         originWorkspaceAlive={alive}
+        stamp="time"
         focusable
         onFocusRow={() => {}}
         registerRef={() => {}}
@@ -78,23 +79,49 @@ describe("NoteRow", () => {
     expect(screen.queryByText("Terminal 2")).not.toBeInTheDocument();
   });
 
+  it("keeps origin and time in the row's accessible name (the SR path)", () => {
+    // With the label off-screen, aria-label is the ONLY queryable home
+    // for origin text — a future cleanup must not silently drop it.
+    renderRow(makeNote());
+    const label = screen.getByRole("article").getAttribute("aria-label") ?? "";
+    expect(label).toContain("Terminal 2");
+    expect(label).toContain("fix-auth");
+    expect(label).toMatch(/\d{2}:\d{2}/);
+  });
+
+  it("names a removed workspace in the accessible name too", () => {
+    renderRow(makeNote(), { alive: false });
+    expect(screen.getByRole("article").getAttribute("aria-label")).toContain(
+      "(workspace removed)",
+    );
+  });
+
+  it("adds no extra tab stops — the roving list owns the tab order", () => {
+    renderRow(makeNote(), { alive: false });
+    const row = screen.getByRole("article");
+    const stops = row.querySelectorAll('[tabindex="0"]');
+    // Only the row itself is focusable; tooltips are pointer affordances.
+    expect(stops.length).toBe(0);
+    expect(row).toHaveAttribute("tabindex", "0");
+  });
+
   it("marks a dead origin workspace with strikethrough + an sr-only reason", () => {
     renderRow(makeNote(), { alive: false });
     const ref = screen.getByText(/fix-auth/);
     expect(ref.className).toContain("line-through");
+    // The explanation is not mouse-only: it's in the row's accessible
+    // name and as sr-only text, NOT as an extra tab stop (see below).
     expect(screen.getByText("(workspace removed)")).toBeInTheDocument();
-    // Reachable by keyboard — the explanation must not be mouse-only.
-    expect(ref.closest("[tabindex='0']")).not.toBeNull();
   });
 
   it("shows the edited badge only when updatedAt moved past createdAt", () => {
     renderRow(makeNote({ updatedAt: "2026-08-01T11:00:00Z" }));
-    expect(screen.getByText("edited")).toBeInTheDocument();
+    expect(screen.getByText(/edited/)).toBeInTheDocument();
   });
 
   it("tolerates sub-second insert jitter without claiming edited", () => {
     renderRow(makeNote({ updatedAt: "2026-08-01T10:00:00.500Z" }));
-    expect(screen.queryByText("edited")).not.toBeInTheDocument();
+    expect(screen.queryByText(/edited/)).not.toBeInTheDocument();
   });
 
   it("offers Show more for a long SINGLE-PARAGRAPH note (measured, not newline-counted)", () => {
