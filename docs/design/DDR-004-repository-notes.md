@@ -1,6 +1,16 @@
 # DDR-004: Repository Notes — a rail that stays open while you work
 
-**Status:** Implemented (`feat/keymap-and-repo-notes`) · **Date:** 2026-08-04 · **Mode:** DESIGN
+> **⚠️ SUPERSEDED by [DDR-005](DDR-005-repository-notes-revision.md) (2026-08-05).**
+> The rail-as-third-tab direction survives. The *anatomy* below — a composer
+> pinned to the top of the panel, rows with always-visible icon actions, no
+> grouping — was reworked after review: it specified a DOM tree rather than a
+> reading experience, and shipped five defects (silent truncation of long
+> notes, a dead empty-state CTA, sub-3:1 light-theme focus rings,
+> keyboard-unreachable tooltips, no keyboard model). Read DDR-005 for the
+> current design; this file is kept for the rejected-alternatives analysis
+> (drawer / inner tab / bottom dock), which still holds.
+
+**Status:** Superseded · **Date:** 2026-08-04 · **Mode:** DESIGN
 **Builds on:** DDR-002 (glass panels, PanelState, toast system), the existing right rail.
 **Spec:** `specs/repository-notes-spec.md`
 
