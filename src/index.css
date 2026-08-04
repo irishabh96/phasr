@@ -79,6 +79,10 @@
   /* Solid danger fill for buttons (white text needs a darker red than
      --color-danger). */
   --color-danger-solid: #c93c37;
+  /* Danger-colored TEXT on tinted strips (mirrors --color-accent-text).
+     Dark: the vivid token reads fine on a 12% danger tint (6.37:1).
+     Light overrides below — #dc2626 on the tint is 4.01:1, fails AA. */
+  --color-danger-text: var(--color-danger);
   /* Diff line-marker + counts foreground. On the 14%-tinted diff rows the raw
      success/danger read fine in dark but drop below AA in light, so these get a
      darker light-theme override (below). Dark keeps the vivid tokens. */
@@ -194,6 +198,8 @@
   --color-danger: #dc2626;
   /* Solid danger fill for buttons — white on it = 4.83:1. */
   --color-danger-solid: #dc2626;
+  /* Danger text on the 12% danger tint: 5.37:1 (vivid #dc2626 = 4.01:1). */
+  --color-danger-text: #b91c1c;
   /* Darker diff markers/counts for light theme — clear AA on the tinted rows
      (add-fg 5.46:1 on #def2e6, remove-fg 5.21:1 on #fae1e1) and on white
      (6.39:1 / 6.47:1). Vivid success/danger fail there (2.82:1 / 3.89:1). */

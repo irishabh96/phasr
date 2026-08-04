@@ -97,6 +97,19 @@ function AppShell() {
         toggleRightPanel();
         return;
       }
+      if (matchShortcut(e, SHORTCUTS.openNotes)) {
+        // Workspace context only — RepoHomeShell binds its own copy for
+        // the repo-home rail (the two never co-mount).
+        const s = useUiStore.getState();
+        const ctx = s.activeWorkspaceContext;
+        if (!ctx) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        s.setRightPanelCollapsed(false);
+        s.setRightPanelTab(ctx.workspaceId, "notes");
+        s.requestNotesFocus();
+        return;
+      }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
         const { activeWorkspaceContext, requestNewWorkspace } =
           useUiStore.getState();

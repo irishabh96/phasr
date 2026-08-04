@@ -1,6 +1,6 @@
 import * as RadixDialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
-import { type RefObject } from "react";
+import { useRef, type RefObject } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { humanizeError } from "@/lib/humanizeError";
 import { cn } from "@/lib/utils";
@@ -176,6 +176,9 @@ export function ConfirmDialog({
   pendingLabel,
   size,
 }: ConfirmDialogProps) {
+  // Destructive dialogs focus Cancel, not the danger action — otherwise
+  // an Enter-through on open performs the irreversible thing.
+  const cancelRef = useRef<HTMLButtonElement>(null);
   return (
     <Dialog
       open={open}
@@ -183,9 +186,11 @@ export function ConfirmDialog({
       title={title}
       description={<span className="whitespace-pre-line">{description}</span>}
       {...(size ? { size } : {})}
+      {...(destructive ? { initialFocusRef: cancelRef } : {})}
       footer={
         <>
           <GlassButton
+            ref={cancelRef}
             variant="outline"
             size="sm"
             disabled={pending}

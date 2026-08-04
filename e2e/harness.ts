@@ -146,7 +146,7 @@ export function makeFixtures() {
       repositoryId: "repo-1",
       body: "Seed script needs DATABASE_URL exported first — .env.local is stale.",
       originKind: "terminal",
-      originWorkspaceId: "ws-1",
+      originWorkspaceId: "ws-agent",
       originWorkspaceName: "add-feature",
       originTerminalId: "session:dead",
       originLabel: "Terminal 2",

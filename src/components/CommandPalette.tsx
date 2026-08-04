@@ -1,8 +1,9 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import {
   FolderGit2,
   LogOut,
+  NotebookPen,
   Palette,
   Plus,
   Search,
@@ -47,6 +48,16 @@ export function CommandPalette() {
   const { setTheme } = useUiStore();
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const navigateToRepoEntry = useNavigateToRepoEntry();
+  const activeWorkspaceContext = useUiStore((s) => s.activeWorkspaceContext);
+  const location = useLocation();
+  // Where would "Repository notes" open? Workspace rail when a
+  // workspace is active, repo-home rail on a repo route, else nowhere
+  // (the item renders disabled with the reason inline).
+  const notesContext: "workspace" | "repoHome" | null = activeWorkspaceContext
+    ? "workspace"
+    : /^\/repositories\/[^/]+\/?$/.test(location.pathname)
+      ? "repoHome"
+      : null;
 
   const { data: repositories } = useRepositories();
 
@@ -198,6 +209,38 @@ export function CommandPalette() {
                   <PaletteShortcut keys={SHORTCUTS.newWorkspace.display} />
                 </Command.Item>
               ))}
+              <Command.Item
+                value="action repository notes new note"
+                disabled={!notesContext}
+                onSelect={() => {
+                  if (!notesContext) return;
+                  go(() => {
+                    const s = useUiStore.getState();
+                    if (notesContext === "workspace" && s.activeWorkspaceContext) {
+                      s.setRightPanelCollapsed(false);
+                      s.setRightPanelTab(
+                        s.activeWorkspaceContext.workspaceId,
+                        "notes",
+                      );
+                    } else {
+                      s.setRepoRailCollapsed(false);
+                    }
+                    s.requestNotesFocus();
+                  });
+                }}
+                className={ITEM_CLS}
+              >
+                <NotebookPen size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">
+                  Repository notes
+                  {!notesContext && (
+                    <span className="ml-2 text-[12px] text-(--color-text-muted)">
+                      Open a repository first
+                    </span>
+                  )}
+                </span>
+                <PaletteShortcut keys={SHORTCUTS.openNotes.display} />
+              </Command.Item>
             </PaletteGroup>
 
             <PaletteGroup heading="Settings">

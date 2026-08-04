@@ -23,6 +23,8 @@ export interface ActiveWorkspaceContext {
 
 export type InnerTabKind = "main" | "terminal" | "preview";
 
+export type RightPanelTab = "changes" | "history" | "notes";
+
 export interface InnerTab {
   id: string;
   kind: InnerTabKind;
@@ -184,8 +186,28 @@ interface UiState {
    * but not across reloads — survives sessions via the same per-tab
    * pattern as `innerTabs` (in-memory; we don't snapshot to disk).
    */
-  rightPanelTab: Record<string, "changes" | "history">;
-  setRightPanelTab: (workspaceId: string, tab: "changes" | "history") => void;
+  rightPanelTab: Record<string, RightPanelTab>;
+  setRightPanelTab: (workspaceId: string, tab: RightPanelTab) => void;
+
+  /** Repo-home right rail (Notes only). Collapsed by default. */
+  repoRailCollapsed: boolean;
+  setRepoRailCollapsed: (collapsed: boolean) => void;
+
+  /**
+   * Unsaved note-composer drafts, keyed `${repositoryId}:${noteId|"new"}`.
+   * Survives rail collapse / tab switches so a draft is never lost;
+   * in-memory only (a draft should not outlive the app).
+   */
+  noteDrafts: Record<string, string>;
+  setNoteDraft: (key: string, body: string) => void;
+  clearNoteDraft: (key: string) => void;
+
+  /**
+   * Bumped by ⌘⇧N / "New note" entry points after they open the rail;
+   * the mounted NotesPanel focuses its composer when this changes.
+   */
+  notesFocusRequest: number;
+  requestNotesFocus: () => void;
 
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
@@ -397,6 +419,22 @@ export const useUiStore = create<UiState>((set, get) => ({
   setRightPanelTab: (workspaceId, tab) => {
     set({ rightPanelTab: { ...get().rightPanelTab, [workspaceId]: tab } });
   },
+
+  repoRailCollapsed: true,
+  setRepoRailCollapsed: (collapsed) => set({ repoRailCollapsed: collapsed }),
+
+  noteDrafts: {},
+  setNoteDraft: (key, body) => {
+    set({ noteDrafts: { ...get().noteDrafts, [key]: body } });
+  },
+  clearNoteDraft: (key) => {
+    const { [key]: _, ...rest } = get().noteDrafts;
+    set({ noteDrafts: rest });
+  },
+
+  notesFocusRequest: 0,
+  requestNotesFocus: () =>
+    set({ notesFocusRequest: get().notesFocusRequest + 1 }),
 
   pendingGitInitRepoId: null,
   requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),

@@ -3,6 +3,7 @@ import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { Loader2, PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { BranchChip } from "@/components/BranchChip";
+import { NotesEntryButton } from "@/components/NotesEntryButton";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
 import { GlassButton } from "@/components/ui/GlassButton";
@@ -179,6 +180,14 @@ function WorkspaceDetail() {
             {workspace.worktreePath && (
               <OpenInMenu path={workspace.worktreePath} />
             )}
+            <NotesEntryButton
+              onClick={() => {
+                const s = useUiStore.getState();
+                s.setRightPanelCollapsed(false);
+                s.setRightPanelTab(workspaceId, "notes");
+                s.requestNotesFocus();
+              }}
+            />
             {workspace.worktreePath && (
               <ChangesToggle
                 count={changeCount}
@@ -200,8 +209,10 @@ function WorkspaceDetail() {
           workspace={workspace}
           onMainExit={refresh}
         />
-        {workspace.worktreePath && (
-          <aside
+        {/* Not gated on worktreePath: Notes must be reachable on
+            pending/worktree-less workspaces; the git panels render
+            their own "No worktree yet" state inside. */}
+        <aside
             aria-hidden={rightPanelCollapsed}
             style={rightPanelCollapsed ? undefined : { width: rightPanelWidth }}
             className={cn(
@@ -226,10 +237,13 @@ function WorkspaceDetail() {
               className="flex h-full flex-col"
               style={{ width: rightPanelWidth, minWidth: rightPanelWidth }}
             >
-              <WorkspaceRightSidebar workspaceId={workspaceId} />
+              <WorkspaceRightSidebar
+                workspaceId={workspaceId}
+                repositoryId={repositoryId}
+                hasWorktree={!!workspace.worktreePath}
+              />
             </div>
           </aside>
-        )}
       </div>
       <RunCommandsPane repositoryId={repositoryId} />
     </div>

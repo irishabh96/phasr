@@ -1,4 +1,11 @@
-import { FileCode2, Home, Plus, Terminal as TerminalIcon, X } from "lucide-react";
+import {
+  FileCode2,
+  Home,
+  NotebookPen,
+  Plus,
+  Terminal as TerminalIcon,
+  X,
+} from "lucide-react";
 import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { SHORTCUTS } from "@/lib/shortcuts";
@@ -8,6 +15,8 @@ import { cn } from "@/lib/utils";
 
 interface RepoInnerTabBarProps {
   repositoryId: string;
+  /** Toggles the repo-home Notes rail (button pinned right, before +). */
+  onOpenNotes?: () => void;
 }
 
 /**
@@ -18,7 +27,10 @@ interface RepoInnerTabBarProps {
  *  - "terminal" — ad-hoc shells; the `+` at the end of the strip spawns one
  *                 (or ⌘T from `RepoHomeContent`).
  */
-export function RepoInnerTabBar({ repositoryId }: RepoInnerTabBarProps) {
+export function RepoInnerTabBar({
+  repositoryId,
+  onOpenNotes,
+}: RepoInnerTabBarProps) {
   const state = useUiStore((s) => s.repoInnerTabs[repositoryId]);
   const setActive = useUiStore((s) => s.setActiveRepoInnerTab);
   const close = useUiStore((s) => s.closeRepoInnerTab);
@@ -52,6 +64,21 @@ export function RepoInnerTabBar({ repositoryId }: RepoInnerTabBarProps) {
           onClose={() => handleClose(tab)}
         />
       ))}
+      {onOpenNotes && (
+        <GlassTooltip
+          content={`${SHORTCUTS.openNotes.label} (${SHORTCUTS.openNotes.display.join("")})`}
+          side="bottom"
+        >
+          <button
+            type="button"
+            aria-label={SHORTCUTS.openNotes.label}
+            onClick={onOpenNotes}
+            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+          >
+            <NotebookPen size={13} />
+          </button>
+        </GlassTooltip>
+      )}
       <GlassTooltip
         content={`${SHORTCUTS.newTerminal.label} (${SHORTCUTS.newTerminal.display.join("")})`}
         side="bottom"
@@ -60,7 +87,10 @@ export function RepoInnerTabBar({ repositoryId }: RepoInnerTabBarProps) {
           type="button"
           aria-label={SHORTCUTS.newTerminal.label}
           onClick={() => openTerminal(repositoryId)}
-          className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+            !onOpenNotes && "ml-auto",
+          )}
         >
           <Plus size={13} />
         </button>
