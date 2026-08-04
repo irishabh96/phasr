@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { tauri } from "@/lib/tauri";
+import { installTerminalLinks } from "@/lib/terminal/links";
 import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent } from "@/lib/types";
 
@@ -48,6 +49,8 @@ export function RunCommandTerminal({
   const restartRef = useRef<(() => void) | null>(null);
   const { data: settings } = useUserSettings();
   onExitRef.current = onExit;
+  const editorIdRef = useRef<string | null>(null);
+  editorIdRef.current = settings?.defaultEditor ?? null;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -58,6 +61,11 @@ export function RunCommandTerminal({
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
+    // No cwd context on this surface — URL + absolute-path links only.
+    installTerminalLinks(term, {
+      getCwd: () => null,
+      getEditorId: () => editorIdRef.current,
+    });
     term.open(container);
     try {
       term.loadAddon(new WebglAddon());

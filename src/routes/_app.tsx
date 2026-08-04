@@ -15,6 +15,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
 import { useFileDrop } from "@/lib/hooks/useFileDrop";
+import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
 import { useMacTextEditingKeys } from "@/lib/hooks/useMacTextEditingKeys";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
@@ -68,6 +69,8 @@ function AppShell() {
   // ⌘⌫ / ⌘← / ⌘→ in every field — the webview never runs the native
   // macOS editing actions for these, so we implement them ourselves.
   useMacTextEditingKeys();
+  // <a href="http…"> anywhere in the app → default browser, not the webview.
+  useExternalLinkOpener();
 
   // Global chrome shortcuts. All bindings come from `@/lib/shortcuts` —
   // edits to a binding live there, not here.
