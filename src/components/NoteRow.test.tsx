@@ -21,10 +21,7 @@ function makeNote(overrides: Partial<Note> = {}): Note {
 
 function renderRow(
   note: Note,
-  {
-    alive = true,
-    showDayStamp = false,
-  }: { alive?: boolean; showDayStamp?: boolean } = {},
+  { alive = true }: { alive?: boolean } = {},
   onSave = vi.fn().mockResolvedValue(undefined),
   onDelete = vi.fn(),
 ) {
@@ -33,7 +30,6 @@ function renderRow(
       <NoteRow
         note={note}
         originWorkspaceAlive={alive}
-        showDayStamp={showDayStamp}
         focusable
         onFocusRow={() => {}}
         registerRef={() => {}}
@@ -70,13 +66,16 @@ afterEach(() => {
 
 
 describe("NoteRow", () => {
-  it("renders body, provenance label, and workspace name", () => {
+  it("renders body, workspace ref, and a timestamp — origin label is icon-only", () => {
     renderRow(makeNote());
     expect(
       screen.getByText(/Seed script needs DATABASE_URL/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Terminal 2")).toBeInTheDocument();
     expect(screen.getByText("fix-auth")).toBeInTheDocument();
+    // Every note carries a stamp, whatever bucket it's in.
+    expect(screen.getByRole("time")).toBeInTheDocument();
+    // The word "Terminal 2" lives in the icon's tooltip, not the row.
+    expect(screen.queryByText("Terminal 2")).not.toBeInTheDocument();
   });
 
   it("marks a dead origin workspace with strikethrough + an sr-only reason", () => {

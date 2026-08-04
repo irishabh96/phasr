@@ -45,6 +45,8 @@ function WorkspaceDetail() {
   const { data: changes } = useGitStatus(workspaceId);
   const { data: runCommands } = useRunCommands(repositoryId);
   const rightPanelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
+  const rightPanelTab =
+    useUiStore((s) => s.rightPanelTab[workspaceId]) ?? "changes";
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
   const rightPanelWidth = useUiStore((s) => s.rightPanelWidth);
   const setRightPanelWidth = useUiStore((s) => s.setRightPanelWidth);
@@ -181,9 +183,16 @@ function WorkspaceDetail() {
               <OpenInMenu path={workspace.worktreePath} />
             )}
             <NotesEntryButton
+              active={!rightPanelCollapsed && rightPanelTab === "notes"}
               onClick={() => {
-                // Reading entry point — capture is ⌘⇧N / the panel's +.
+                // A toggle, not a one-way door: if the rail is already
+                // showing Notes this closes it. Reading entry point —
+                // capture is ⌘⇧N / the panel's +.
                 const s = useUiStore.getState();
+                if (!s.rightPanelCollapsed && rightPanelTab === "notes") {
+                  s.setRightPanelCollapsed(true);
+                  return;
+                }
                 s.setRightPanelCollapsed(false);
                 s.setRightPanelTab(workspaceId, "notes");
               }}

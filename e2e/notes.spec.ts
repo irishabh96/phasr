@@ -68,7 +68,8 @@ test.describe("Notes panel", () => {
 
     // Fixture note bodies + provenance render.
     await expect(page.getByText(/Seed script needs DATABASE_URL/)).toBeVisible();
-    await expect(page.getByText("Terminal 2")).toBeVisible();
+    // Origin is icon-only now; the label lives in its tooltip.
+    await expect(page.getByText("Terminal 2")).toHaveCount(0);
     // note-2's origin workspace (ws-gone) doesn't exist → the snapshot
     // still renders, struck through, with a keyboard-reachable reason.
     const deadRef = page.getByText("checkout-flow");

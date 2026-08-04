@@ -212,7 +212,6 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                         !note.originWorkspaceId ||
                         liveWorkspaceIds.has(note.originWorkspaceId)
                       }
-                      showDayStamp={group.spansDays}
                       focusable={i === activeIndex}
                       onFocusRow={() => setActiveIndex(i)}
                       registerRef={(el) => {

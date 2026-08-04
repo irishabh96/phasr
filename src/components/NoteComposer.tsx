@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
-import { KBD_CLS } from "@/components/ui/palette";
 import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
@@ -134,11 +133,9 @@ export function NoteComposer({
         </div>
       )}
 
-      <div className="flex h-8 items-center justify-between gap-2 px-2">
-        <span className="flex items-center gap-1.5 text-[11px] leading-none text-(--color-text-muted)">
-          <span>⌘↵ save · esc close</span>
-          <kbd className={KBD_CLS}>{SHORTCUTS.openNotes.display.join("")}</kbd>
-        </span>
+      {/* The keys are discoverable from the tooltip and the canvas row;
+          a permanent hint line under the field is noise you read once. */}
+      <div className="mt-2 flex h-8 items-center justify-end gap-2 px-0">
         <div className="flex items-center gap-2">
           {trimmed.length > COUNTER_THRESHOLD && (
             <span

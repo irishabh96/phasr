@@ -11,7 +11,7 @@ import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
-import { formatAbsolute, formatDayStamp } from "@/lib/time";
+import { formatAbsolute, formatNoteStamp } from "@/lib/time";
 import type { Note } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -36,8 +36,6 @@ export interface NoteRowProps {
   note: Note;
   /** Whether the origin workspace still exists (live-resolved by the panel). */
   originWorkspaceAlive: boolean;
-  /** Show a day stamp — only inside buckets that span multiple days. */
-  showDayStamp: boolean;
   /** Roving tabindex: the one row that is in the tab order. */
   focusable: boolean;
   onFocusRow: () => void;
@@ -55,7 +53,6 @@ export interface NoteRowProps {
 export function NoteRow({
   note,
   originWorkspaceAlive,
-  showDayStamp,
   focusable,
   onFocusRow,
   onSave,
@@ -283,10 +280,18 @@ export function NoteRow({
                 signal, and its arrival is the confirmation. */}
             {!pending && (
               <div className="flex h-6 items-center gap-2">
-                <OriginIcon kind={note.originKind} />
-                <span className="shrink-0 text-[11px] font-medium leading-none text-(--color-text-secondary)">
-                  {note.originLabel}
-                </span>
+                {/* Icon-only origin: the glyph already says agent vs
+                    terminal vs run-command vs repo. The full label
+                    ("Terminal 2") lives in its tooltip so the detail is
+                    available without being shouted on every row. */}
+                <GlassTooltip content={note.originLabel} side="top">
+                  <span
+                    tabIndex={0}
+                    className="flex shrink-0 items-center rounded-[4px] focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+                  >
+                    <OriginIcon kind={note.originKind} />
+                  </span>
+                </GlassTooltip>
                 {note.originWorkspaceName &&
                   (originWorkspaceAlive ? (
                     <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted)">
@@ -309,17 +314,19 @@ export function NoteRow({
                     </GlassTooltip>
                   ))}
                 {!note.originWorkspaceName && <span className="flex-1" />}
-                {showDayStamp && (
-                  <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
-                    <time
-                      dateTime={note.createdAt}
-                      tabIndex={0}
-                      className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
-                    >
-                      {formatDayStamp(note.createdAt)}
-                    </time>
-                  </GlassTooltip>
-                )}
+                {/* Every note carries a stamp — clock time within today,
+                    the date beyond it. A note is a receipt of work; when
+                    it was written is part of judging whether it's still
+                    true. Full date-time on hover/focus. */}
+                <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
+                  <time
+                    dateTime={note.createdAt}
+                    tabIndex={0}
+                    className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+                  >
+                    {formatNoteStamp(note.createdAt)}
+                  </time>
+                </GlassTooltip>
                 {edited && (
                   <span className="shrink-0 text-[11px] leading-none text-(--color-text-muted)">
                     edited
