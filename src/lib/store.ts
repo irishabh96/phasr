@@ -203,11 +203,16 @@ interface UiState {
   clearNoteDraft: (key: string) => void;
 
   /**
-   * Bumped by ⌘⇧N / "New note" entry points after they open the rail;
-   * the mounted NotesPanel focuses its composer when this changes.
+   * The note composer is SUMMONED, not pinned: the panel's resting state
+   * is a reading surface. ⌘⇧N / the header + / clicking the canvas open
+   * it; Esc closes it (the draft survives in `noteDrafts`).
+   * `notesComposerRequest` is bumped on every open so the mounted
+   * composer re-focuses even if it was already open.
    */
-  notesFocusRequest: number;
-  requestNotesFocus: () => void;
+  notesComposerOpen: boolean;
+  notesComposerRequest: number;
+  openNotesComposer: () => void;
+  closeNotesComposer: () => void;
 
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
@@ -432,9 +437,14 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ noteDrafts: rest });
   },
 
-  notesFocusRequest: 0,
-  requestNotesFocus: () =>
-    set({ notesFocusRequest: get().notesFocusRequest + 1 }),
+  notesComposerOpen: false,
+  notesComposerRequest: 0,
+  openNotesComposer: () =>
+    set({
+      notesComposerOpen: true,
+      notesComposerRequest: get().notesComposerRequest + 1,
+    }),
+  closeNotesComposer: () => set({ notesComposerOpen: false }),
 
   pendingGitInitRepoId: null,
   requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),

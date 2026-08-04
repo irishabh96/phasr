@@ -1,8 +1,11 @@
+import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NotesPanel } from "@/components/NotesPanel";
 import { RepoInnerTabBar } from "@/components/RepoInnerTabBar";
 import { RepoTabContent } from "@/components/RepoTabContent";
-import { PanelTab } from "@/components/ui/PanelTabs";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
+import { PanelTab, PanelTabBar } from "@/components/ui/PanelTabs";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useNotes } from "@/lib/hooks/useNotes";
 import { originFromRepoHome } from "@/lib/noteProvenance";
@@ -57,7 +60,7 @@ export function RepoHomeShell({ repo }: RepoHomeShellProps) {
         e.stopImmediatePropagation();
         const s = useUiStore.getState();
         s.setRepoRailCollapsed(false);
-        s.requestNotesFocus();
+        s.openNotesComposer();
         return;
       }
       if (!matchShortcut(e, SHORTCUTS.closeActiveTab)) return;
@@ -78,8 +81,7 @@ export function RepoHomeShell({ repo }: RepoHomeShellProps) {
         repositoryId={repo.id}
         onOpenNotes={() => {
           const s = useUiStore.getState();
-          s.setRepoRailCollapsed(railCollapsed ? false : true);
-          if (railCollapsed) s.requestNotesFocus();
+          s.setRepoRailCollapsed(!railCollapsed);
         }}
       />
       <div className="flex min-h-0 flex-1">
@@ -110,14 +112,30 @@ export function RepoHomeShell({ repo }: RepoHomeShellProps) {
             className="flex h-full flex-col"
             style={{ width: railWidth, minWidth: railWidth }}
           >
-            <div className="flex h-9 shrink-0 items-center gap-1 border-b border-(--color-border-subtle) px-2">
+            <PanelTabBar
+              actions={
+                <GlassTooltip
+                  content={`New note (${SHORTCUTS.openNotes.display.join("")})`}
+                  side="bottom"
+                >
+                  <GlassButton
+                    variant="ghost"
+                    size="icon"
+                    aria-label="New note"
+                    onClick={() => useUiStore.getState().openNotesComposer()}
+                  >
+                    <Plus size={14} />
+                  </GlassButton>
+                </GlassTooltip>
+              }
+            >
               <PanelTab
                 label="Notes"
                 count={notes?.length ?? 0}
                 active
                 onClick={() => setRailCollapsed(true)}
               />
-            </div>
+            </PanelTabBar>
             <div className="min-h-0 flex-1">
               <NotesPanel
                 repositoryId={repo.id}

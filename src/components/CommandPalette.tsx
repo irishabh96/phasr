@@ -59,6 +59,18 @@ export function CommandPalette() {
       ? "repoHome"
       : null;
 
+  /** Show the notes rail; optionally summon the composer too. */
+  const revealNotes = (compose: boolean) => {
+    const s = useUiStore.getState();
+    if (notesContext === "workspace" && s.activeWorkspaceContext) {
+      s.setRightPanelCollapsed(false);
+      s.setRightPanelTab(s.activeWorkspaceContext.workspaceId, "notes");
+    } else {
+      s.setRepoRailCollapsed(false);
+    }
+    if (compose) s.openNotesComposer();
+  };
+
   const { data: repositories } = useRepositories();
 
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
@@ -209,30 +221,33 @@ export function CommandPalette() {
                   <PaletteShortcut keys={SHORTCUTS.newWorkspace.display} />
                 </Command.Item>
               ))}
+              {/* Two items, because they're two different intents:
+                  read what's there vs. capture something new. */}
               <Command.Item
-                value="action repository notes new note"
+                value="action repository notes read"
                 disabled={!notesContext}
-                onSelect={() => {
-                  if (!notesContext) return;
-                  go(() => {
-                    const s = useUiStore.getState();
-                    if (notesContext === "workspace" && s.activeWorkspaceContext) {
-                      s.setRightPanelCollapsed(false);
-                      s.setRightPanelTab(
-                        s.activeWorkspaceContext.workspaceId,
-                        "notes",
-                      );
-                    } else {
-                      s.setRepoRailCollapsed(false);
-                    }
-                    s.requestNotesFocus();
-                  });
-                }}
+                onSelect={() => notesContext && go(() => revealNotes(false))}
                 className={ITEM_CLS}
               >
                 <NotebookPen size={15} className="shrink-0 text-(--color-text-secondary)" />
                 <span className="flex-1 text-[15px]">
                   Repository notes
+                  {!notesContext && (
+                    <span className="ml-2 text-[12px] text-(--color-text-muted)">
+                      Open a repository first
+                    </span>
+                  )}
+                </span>
+              </Command.Item>
+              <Command.Item
+                value="action new note write capture"
+                disabled={!notesContext}
+                onSelect={() => notesContext && go(() => revealNotes(true))}
+                className={ITEM_CLS}
+              >
+                <Plus size={15} className="shrink-0 text-(--color-text-secondary)" />
+                <span className="flex-1 text-[15px]">
+                  New note
                   {!notesContext && (
                     <span className="ml-2 text-[12px] text-(--color-text-muted)">
                       Open a repository first

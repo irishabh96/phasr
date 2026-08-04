@@ -1,22 +1,22 @@
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   FolderGit2,
-  Pencil,
+  MoreHorizontal,
   SquareChevronRight,
   Terminal as TerminalIcon,
-  Trash2,
   Zap,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
-import { GlassTextarea } from "@/components/ui/GlassInput";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
-import { formatAbsolute, formatRelative } from "@/lib/time";
+import { formatAbsolute, formatDayStamp } from "@/lib/time";
 import type { Note } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const BODY_CLAMP_LINES = 8;
+/** A first line longer than this is a paragraph, not a title. */
+const TITLE_MAX = 120;
 
 function OriginIcon({ kind }: { kind: Note["originKind"] }) {
   const cls = "shrink-0 text-(--color-text-muted)";
@@ -36,32 +36,63 @@ export interface NoteRowProps {
   note: Note;
   /** Whether the origin workspace still exists (live-resolved by the panel). */
   originWorkspaceAlive: boolean;
+  /** Show a day stamp — only inside buckets that span multiple days. */
+  showDayStamp: boolean;
+  /** Roving tabindex: the one row that is in the tab order. */
+  focusable: boolean;
+  onFocusRow: () => void;
   onSave: (body: string, expectedUpdatedAt: string) => Promise<void>;
   onDelete: () => void;
+  registerRef: (el: HTMLElement | null) => void;
 }
 
 /**
- * One note: body (pre-wrap, clamped with "Show more"), provenance meta
- * line, always-visible edit/delete actions, inline editor with the
- * shared ⌘↵ / Esc bindings. Save failures keep the text and offer Retry.
+ * One note. At rest it carries no chrome at all — body text and a quiet
+ * provenance line; actions appear on hover or focus. Optimistic rows
+ * (id `optimistic-*`) render without provenance until the write lands,
+ * which is what makes the save read as the text becoming the note.
  */
 export function NoteRow({
   note,
   originWorkspaceAlive,
+  showDayStamp,
+  focusable,
+  onFocusRow,
   onSave,
   onDelete,
+  registerRef,
 }: NoteRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note.body);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const bodyRef = useRef<HTMLParagraphElement>(null);
 
-  // The "edited" badge tolerates sub-second insert jitter.
-  const edited =
-    Date.parse(note.updatedAt) - Date.parse(note.createdAt) > 1000;
-  const isLong = note.body.split("\n").length > BODY_CLAMP_LINES;
+  const pending = note.id.startsWith("optimistic-");
+  const edited = Date.parse(note.updatedAt) - Date.parse(note.createdAt) > 1000;
+
+  // "Show more" must be driven by MEASURED overflow. Inferring it from
+  // newline count misses the common case — a long single paragraph is
+  // clamped by CSS at 5 visual lines with no hard newline anywhere, so
+  // the rest of the note would be unreachable.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || editing) return;
+    const measure = () =>
+      setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [note.body, editing, expanded]);
+
+  const nl = note.body.indexOf("\n");
+  const hasTitle = nl > 0 && nl <= TITLE_MAX;
+  const title = hasTitle ? note.body.slice(0, nl) : null;
+  const rest = hasTitle ? note.body.slice(nl + 1).trimStart() : note.body;
 
   const beginEdit = () => {
     setDraft(note.body);
@@ -102,31 +133,70 @@ export function NoteRow({
     }
   };
 
+  const handleRowKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (editing) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      beginEdit();
+      return;
+    }
+    if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      onDelete();
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
+      e.preventDefault();
+      void navigator.clipboard?.writeText(note.body).catch(() => {});
+    }
+  };
+
   const canSave = draft.trim().length > 0 && draft.trim() !== note.body;
 
   return (
     <li>
       <article
+        ref={registerRef}
+        tabIndex={focusable ? 0 : -1}
+        onFocus={onFocusRow}
+        onKeyDown={handleRowKeyDown}
+        onDoubleClick={() => !pending && beginEdit()}
         aria-label={`Note from ${note.originLabel}${
-          note.originWorkspaceName ? `, ${note.originWorkspaceName}` : ""
-        }, ${formatRelative(note.createdAt)}`}
-        className="group flex flex-col gap-2 px-3 py-3 transition-colors duration-100 hover:bg-(--color-bg-hover)"
+          note.originWorkspaceName
+            ? `, ${note.originWorkspaceName}${originWorkspaceAlive ? "" : " (workspace removed)"}`
+            : ""
+        }`}
+        className={cn(
+          "group mx-2 my-1 flex flex-col gap-1.5 rounded-[8px] px-2 py-2",
+          "transition-colors duration-100",
+          "hover:bg-(--color-bg-hover)",
+          "focus-visible:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+          pending && "opacity-90",
+        )}
       >
         {editing ? (
-          <div className="flex flex-col gap-2">
-            <GlassTextarea
-              ref={textareaRef}
+          <div className="flex flex-col gap-1.5">
+            <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleEditorKeyDown}
-              rows={Math.min(Math.max(draft.split("\n").length, 3), 12)}
+              rows={Math.min(Math.max(draft.split("\n").length, 2), 12)}
               autoFocus
               disabled={saving}
+              aria-label="Edit note"
+              className={cn(
+                // Same metrics as the resting body so edit-in-place
+                // doesn't shift a single character.
+                "block w-full resize-none rounded-[6px] bg-transparent px-0 py-0",
+                "text-[13px] leading-[1.5] text-(--color-text-primary)",
+                "outline outline-2 -outline-offset-2 outline-(--color-focus-ring)",
+                "disabled:opacity-50",
+              )}
             />
             {saveError && (
               <div
                 role="alert"
-                className="flex items-center justify-between gap-2 rounded-[8px] bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-2.5 py-1.5"
+                className="flex items-center justify-between gap-2 rounded-[6px] bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-2 py-1.5"
               >
                 <span className="min-w-0 truncate text-[12px] text-(--color-danger-text)">
                   {saveError}
@@ -141,14 +211,15 @@ export function NoteRow({
                 </GlassButton>
               </div>
             )}
-            <div className="flex h-8 items-center justify-between gap-2">
+            <div className="flex h-6 items-center justify-between gap-2">
               <span className="text-[11px] leading-none text-(--color-text-muted)">
-                ⌘↵ to save · Esc to cancel
+                ⌘↵ save · esc discard
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <GlassButton
                   variant="ghost"
                   size="sm"
+                  className="!h-6 px-2 text-[11px]"
                   disabled={saving}
                   onClick={cancelEdit}
                 >
@@ -157,6 +228,7 @@ export function NoteRow({
                 <GlassButton
                   variant="primary"
                   size="sm"
+                  className="!h-6 px-2 text-[11px]"
                   disabled={!canSave || saving}
                   {...(!canSave ? { title: "No changes to save" } : {})}
                   onClick={() => void save()}
@@ -168,86 +240,169 @@ export function NoteRow({
           </div>
         ) : (
           <>
-            <p
-              className={cn(
-                "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.55] text-(--color-text-primary)",
-                !expanded && "line-clamp-8",
-              )}
-            >
-              {note.body}
-            </p>
-            {isLong && (
+            {title !== null ? (
+              <>
+                <p className="truncate text-[13px] font-medium leading-[1.5] text-(--color-text-primary)">
+                  {title}
+                </p>
+                <p
+                  ref={bodyRef}
+                  className={cn(
+                    "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-(--color-text-secondary)",
+                    !expanded && "line-clamp-4",
+                  )}
+                >
+                  {rest}
+                </p>
+              </>
+            ) : (
+              <p
+                ref={bodyRef}
+                className={cn(
+                  "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-(--color-text-primary)",
+                  !expanded && "line-clamp-5",
+                )}
+              >
+                {rest}
+              </p>
+            )}
+
+            {(overflowing || expanded) && (
               <button
                 type="button"
+                tabIndex={-1}
                 onClick={() => setExpanded((v) => !v)}
                 className="self-start text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
               >
                 {expanded ? "Show less" : "Show more"}
               </button>
             )}
-            <div className="flex h-8 items-center gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] leading-none text-(--color-text-muted)">
+
+            {/* Provenance renders only once the note actually exists —
+                on an optimistic row its absence is the "not yet saved"
+                signal, and its arrival is the confirmation. */}
+            {!pending && (
+              <div className="flex h-6 items-center gap-2">
                 <OriginIcon kind={note.originKind} />
-                <span className="max-w-[120px] truncate font-medium text-(--color-text-secondary)">
+                <span className="shrink-0 text-[11px] font-medium leading-none text-(--color-text-secondary)">
                   {note.originLabel}
                 </span>
-                {note.originWorkspaceName && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span className="max-w-[110px] truncate">
+                {note.originWorkspaceName &&
+                  (originWorkspaceAlive ? (
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted)">
                       {note.originWorkspaceName}
                     </span>
-                    {!originWorkspaceAlive && (
-                      <GlassTooltip
-                        content="This workspace no longer exists."
-                        side="top"
+                  ) : (
+                    <GlassTooltip
+                      content="This workspace no longer exists."
+                      side="top"
+                    >
+                      {/* tabIndex so the explanation is reachable by
+                          keyboard — Radix's trigger doesn't add one. */}
+                      <span
+                        tabIndex={0}
+                        className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted) line-through focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
                       >
-                        <span className="flex h-4 items-center rounded-full bg-(--color-bg-hover) px-1.5 text-[10px] font-medium">
-                          Removed
-                        </span>
-                      </GlassTooltip>
-                    )}
-                  </>
-                )}
-                <span aria-hidden>·</span>
-                <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
-                  <time dateTime={note.createdAt} className="shrink-0">
-                    {formatRelative(note.createdAt)}
-                  </time>
-                </GlassTooltip>
-                {edited && (
-                  <GlassTooltip
-                    content={`Edited ${formatAbsolute(note.updatedAt)}`}
-                    side="top"
-                  >
-                    <span className="shrink-0">· edited</span>
+                        {note.originWorkspaceName}
+                        <span className="sr-only"> (workspace removed)</span>
+                      </span>
+                    </GlassTooltip>
+                  ))}
+                {!note.originWorkspaceName && <span className="flex-1" />}
+                {showDayStamp && (
+                  <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
+                    <time
+                      dateTime={note.createdAt}
+                      tabIndex={0}
+                      className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+                    >
+                      {formatDayStamp(note.createdAt)}
+                    </time>
                   </GlassTooltip>
                 )}
+                {edited && (
+                  <span className="shrink-0 text-[11px] leading-none text-(--color-text-muted)">
+                    edited
+                  </span>
+                )}
+                <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+                  <DropdownMenu.Trigger asChild>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label="Note actions"
+                      className={cn(
+                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px]",
+                        "text-(--color-text-muted) transition-opacity",
+                        "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
+                        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                        "data-[state=open]:opacity-100",
+                      )}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      align="end"
+                      sideOffset={6}
+                      className="glass-modal z-(--z-popover) min-w-[160px] overflow-hidden p-1"
+                    >
+                      <MenuItem onSelect={beginEdit} hint="↵">
+                        Edit
+                      </MenuItem>
+                      <MenuItem
+                        onSelect={() =>
+                          void navigator.clipboard
+                            ?.writeText(note.body)
+                            .catch(() => {})
+                        }
+                        hint="⌘C"
+                      >
+                        Copy text
+                      </MenuItem>
+                      <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
+                      <MenuItem onSelect={onDelete} hint="⌫" danger>
+                        Delete…
+                      </MenuItem>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <GlassButton
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Edit note"
-                  className="text-(--color-text-muted) hover:text-(--color-text-primary) group-hover:text-(--color-text-secondary)"
-                  onClick={beginEdit}
-                >
-                  <Pencil size={12} />
-                </GlassButton>
-                <GlassButton
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Delete note"
-                  className="text-(--color-text-muted) hover:!text-(--color-danger) group-hover:text-(--color-text-secondary)"
-                  onClick={onDelete}
-                >
-                  <Trash2 size={12} />
-                </GlassButton>
-              </div>
-            </div>
+            )}
           </>
         )}
       </article>
     </li>
+  );
+}
+
+function MenuItem({
+  children,
+  onSelect,
+  hint,
+  danger,
+}: {
+  children: React.ReactNode;
+  onSelect: () => void;
+  hint?: string;
+  danger?: boolean;
+}) {
+  return (
+    <DropdownMenu.Item
+      onSelect={onSelect}
+      className={cn(
+        "flex cursor-pointer items-center gap-2 rounded-[6px] px-2 py-1.5 text-[12px] outline-none",
+        "data-[highlighted]:bg-(--color-bg-hover)",
+        danger
+          ? "text-(--color-danger) data-[highlighted]:text-(--color-danger)"
+          : "text-(--color-text-secondary) data-[highlighted]:text-(--color-text-primary)",
+      )}
+    >
+      <span className="flex-1">{children}</span>
+      {hint && (
+        <span className="text-[11px] text-(--color-text-muted)">{hint}</span>
+      )}
+    </DropdownMenu.Item>
   );
 }

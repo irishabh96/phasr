@@ -63,7 +63,6 @@ export function RepositorySidebarMenu({
       } else {
         s.setRepoRailCollapsed(false);
       }
-      s.requestNotesFocus();
     }, 50);
   };
 

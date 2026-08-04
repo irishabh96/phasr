@@ -182,10 +182,10 @@ function WorkspaceDetail() {
             )}
             <NotesEntryButton
               onClick={() => {
+                // Reading entry point — capture is ⌘⇧N / the panel's +.
                 const s = useUiStore.getState();
                 s.setRightPanelCollapsed(false);
                 s.setRightPanelTab(workspaceId, "notes");
-                s.requestNotesFocus();
               }}
             />
             {workspace.worktreePath && (

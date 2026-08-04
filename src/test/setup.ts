@@ -9,6 +9,20 @@ afterEach(() => {
   cleanup();
 });
 
+// jsdom doesn't implement ResizeObserver. Components that measure their
+// own overflow (NoteRow's "Show more") construct one on mount; tests
+// drive the measurement by setting scrollHeight/clientHeight directly.
+if (typeof globalThis !== "undefined" && !("ResizeObserver" in globalThis)) {
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    writable: true,
+    value: class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  });
+}
+
 // jsdom doesn't implement matchMedia — useShiki / theme code reads it
 // to resolve `theme: "system"`. Provide a no-op shim.
 if (typeof window !== "undefined" && !("matchMedia" in window)) {

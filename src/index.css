@@ -170,8 +170,15 @@
      Canonical focus-visible ring (the pattern GlassButton already ships).
      Apply to hand-rolled interactive controls as
      `focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]`.
-     Note: text inputs keep their own softer ring (GlassInput: 4px @ 12%). */
-  --ring-focus: 0 0 0 2px var(--color-accent-300);
+     Note: text inputs keep their own softer ring (GlassInput: 4px @ 12%).
+
+     --color-focus-ring is the theme-flipping ring COLOR, the counterpart to
+     --color-accent-text and for the same reason: pale coral fails on white.
+     accent-300 on white is 1.87:1 and accent-500 is 2.53:1 — both below the
+     3:1 WCAG non-text minimum, so in light theme the focus indicator was
+     effectively invisible. accent-700 is 4:1 on white / 3.63:1 on bg-input. */
+  --color-focus-ring: var(--color-accent-300); /* dark: 10.11:1 on surface */
+  --ring-focus: 0 0 0 2px var(--color-focus-ring);
 }
 
 /* Light mode overrides */
@@ -207,6 +214,7 @@
   --diff-remove-fg: #b91c1c;
   --color-info: #2563eb;
   --color-accent-text: var(--color-accent-700); /* darker coral — AA on white */
+  --color-focus-ring: var(--color-accent-700); /* 4:1 on white, 3.63:1 on bg-input */
 
   /* Glass tokens — light variant. White-tinted instead of black-tinted. */
   --glass-rail: color-mix(in oklab, var(--color-bg-surface) 75%, transparent);
@@ -317,9 +325,9 @@ body {
   textarea:focus,
   select:focus {
     outline: none;
-    border-color: var(--color-accent-500);
+    border-color: var(--color-focus-ring);
     box-shadow: 0 0 0 3px
-      color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+      color-mix(in oklab, var(--color-focus-ring) 25%, transparent);
   }
 }
 

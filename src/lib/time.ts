@@ -16,6 +16,60 @@ export function formatRelative(iso: string): string {
   });
 }
 
+export interface DayBucket {
+  /** Group header text. */
+  label: string;
+  /**
+   * True when the bucket can hold more than one calendar day (month and
+   * year buckets). Rows in those carry their own day stamp; rows in a
+   * single-day bucket don't need one — the header already says the day.
+   */
+  spansDays: boolean;
+}
+
+/**
+ * Bucket for grouping a list by recency: "Today", "Yesterday", a
+ * weekday+date for the last fortnight, then month, then year. Gives a
+ * long list constant orientation without a timestamp on every row.
+ */
+export function dayBucket(iso: string): DayBucket {
+  const then = new Date(Date.parse(iso));
+  if (Number.isNaN(then.getTime()))
+    return { label: "Earlier", spansDays: true };
+  const startOfDay = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const now = new Date();
+  const days = Math.round((startOfDay(now) - startOfDay(then)) / 86_400_000);
+
+  if (days <= 0) return { label: "Today", spansDays: false };
+  if (days === 1) return { label: "Yesterday", spansDays: false };
+  if (days < 14)
+    return {
+      label: then.toLocaleDateString(undefined, {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+      }),
+      spansDays: false,
+    };
+  if (then.getFullYear() === now.getFullYear())
+    return {
+      label: then.toLocaleDateString(undefined, { month: "long" }),
+      spansDays: true,
+    };
+  return { label: String(then.getFullYear()), spansDays: true };
+}
+
+/** Compact day stamp ("12 Jul") for rows inside multi-day buckets. */
+export function formatDayStamp(iso: string): string {
+  const date = Date.parse(iso);
+  if (Number.isNaN(date)) return "";
+  return new Date(date).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+  });
+}
+
 /** Full local date-time, for tooltips over relative timestamps. */
 export function formatAbsolute(iso: string): string {
   const date = Date.parse(iso);

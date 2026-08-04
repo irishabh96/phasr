@@ -107,7 +107,7 @@ function AppShell() {
         e.stopImmediatePropagation();
         s.setRightPanelCollapsed(false);
         s.setRightPanelTab(ctx.workspaceId, "notes");
-        s.requestNotesFocus();
+        s.openNotesComposer();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {

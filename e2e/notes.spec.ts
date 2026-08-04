@@ -23,11 +23,31 @@ async function boot(page: Page, fixtures = makeFixtures()) {
   return res;
 }
 
+/**
+ * Open the rail on Notes. The composer is summoned, not pinned, so the
+ * settled state is the Notes tab being selected.
+ * ("New note" deliberately names two affordances — the header icon and
+ * the canvas row — so tests scope rather than match it globally.)
+ */
 async function openNotesTab(page: Page) {
   await page.getByRole("button", { name: "Repository notes" }).click();
   await expect(
-    page.getByPlaceholder("Write a note…"),
+    page.getByRole("button", { name: "New note" }).first(),
   ).toBeVisible();
+}
+
+/** Summon the composer (⌘⇧N path). */
+async function openComposer(page: Page) {
+  await page.keyboard.press("Meta+Shift+N");
+  await expect(page.getByPlaceholder("Write a note…")).toBeVisible();
+}
+
+/** Open a row's ⋯ menu and pick an item. */
+async function rowMenu(page: Page, index: number, item: string) {
+  const row = page.getByRole("listitem").nth(index);
+  await row.hover();
+  await row.getByRole("button", { name: "Note actions" }).click();
+  await page.getByRole("menuitem", { name: item }).click();
 }
 
 async function argsFor(page: Page, cmd: string) {
@@ -49,9 +69,15 @@ test.describe("Notes panel", () => {
     // Fixture note bodies + provenance render.
     await expect(page.getByText(/Seed script needs DATABASE_URL/)).toBeVisible();
     await expect(page.getByText("Terminal 2")).toBeVisible();
-    // note-2's origin workspace (ws-gone) doesn't exist → snapshot + chip.
-    await expect(page.getByText("checkout-flow")).toBeVisible();
-    await expect(page.getByText("Removed")).toBeVisible();
+    // note-2's origin workspace (ws-gone) doesn't exist → the snapshot
+    // still renders, struck through, with a keyboard-reachable reason.
+    const deadRef = page.getByText("checkout-flow");
+    await expect(deadRef).toBeVisible();
+    await expect(deadRef).toHaveClass(/line-through/);
+    await expect(page.getByText("(workspace removed)")).toBeAttached();
+
+    // The resting panel is a reading surface: no pinned composer.
+    await expect(page.getByPlaceholder("Write a note…")).toHaveCount(0);
 
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
@@ -61,12 +87,11 @@ test.describe("Notes panel", () => {
   }) => {
     await boot(page);
     await openNotesTab(page);
+    await openComposer(page);
 
     const composer = page.getByPlaceholder("Write a note…");
     await composer.fill("pin the vite config in the prompt");
-    await composer.press(
-      process.platform === "darwin" ? "Meta+Enter" : "Control+Enter",
-    );
+    await composer.press("Meta+Enter");
 
     await waitForCall(page, "create_note");
     const created = await argsFor(page, "create_note");
@@ -91,15 +116,18 @@ test.describe("Notes panel", () => {
     // a hasText filter would stop matching its own row mid-test.
     const codexRow = page.getByRole("listitem").nth(1);
     await expect(codexRow).toContainText("Codex keeps rewriting");
-    await codexRow.getByRole("button", { name: "Edit note" }).click();
+
+    // Cancel path — via the ⋯ menu.
+    await rowMenu(page, 1, "Edit");
     const editor = codexRow.getByRole("textbox");
     await expect(editor).toHaveValue(/Codex keeps rewriting/);
     await editor.fill("should be discarded");
     await editor.press("Escape");
     expect(await argsFor(page, "update_note")).toHaveLength(0);
 
-    // Save path.
-    await codexRow.getByRole("button", { name: "Edit note" }).click();
+    // Save path — via the keyboard (Enter on a focused row).
+    await codexRow.click();
+    await codexRow.press("Enter");
     const editor2 = codexRow.getByRole("textbox");
     await editor2.fill("updated body");
     await codexRow.getByRole("button", { name: "Save" }).click();
@@ -122,10 +150,7 @@ test.describe("Notes panel", () => {
     await openNotesTab(page);
     await expect(page.getByText(/Codex keeps rewriting/)).toBeVisible();
 
-    const codexRow = page
-      .getByRole("listitem")
-      .filter({ hasText: "Codex keeps rewriting" });
-    await codexRow.getByRole("button", { name: "Delete note" }).click();
+    await rowMenu(page, 1, "Delete…");
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -148,12 +173,47 @@ test.describe("Notes panel", () => {
     const { errors } = await boot(page, fixtures);
     await openNotesTab(page);
 
-    await expect(
-      page.getByText("No notes for this repository"),
-    ).toBeVisible();
+    await expect(page.getByText("No notes yet")).toBeVisible();
+    // The composer IS the empty state's affordance — present, but not
+    // stealing focus, and there is no second dead CTA beside it.
+    await expect(page.getByPlaceholder("Write a note…")).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Write a note" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
+  });
+
+  test("a long single-paragraph note can be expanded (regression)", async ({
+    page,
+  }) => {
+    const fixtures = makeFixtures();
+    const notes = (fixtures as { notes: Record<string, unknown>[] }).notes;
+    notes[0]!.body =
+      "The seed script silently no-ops when DATABASE_URL points at the pooled connection string, which is what .env.local has by default, so you get an empty database and no error at all. Use the direct connection string instead, and remember the pooler port differs by one digit which is very easy to miss when copying.";
+    await boot(page, fixtures);
+    await openNotesTab(page);
+
+    // Newline-free but visually clamped: the old newline-count gate hid
+    // "Show more" here and the rest of the note was unreachable.
+    const more = page.getByRole("button", { name: "Show more" }).first();
+    await expect(more).toBeVisible();
+    await more.click();
+    await expect(
+      page.getByRole("button", { name: "Show less" }).first(),
+    ).toBeVisible();
+  });
+
+  test("keyboard: ↓ moves between notes and ↵ opens the editor", async ({
+    page,
+  }) => {
+    await boot(page);
+    await openNotesTab(page);
+    const first = page.getByRole("listitem").nth(0);
+    await first.click();
+    await first.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(
+      page.getByRole("listitem").nth(1).getByRole("textbox"),
+    ).toBeVisible();
   });
 });

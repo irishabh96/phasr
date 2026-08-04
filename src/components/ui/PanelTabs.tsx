@@ -1,4 +1,27 @@
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+
+/**
+ * Panel tab strip with a right-hand action slot. Contextual actions live
+ * in the header (Linear's model), which is why the notes composer costs
+ * zero vertical space in the panel body.
+ */
+export function PanelTabBar({
+  children,
+  actions,
+}: {
+  children: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-(--color-border-subtle) px-2">
+      {children}
+      {actions ? (
+        <div className="ml-auto flex items-center gap-0.5">{actions}</div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * Tab button for panel tab strips (right rail, repo-home rail).
