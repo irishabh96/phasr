@@ -292,24 +292,29 @@ body {
   }
 }
 
-input,
-textarea,
-select {
-  font: inherit;
-  background: var(--color-bg-input);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: 6px;
-  padding: 6px 10px;
-}
+/* Same layering as the button reset above: unlayered, these field defaults
+   beat every `@layer utilities` declaration, so GlassInput/GlassTextarea's
+   glass background, hairline border, radius, and padding never rendered. */
+@layer base {
+  input,
+  textarea,
+  select {
+    font: inherit;
+    background: var(--color-bg-input);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    padding: 6px 10px;
+  }
 
-input:focus,
-textarea:focus,
-select:focus {
-  outline: none;
-  border-color: var(--color-accent-500);
-  box-shadow: 0 0 0 3px
-    color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: none;
+    border-color: var(--color-accent-500);
+    box-shadow: 0 0 0 3px
+      color-mix(in oklab, var(--color-accent-500) 25%, transparent);
+  }
 }
 
 /* ---------- Reduced motion ----------
