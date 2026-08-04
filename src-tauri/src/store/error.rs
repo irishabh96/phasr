@@ -11,6 +11,9 @@ pub enum StoreError {
     #[error("not found")]
     NotFound,
 
+    #[error("changed in another window — reload and retry")]
+    Conflict,
+
     #[error("invalid value for field `{field}`: {message}")]
     InvalidValue {
         field: &'static str,

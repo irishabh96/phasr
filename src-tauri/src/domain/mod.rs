@@ -6,9 +6,12 @@
 //!     git worktree, branch, and PTY session.
 //!   - `Agent`      — an AI tool/CLI that can be run as a workspace's
 //!     command (Claude, Codex, Copilot, …).
+//!   - `Note`       — a repository-scoped note with an origin snapshot;
+//!     outlives every workspace/terminal of its repository.
 //!   - `UserSettings` — per-user app settings.
 
 pub mod agent;
+pub mod note;
 pub mod repository;
 pub mod run_command;
 pub mod settings;
@@ -16,6 +19,7 @@ pub mod user;
 pub mod workspace;
 
 pub use agent::Agent;
+pub use note::{Note, NoteOriginKind};
 pub use repository::Repository;
 pub use run_command::RunCommand;
 pub use settings::UserSettings;

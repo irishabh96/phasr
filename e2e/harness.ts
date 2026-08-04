@@ -140,6 +140,32 @@ export function makeFixtures() {
       updatedAt: NOW,
     },
   ];
+  const notes = [
+    {
+      id: "note-1",
+      repositoryId: "repo-1",
+      body: "Seed script needs DATABASE_URL exported first — .env.local is stale.",
+      originKind: "terminal",
+      originWorkspaceId: "ws-1",
+      originWorkspaceName: "add-feature",
+      originTerminalId: "session:dead",
+      originLabel: "Terminal 2",
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+    {
+      id: "note-2",
+      repositoryId: "repo-1",
+      body: "Codex keeps rewriting the vite config. Pin it in the prompt.",
+      originKind: "workspace",
+      originWorkspaceId: "ws-gone",
+      originWorkspaceName: "checkout-flow",
+      originTerminalId: null,
+      originLabel: "Agent",
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+  ];
   const gitStatus = [
     { path: "src/app.ts", oldPath: null, staged: "other", unstaged: "modified", adds: 12, removes: 3 },
     { path: "src/new.ts", oldPath: null, staged: "added", unstaged: "other", adds: 40, removes: 0 },
@@ -194,6 +220,7 @@ export function makeFixtures() {
     agents,
     userSettings,
     runCommands,
+    notes,
     gitStatus,
     branchStatus,
     commits,
@@ -234,6 +261,21 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "create_run_command":
       case "update_run_command": return { ...f.runCommands[0], ...a, id: a?.id ?? "rc-new" };
       case "delete_run_command": return null;
+      case "list_notes_for_repository": return f.notes.filter((n) => n.repositoryId === a?.repositoryId);
+      case "create_note": return {
+        id: "note-new",
+        repositoryId: a?.input?.repositoryId,
+        body: (a?.input?.body ?? "").trim(),
+        originKind: a?.input?.originKind ?? "repository",
+        originWorkspaceId: a?.input?.originWorkspaceId ?? null,
+        originWorkspaceName: null,
+        originTerminalId: a?.input?.originTerminalId ?? null,
+        originLabel: a?.input?.originLabelHint ?? "Repository home",
+        createdAt: f.now,
+        updatedAt: f.now,
+      };
+      case "update_note": return { ...f.notes.find((n) => n.id === a?.id), ...(a?.input?.body ? { body: a.input.body } : {}), updatedAt: f.now };
+      case "delete_note": return null;
       case "git_status": return f.gitStatus;
       case "git_branch_status": return f.branchStatus;
       case "git_merge_in_progress": return { kind: "none" };

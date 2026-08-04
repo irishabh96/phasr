@@ -16,6 +16,8 @@ import type {
   LogOptions,
   MergeOutcome,
   MergeStrategy,
+  Note,
+  NoteOriginKind,
   OpenPullRequestOutcome,
   PathValidation,
   PtyEvent,
@@ -262,6 +264,27 @@ export const tauri = {
     },
   ) => invoke<RunCommand>("update_run_command", { id, input }),
   deleteRunCommand: (id: string) => invoke<void>("delete_run_command", { id }),
+
+  // ── notes ────────────────────────────────────────────────────────────
+  listNotesForRepository: (repositoryId: string) =>
+    invoke<Note[]>("list_notes_for_repository", { repositoryId }),
+  createNote: (input: {
+    repositoryId: string;
+    body: string;
+    originKind: NoteOriginKind;
+    originWorkspaceId?: string | null;
+    originTerminalId?: string | null;
+    originLabelHint?: string | null;
+  }) => invoke<Note>("create_note", { input }),
+  updateNote: (
+    id: string,
+    input: {
+      body?: string;
+      /** RFC3339 `updatedAt` the editor loaded — optimistic-concurrency guard. */
+      expectedUpdatedAt?: string;
+    },
+  ) => invoke<Note>("update_note", { id, input }),
+  deleteNote: (id: string) => invoke<void>("delete_note", { id }),
   upsertRunCommandFromCloud: (input: RunCommand) =>
     invoke<RunCommand>("upsert_run_command_from_cloud", { input }),
   startRunCommand: (

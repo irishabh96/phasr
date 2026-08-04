@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod files;
 pub mod git;
+pub mod notes;
 pub mod notifications;
 pub mod orchestrator;
 pub mod repositories;
