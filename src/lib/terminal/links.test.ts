@@ -3,9 +3,54 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({ tauri: { launchApp: vi.fn() } }));
 
-const { findPathTokens, resolvePathToken } = await import(
+const { findPathTokens, resolvePathToken, findLinkTokens } = await import(
   "@/lib/terminal/links"
 );
+
+describe("findLinkTokens — URLs", () => {
+  it("finds an http(s) URL", () => {
+    const t = findLinkTokens("see https://example.com now");
+    expect(t).toHaveLength(1);
+    expect(t[0]).toMatchObject({ kind: "url", target: "https://example.com" });
+  });
+
+  it("keeps a colon inside the path (wikipedia Special:Random)", () => {
+    const url = "https://en.wikipedia.org/wiki/Special:Random";
+    const t = findLinkTokens(`open ${url}`);
+    expect(t).toHaveLength(1);
+    expect(t[0]?.target).toBe(url);
+  });
+
+  it("drops trailing sentence punctuation", () => {
+    expect(findLinkTokens("go to https://example.com.")[0]?.target).toBe(
+      "https://example.com",
+    );
+    expect(findLinkTokens("(https://example.com)")[0]?.target).toBe(
+      "https://example.com",
+    );
+  });
+
+  it("keeps query strings and fragments", () => {
+    const url = "https://example.com/a/b?x=1&y=2#frag";
+    expect(findLinkTokens(url)[0]?.target).toBe(url);
+  });
+
+  it("never lets a path token overlap a URL", () => {
+    const t = findLinkTokens("see https://example.com/a/b and src/lib/foo.ts:12");
+    expect(t.map((x) => x.kind)).toEqual(["url", "path"]);
+    expect(t[0]?.target).toBe("https://example.com/a/b");
+    expect(t[1]?.target).toBe("src/lib/foo.ts");
+  });
+
+  it("returns tokens in reading order", () => {
+    const t = findLinkTokens("src/a.ts then https://example.com");
+    expect(t.map((x) => x.kind)).toEqual(["path", "url"]);
+  });
+
+  it("ignores non-http schemes", () => {
+    expect(findLinkTokens("ftp://example.com file:///tmp/x")).toHaveLength(0);
+  });
+});
 
 describe("findPathTokens", () => {
   it("matches bare relative paths with a :line:col suffix", () => {
