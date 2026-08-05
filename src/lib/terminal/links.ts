@@ -129,10 +129,44 @@ function openPathInEditor(path: string, editorId: string | null): void {
  * the returned disposable unregisters the path provider (the web-links
  * addon is owned by the terminal and dies with it).
  */
+/** Open an http(s) URL externally, surfacing a failure instead of eating it. */
+function openExternalUrl(url: string): void {
+  void openUrl(url).catch((err) => {
+    showToast({
+      intent: "error",
+      title: "Couldn't open link",
+      message: String(err),
+    });
+  });
+}
+
+/** Only ever hand the OS an http(s) URL from terminal output. */
+export function isOpenableUrl(text: string): boolean {
+  return /^https?:\/\//i.test(text);
+}
+
 export function installTerminalLinks(
   term: XtermTerminal,
   opts: TerminalLinkOptions,
 ): IDisposable {
+  // OSC 8 hyperlinks — the escape sequence a program uses to say "this
+  // text IS a link" (Claude Code emits its URLs this way). xterm renders
+  // them underlined but routes activation through `options.linkHandler`,
+  // NOT through registerLinkProvider, so without this they looked like
+  // links and did nothing on click.
+  //
+  // `allowNonHttpProtocols` stays off and `activate` re-checks the
+  // scheme: OSC 8 lets the program choose an arbitrary target, and
+  // terminal output is untrusted (it's whatever an agent printed).
+  term.options.linkHandler = {
+    allowNonHttpProtocols: false,
+    activate(event, text) {
+      if (!event.metaKey) return;
+      if (!isOpenableUrl(text)) return;
+      openExternalUrl(text);
+    },
+  };
+
   // URLs are detected here rather than via @xterm/addon-web-links: that
   // addon registers a provider that never yields a link under xterm 6
   // (verified — clicking a URL did nothing even with this provider
@@ -150,15 +184,7 @@ export function installTerminalLinks(
       for (const token of findLinkTokens(text)) {
         const activate =
           token.kind === "url"
-            ? () => {
-                void openUrl(token.target).catch((err) => {
-                  showToast({
-                    intent: "error",
-                    title: "Couldn't open link",
-                    message: String(err),
-                  });
-                });
-              }
+            ? () => openExternalUrl(token.target)
             : (() => {
                 const resolved = resolvePathToken(token.target, opts.getCwd());
                 if (!resolved) return null;
