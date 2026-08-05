@@ -1,84 +1,108 @@
+import { GitBranch, Plus } from "lucide-react";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { NotesPanel } from "@/components/NotesPanel";
+import { GlassButton } from "@/components/ui/GlassButton";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
+import { PanelState } from "@/components/ui/PanelState";
+import { PanelTab, PanelTabBar } from "@/components/ui/PanelTabs";
 import { useGitStatus } from "@/lib/hooks/useGit";
+import { useNotes } from "@/lib/hooks/useNotes";
+import { originFromWorkspace } from "@/lib/noteProvenance";
+import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
 
 interface WorkspaceRightSidebarProps {
   workspaceId: string;
+  repositoryId: string;
+  /** Changes/History need a worktree; Notes never does. */
+  hasWorktree: boolean;
 }
 
 /**
- * Right-hand sidebar that hosts the Changes and History panels.
- * Owns the tab strip at the top (replacing the prior "CHANGES N"
- * header inside ChangesPanel) and dispatches to the active panel.
- * Selected tab persists per-workspace via useUiStore.
+ * Right-hand sidebar hosting the Changes, History, and Notes panels.
+ * Owns the tab strip and dispatches to the active panel; selected tab
+ * persists per-workspace via useUiStore. Notes are repository-scoped —
+ * the same list renders on every workspace of the repo.
  */
-export function WorkspaceRightSidebar({ workspaceId }: WorkspaceRightSidebarProps) {
-  const { data: changes } = useGitStatus(workspaceId);
+export function WorkspaceRightSidebar({
+  workspaceId,
+  repositoryId,
+  hasWorktree,
+}: WorkspaceRightSidebarProps) {
+  const { data: changes } = useGitStatus(hasWorktree ? workspaceId : null);
+  const { data: notes } = useNotes(repositoryId);
   const activeTab =
     useUiStore((s) => s.rightPanelTab[workspaceId]) ?? "changes";
   const setTab = useUiStore((s) => s.setRightPanelTab);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-(--color-border-subtle) px-2">
-        <TabButton
+      <PanelTabBar
+        actions={
+          activeTab === "notes" ? (
+            <GlassTooltip
+              content={`New note (${SHORTCUTS.openNotes.display.join("")})`}
+              side="bottom"
+            >
+              <GlassButton
+                variant="ghost"
+                size="icon"
+                aria-label="New note"
+                onClick={() => useUiStore.getState().openNotesComposer()}
+              >
+                <Plus size={14} />
+              </GlassButton>
+            </GlassTooltip>
+          ) : undefined
+        }
+      >
+        <PanelTab
           label="Changes"
           count={changes?.length ?? 0}
           active={activeTab === "changes"}
           onClick={() => setTab(workspaceId, "changes")}
         />
-        <TabButton
+        <PanelTab
           label="History"
           active={activeTab === "history"}
           onClick={() => setTab(workspaceId, "history")}
         />
-      </div>
+        <PanelTab
+          label="Notes"
+          count={notes?.length ?? 0}
+          active={activeTab === "notes"}
+          onClick={() => setTab(workspaceId, "notes")}
+        />
+      </PanelTabBar>
       <div className="min-h-0 flex-1">
-        {activeTab === "changes" ? (
-          <ChangesPanel workspaceId={workspaceId} />
-        ) : (
+        {activeTab === "notes" ? (
+          <NotesPanel
+            repositoryId={repositoryId}
+            getOrigin={() => {
+              const inner = useUiStore.getState().innerTabs[workspaceId];
+              const active = inner?.tabs.find(
+                (t) => t.id === inner.activeTabId,
+              );
+              return originFromWorkspace(workspaceId, active);
+            }}
+          />
+        ) : !hasWorktree ? (
+          // The rail is no longer gated on worktreePath (Notes must
+          // always be reachable) — the git panels state their own
+          // precondition instead of erroring.
+          <PanelState
+            kind="empty"
+            icon={<GitBranch />}
+            title="No worktree yet"
+            description="Changes and history appear once this workspace has a worktree."
+          />
+        ) : activeTab === "history" ? (
           <HistoryPanel workspaceId={workspaceId} />
+        ) : (
+          <ChangesPanel workspaceId={workspaceId} />
         )}
       </div>
     </div>
-  );
-}
-
-function TabButton({
-  label,
-  count,
-  active,
-  onClick,
-}: {
-  label: string;
-  count?: number;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "relative flex h-7 items-center gap-1.5 px-2 text-[12px]",
-        "transition-colors duration-100",
-        active
-          ? "font-medium text-(--color-text-primary)"
-          : "text-(--color-text-muted) hover:text-(--color-text-secondary)",
-      )}
-    >
-      <span>{label}</span>
-      {typeof count === "number" && count > 0 && (
-        <span className="text-(--color-text-secondary)">{count}</span>
-      )}
-      {active && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-accent-500)"
-        />
-      )}
-    </button>
   );
 }

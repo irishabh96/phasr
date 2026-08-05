@@ -23,6 +23,8 @@ export interface ActiveWorkspaceContext {
 
 export type InnerTabKind = "main" | "terminal" | "preview";
 
+export type RightPanelTab = "changes" | "history" | "notes";
+
 export interface InnerTab {
   id: string;
   kind: InnerTabKind;
@@ -184,8 +186,33 @@ interface UiState {
    * but not across reloads — survives sessions via the same per-tab
    * pattern as `innerTabs` (in-memory; we don't snapshot to disk).
    */
-  rightPanelTab: Record<string, "changes" | "history">;
-  setRightPanelTab: (workspaceId: string, tab: "changes" | "history") => void;
+  rightPanelTab: Record<string, RightPanelTab>;
+  setRightPanelTab: (workspaceId: string, tab: RightPanelTab) => void;
+
+  /** Repo-home right rail (Notes only). Collapsed by default. */
+  repoRailCollapsed: boolean;
+  setRepoRailCollapsed: (collapsed: boolean) => void;
+
+  /**
+   * Unsaved note-composer drafts, keyed `${repositoryId}:${noteId|"new"}`.
+   * Survives rail collapse / tab switches so a draft is never lost;
+   * in-memory only (a draft should not outlive the app).
+   */
+  noteDrafts: Record<string, string>;
+  setNoteDraft: (key: string, body: string) => void;
+  clearNoteDraft: (key: string) => void;
+
+  /**
+   * The note composer is SUMMONED, not pinned: the panel's resting state
+   * is a reading surface. ⌘⇧N / the header + / clicking the canvas open
+   * it; Esc closes it (the draft survives in `noteDrafts`).
+   * `notesComposerRequest` is bumped on every open so the mounted
+   * composer re-focuses even if it was already open.
+   */
+  notesComposerOpen: boolean;
+  notesComposerRequest: number;
+  openNotesComposer: () => void;
+  closeNotesComposer: () => void;
 
   /**
    * Drives `<GitInitConfirmModal>`. Set to a repo id when an Open-existing
@@ -397,6 +424,27 @@ export const useUiStore = create<UiState>((set, get) => ({
   setRightPanelTab: (workspaceId, tab) => {
     set({ rightPanelTab: { ...get().rightPanelTab, [workspaceId]: tab } });
   },
+
+  repoRailCollapsed: true,
+  setRepoRailCollapsed: (collapsed) => set({ repoRailCollapsed: collapsed }),
+
+  noteDrafts: {},
+  setNoteDraft: (key, body) => {
+    set({ noteDrafts: { ...get().noteDrafts, [key]: body } });
+  },
+  clearNoteDraft: (key) => {
+    const { [key]: _, ...rest } = get().noteDrafts;
+    set({ noteDrafts: rest });
+  },
+
+  notesComposerOpen: false,
+  notesComposerRequest: 0,
+  openNotesComposer: () =>
+    set({
+      notesComposerOpen: true,
+      notesComposerRequest: get().notesComposerRequest + 1,
+    }),
+  closeNotesComposer: () => set({ notesComposerOpen: false }),
 
   pendingGitInitRepoId: null,
   requestGitInit: (repoId) => set({ pendingGitInitRepoId: repoId }),

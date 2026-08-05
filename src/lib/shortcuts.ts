@@ -96,6 +96,15 @@ export const SHORTCUTS = {
     label: "Open in editor",
   },
 
+  // Notes
+  openNotes: {
+    key: "n",
+    meta: true,
+    shift: true,
+    display: ["⌘", "⇧", "N"],
+    label: "Repository notes",
+  },
+
   // Diff viewer
   toggleDiffMode: {
     key: "\\",

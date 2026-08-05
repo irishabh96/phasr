@@ -3,6 +3,7 @@ import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { Loader2, PanelRight, PanelRightClose } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { BranchChip } from "@/components/BranchChip";
+import { NotesEntryButton } from "@/components/NotesEntryButton";
 import { OpenInMenu } from "@/components/OpenInMenu";
 import { SyncButton } from "@/components/SyncButton";
 import { GlassButton } from "@/components/ui/GlassButton";
@@ -44,6 +45,8 @@ function WorkspaceDetail() {
   const { data: changes } = useGitStatus(workspaceId);
   const { data: runCommands } = useRunCommands(repositoryId);
   const rightPanelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
+  const rightPanelTab =
+    useUiStore((s) => s.rightPanelTab[workspaceId]) ?? "changes";
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
   const rightPanelWidth = useUiStore((s) => s.rightPanelWidth);
   const setRightPanelWidth = useUiStore((s) => s.setRightPanelWidth);
@@ -179,6 +182,21 @@ function WorkspaceDetail() {
             {workspace.worktreePath && (
               <OpenInMenu path={workspace.worktreePath} />
             )}
+            <NotesEntryButton
+              active={!rightPanelCollapsed && rightPanelTab === "notes"}
+              onClick={() => {
+                // A toggle, not a one-way door: if the rail is already
+                // showing Notes this closes it. Reading entry point —
+                // capture is ⌘⇧N / the panel's +.
+                const s = useUiStore.getState();
+                if (!s.rightPanelCollapsed && rightPanelTab === "notes") {
+                  s.setRightPanelCollapsed(true);
+                  return;
+                }
+                s.setRightPanelCollapsed(false);
+                s.setRightPanelTab(workspaceId, "notes");
+              }}
+            />
             {workspace.worktreePath && (
               <ChangesToggle
                 count={changeCount}
@@ -200,8 +218,10 @@ function WorkspaceDetail() {
           workspace={workspace}
           onMainExit={refresh}
         />
-        {workspace.worktreePath && (
-          <aside
+        {/* Not gated on worktreePath: Notes must be reachable on
+            pending/worktree-less workspaces; the git panels render
+            their own "No worktree yet" state inside. */}
+        <aside
             aria-hidden={rightPanelCollapsed}
             style={rightPanelCollapsed ? undefined : { width: rightPanelWidth }}
             className={cn(
@@ -226,10 +246,13 @@ function WorkspaceDetail() {
               className="flex h-full flex-col"
               style={{ width: rightPanelWidth, minWidth: rightPanelWidth }}
             >
-              <WorkspaceRightSidebar workspaceId={workspaceId} />
+              <WorkspaceRightSidebar
+                workspaceId={workspaceId}
+                repositoryId={repositoryId}
+                hasWorktree={!!workspace.worktreePath}
+              />
             </div>
           </aside>
-        )}
       </div>
       <RunCommandsPane repositoryId={repositoryId} />
     </div>

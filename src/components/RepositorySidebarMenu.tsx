@@ -3,6 +3,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useNavigate } from "@tanstack/react-router";
 import {
   FolderOpen,
+  NotebookPen,
   Plus,
   Settings as SettingsIcon,
   Trash2,
@@ -49,6 +50,22 @@ export function RepositorySidebarMenu({
     requestNewWorkspace(repository.id);
   };
 
+  const onNotes = async () => {
+    await navigateToRepoEntry(repository.id);
+    // The entry route may be repo home OR the last workspace; let it
+    // mount and register its context, then open the matching rail.
+    setTimeout(() => {
+      const s = useUiStore.getState();
+      const ctx = s.activeWorkspaceContext;
+      if (ctx && ctx.repositoryId === repository.id) {
+        s.setRightPanelCollapsed(false);
+        s.setRightPanelTab(ctx.workspaceId, "notes");
+      } else {
+        s.setRepoRailCollapsed(false);
+      }
+    }, 50);
+  };
+
   const onOpenSettings = () => {
     navigate({
       to: "/repositories/$repositoryId/settings",
@@ -83,6 +100,9 @@ export function RepositorySidebarMenu({
             </Item>
             <Item icon={<Plus size={12} />} onSelect={onNewWorkspace}>
               New workspace
+            </Item>
+            <Item icon={<NotebookPen size={12} />} onSelect={() => void onNotes()}>
+              Notes
             </Item>
             <Item icon={<SettingsIcon size={12} />} onSelect={onOpenSettings}>
               Settings

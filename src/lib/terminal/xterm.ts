@@ -1,5 +1,6 @@
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { ITerminalOptions, ITheme } from "@xterm/xterm";
+import { itermSequenceFor } from "@/lib/terminal/keymap";
 import type { UserSettings } from "@/lib/types";
 
 const DEFAULT_MONO_FONT = "ui-monospace, Menlo, monospace";
@@ -16,7 +17,19 @@ type TerminalSettings = Pick<
 >;
 
 export function createXtermTerminal(settings?: Partial<TerminalSettings>) {
-  return new XtermTerminal(buildTerminalOptions(settings));
+  const term = new XtermTerminal(buildTerminalOptions(settings));
+  // iTerm-parity chords (⌘⌫, ⌘←/→, ⌥-word, ⇧↵, …). xterm ignores
+  // meta-modified keys, so without this the PTY never hears them.
+  // `input()` emits onData — the normal send path picks it up.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== "keydown") return true;
+    const seq = itermSequenceFor(e);
+    if (seq === null) return true;
+    term.input(seq);
+    e.preventDefault();
+    return false;
+  });
+  return term;
 }
 
 export function applyXtermSettings(

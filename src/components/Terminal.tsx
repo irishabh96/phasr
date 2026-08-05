@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { tauri } from "@/lib/tauri";
+import { installTerminalLinks } from "@/lib/terminal/links";
 import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
@@ -16,6 +17,8 @@ export interface TerminalProps {
   status: WorkspaceStatus;
   /** Whether this terminal's tab is currently the active inner tab. */
   visible: boolean;
+  /** Worktree root — resolves relative file-path links in output. */
+  cwd?: string | null;
   onExit?: (exitCode: number | null) => void;
 }
 
@@ -60,6 +63,9 @@ interface CachedMain {
   setStatus: ((s: TermStatus) => void) | null;
   /** Set when the PTY exits so a later remount can restore the overlay. */
   exitStatus: { exitCode: number | null } | null;
+  /** Read at click time by the link layer — kept fresh across remounts
+   *  (the xterm and its link closures outlive component instances). */
+  linkContext: { cwd: string | null; editorId: string | null };
 }
 
 const mainXtermCache = new Map<string, CachedMain>();
@@ -107,6 +113,7 @@ export function Terminal({
   workspaceId,
   status,
   visible,
+  cwd,
   onExit,
 }: TerminalProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -166,13 +173,23 @@ export function Terminal({
         onExit,
         setStatus: null,
         exitStatus: null,
+        linkContext: { cwd: null, editorId: null },
       };
+      const created = entry;
+      installTerminalLinks(term, {
+        getCwd: () => created.linkContext.cwd,
+        getEditorId: () => created.linkContext.editorId,
+      });
       mainXtermCache.set(workspaceId, entry);
     } else {
       // Cache hit — move the persistent container back into this mount.
       mount.appendChild(entry.container);
       entry.onExit = onExit;
     }
+    entry.linkContext = {
+      cwd: cwd ?? null,
+      editorId: settings?.defaultEditor ?? null,
+    };
 
     const term = entry.term;
     // Route lifecycle updates from the (persistent) PTY channel to the
@@ -353,6 +370,7 @@ export function Terminal({
   useEffect(() => {
     const entry = mainXtermCache.get(workspaceId);
     if (!entry) return;
+    entry.linkContext.editorId = settings?.defaultEditor ?? null;
     applyXtermSettings(entry.term, settings);
     try {
       entry.fit.fit();

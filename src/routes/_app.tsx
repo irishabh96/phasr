@@ -15,6 +15,8 @@ import { TitleBar } from "@/components/TitleBar";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
 import { useFileDrop } from "@/lib/hooks/useFileDrop";
+import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
+import { useMacTextEditingKeys } from "@/lib/hooks/useMacTextEditingKeys";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
@@ -64,6 +66,11 @@ function AppShell() {
   useTaskEvents();
   useCompletionNotifications();
   useFileDrop();
+  // ⌘⌫ / ⌘← / ⌘→ in every field — the webview never runs the native
+  // macOS editing actions for these, so we implement them ourselves.
+  useMacTextEditingKeys();
+  // <a href="http…"> anywhere in the app → default browser, not the webview.
+  useExternalLinkOpener();
 
   // Global chrome shortcuts. All bindings come from `@/lib/shortcuts` —
   // edits to a binding live there, not here.
@@ -88,6 +95,19 @@ function AppShell() {
         // Don't steal ⌘⇧J — that's "Reload window" in some browsers.
         e.preventDefault();
         toggleRightPanel();
+        return;
+      }
+      if (matchShortcut(e, SHORTCUTS.openNotes)) {
+        // Workspace context only — RepoHomeShell binds its own copy for
+        // the repo-home rail (the two never co-mount).
+        const s = useUiStore.getState();
+        const ctx = s.activeWorkspaceContext;
+        if (!ctx) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        s.setRightPanelCollapsed(false);
+        s.setRightPanelTab(ctx.workspaceId, "notes");
+        s.openNotesComposer();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {

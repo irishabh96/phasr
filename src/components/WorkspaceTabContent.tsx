@@ -84,6 +84,7 @@ export function WorkspaceTabContent({
                 workspaceId={workspaceId}
                 status={workspace.status}
                 visible={active}
+                cwd={worktreePath}
                 {...(onMainExit ? { onExit: onMainExit } : {})}
               />
             </div>

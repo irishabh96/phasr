@@ -148,6 +148,27 @@ export interface RunCommand {
   updatedAt: string;
 }
 
+export type NoteOriginKind =
+  | "workspace"
+  | "terminal"
+  | "runCommand"
+  | "repository";
+
+/** Repository-scoped note. `origin*` is a creation-time snapshot — the
+ *  referenced workspace/terminal may no longer exist. */
+export interface Note {
+  id: string;
+  repositoryId: string;
+  body: string;
+  originKind: NoteOriginKind;
+  originWorkspaceId: string | null;
+  originWorkspaceName: string | null;
+  originTerminalId: string | null;
+  originLabel: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CommitOutput {
   sha: string;
   message: string;

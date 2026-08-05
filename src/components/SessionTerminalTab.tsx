@@ -8,6 +8,7 @@ import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
+import { installTerminalLinks } from "@/lib/terminal/links";
 import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
 import type { PtyEvent } from "@/lib/types";
 
@@ -62,6 +63,8 @@ interface CachedSession {
   sessionId: string | null;
   /** Input/resize handlers — replaced on each remount. */
   inputDisposables: { dispose(): void }[];
+  /** Read at click time by the link layer — kept fresh across remounts. */
+  linkContext: { cwd: string | null; editorId: string | null };
   /** Latest mount's status setter — lets the persistent channel reach the
    *  live component after a remount. */
   setStatus: ((s: TermStatus) => void) | null;
@@ -183,7 +186,13 @@ export function SessionTerminalTab({
         inputDisposables: [],
         setStatus: null,
         exitStatus: null,
+        linkContext: { cwd: null, editorId: null },
       };
+      const created = entry;
+      installTerminalLinks(term, {
+        getCwd: () => created.linkContext.cwd,
+        getEditorId: () => created.linkContext.editorId,
+      });
       sessionXtermCache.set(tabId, entry);
 
       channel.onmessage = (event) => {
@@ -204,6 +213,7 @@ export function SessionTerminalTab({
     const term = entry.term;
     const channel = entry.channel;
     entry.setStatus = setStatus;
+    entry.linkContext.cwd = cwd ?? null;
 
     const wireInteractive = (id: string) => {
       for (const d of entry!.inputDisposables) d.dispose();
@@ -355,6 +365,7 @@ export function SessionTerminalTab({
   useEffect(() => {
     const entry = sessionXtermCache.get(tabId);
     if (!entry) return;
+    entry.linkContext.editorId = settings?.defaultEditor ?? null;
     applyXtermSettings(entry.term, settings);
     try {
       entry.fit.fit();

@@ -21,7 +21,7 @@ use domain::WorkspaceStatus;
 use orchestrator::{RepoLockRegistry, TaskOrchestrator};
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
+    default_db_path, init_pool, NoteRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
     WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
@@ -195,6 +195,10 @@ pub fn run() {
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,
             commands::run_commands::resize_run_command,
+            commands::notes::create_note,
+            commands::notes::list_notes_for_repository,
+            commands::notes::update_note,
+            commands::notes::delete_note,
             commands::session_terminal::start_session_terminal,
             commands::session_terminal::attach_session_terminal,
             commands::session_terminal::send_session_input,
@@ -234,6 +238,7 @@ async fn initialize_database_state(
     handle.manage(repository_repo);
     handle.manage(workspace_repo);
     handle.manage(RunCommandRepo::new(pool.clone()));
+    handle.manage(NoteRepo::new(pool.clone()));
     handle.manage(SettingsRepo::new(pool.clone()));
     handle.manage(UserRepo::new(pool.clone()));
     handle.manage(pool);

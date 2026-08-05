@@ -317,6 +317,40 @@ impl TaskOrchestrator {
         Ok(())
     }
 
+    /// Kill a task's PTY immediately, for callers that are tearing the
+    /// workspace down (archive, delete). Unlike `stop_task` there's no
+    /// SIGINT grace period — nothing in-process is worth preserving.
+    ///
+    /// **The order is the entire point.** `spawn_exit_watcher` flips a
+    /// still-`running` row to `failed` on any non-zero exit — which is
+    /// exactly what SIGKILL produces — and broadcasts it. Killing first
+    /// therefore reports the user's own delete back to them as "the
+    /// agent exited with an error", for a workspace that no longer
+    /// exists. Moving the row out of `running` first makes the watcher's
+    /// guard skip it. `stop_task` already honours this contract; every
+    /// other teardown path must too.
+    ///
+    /// No status broadcast: the caller is about to archive or delete the
+    /// row and will publish that transition itself.
+    pub async fn quiesce_task(&self, task_id: &str) {
+        let Some(handle) = self.runtime.get(task_id) else {
+            return;
+        };
+        let _ = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Stopped),
+                    finished_at: Some(Some(Utc::now())),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let _ = handle.kill();
+        self.runtime.drop_task(task_id);
+    }
+
     /// Open the task's terminal stream. If the PTY is still alive, this
     /// attaches to it with replay. If the row is pending/stopped (or a
     /// stale running row somehow has no process), this resumes the task
@@ -1347,6 +1381,73 @@ mod tests {
         let (orchestrator, _r, _pool, _t) = fresh_orchestrator().await;
         let err = orchestrator.stop_task("missing").await.unwrap_err();
         assert!(matches!(err, OrchestratorError::TaskNotRunning(_)));
+    }
+
+    /// Regression: archiving or deleting a workspace with a live agent
+    /// used to kill the PTY while the row was still `running`. The exit
+    /// watcher then saw a non-zero exit (SIGKILL) and broadcast
+    /// `failed`, which surfaced as "the agent exited with an error" for
+    /// a workspace the user had just removed. `quiesce_task` must move
+    /// the row out of `running` FIRST so the watcher stays silent.
+    #[tokio::test]
+    async fn quiesce_task_kills_without_reporting_a_failure() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+
+        let mut status_rx = orchestrator.subscribe_status();
+
+        let started = orchestrator
+            .start_task(StartTaskRequest {
+                repository_id: repo.id.clone(),
+                user_id: None,
+                agent: Agent::Claude,
+                // Long-running, so the process is still alive when we
+                // tear it down — the situation the bug needed.
+                command: "sleep 120".into(),
+                name: "doomed task".into(),
+                prompt: None,
+                base_branch: None,
+                rows: None,
+                cols: None,
+            })
+            .await
+            .expect("start_task should succeed");
+        let task_id = started.workspace.id.clone();
+
+        let first = tokio::time::timeout(Duration::from_secs(2), status_rx.recv())
+            .await
+            .expect("status event")
+            .expect("recv ok");
+        assert_eq!(first.status, WorkspaceStatus::Running);
+
+        orchestrator.quiesce_task(&task_id).await;
+
+        // Give the exit watcher every chance to misbehave.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(200), status_rx.recv()).await {
+                Ok(Ok(event)) => panic!(
+                    "teardown must not broadcast a status event, got {:?} (exit {:?})",
+                    event.status, event.exit_code
+                ),
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        // And the row records a deliberate stop, not a failure.
+        let row = orchestrator.workspaces.get(&task_id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Stopped);
+        assert!(row.finished_at.is_some());
     }
 
     // F1: opening a workspace whose worktree dir is gone (moved repo,

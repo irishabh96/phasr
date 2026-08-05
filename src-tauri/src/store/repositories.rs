@@ -177,10 +177,17 @@ impl RepositoryRepo {
     /// cascade only fires on DELETE, not UPDATE. The cloud's own FK
     /// cascade handles the corresponding cloud rows when the parent
     /// delete pushes.
+    ///
+    /// `repository_notes` is the deliberate exception: notes are
+    /// SOFT-deleted (kept forever per the notes spec) so an accidental
+    /// removal is recoverable and a future "restore repository" has
+    /// data to restore. Never add notes to the hard-delete list.
     pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
         let now = Utc::now().to_rfc3339();
 
         let mut tx = self.db.begin().await?;
+
+        super::notes::NoteRepo::soft_delete_by_repository(&mut tx, id, false).await?;
 
         sqlx::query("DELETE FROM run_commands WHERE repository_id = ?")
             .bind(id)
@@ -316,6 +323,48 @@ mod tests {
         assert!(repo.exists_soft_deleted(&r.id).await.unwrap());
         let pending = repo.list_dirty_soft_deletes().await.unwrap();
         assert_eq!(pending, vec![r.id.clone()]);
+    }
+
+    #[tokio::test]
+    async fn delete_soft_deletes_notes_while_hard_deleting_other_children() {
+        use crate::domain::{Note, NoteOriginKind, RunCommand};
+        use crate::store::{NoteRepo, RunCommandRepo};
+
+        let repo = fresh_repo().await;
+        insert_user(&repo.db, "user-a").await;
+        let r = Repository::new("doomed".into(), None, None);
+        repo.insert(&r).await.unwrap();
+
+        let notes = NoteRepo::new(repo.db.clone());
+        for body in ["one", "two"] {
+            let mut n = Note::new(r.id.clone(), body.into(), NoteOriginKind::Repository);
+            n.origin_label = "Repository home".into();
+            notes.insert_for_user(&n, "user-a").await.unwrap();
+        }
+        let rc = RunCommand::new(r.id.clone(), "Dev".into(), "npm run dev".into());
+        RunCommandRepo::new(repo.db.clone())
+            .insert(&rc)
+            .await
+            .unwrap();
+
+        repo.delete(&r.id).await.unwrap();
+
+        // Notes: rows retained, all tombstoned (the deliberate exception).
+        let all = notes
+            .list_all_by_repository_including_deleted(&r.id)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2, "note rows must survive repository removal");
+        assert!(all.iter().all(|(_, deleted)| deleted.is_some()));
+
+        // Run commands: hard-deleted (the existing policy, unchanged).
+        let rc_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM run_commands WHERE repository_id = ?")
+                .bind(&r.id)
+                .fetch_one(&repo.db)
+                .await
+                .unwrap();
+        assert_eq!(rc_count, 0);
     }
 
     async fn insert_user(db: &Db, id: &str) {

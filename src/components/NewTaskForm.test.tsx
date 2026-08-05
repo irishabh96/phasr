@@ -147,6 +147,31 @@ describe("NewTaskForm", () => {
     );
   });
 
+  it("⌘↵ from any field submits the form", async () => {
+    startTask.mockResolvedValue({
+      taskId: "task-1",
+      workspace: makeWorkspace(),
+    });
+    renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    await screen.findByText("claude --dangerously-skip-permissions");
+
+    const nameInput = screen.getByPlaceholderText(/fix login redirect bug/);
+    fireEvent.change(nameInput, { target: { value: "fix bug" } });
+    fireEvent.keyDown(nameInput, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(startTask).toHaveBeenCalledTimes(1));
+  });
+
+  it("⌘↵ does nothing while the form is incomplete", async () => {
+    renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    await screen.findByText("claude --dangerously-skip-permissions");
+
+    const nameInput = screen.getByPlaceholderText(/fix login redirect bug/);
+    fireEvent.keyDown(nameInput, { key: "Enter", metaKey: true });
+
+    expect(startTask).not.toHaveBeenCalled();
+  });
+
   it("surfaces backend errors inline without throwing", async () => {
     startTask.mockRejectedValue("repository has no local path");
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);

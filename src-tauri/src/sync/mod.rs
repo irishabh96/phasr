@@ -484,9 +484,15 @@ async fn upsert_repository_from_cloud(
     // Cloud tombstone: the repo was soft-deleted on another device.
     // Mirror it locally (hard-delete children, set deleted_at, clear
     // dirty) if we still have a live row, then stop — never resurrect it.
+    // `repository_notes` is the deliberate exception to the hard-delete
+    // child list: notes are SOFT-deleted (kept forever per the notes
+    // spec), with dirty=0/synced_at=now to match the mirror semantics.
     if row.deleted_at.is_some() {
         if get_repository_row(db, &row.id, &client.user_id).await?.is_some() {
             let mut tx = db.begin().await?;
+            crate::store::NoteRepo::soft_delete_by_repository(&mut tx, &row.id, true)
+                .await
+                .map_err(|e| SyncError::Store(e.to_string()))?;
             for child in ["run_commands", "repository_config", "workspaces"] {
                 sqlx::query(&format!("DELETE FROM {child} WHERE repository_id = ?"))
                     .bind(&row.id)
@@ -1923,6 +1929,62 @@ mod tests {
         .await
         .unwrap();
         assert!(tomb.is_some());
+        let ws_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces WHERE id='ws-a'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(ws_count, 0);
+    }
+
+    #[tokio::test]
+    async fn pull_cloud_tombstone_soft_deletes_notes_and_hard_deletes_other_children() {
+        use crate::domain::{Note, NoteOriginKind};
+        use crate::store::NoteRepo;
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-a", "user-a", "repo-a", "claude").await;
+
+        let notes = NoteRepo::new(db.clone());
+        let mut n = Note::new("repo-a".into(), "keep me".into(), NoteOriginKind::Repository);
+        n.origin_label = "Repository home".into();
+        notes.insert_for_user(&n, "user-a").await.unwrap();
+
+        let client = client_at("user-a", "http://127.0.0.1:1");
+        let now = Utc::now();
+        upsert_repository_from_cloud(
+            &client,
+            &db,
+            &CloudRepositoryRow {
+                id: "repo-a".into(),
+                name: "R".into(),
+                remote_url: None,
+                local_paths: HashMap::new(),
+                default_branch: "main".into(),
+                created_at: now,
+                updated_at: now,
+                deleted_at: Some(now),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The note row survives, tombstoned, with mirror semantics
+        // (dirty=0, synced_at set) — nothing left to push.
+        let (deleted_at, dirty, synced_at): (Option<String>, i64, Option<String>) =
+            sqlx::query_as(
+                "SELECT deleted_at, dirty, synced_at FROM repository_notes WHERE id = ?",
+            )
+            .bind(&n.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(deleted_at.is_some(), "note must be soft-deleted, not gone");
+        assert_eq!(dirty, 0);
+        assert!(synced_at.is_some());
+
+        // The workspace child is hard-deleted, unchanged policy.
         let ws_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces WHERE id='ws-a'")
             .fetch_one(&db)
             .await

@@ -8,8 +8,7 @@ use crate::auth::{AuthError, SessionState};
 use crate::domain::{Agent, Workspace, WorkspaceStatus};
 use crate::fswatch::WorktreeWatchRegistry;
 use crate::git;
-use crate::orchestrator::RepoLockRegistry;
-use crate::pty::TaskRuntime;
+use crate::orchestrator::{RepoLockRegistry, TaskOrchestrator};
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo, WorkspaceUpdate};
 use crate::sync::CloudSyncState;
 
@@ -218,12 +217,11 @@ pub async fn archive_workspace(
 ) -> Result<crate::domain::Workspace, WorkspaceCmdError> {
     session.require()?;
     // Stop the PTY if it's running so the status flip doesn't race
-    // against a still-alive shell.
-    if let Some(runtime) = app.try_state::<Arc<TaskRuntime>>() {
-        if let Some(handle) = runtime.get(&id) {
-            let _ = handle.kill();
-            runtime.drop_task(&id);
-        }
+    // against a still-alive shell. Via `quiesce_task`, which marks the
+    // row stopped BEFORE the kill — killing first makes the exit watcher
+    // report the archive as an agent failure.
+    if let Some(orchestrator) = app.try_state::<TaskOrchestrator>() {
+        orchestrator.quiesce_task(&id).await;
     }
     // Archived workspaces no longer need the watcher (the UI won't
     // be showing live git_status for them).
@@ -361,11 +359,11 @@ pub async fn delete_workspace(
     let workspace = repo.get(&id).await.ok();
 
     if let Some(workspace) = workspace.as_ref() {
-        if let Some(runtime) = app.try_state::<Arc<TaskRuntime>>() {
-            if let Some(handle) = runtime.get(&workspace.id) {
-                let _ = handle.kill();
-                runtime.drop_task(&workspace.id);
-            }
+        // Marks the row stopped before killing — otherwise the exit
+        // watcher sees a still-`running` row exit non-zero and fires an
+        // "agent failed" notification for the workspace being deleted.
+        if let Some(orchestrator) = app.try_state::<TaskOrchestrator>() {
+            orchestrator.quiesce_task(&workspace.id).await;
         }
         if workspace.workspace_kind.is_local() {
             return Ok(repo.delete(&id).await?);

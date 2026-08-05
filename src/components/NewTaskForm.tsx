@@ -6,6 +6,7 @@ import { GlassSelect } from "@/components/ui/GlassSelect";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { humanizeError } from "@/lib/humanizeError";
 import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { reportP0Error } from "@/lib/sentry";
@@ -79,8 +80,7 @@ export function NewTaskForm({
   const trimmedBaseBranch = baseBranch.trim();
   const canSubmit = trimmedName.length > 0 && !!activeAgent && !submitting;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     if (!canSubmit || !activeAgent) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
@@ -120,8 +120,22 @@ export function NewTaskForm({
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    void submit();
+  };
+
+  // ⌘↵ submits from any field — the form only receives key events while
+  // a descendant is focused, so this never fires as a global binding.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
+    if (!matchShortcut(e.nativeEvent as KeyboardEvent, SHORTCUTS.submitForm))
+      return;
+    e.preventDefault();
+    void submit();
+  };
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-3">
+    <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} className="space-y-3">
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor="new-task-name"
