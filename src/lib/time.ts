@@ -110,3 +110,22 @@ export function formatAbsolute(iso: string): string {
     hourCycle: "h23",
   });
 }
+
+/**
+ * Ultra-compact stamp for a completed note ("now", "12m", "5h", "Tue",
+ * "12 Jul"). Max ~6 chars so it fits the fixed right slot on a
+ * single-line done row without pushing the body.
+ */
+export function formatDoneStamp(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const mins = Math.floor((Date.now() - t) / 60_000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const d = new Date(t);
+  const days = Math.floor(hours / 24);
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: "short" });
+  return formatDayStamp(iso);
+}

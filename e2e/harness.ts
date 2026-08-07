@@ -140,6 +140,7 @@ export function makeFixtures() {
       updatedAt: NOW,
     },
   ];
+  const EARLIER = new Date(Date.parse(NOW) - 3_600_000).toISOString();
   const notes = [
     {
       id: "note-1",
@@ -163,8 +164,8 @@ export function makeFixtures() {
       originWorkspaceName: "checkout-flow",
       originTerminalId: null,
       originLabel: "Agent",
-      createdAt: NOW,
-      updatedAt: NOW,
+      createdAt: EARLIER,
+      updatedAt: EARLIER,
       doneAt: null,
     },
   ];
@@ -277,7 +278,13 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         updatedAt: f.now,
       };
       case "update_note": return { ...f.notes.find((n) => n.id === a?.id), ...(a?.input?.body ? { body: a.input.body } : {}), updatedAt: f.now };
-      case "set_note_done": return { ...f.notes.find((n) => n.id === a?.id), doneAt: a?.done ? f.now : null };
+      case "set_note_done": {
+        // Stateful on purpose: the panel refetches after the mutation,
+        // and a stateless mock would silently revert the toggle.
+        const n = f.notes.find((x) => x.id === a?.id);
+        if (n) n.doneAt = a?.done ? new Date().toISOString() : null;
+        return n;
+      }
       case "delete_note": return null;
       case "git_status": return f.gitStatus;
       case "git_branch_status": return f.branchStatus;

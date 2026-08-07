@@ -8,10 +8,11 @@ import {
 } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
+import { NoteCheckbox } from "@/components/ui/NoteCheckbox";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
-import { formatAbsolute, formatNoteStamp } from "@/lib/time";
+import { formatAbsolute, formatDoneStamp, formatNoteStamp } from "@/lib/time";
 import type { Note } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +49,14 @@ export interface NoteRowProps {
    * buckets need the date instead. Never duplicates the header.
    */
   stamp: "time" | "date";
+  /**
+   * Which section the row is RENDERED in. Deliberately separate from
+   * `note.doneAt` (its live state): checking a note flips the live
+   * state instantly but leaves presentation alone until the list
+   * settles, so nothing moves out from under the pointer.
+   */
+  presentation: "open" | "done";
+  onToggleDone: (done: boolean) => void;
   /** Roving tabindex: the one row that is in the tab order. */
   focusable: boolean;
   onFocusRow: () => void;
@@ -66,6 +75,8 @@ export function NoteRow({
   note,
   originWorkspaceAlive,
   stamp,
+  presentation,
+  onToggleDone,
   focusable,
   onFocusRow,
   onSave,
@@ -82,6 +93,8 @@ export function NoteRow({
   const bodyRef = useRef<HTMLParagraphElement>(null);
 
   const pending = note.id.startsWith("optimistic-");
+  const done = note.doneAt !== null;
+  const collapsed = presentation === "done";
   const edited = Date.parse(note.updatedAt) - Date.parse(note.createdAt) > 1000;
 
   // "Show more" must be driven by MEASURED overflow. Inferring it from
@@ -144,6 +157,13 @@ export function NoteRow({
 
   const handleRowKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     if (editing) return;
+    if (e.key === " " || e.code === "Space") {
+      // Space is the universal checkbox key. preventDefault or the
+      // scroll container pages down under us.
+      e.preventDefault();
+      onToggleDone(!done);
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       beginEdit();
@@ -170,19 +190,27 @@ export function NoteRow({
         onFocus={onFocusRow}
         onKeyDown={handleRowKeyDown}
         onDoubleClick={() => !pending && beginEdit()}
-        aria-label={`Note from ${note.originLabel}${
+        aria-keyshortcuts="Space"
+        aria-label={`${done ? "Done" : "To do"}, note from ${note.originLabel}${
           note.originWorkspaceName
             ? `, ${note.originWorkspaceName}${originWorkspaceAlive ? "" : " (workspace removed)"}`
             : ""
         }, ${formatAbsolute(note.createdAt)}`}
         className={cn(
-          "group mx-2 my-1 flex flex-col gap-1.5 rounded-[8px] px-2 py-2",
+          "group mx-2 grid grid-cols-[20px_1fr] items-start gap-x-2 rounded-[8px] px-2",
+          collapsed ? "my-0.5 py-1.5" : "my-1 py-2",
           "transition-colors duration-100",
           "hover:bg-(--color-bg-hover)",
           "focus-visible:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
           pending && "opacity-90",
         )}
       >
+        <NoteCheckbox
+          checked={done}
+          onToggle={() => onToggleDone(!done)}
+          className="-ml-1.5 -mt-1"
+        />
+        <div className="flex min-w-0 flex-col gap-1.5">
         {editing ? (
           <div className="flex flex-col gap-2">
             <textarea
@@ -245,11 +273,31 @@ export function NoteRow({
               </div>
             </div>
           </div>
+        ) : collapsed ? (
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-[13px] leading-[1.5] text-(--color-text-secondary)">
+              {note.body}
+            </p>
+            {note.doneAt && (
+              <GlassTooltip content={formatAbsolute(note.doneAt)} side="top">
+                <span className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted)">
+                  {formatDoneStamp(note.doneAt)}
+                </span>
+              </GlassTooltip>
+            )}
+          </div>
         ) : (
           <>
             {title !== null ? (
               <>
-                <p className="truncate text-[13px] font-medium leading-[1.5] text-(--color-text-primary)">
+                <p
+                  className={cn(
+                    "truncate text-[13px] font-medium leading-[1.5]",
+                    done
+                      ? "text-(--color-text-secondary)"
+                      : "text-(--color-text-primary)",
+                  )}
+                >
                   {title}
                 </p>
                 <p
@@ -266,7 +314,10 @@ export function NoteRow({
               <p
                 ref={bodyRef}
                 className={cn(
-                  "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-(--color-text-primary)",
+                  "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5]",
+                  done
+                    ? "text-(--color-text-secondary)"
+                    : "text-(--color-text-primary)",
                   !expanded && "line-clamp-5",
                 )}
               >
@@ -379,6 +430,7 @@ export function NoteRow({
             </div>
           </>
         )}
+        </div>
       </article>
     </li>
   );

@@ -22,7 +22,15 @@ function makeNote(overrides: Partial<Note> = {}): Note {
 
 function renderRow(
   note: Note,
-  { alive = true }: { alive?: boolean } = {},
+  {
+    alive = true,
+    presentation = "open" as "open" | "done",
+    onToggleDone = vi.fn(),
+  }: {
+    alive?: boolean;
+    presentation?: "open" | "done";
+    onToggleDone?: (done: boolean) => void;
+  } = {},
   onSave = vi.fn().mockResolvedValue(undefined),
   onDelete = vi.fn(),
 ) {
@@ -32,6 +40,8 @@ function renderRow(
         note={note}
         originWorkspaceAlive={alive}
         stamp="time"
+        presentation={presentation}
+        onToggleDone={onToggleDone}
         focusable
         onFocusRow={() => {}}
         registerRef={() => {}}
@@ -40,7 +50,7 @@ function renderRow(
       />
     </ul>,
   );
-  return { onSave, onDelete };
+  return { onSave, onDelete, onToggleDone };
 }
 
 /**
@@ -213,6 +223,52 @@ describe("NoteRow", () => {
 
   // The ⋯ menu's contents need a real pointer environment (Radix +
   // jsdom has no PointerEvent) — asserted in e2e/notes.spec.ts instead.
+  it("Space on a focused row toggles done", () => {
+    const onToggleDone = vi.fn();
+    renderRow(makeNote(), { onToggleDone });
+    fireEvent.keyDown(screen.getByRole("article"), { key: " " });
+    expect(onToggleDone).toHaveBeenCalledWith(true);
+  });
+
+  it("Space on a done note reopens it", () => {
+    const onToggleDone = vi.fn();
+    renderRow(makeNote({ doneAt: "2026-08-02T10:00:00Z" }), { onToggleDone });
+    fireEvent.keyDown(screen.getByRole("article"), { key: " " });
+    expect(onToggleDone).toHaveBeenCalledWith(false);
+  });
+
+  it("the checkbox reflects LIVE done state even while rendered as open", () => {
+    // The anti-yank split: a just-checked note keeps its open position
+    // (presentation) but must show as checked (live state) immediately.
+    renderRow(makeNote({ doneAt: "2026-08-02T10:00:00Z" }), {
+      presentation: "open",
+    });
+    expect(screen.getByRole("checkbox")).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    // …and still renders its full open-row body, not the collapsed one.
+    expect(
+      screen.getByText(/Seed script needs DATABASE_URL/),
+    ).toBeInTheDocument();
+  });
+
+  it("a done-presentation row collapses to one line with a done stamp", () => {
+    renderRow(makeNote({ doneAt: new Date().toISOString() }), {
+      presentation: "done",
+    });
+    expect(screen.getByText("now")).toBeInTheDocument();
+    // The open-row meta (origin ref) is not rendered when collapsed.
+    expect(screen.queryByText("fix-auth")).not.toBeInTheDocument();
+  });
+
+  it("states done-ness in the accessible name", () => {
+    renderRow(makeNote({ doneAt: "2026-08-02T10:00:00Z" }));
+    expect(screen.getByRole("article").getAttribute("aria-label")).toMatch(
+      /^Done,/,
+    );
+  });
+
   it("keeps the ⋯ trigger present but out of the tab order", () => {
     renderRow(makeNote());
     const trigger = screen.getByRole("button", { name: "Note actions" });

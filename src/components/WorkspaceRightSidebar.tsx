@@ -70,7 +70,7 @@ export function WorkspaceRightSidebar({
         />
         <PanelTab
           label="Notes"
-          count={notes?.length ?? 0}
+          count={notes?.filter((n) => !n.doneAt).length ?? 0}
           active={activeTab === "notes"}
           onClick={() => setTab(workspaceId, "notes")}
         />
