@@ -152,37 +152,6 @@ impl NoteRepo {
         Ok(())
     }
 
-    /// Tombstone every live note of a repository inside an existing
-    /// transaction — shared by BOTH repository-delete paths (local
-    /// removal and the cloud-tombstone mirror). Idempotent: the
-    /// `deleted_at IS NULL` predicate makes a re-run a no-op.
-    pub async fn soft_delete_by_repository(
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        repository_id: &str,
-        mark_synced: bool,
-    ) -> Result<(), StoreError> {
-        let now = Utc::now().to_rfc3339();
-        let (dirty, synced_sql) = if mark_synced {
-            // Cloud-mirror path: mirror semantics, nothing left to push.
-            (0i64, Some(now.clone()))
-        } else {
-            (1i64, None)
-        };
-        sqlx::query(
-            "UPDATE repository_notes
-             SET deleted_at = ?, updated_at = ?, dirty = ?, synced_at = COALESCE(?, synced_at)
-             WHERE repository_id = ? AND deleted_at IS NULL",
-        )
-        .bind(&now)
-        .bind(&now)
-        .bind(dirty)
-        .bind(synced_sql)
-        .bind(repository_id)
-        .execute(&mut **tx)
-        .await?;
-        Ok(())
-    }
-
     /// Unscoped list including tombstones — tests only.
     #[cfg(test)]
     pub async fn list_all_by_repository_including_deleted(
@@ -489,36 +458,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn soft_delete_by_repository_tombstones_all_live_notes_and_is_idempotent() {
-        let (repo, repository, db) = fresh().await;
-        repo.insert_for_user(&note(&repository.id, "one"), USER)
-            .await
-            .unwrap();
-        repo.insert_for_user(&note(&repository.id, "two"), USER)
-            .await
-            .unwrap();
-
-        let mut tx = db.begin().await.unwrap();
-        NoteRepo::soft_delete_by_repository(&mut tx, &repository.id, false)
-            .await
-            .unwrap();
-        // Idempotent inside the same tx.
-        NoteRepo::soft_delete_by_repository(&mut tx, &repository.id, false)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        assert!(repo
-            .list_by_repository_for_user(&repository.id, USER)
-            .await
-            .unwrap()
-            .is_empty());
-        let all = repo
-            .list_all_by_repository_including_deleted(&repository.id)
-            .await
-            .unwrap();
-        assert_eq!(all.len(), 2);
-        assert!(all.iter().all(|(_, deleted)| deleted.is_some()));
-    }
 }

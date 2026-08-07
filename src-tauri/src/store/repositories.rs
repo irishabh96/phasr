@@ -178,16 +178,21 @@ impl RepositoryRepo {
     /// cascade handles the corresponding cloud rows when the parent
     /// delete pushes.
     ///
-    /// `repository_notes` is the deliberate exception: notes are
-    /// SOFT-deleted (kept forever per the notes spec) so an accidental
-    /// removal is recoverable and a future "restore repository" has
-    /// data to restore. Never add notes to the hard-delete list.
+    /// `repository_notes` is the deliberate exception and is not touched
+    /// at all — not deleted, not tombstoned. Notes are the user's todos;
+    /// disconnecting a repository from phasr is not a reason to destroy
+    /// them. They keep referencing this row, which survives as a
+    /// tombstone, so their provenance still resolves.
     pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
         let now = Utc::now().to_rfc3339();
 
         let mut tx = self.db.begin().await?;
 
-        super::notes::NoteRepo::soft_delete_by_repository(&mut tx, id, false).await?;
+        // `repository_notes` is deliberately NOT touched here. Notes are
+        // todos the user keeps; removing a repository from phasr must not
+        // destroy them (nor hide them — they aren't tombstoned either).
+        // They keep pointing at this repository row, which survives as a
+        // soft-deleted tombstone, so their provenance still resolves.
 
         sqlx::query("DELETE FROM run_commands WHERE repository_id = ?")
             .bind(id)
@@ -326,7 +331,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_soft_deletes_notes_while_hard_deleting_other_children() {
+    async fn delete_leaves_notes_untouched_while_hard_deleting_other_children() {
         use crate::domain::{Note, NoteOriginKind, RunCommand};
         use crate::store::{NoteRepo, RunCommandRepo};
 
@@ -349,13 +354,17 @@ mod tests {
 
         repo.delete(&r.id).await.unwrap();
 
-        // Notes: rows retained, all tombstoned (the deliberate exception).
+        // Notes are todos the user keeps: removing the repository must
+        // neither delete NOR hide them.
         let all = notes
             .list_all_by_repository_including_deleted(&r.id)
             .await
             .unwrap();
         assert_eq!(all.len(), 2, "note rows must survive repository removal");
-        assert!(all.iter().all(|(_, deleted)| deleted.is_some()));
+        assert!(
+            all.iter().all(|(_, deleted)| deleted.is_none()),
+            "notes must stay live — a removed repository is not a reason to tombstone a todo"
+        );
 
         // Run commands: hard-deleted (the existing policy, unchanged).
         let rc_count: i64 =
