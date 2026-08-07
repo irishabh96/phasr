@@ -1,4 +1,4 @@
-import { Plus, Search } from "lucide-react";
+import { ChevronRight, Plus, Search } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { NoteComposer } from "@/components/NoteComposer";
 import { NoteRow } from "@/components/NoteRow";
@@ -10,12 +10,14 @@ import {
   useCreateNote,
   useDeleteNote,
   useNotes,
+  useSetNoteDone,
   useUpdateNote,
 } from "@/lib/hooks/useNotes";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import type { NoteOrigin } from "@/lib/noteProvenance";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
+import { useSettledLayout } from "@/lib/notesLayout";
 import { dayBucket } from "@/lib/time";
 import type { Note } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -40,11 +42,16 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
   const createNote = useCreateNote(repositoryId);
   const updateNote = useUpdateNote(repositoryId);
   const deleteNote = useDeleteNote(repositoryId);
+  const setNoteDone = useSetNoteDone(repositoryId);
   const composerOpen = useUiStore((s) => s.notesComposerOpen);
   const composerRequest = useUiStore((s) => s.notesComposerRequest);
   const openComposer = useUiStore((s) => s.openNotesComposer);
 
   const [filter, setFilter] = useState("");
+  // Layout is held still while the user is interacting, so ticking a
+  // note can't move rows out from under the pointer. See notesLayout.ts.
+  const [held, setHeld] = useState(false);
+  const [doneOpen, setDoneOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Note | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const rowRefs = useRef<(HTMLElement | null)[]>([]);
@@ -63,20 +70,22 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
     return notes.filter((n) => n.body.toLowerCase().includes(q));
   }, [notes, filter]);
 
+  const { open: openNotes, done: doneNotes } = useSettledLayout(visible, held);
+
   /** Newest-first, bucketed by recency; flat index kept for roving focus. */
   const groups = useMemo(() => {
     const out: { label: string; spansDays: boolean; notes: Note[] }[] = [];
-    for (const note of visible) {
+    for (const note of openNotes) {
       const bucket = dayBucket(note.createdAt);
       const last = out[out.length - 1];
       if (last && last.label === bucket.label) last.notes.push(note);
       else out.push({ ...bucket, notes: [note] });
     }
     return out;
-  }, [visible]);
+  }, [openNotes]);
 
   const focusRow = (i: number) => {
-    const clamped = Math.max(0, Math.min(i, visible.length - 1));
+    const clamped = Math.max(0, Math.min(i, openNotes.length + doneNotes.length - 1));
     setActiveIndex(clamped);
     rowRefs.current[clamped]?.focus();
   };
@@ -93,7 +102,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
       focusRow(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      focusRow(visible.length - 1);
+      focusRow(openNotes.length + doneNotes.length - 1);
     } else if (e.key === "/" && (notes?.length ?? 0) > FILTER_VISIBLE_AT) {
       e.preventDefault();
       scrollRef.current?.scrollTo({ top: 0 });
@@ -128,6 +137,10 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto"
         onKeyDown={handleListKeyDown}
+        onPointerEnter={() => setHeld(true)}
+        onPointerLeave={() => setHeld(false)}
+        onFocusCapture={() => setHeld(true)}
+        onBlurCapture={() => setHeld(false)}
       >
         {/* A note written now belongs to Today, so the composer renders
             INSIDE today's group, under its header — never above it and
@@ -209,6 +222,10 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                       key={note.id}
                       note={note}
                       stamp={group.spansDays ? "date" : "time"}
+                      presentation="open"
+                      onToggleDone={(next) =>
+                        setNoteDone.mutate({ id: note.id, done: next })
+                      }
                       originWorkspaceAlive={
                         !note.originWorkspaceId ||
                         liveWorkspaceIds.has(note.originWorkspaceId)
@@ -231,6 +248,68 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
               </ul>
             </div>
           ))
+        )}
+
+        {doneNotes.length > 0 && (
+          <div className="mt-1 border-t border-(--color-border-subtle) pt-1">
+            <button
+              type="button"
+              onClick={() => setDoneOpen((v) => !v)}
+              aria-expanded={doneOpen}
+              className={cn(
+                "flex h-7 w-full items-center gap-1.5 px-2 text-[11px] font-medium",
+                "text-(--color-text-muted) hover:text-(--color-text-secondary)",
+                "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+              )}
+            >
+              <ChevronRight
+                size={12}
+                className={cn(
+                  "shrink-0 transition-transform duration-[var(--duration-glass)] motion-reduce:transition-none",
+                  doneOpen && "rotate-90",
+                )}
+              />
+              <span className="flex-1 text-left">Done</span>
+              <span className="text-(--color-text-secondary)">
+                {doneNotes.length}
+              </span>
+            </button>
+            {doneOpen && (
+              <ul role="list">
+                {doneNotes.map((note) => {
+                  flatIndex += 1;
+                  const i = flatIndex;
+                  return (
+                    <NoteRow
+                      key={note.id}
+                      note={note}
+                      stamp="date"
+                      presentation="done"
+                      onToggleDone={(next) =>
+                        setNoteDone.mutate({ id: note.id, done: next })
+                      }
+                      originWorkspaceAlive={
+                        !note.originWorkspaceId ||
+                        liveWorkspaceIds.has(note.originWorkspaceId)
+                      }
+                      focusable={i === activeIndex}
+                      onFocusRow={() => setActiveIndex(i)}
+                      registerRef={(el) => {
+                        rowRefs.current[i] = el;
+                      }}
+                      onSave={async (body, expectedUpdatedAt) => {
+                        await updateNote.mutateAsync({
+                          id: note.id,
+                          input: { body, expectedUpdatedAt },
+                        });
+                      }}
+                      onDelete={() => setPendingDelete(note)}
+                    />
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         )}
 
         {/* The canvas: the space below the last note is the primary
