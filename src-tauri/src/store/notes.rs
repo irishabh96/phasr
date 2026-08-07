@@ -24,7 +24,7 @@ pub struct NoteRepo {
 }
 
 const NOTE_COLUMNS: &str = "id, repository_id, body, origin_kind, origin_workspace_id,
-        origin_workspace_name, origin_terminal_id, origin_label, created_at, updated_at";
+        origin_workspace_name, origin_terminal_id, origin_label, created_at, updated_at, done_at";
 
 impl NoteRepo {
     pub fn new(db: Db) -> Self {
@@ -132,6 +132,34 @@ impl NoteRepo {
         Ok(current)
     }
 
+    /// Check a note off, or reopen it. Deliberately NOT guarded by
+    /// `expected_updated_at`: ticking a box must never lose a race to
+    /// someone fixing a typo in the same note. Also deliberately does
+    /// not touch `updated_at` — that drives the "edited" badge, and
+    /// completing a todo is not an edit of its text.
+    pub async fn set_done_for_user(
+        &self,
+        id: &str,
+        user_id: &str,
+        done: bool,
+    ) -> Result<Note, StoreError> {
+        let done_at = done.then(|| Utc::now().to_rfc3339());
+        let res = sqlx::query(
+            "UPDATE repository_notes
+             SET done_at = ?, dirty = 1
+             WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&done_at)
+        .bind(id)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        self.get_for_user(id, user_id).await
+    }
+
     /// Soft delete. The row stays in SQLite; every read filters it out.
     pub async fn soft_delete_for_user(&self, id: &str, user_id: &str) -> Result<(), StoreError> {
         let now = Utc::now().to_rfc3339();
@@ -193,6 +221,10 @@ fn row_to_note(row: &sqlx::sqlite::SqliteRow) -> Result<Note, StoreError> {
         origin_label: row.try_get("origin_label")?,
         created_at: parse_timestamp(row.try_get::<String, _>("created_at")?, "created_at")?,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,
+        done_at: row
+            .try_get::<Option<String>, _>("done_at")?
+            .map(|v| parse_timestamp(v, "done_at"))
+            .transpose()?,
     })
 }
 

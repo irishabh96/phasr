@@ -198,6 +198,7 @@ pub fn run() {
             commands::notes::create_note,
             commands::notes::list_notes_for_repository,
             commands::notes::update_note,
+            commands::notes::set_note_done,
             commands::notes::delete_note,
             commands::session_terminal::start_session_terminal,
             commands::session_terminal::attach_session_terminal,

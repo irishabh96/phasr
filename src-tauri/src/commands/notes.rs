@@ -1,7 +1,7 @@
-//! CRUD for repository notes. Notes are repository-scoped (they outlive
-//! every workspace/terminal), soft-deleted only, and local-only in v1 —
-//! deliberately NOT wired into cloud sync (bodies may contain pasted
-//! secrets; see the spec before changing that).
+//! CRUD for repository notes — the user's todos. Repository-scoped (they
+//! outlive every workspace/terminal AND the repository itself),
+//! soft-deleted only, and checkable: `done_at` carries both whether a
+//! note is done and when it was ticked.
 
 use std::sync::Arc;
 
@@ -155,6 +155,17 @@ pub async fn update_note(
             },
         )
         .await?)
+}
+
+#[tauri::command]
+pub async fn set_note_done(
+    id: String,
+    done: bool,
+    notes: State<'_, NoteRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Note, NoteError> {
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    Ok(notes.set_done_for_user(&id, &current.user_id, done).await?)
 }
 
 #[tauri::command]

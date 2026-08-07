@@ -15,6 +15,7 @@ function makeNote(overrides: Partial<Note> = {}): Note {
     originLabel: "Terminal 2",
     createdAt: "2026-08-01T10:00:00Z",
     updatedAt: "2026-08-01T10:00:00Z",
+    doneAt: null,
     ...overrides,
   };
 }

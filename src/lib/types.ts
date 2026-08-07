@@ -167,6 +167,8 @@ export interface Note {
   originLabel: string;
   createdAt: string;
   updatedAt: string;
+  /** Non-null means done; the value is when it was ticked (sort key). */
+  doneAt: string | null;
 }
 
 export interface CommitOutput {

@@ -53,6 +53,9 @@ pub struct Note {
     pub origin_label: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set when the note is checked off; the sort key for the done list.
+    /// `Some` IS "done" — there is no separate boolean to disagree with it.
+    pub done_at: Option<DateTime<Utc>>,
 }
 
 impl Note {
@@ -69,6 +72,7 @@ impl Note {
             origin_label: String::new(),
             created_at: now,
             updated_at: now,
+            done_at: None,
         }
     }
 }
