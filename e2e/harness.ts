@@ -152,6 +152,7 @@ export function makeFixtures() {
       originLabel: "Terminal 2",
       createdAt: NOW,
       updatedAt: NOW,
+      doneAt: null,
     },
     {
       id: "note-2",
@@ -164,6 +165,7 @@ export function makeFixtures() {
       originLabel: "Agent",
       createdAt: NOW,
       updatedAt: NOW,
+      doneAt: null,
     },
   ];
   const gitStatus = [
@@ -275,6 +277,7 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         updatedAt: f.now,
       };
       case "update_note": return { ...f.notes.find((n) => n.id === a?.id), ...(a?.input?.body ? { body: a.input.body } : {}), updatedAt: f.now };
+      case "set_note_done": return { ...f.notes.find((n) => n.id === a?.id), doneAt: a?.done ? f.now : null };
       case "delete_note": return null;
       case "git_status": return f.gitStatus;
       case "git_branch_status": return f.branchStatus;

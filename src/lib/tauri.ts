@@ -284,6 +284,8 @@ export const tauri = {
       expectedUpdatedAt?: string;
     },
   ) => invoke<Note>("update_note", { id, input }),
+  setNoteDone: (id: string, done: boolean) =>
+    invoke<Note>("set_note_done", { id, done }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
   upsertRunCommandFromCloud: (input: RunCommand) =>
     invoke<RunCommand>("upsert_run_command_from_cloud", { input }),
