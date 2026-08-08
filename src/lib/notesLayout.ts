@@ -89,14 +89,23 @@ export function applySnapshot(
 }
 
 /**
- * Holds layout still while `held` is true, then settles after a beat.
- * `held` should be true whenever the pointer or focus is inside the
- * panel — the two ways a user can have a row targeted.
+ * Holds layout still, then settles a beat after the last change.
+ *
+ * The delay is a DEBOUNCE on data changes, not a wait for the user to
+ * leave. An earlier version held until the pointer left the panel —
+ * but after clicking a checkbox the pointer is, by definition, still
+ * in the panel, so a checked note could sit in the open list forever
+ * and the whole thing read as "it didn't update". Ticking several
+ * notes in a row keeps resetting the timer, so nothing moves mid-burst;
+ * pause, and the list tidies itself.
+ *
+ * `held` is now only for the cases where a reflow would land behind
+ * something the user is actively looking at — an open dialog.
  */
 export function useSettledLayout(
   notes: Note[],
   held: boolean,
-  settleDelayMs = 250,
+  settleDelayMs = 600,
 ): NotePartition {
   const [snapshot, setSnapshot] = useState<LayoutSnapshot>(() =>
     snapshotOf(notes),

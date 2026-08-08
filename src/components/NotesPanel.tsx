@@ -47,9 +47,9 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
   const openComposer = useUiStore((s) => s.openNotesComposer);
 
   const [filter, setFilter] = useState("");
-  // Layout is held still while the user is interacting, so ticking a
-  // note can't move rows out from under the pointer. See notesLayout.ts.
-  const [held, setHeld] = useState(false);
+  // See notesLayout.ts: the list tidies a beat after the last change,
+  // not when the pointer leaves — the pointer is always still here
+  // right after a click.
   const [doneOpen, setDoneOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Note | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -69,7 +69,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
     return notes.filter((n) => n.body.toLowerCase().includes(q));
   }, [notes, filter]);
 
-  const { open: openNotes, done: doneNotes } = useSettledLayout(visible, held);
+  const { open: openNotes, done: doneNotes } = useSettledLayout(visible, pendingDelete !== null);
 
   const focusRow = (i: number) => {
     const clamped = Math.max(
@@ -126,10 +126,6 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto"
         onKeyDown={handleListKeyDown}
-        onPointerEnter={() => setHeld(true)}
-        onPointerLeave={() => setHeld(false)}
-        onFocusCapture={() => setHeld(true)}
-        onBlurCapture={() => setHeld(false)}
       >
         {/* A note written now belongs to Today, so the composer renders
             INSIDE today's group, under its header — never above it and
