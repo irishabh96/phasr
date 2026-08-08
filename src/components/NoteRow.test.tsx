@@ -207,6 +207,15 @@ describe("NoteRow", () => {
     ).toBeInTheDocument();
   });
 
+  it("the editor offers Delete — not just Cancel/Save", () => {
+    // Reported gap: a note you opened to fix and then decided to bin
+    // had no way out of the editor except cancelling first.
+    const { onDelete } = renderRow(makeNote());
+    fireEvent.keyDown(screen.getByRole("article"), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
   it("Backspace on a focused row asks to delete", () => {
     const { onDelete } = renderRow(makeNote());
     fireEvent.keyDown(screen.getByRole("article"), { key: "Backspace" });

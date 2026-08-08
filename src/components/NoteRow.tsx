@@ -2,6 +2,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   FolderGit2,
   ChevronDown,
+  MoreHorizontal,
   Play,
   Terminal as TerminalIcon,
   Zap,
@@ -236,7 +237,10 @@ export function NoteRow({
                   // doesn't shift a single character.
                   "block w-full resize-none rounded-[6px] bg-transparent px-0 py-0",
                   "text-[13px] leading-[20px] text-(--color-text-primary)",
-                  "outline outline-2 -outline-offset-2 outline-(--color-focus-ring)",
+                  // Positive offset: the ring floats clear of the glyphs so the
+                  // field breathes, while the text stays on the exact pixel it
+                  // occupied at rest (px-0/py-0) — entering edit shifts nothing.
+                  "outline outline-2 outline-offset-[6px] outline-(--color-focus-ring)",
                   "disabled:opacity-50",
                 )}
               />
@@ -258,7 +262,20 @@ export function NoteRow({
                   </GlassButton>
                 </div>
               )}
-              <div className="flex h-6 items-center justify-end gap-2">
+              <div className="flex h-6 items-center justify-between gap-2">
+                {/* Delete is reachable from the editor: Cancel/Save were
+                    the only actions here, so a note you'd opened to fix
+                    and then decided to bin had no way out. */}
+                <GlassButton
+                  variant="ghost"
+                  size="sm"
+                  className="!h-6 px-2 text-[11px] text-(--color-text-muted) hover:!text-(--color-danger)"
+                  disabled={saving}
+                  title="Delete (⌫)"
+                  onClick={onDelete}
+                >
+                  Delete
+                </GlassButton>
                 <div className="flex items-center gap-1.5">
                   <GlassButton
                     variant="ghost"
@@ -392,7 +409,13 @@ export function NoteRow({
                     aria-haspopup="menu"
                     className="grid h-[24px] w-[24px] -my-[2px] -mr-[6px] shrink-0 place-items-center rounded-[5px] hover:bg-(--color-bg-elevated) data-[state=open]:bg-(--color-bg-elevated)"
                   >
-                    <OriginIcon kind={note.originKind} />
+                    <span className="group-hover:hidden">
+                      <OriginIcon kind={note.originKind} />
+                    </span>
+                    <MoreHorizontal
+                      size={13}
+                      className="hidden text-(--color-text-secondary) group-hover:block"
+                    />
                   </button>
                 </DropdownMenu.Trigger>
               </GlassTooltip>
