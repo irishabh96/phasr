@@ -102,3 +102,6 @@ specs_templates
 CLAUDE.md
 AGENTS.md
 .geminiignore
+# aidb dev-tooling runtime state (accidentally committed with the notes work)
+.ai/
+*.seg
