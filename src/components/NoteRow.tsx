@@ -301,18 +301,11 @@ export function NoteRow({
               </div>
             </div>
           ) : collapsed ? (
-            <div className="flex items-center gap-2">
-              <p className="min-w-0 flex-1 truncate text-[13px] leading-[20px] text-(--color-text-secondary)">
-                {note.body}
-              </p>
-              {note.doneAt && (
-                <GlassTooltip content={formatAbsolute(note.doneAt)} side="top">
-                  <span className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted)">
-                    {formatCompactStamp(note.doneAt)}
-                  </span>
-                </GlassTooltip>
-              )}
-            </div>
+            // Body only. The stamp lives in the right cluster for EVERY
+            // state — rendering one here too put two on a done row.
+            <p className="min-w-0 truncate text-[13px] leading-[20px] text-(--color-text-secondary)">
+              {note.body}
+            </p>
           ) : (
             <>
               {title !== null ? (

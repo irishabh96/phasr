@@ -1,9 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { bootApp, makeFixtures, calls } from "./harness";
 
-const OUT =
-  "/private/tmp/claude-501/-Users-rishabh-code-phasr/48f586d1-376e-40d2-a464-744fddb2c6c2/scratchpad";
-
 async function openNotes(page: Page, fixtures = makeFixtures()) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await bootApp(page, fixtures);
@@ -37,7 +34,6 @@ test("checking a note fires set_note_done and does NOT move the row", async ({
   // The anti-yank contract: still row 0, still the same note, while the
   // pointer is inside the panel.
   expect((await rows.nth(0).innerText()).slice(0, 30)).toBe(firstText);
-  await page.screenshot({ path: `${OUT}/todo-checked.png` });
 });
 
 test("the row settles into Done WITHOUT the pointer leaving", async ({
@@ -57,7 +53,6 @@ test("the row settles into Done WITHOUT the pointer leaving", async ({
   await expect(doneToggle).toBeVisible();
   await doneToggle.click();
   await page.waitForTimeout(300);
-  await page.screenshot({ path: `${OUT}/todo-done-open.png` });
 });
 
 test("tab count shows open notes only", async ({ page }) => {
@@ -66,4 +61,25 @@ test("tab count shows open notes only", async ({ page }) => {
   await expect(tab).toContainText("2");
   await page.getByRole("listitem").nth(0).getByRole("checkbox").click();
   await expect(tab).toContainText("1");
+});
+
+test("a done row shows exactly ONE stamp on hover", async ({ page }) => {
+  await openNotes(page);
+  await page.getByRole("listitem").nth(0).getByRole("checkbox").click();
+  await page.waitForTimeout(1000); // settle into Done
+  await page.getByRole("button", { name: /^Done/ }).click();
+  await page.waitForTimeout(250);
+
+  const doneRow = page.getByRole("listitem").last();
+  await doneRow.hover();
+  await page.waitForTimeout(250);
+
+  const stamps = await doneRow.evaluate((el) => {
+    const txt = [...el.querySelectorAll("span,time")]
+      .map((n) => (n.textContent ?? "").trim())
+      .filter((t) => /^(now|\d+[mhd]|[A-Z][a-z]{2}|\d+ [A-Z][a-z]{2})$/.test(t));
+    return txt;
+  });
+  console.log("STAMPS ON DONE ROW:", JSON.stringify(stamps));
+  expect(stamps.length).toBe(1);
 });
