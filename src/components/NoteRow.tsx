@@ -1,7 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   FolderGit2,
-  MoreHorizontal,
+  ChevronDown,
   Play,
   Terminal as TerminalIcon,
   Zap,
@@ -12,7 +12,7 @@ import { NoteCheckbox } from "@/components/ui/NoteCheckbox";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
-import { formatAbsolute, formatDoneStamp, formatNoteStamp } from "@/lib/time";
+import { formatAbsolute, formatCompactStamp } from "@/lib/time";
 import type { Note } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +26,8 @@ const TITLE_MAX = 120;
  * terminal chevron at this size.
  */
 function OriginIcon({ kind }: { kind: Note["originKind"] }) {
-  const cls = "shrink-0 text-(--color-text-secondary)";
+  const cls =
+    "shrink-0 text-(--color-text-muted) group-hover:text-(--color-text-secondary)";
   switch (kind) {
     case "workspace":
       return <Zap size={12} className={cls} />;
@@ -43,12 +44,6 @@ export interface NoteRowProps {
   note: Note;
   /** Whether the origin workspace still exists (live-resolved by the panel). */
   originWorkspaceAlive: boolean;
-  /**
-   * Follows the group header: named-day buckets ("Today", "Mon 12 Jul")
-   * already give the date, so the row shows clock time; month/year
-   * buckets need the date instead. Never duplicates the header.
-   */
-  stamp: "time" | "date";
   /**
    * Which section the row is RENDERED in. Deliberately separate from
    * `note.doneAt` (its live state): checking a note flips the live
@@ -74,7 +69,6 @@ export interface NoteRowProps {
 export function NoteRow({
   note,
   originWorkspaceAlive,
-  stamp,
   presentation,
   onToggleDone,
   focusable,
@@ -169,6 +163,16 @@ export function NoteRow({
       beginEdit();
       return;
     }
+    if (e.key === "ArrowRight" && overflowing) {
+      e.preventDefault();
+      setExpanded(true);
+      return;
+    }
+    if (e.key === "ArrowLeft" && expanded) {
+      e.preventDefault();
+      setExpanded(false);
+      return;
+    }
     if (e.key === "Backspace" || e.key === "Delete") {
       e.preventDefault();
       onDelete();
@@ -197,11 +201,17 @@ export function NoteRow({
             : ""
         }, ${formatAbsolute(note.createdAt)}`}
         className={cn(
-          "group mx-2 grid grid-cols-[20px_1fr] items-start gap-x-2 rounded-[8px] px-2",
-          collapsed ? "my-0.5 py-1.5" : "my-1 py-2",
-          "transition-colors duration-100",
+          // Explicit px: html{font-size:13px} makes rem utilities render
+          // at 0.8125x, so `py-2` is 6.5px and nothing lands on a pixel.
+          // 5 + 20 + 5 = a 30px row, and every extra line is exactly +20.
+          "group mx-[4px] grid grid-cols-[14px_minmax(0,1fr)_auto] items-start",
+          "gap-x-[8px] rounded-[6px] px-[8px] py-[5px] min-h-[30px]",
+          // No row transition: a sweep crosses 8 rows in ~200ms and a
+          // fade on each leaves a comet trail.
           "hover:bg-(--color-bg-hover)",
-          "focus-visible:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
+          // Inset ring — rows are flush, so an outer ring would overlap
+          // its neighbours and clip at the scroll container.
+          "focus-visible:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus-inset)]",
           pending && "opacity-90",
         )}
       >
@@ -211,226 +221,233 @@ export function NoteRow({
           className="-ml-1.5 -mt-1"
         />
         <div className="flex min-w-0 flex-col gap-1.5">
-        {editing ? (
-          <div className="flex flex-col gap-2">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={handleEditorKeyDown}
-              rows={Math.min(Math.max(draft.split("\n").length, 2), 12)}
-              autoFocus
-              disabled={saving}
-              aria-label="Edit note"
-              className={cn(
-                // Same metrics as the resting body so edit-in-place
-                // doesn't shift a single character.
-                "block w-full resize-none rounded-[6px] bg-transparent px-0 py-0",
-                "text-[13px] leading-[1.5] text-(--color-text-primary)",
-                "outline outline-2 -outline-offset-2 outline-(--color-focus-ring)",
-                "disabled:opacity-50",
+          {editing ? (
+            <div className="flex flex-col gap-2">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={handleEditorKeyDown}
+                rows={Math.min(Math.max(draft.split("\n").length, 2), 12)}
+                autoFocus
+                disabled={saving}
+                aria-label="Edit note"
+                className={cn(
+                  // Same metrics as the resting body so edit-in-place
+                  // doesn't shift a single character.
+                  "block w-full resize-none rounded-[6px] bg-transparent px-0 py-0",
+                  "text-[13px] leading-[20px] text-(--color-text-primary)",
+                  "outline outline-2 -outline-offset-2 outline-(--color-focus-ring)",
+                  "disabled:opacity-50",
+                )}
+              />
+              {saveError && (
+                <div
+                  role="alert"
+                  className="flex items-center justify-between gap-2 rounded-[6px] bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-2 py-1.5"
+                >
+                  <span className="min-w-0 truncate text-[12px] text-(--color-danger-text)">
+                    {saveError}
+                  </span>
+                  <GlassButton
+                    variant="ghost"
+                    size="sm"
+                    className="!h-6 shrink-0 px-2 text-[11px]"
+                    onClick={() => void save()}
+                  >
+                    Retry
+                  </GlassButton>
+                </div>
               )}
-            />
-            {saveError && (
-              <div
-                role="alert"
-                className="flex items-center justify-between gap-2 rounded-[6px] bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-2 py-1.5"
-              >
-                <span className="min-w-0 truncate text-[12px] text-(--color-danger-text)">
-                  {saveError}
-                </span>
-                <GlassButton
-                  variant="ghost"
-                  size="sm"
-                  className="!h-6 shrink-0 px-2 text-[11px]"
-                  onClick={() => void save()}
-                >
-                  Retry
-                </GlassButton>
-              </div>
-            )}
-            <div className="flex h-6 items-center justify-end gap-2">
-              <div className="flex items-center gap-1.5">
-                <GlassButton
-                  variant="ghost"
-                  size="sm"
-                  className="!h-6 px-2 text-[11px]"
-                  disabled={saving}
-                  title="Discard (Esc)"
-                  onClick={cancelEdit}
-                >
-                  Cancel
-                </GlassButton>
-                <GlassButton
-                  variant="primary"
-                  size="sm"
-                  className="!h-6 px-2 text-[11px]"
-                  disabled={!canSave || saving}
-                  title={canSave ? "Save (⌘↵)" : "No changes to save"}
-                  onClick={() => void save()}
-                >
-                  {saving ? "Saving…" : "Save"}
-                </GlassButton>
+              <div className="flex h-6 items-center justify-end gap-2">
+                <div className="flex items-center gap-1.5">
+                  <GlassButton
+                    variant="ghost"
+                    size="sm"
+                    className="!h-6 px-2 text-[11px]"
+                    disabled={saving}
+                    title="Discard (Esc)"
+                    onClick={cancelEdit}
+                  >
+                    Cancel
+                  </GlassButton>
+                  <GlassButton
+                    variant="primary"
+                    size="sm"
+                    className="!h-6 px-2 text-[11px]"
+                    disabled={!canSave || saving}
+                    title={canSave ? "Save (⌘↵)" : "No changes to save"}
+                    onClick={() => void save()}
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </GlassButton>
+                </div>
               </div>
             </div>
-          </div>
-        ) : collapsed ? (
-          <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 truncate text-[13px] leading-[1.5] text-(--color-text-secondary)">
-              {note.body}
-            </p>
-            {note.doneAt && (
-              <GlassTooltip content={formatAbsolute(note.doneAt)} side="top">
-                <span className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted)">
-                  {formatDoneStamp(note.doneAt)}
-                </span>
-              </GlassTooltip>
-            )}
-          </div>
-        ) : (
-          <>
-            {title !== null ? (
-              <>
-                <p
-                  className={cn(
-                    "truncate text-[13px] font-medium leading-[1.5]",
-                    done
-                      ? "text-(--color-text-secondary)"
-                      : "text-(--color-text-primary)",
-                  )}
-                >
-                  {title}
-                </p>
+          ) : collapsed ? (
+            <div className="flex items-center gap-2">
+              <p className="min-w-0 flex-1 truncate text-[13px] leading-[20px] text-(--color-text-secondary)">
+                {note.body}
+              </p>
+              {note.doneAt && (
+                <GlassTooltip content={formatAbsolute(note.doneAt)} side="top">
+                  <span className="shrink-0 font-mono text-[11px] leading-none text-(--color-text-muted)">
+                    {formatCompactStamp(note.doneAt)}
+                  </span>
+                </GlassTooltip>
+              )}
+            </div>
+          ) : (
+            <>
+              {title !== null ? (
+                <>
+                  <p
+                    className={cn(
+                      "truncate text-[13px] font-medium leading-[20px]",
+                      done
+                        ? "text-(--color-text-secondary)"
+                        : "text-(--color-text-primary)",
+                    )}
+                  >
+                    {title}
+                  </p>
+                  <p
+                    ref={bodyRef}
+                    className={cn(
+                      "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-(--color-text-secondary)",
+                      !expanded && "line-clamp-1",
+                    )}
+                  >
+                    {rest}
+                  </p>
+                </>
+              ) : (
                 <p
                   ref={bodyRef}
                   className={cn(
-                    "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-(--color-text-secondary)",
-                    !expanded && "line-clamp-4",
+                    "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[20px]",
+                    done
+                      ? "text-(--color-text-secondary)"
+                      : "text-(--color-text-primary)",
+                    !expanded && "line-clamp-2",
                   )}
                 >
                   {rest}
                 </p>
-              </>
-            ) : (
-              <p
-                ref={bodyRef}
-                className={cn(
-                  "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5]",
-                  done
-                    ? "text-(--color-text-secondary)"
-                    : "text-(--color-text-primary)",
-                  !expanded && "line-clamp-5",
-                )}
-              >
-                {rest}
-              </p>
+              )}
+            </>
+          )}
+        </div>
+        {/* Provenance costs ZERO vertical space now: it lives in
+                the right cluster, locked to the 20px first line box so
+                it can never grow the row. The origin glyph doubles as
+                the actions trigger — a 12px mark that says "this note
+                remembers where it came from" and opens the menu. The
+                workspace ref and the absolute time are one hover
+                deeper, in the tooltip and the menu header; at a 300px
+                rail a visible ref would eat 44% of the task text.
+                The row's aria-label still carries all of it verbatim,
+                so nothing moved out of reach of a screen reader. */}
+        {!editing && (
+          <div
+            className={cn(
+              "col-start-3 flex h-[20px] shrink-0 items-center gap-[6px]",
+              "transition-opacity duration-[var(--duration-glass)] motion-reduce:transition-none",
+              pending && "pointer-events-none opacity-0",
             )}
-
+            aria-hidden={pending}
+          >
             {(overflowing || expanded) && (
               <button
                 type="button"
                 tabIndex={-1}
+                aria-label={expanded ? "Collapse note" : "Expand note"}
                 onClick={() => setExpanded((v) => !v)}
-                className="self-start text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+                className="grid h-[24px] w-[24px] -my-[2px] place-items-center rounded-[5px] text-(--color-text-muted) opacity-0 hover:bg-(--color-bg-elevated) hover:text-(--color-text-secondary) group-hover:opacity-100 group-focus-within:opacity-100"
               >
-                {expanded ? "Show less" : "Show more"}
+                <ChevronDown
+                  size={12}
+                  className={cn(
+                    "transition-transform duration-[var(--duration-glass)] motion-reduce:transition-none",
+                    expanded && "rotate-180",
+                  )}
+                />
               </button>
             )}
-
-            {/* Provenance renders only once the note actually exists —
-                on an optimistic row its absence is the "not yet saved"
-                signal, and its arrival is the confirmation. */}
-            {/* The meta line keeps its height on a pending row (content
-                hidden, not absent) so the provenance arriving on save
-                doesn't shove the list — the receipt fades in, in place.
-                Two tonal groups: [origin: icon + ref] … [when: time].
-                None of these are tab stops — the panel runs a roving
-                tabindex, and the row's aria-label carries all of this
-                text for keyboard and screen-reader users. */}
-            <div
-              className={cn(
-                "flex h-6 items-center gap-1.5",
-                "transition-opacity duration-[var(--duration-glass)] motion-reduce:transition-none",
-                pending && "pointer-events-none opacity-0",
+            <span className="text-[11px] leading-[20px] tabular-nums text-(--color-text-muted) opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none">
+              {formatCompactStamp(
+                collapsed && note.doneAt ? note.doneAt : note.createdAt,
               )}
-              aria-hidden={pending}
-            >
-              <GlassTooltip content={note.originLabel} side="top">
-                <span className="flex h-6 w-4 shrink-0 items-center justify-center">
-                  <OriginIcon kind={note.originKind} />
-                </span>
-              </GlassTooltip>
-              {note.originWorkspaceName &&
-                (originWorkspaceAlive ? (
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-secondary)">
-                    {note.originWorkspaceName}
-                  </span>
-                ) : (
-                  <GlassTooltip
-                    content="This workspace no longer exists."
-                    side="top"
-                  >
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-(--color-text-muted) line-through">
-                      {note.originWorkspaceName}
-                      <span className="sr-only"> (workspace removed)</span>
-                    </span>
-                  </GlassTooltip>
-                ))}
-              {!note.originWorkspaceName && <span className="flex-1" />}
-              <GlassTooltip content={formatAbsolute(note.createdAt)} side="top">
-                <div className="flex shrink-0 items-center gap-1 text-[11px] leading-none text-(--color-text-muted)">
-                  <time dateTime={note.createdAt} className="font-mono">
-                    {formatNoteStamp(note.createdAt, stamp)}
-                  </time>
-                  {edited && <span>· edited</span>}
-                </div>
-              </GlassTooltip>
-              <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+              {edited && !collapsed ? " · edited" : ""}
+            </span>
+            <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+              <GlassTooltip
+                content={`${note.originLabel}${note.originWorkspaceName ? ` · ${note.originWorkspaceName}` : ""}${originWorkspaceAlive ? "" : " (removed)"}`}
+                side="top"
+              >
                 <DropdownMenu.Trigger asChild>
                   <button
                     type="button"
                     tabIndex={-1}
                     aria-label="Note actions"
-                    className={cn(
-                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px]",
-                      "text-(--color-text-muted) transition-opacity",
-                      "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
-                      "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-                      "data-[state=open]:opacity-100",
-                    )}
+                    aria-haspopup="menu"
+                    className="grid h-[24px] w-[24px] -my-[2px] -mr-[6px] shrink-0 place-items-center rounded-[5px] hover:bg-(--color-bg-elevated) data-[state=open]:bg-(--color-bg-elevated)"
                   >
-                    <MoreHorizontal size={14} />
+                    <OriginIcon kind={note.originKind} />
                   </button>
                 </DropdownMenu.Trigger>
-                <DropdownMenu.Portal>
-                  <DropdownMenu.Content
-                    align="end"
-                    sideOffset={6}
-                    className="glass-modal z-(--z-popover) min-w-[160px] overflow-hidden p-1"
+              </GlassTooltip>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={6}
+                  className="glass-modal z-(--z-popover) min-w-[180px] overflow-hidden p-1"
+                >
+                  <div
+                    role="presentation"
+                    className="px-2 py-1.5 text-[11px] text-(--color-text-muted)"
                   >
-                    <MenuItem onSelect={beginEdit} hint="↵">
-                      Edit
-                    </MenuItem>
-                    <MenuItem
-                      onSelect={() =>
-                        void navigator.clipboard
-                          ?.writeText(note.body)
-                          .catch(() => {})
-                      }
-                      hint="⌘C"
-                    >
-                      Copy text
-                    </MenuItem>
-                    <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
-                    <MenuItem onSelect={onDelete} hint="⌫" danger>
-                      Delete…
-                    </MenuItem>
-                  </DropdownMenu.Content>
-                </DropdownMenu.Portal>
-              </DropdownMenu.Root>
-            </div>
-          </>
+                    <span>{note.originLabel}</span>
+                    {note.originWorkspaceName && (
+                      <>
+                        {" · "}
+                        <span
+                          className={cn(
+                            "font-mono",
+                            !originWorkspaceAlive && "line-through",
+                          )}
+                        >
+                          {note.originWorkspaceName}
+                        </span>
+                        {!originWorkspaceAlive && " (removed)"}
+                      </>
+                    )}
+                    <div className="mt-0.5">
+                      {formatAbsolute(note.createdAt)}
+                    </div>
+                  </div>
+                  <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
+                  <MenuItem onSelect={beginEdit} hint="↵">
+                    Edit
+                  </MenuItem>
+                  <MenuItem
+                    onSelect={() =>
+                      void navigator.clipboard
+                        ?.writeText(note.body)
+                        .catch(() => {})
+                    }
+                    hint="⌘C"
+                  >
+                    Copy text
+                  </MenuItem>
+                  <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
+                  <MenuItem onSelect={onDelete} hint="⌫" danger>
+                    Delete…
+                  </MenuItem>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          </div>
         )}
-        </div>
       </article>
     </li>
   );

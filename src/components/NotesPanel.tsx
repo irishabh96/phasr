@@ -18,11 +18,10 @@ import type { NoteOrigin } from "@/lib/noteProvenance";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { useSettledLayout } from "@/lib/notesLayout";
-import { dayBucket } from "@/lib/time";
 import type { Note } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const FILTER_VISIBLE_AT = 8;
+const FILTER_VISIBLE_AT = 12;
 
 export interface NotesPanelProps {
   repositoryId: string;
@@ -72,20 +71,11 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
 
   const { open: openNotes, done: doneNotes } = useSettledLayout(visible, held);
 
-  /** Newest-first, bucketed by recency; flat index kept for roving focus. */
-  const groups = useMemo(() => {
-    const out: { label: string; spansDays: boolean; notes: Note[] }[] = [];
-    for (const note of openNotes) {
-      const bucket = dayBucket(note.createdAt);
-      const last = out[out.length - 1];
-      if (last && last.label === bucket.label) last.notes.push(note);
-      else out.push({ ...bucket, notes: [note] });
-    }
-    return out;
-  }, [openNotes]);
-
   const focusRow = (i: number) => {
-    const clamped = Math.max(0, Math.min(i, openNotes.length + doneNotes.length - 1));
+    const clamped = Math.max(
+      0,
+      Math.min(i, openNotes.length + doneNotes.length - 1),
+    );
     setActiveIndex(clamped);
     rowRefs.current[clamped]?.focus();
   };
@@ -118,7 +108,6 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
   // With zero notes the composer IS the empty state's affordance — but
   // unfocused, so opening the panel never opens with a blinking caret.
   const showComposer = composerOpen || isEmpty;
-  const todayGroupExists = groups[0]?.label === "Today";
 
   const composerEl = showComposer ? (
     <NoteComposer
@@ -146,12 +135,8 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
             INSIDE today's group, under its header — never above it and
             never growing a second one. When today has no notes yet the
             header is synthesised here. */}
-        {showComposer && !todayGroupExists && (
-          <>
-            <GroupHeader label="Today" />
-            {composerEl}
-          </>
-        )}
+        {/* Composer is row zero — no synthesised day header above it. */}
+        {composerEl}
 
         {(notes?.length ?? 0) > FILTER_VISIBLE_AT && (
           <div className="relative px-2 py-1.5">
@@ -195,6 +180,10 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
               kept with the repo.
             </p>
           </div>
+        ) : openNotes.length === 0 && doneNotes.length > 0 ? (
+          <div className="flex h-[30px] items-center px-[8px] text-[13px] text-(--color-text-muted)">
+            <span className="pl-[26px]">Nothing open.</span>
+          </div>
         ) : visible.length === 0 ? (
           <div className="px-4 py-3">
             <p className="text-[12px] text-(--color-text-muted)">
@@ -209,45 +198,38 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
             </button>
           </div>
         ) : (
-          groups.map((group, gi) => (
-            <div key={group.label}>
-              <GroupHeader label={group.label} />
-              {gi === 0 && todayGroupExists && composerEl}
-              <ul role="list">
-                {group.notes.map((note) => {
-                  flatIndex += 1;
-                  const i = flatIndex;
-                  return (
-                    <NoteRow
-                      key={note.id}
-                      note={note}
-                      stamp={group.spansDays ? "date" : "time"}
-                      presentation="open"
-                      onToggleDone={(next) =>
-                        setNoteDone.mutate({ id: note.id, done: next })
-                      }
-                      originWorkspaceAlive={
-                        !note.originWorkspaceId ||
-                        liveWorkspaceIds.has(note.originWorkspaceId)
-                      }
-                      focusable={i === activeIndex}
-                      onFocusRow={() => setActiveIndex(i)}
-                      registerRef={(el) => {
-                        rowRefs.current[i] = el;
-                      }}
-                      onSave={async (body, expectedUpdatedAt) => {
-                        await updateNote.mutateAsync({
-                          id: note.id,
-                          input: { body, expectedUpdatedAt },
-                        });
-                      }}
-                      onDelete={() => setPendingDelete(note)}
-                    />
-                  );
-                })}
-              </ul>
-            </div>
-          ))
+          <ul role="list">
+            {openNotes.map((note) => {
+              flatIndex += 1;
+              const i = flatIndex;
+              return (
+                <NoteRow
+                  key={note.id}
+                  note={note}
+                  presentation="open"
+                  onToggleDone={(next) =>
+                    setNoteDone.mutate({ id: note.id, done: next })
+                  }
+                  originWorkspaceAlive={
+                    !note.originWorkspaceId ||
+                    liveWorkspaceIds.has(note.originWorkspaceId)
+                  }
+                  focusable={i === activeIndex}
+                  onFocusRow={() => setActiveIndex(i)}
+                  registerRef={(el) => {
+                    rowRefs.current[i] = el;
+                  }}
+                  onSave={async (body, expectedUpdatedAt) => {
+                    await updateNote.mutateAsync({
+                      id: note.id,
+                      input: { body, expectedUpdatedAt },
+                    });
+                  }}
+                  onDelete={() => setPendingDelete(note)}
+                />
+              );
+            })}
+          </ul>
         )}
 
         {doneNotes.length > 0 && (
@@ -283,7 +265,6 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                     <NoteRow
                       key={note.id}
                       note={note}
-                      stamp="date"
                       presentation="done"
                       onToggleDone={(next) =>
                         setNoteDone.mutate({ id: note.id, done: next })
@@ -376,14 +357,6 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
           });
         }}
       />
-    </div>
-  );
-}
-
-function GroupHeader({ label }: { label: string }) {
-  return (
-    <div className="sticky top-0 z-10 flex h-7 items-center bg-(--color-bg-surface) px-4 text-[11px] font-medium leading-none text-(--color-text-muted)">
-      {label}
     </div>
   );
 }

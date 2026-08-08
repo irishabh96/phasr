@@ -116,7 +116,7 @@ export function formatAbsolute(iso: string): string {
  * "12 Jul"). Max ~6 chars so it fits the fixed right slot on a
  * single-line done row without pushing the body.
  */
-export function formatDoneStamp(iso: string): string {
+export function formatCompactStamp(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "—";
   const mins = Math.floor((Date.now() - t) / 60_000);
