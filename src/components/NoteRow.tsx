@@ -227,29 +227,37 @@ export function NoteRow({
       >
         <NoteCheckbox
           checked={done}
+          // No className override: the caller's -ml/-mt beat the
+          // component's own -mx-[5px] -my-[2px] in the built CSS and sat
+          // the tick 1.25px high on every row.
+          // Ticking mid-edit would toggle done under an open editor.
+          disabled={editing}
           onToggle={() => onToggleDone(!done)}
-          className="-ml-1.5 -mt-1"
         />
         <div className="flex min-w-0 flex-col gap-1.5">
           {editing ? (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-[13px]">
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleEditorKeyDown}
-                rows={Math.min(Math.max(draft.split("\n").length, 2), 12)}
+                rows={Math.min(Math.max(draft.split("\n").length, 1), 12)}
                 autoFocus
                 disabled={saving}
                 aria-label="Edit note"
                 className={cn(
                   // Same metrics as the resting body so edit-in-place
                   // doesn't shift a single character.
-                  "block w-full resize-none rounded-[6px] bg-transparent px-0 py-0",
+                  // Padding gives the field its breathing room; the equal
+                  // negative margin cancels it in layout, so the caret still
+                  // lands on the exact 34px origin and 20px line box the text
+                  // occupied at rest. An outer outline-offset did the same job
+                  // visually but inflated the block on all four sides and left
+                  // ~0.5px of clearance above the buttons.
+                  "block w-full resize-none rounded-[6px] bg-transparent",
+                  "px-[8px] py-[5px] -mx-[8px] -my-[5px]",
                   "text-[13px] leading-[20px] text-(--color-text-primary)",
-                  // Positive offset: the ring floats clear of the glyphs so the
-                  // field breathes, while the text stays on the exact pixel it
-                  // occupied at rest (px-0/py-0) — entering edit shifts nothing.
-                  "outline outline-2 outline-offset-[6px] outline-(--color-focus-ring)",
+                  "outline outline-2 -outline-offset-1 outline-(--color-focus-ring)",
                   "disabled:opacity-50",
                 )}
               />
