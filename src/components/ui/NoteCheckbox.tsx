@@ -26,10 +26,13 @@ import { cn } from "@/lib/utils";
 export function NoteCheckbox({
   checked,
   onToggle,
+  disabled = false,
   className,
 }: {
   checked: boolean;
   onToggle: () => void;
+  /** While the row's editor is open — toggling would discard the draft. */
+  disabled?: boolean;
   className?: string;
 }) {
   return (
@@ -39,9 +42,11 @@ export function NoteCheckbox({
       aria-checked={checked}
       aria-label={checked ? "Mark as not done" : "Mark as done"}
       tabIndex={-1}
+      aria-disabled={disabled}
       onClick={(e) => {
         // The row handles double-click to edit; a tick is its own action.
         e.stopPropagation();
+        if (disabled) return;
         onToggle();
       }}
       onDoubleClick={(e) => e.stopPropagation()}

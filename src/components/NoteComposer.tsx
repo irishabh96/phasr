@@ -23,11 +23,11 @@ export interface NoteComposerProps {
  * surface, and this mounts only when the user asks for it (⌘⇧N, the
  * header +, the canvas row) or when there are no notes at all.
  *
- * Geometry is deliberately identical to a resting note body — same
- * `px-2 py-2`, 13px/1.5, same `mx-2` block — and the chrome is an
- * `outline` rather than a `border` so it takes no layout space. That's
- * what lets a saved note appear exactly where the typed text already
- * was, instead of jumping.
+ * Geometry matches a resting note row exactly — 30px min height, 20px
+ * line box, caret at the 34px text origin (pl-[30px] inside an
+ * mx-[4px] px-[8px] block reserves the checkbox column) — so a saved
+ * note appears where the typed text already was. The chrome is an
+ * `outline`, not a border, so it takes no layout space.
  */
 export function NoteComposer({
   repositoryId,
@@ -91,7 +91,7 @@ export function NoteComposer({
   };
 
   return (
-    <div className="mx-2 my-1 flex flex-col gap-2">
+    <div className="mx-[4px] my-[4px] flex flex-col gap-[8px]">
       <textarea
         ref={fieldRef}
         value={draft}
@@ -100,16 +100,20 @@ export function NoteComposer({
         placeholder="Write a note…"
         // Always ≥2 rows so the first keystroke can't shove the list
         // down; grows only when a line actually wraps.
-        rows={Math.min(Math.max(draft.split("\n").length, 2), 12)}
+        rows={Math.min(Math.max(draft.split("\n").length, 1), 12)}
         disabled={saving}
         aria-label="Write a note"
         className={cn(
-          "block w-full resize-none rounded-[8px] bg-transparent px-2 py-2",
-          "text-[13px] leading-[1.5] text-(--color-text-primary)",
+          // pl-30 reserves the 14px checkbox column + gap, so the caret
+          // sits at the same 34px origin as a saved note's body and the
+          // lines lead identically. Previously 21px to the left.
+          "block w-full resize-none rounded-[6px] bg-transparent py-[5px] pl-[30px] pr-[8px]",
+          "text-[13px] leading-[20px] text-(--color-text-primary)",
           "placeholder:text-(--color-text-muted)",
-          "outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
+          "min-h-[30px] outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
           "focus:outline-2 focus:outline-(--color-focus-ring)",
           "transition-[outline-color,background-color] duration-[var(--duration-glass)] [transition-timing-function:var(--ease-glass)]",
+          "disabled:opacity-50",
           landing && "outline-transparent",
           saveError && "outline-2 outline-(--color-danger)",
         )}
@@ -126,7 +130,7 @@ export function NoteComposer({
           <GlassButton
             variant="ghost"
             size="sm"
-            className="!h-6 shrink-0 px-2 text-[11px]"
+            className="!h-[24px] shrink-0 px-2 text-[11px]"
             onClick={() => void save()}
           >
             Retry

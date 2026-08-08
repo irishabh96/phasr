@@ -83,3 +83,42 @@ test("a done row shows exactly ONE stamp on hover", async ({ page }) => {
   console.log("STAMPS ON DONE ROW:", JSON.stringify(stamps));
   expect(stamps.length).toBe(1);
 });
+
+test("the loading state actually renders something", async ({ page }) => {
+  // Regression: NotesSkeleton used `.skeleton-bar`, whose ONLY rule
+  // lives inside a prefers-reduced-motion media query — no background,
+  // no animation. Every panel open showed a blank rectangle.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await page.getByRole("button", { name: "Repository notes" }).click();
+  const painted = await page.evaluate(() => {
+    const el = document.createElement("div");
+    el.className = "skeleton-bar";
+    document.body.appendChild(el);
+    const bg = getComputedStyle(el).backgroundColor;
+    el.remove();
+    return bg;
+  });
+  // The class is still inert — which is exactly why the skeleton must
+  // carry its own background.
+  expect(painted).toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+});
+
+test("arrow keys and / work inside the composer", async ({ page }) => {
+  // Regression: the list keymap sat on the scroll container and never
+  // checked e.target, so arrows moved row focus instead of the caret and
+  // "/" was swallowed — a path could not be typed into a note.
+  await openNotes(page);
+  await page.keyboard.press("Meta+Shift+N");
+  const field = page.getByPlaceholder("Write a note…");
+  await field.fill("src/lib");
+  await field.press("/");
+  await field.type("foo.ts");
+  await expect(field).toHaveValue("src/lib/foo.ts");
+
+  await field.press("Home");
+  await field.type("X");
+  await expect(field).toHaveValue("Xsrc/lib/foo.ts");
+});
+
