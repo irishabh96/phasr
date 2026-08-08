@@ -212,7 +212,7 @@ describe("NoteRow", () => {
     // had no way out of the editor except cancelling first.
     const { onDelete } = renderRow(makeNote());
     fireEvent.keyDown(screen.getByRole("article"), { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 

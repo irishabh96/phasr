@@ -154,8 +154,41 @@ test("the editor is sized to its content, not inflated", async ({ page }) => {
       gap: Math.round(fr.top - t.bottom),
     };
   });
-  // 20px line box + 2×5px padding + 2×1px ring.
+  // 20px line box + 2×5px padding + 2×1px border.
   expect(m.field).toBeLessThanOrEqual(34);
   expect(m.gap).toBeGreaterThanOrEqual(6);
+});
+
+test("a long unwrapped note is fully visible in the editor", async ({
+  page,
+}) => {
+  // Regression: `rows` counts LOGICAL lines, so a 220-char single-line
+  // note rendered a 30px field over 110px of content and hid the rest
+  // behind an internal scrollbar. The field autosizes to wrapped height.
+  const f = makeFixtures();
+  (f as { notes: Record<string, unknown>[] }).notes[1]!.body = "x".repeat(220);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await bootApp(page, f);
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await page.getByRole("button", { name: "Repository notes" }).click();
+  await expect(
+    page.getByRole("button", { name: "New note" }).first(),
+  ).toBeVisible();
+
+  await page
+    .getByRole("listitem")
+    .nth(1)
+    .getByText(/xxxx/)
+    .first()
+    .dblclick();
+  await expect(page.getByLabel("Edit note")).toBeVisible();
+
+  const fits = await page.evaluate(() => {
+    const ta = document.querySelector(
+      "li article textarea",
+    ) as HTMLTextAreaElement;
+    return ta.scrollHeight <= ta.clientHeight + 1;
+  });
+  expect(fits).toBe(true);
 });
 
