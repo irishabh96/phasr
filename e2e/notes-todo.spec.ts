@@ -40,14 +40,18 @@ test("checking a note fires set_note_done and does NOT move the row", async ({
   await page.screenshot({ path: `${OUT}/todo-checked.png` });
 });
 
-test("the row settles into Done once the pointer leaves", async ({ page }) => {
+test("the row settles into Done WITHOUT the pointer leaving", async ({
+  page,
+}) => {
   await openNotes(page);
   const rows = page.getByRole("listitem");
   await rows.nth(0).getByRole("checkbox").click();
 
-  // Move the pointer out of the panel and let the settle timer run.
-  await page.mouse.move(10, 500);
-  await page.waitForTimeout(900);
+  // Regression: settle used to wait for the pointer to leave the panel.
+  // After clicking a checkbox the pointer is by definition still in the
+  // panel, so a checked note could sit in the open list indefinitely and
+  // the feature read as "it doesn't update". Pointer stays put here.
+  await page.waitForTimeout(1000);
 
   const doneToggle = page.getByRole("button", { name: /Done/ });
   await expect(doneToggle).toBeVisible();
