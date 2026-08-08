@@ -89,6 +89,7 @@ export function NoteRow({
   const [overflowing, setOverflowing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const bodyRef = useRef<HTMLParagraphElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const pending = note.id.startsWith("optimistic-");
   const done = note.doneAt !== null;
@@ -108,6 +109,38 @@ export function NoteRow({
     ro.observe(el);
     return () => ro.disconnect();
   }, [note.body, editing, expanded]);
+
+  // `rows` counts logical lines; a long unwrapped note would render one
+  // 30px row over 130px of content and hide the rest behind an internal
+  // scrollbar. Size to the wrapped content instead, capped at 12 lines.
+  useLayoutEffect(() => {
+    const el = editorRef.current;
+    if (!el || !editing) return;
+    const fit = () => {
+      // Measure with the scrollbar suppressed: at height:auto an
+      // overflow-y:auto textarea shows one, which narrows the text and
+      // inflates scrollHeight — set that height and the bar disappears,
+      // the text re-wraps shorter, and the box ends up a line too tall
+      // (or short) forever. Only re-enable scrolling at the cap.
+      el.style.overflowY = "hidden";
+      el.style.height = "auto";
+      // scrollHeight excludes the border, but box-sizing is border-box —
+      // and the @layer base field reset puts a 1px border on every
+      // textarea. Without adding it back the box is always 2px short and
+      // clips the last line.
+      const border = el.offsetHeight - el.clientHeight;
+      const content = el.scrollHeight + border;
+      el.style.height = `${Math.min(content, 250)}px`;
+      el.style.overflowY = content > 250 ? "auto" : "hidden";
+    };
+    fit();
+    // Width changes reflow the text, so a height measured once goes stale
+    // — dragging the rail while editing, or any late layout settle, would
+    // otherwise clip the last line behind an internal scrollbar.
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [draft, editing]);
 
   const nl = note.body.indexOf("\n");
   const hasTitle = nl > 0 && nl <= TITLE_MAX;
@@ -236,8 +269,13 @@ export function NoteRow({
         />
         <div className="flex min-w-0 flex-col gap-1.5">
           {editing ? (
-            <div className="flex flex-col gap-[13px]">
+            // Breaks out of column 2 to the article's full border box, so
+            // the field is the same rectangle as the composer and the
+            // checkbox lives inside its 30px gutter. Safe only because
+            // column 3 is unmounted while editing (see below).
+            <div className="-ml-[30px] -mr-[16px] flex flex-col gap-[8px]">
               <textarea
+                ref={editorRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleEditorKeyDown}
@@ -248,16 +286,18 @@ export function NoteRow({
                 className={cn(
                   // Same metrics as the resting body so edit-in-place
                   // doesn't shift a single character.
-                  // Padding gives the field its breathing room; the equal
-                  // negative margin cancels it in layout, so the caret still
-                  // lands on the exact 34px origin and 20px line box the text
-                  // occupied at rest. An outer outline-offset did the same job
-                  // visually but inflated the block on all four sides and left
-                  // ~0.5px of clearance above the buttons.
+                  // pl-30 reserves the checkbox gutter so the caret lands on
+                  // the same 34px origin it had at rest; -mt cancels the row's
+                  // top padding so the first line box doesn't move either.
                   "block w-full resize-none rounded-[6px] bg-transparent",
-                  "px-[8px] py-[5px] -mx-[8px] -my-[5px]",
+                  "-mt-[5px] py-[5px] pl-[30px] pr-[8px]",
                   "text-[13px] leading-[20px] text-(--color-text-primary)",
-                  "outline outline-2 -outline-offset-1 outline-(--color-focus-ring)",
+                  "min-h-[30px] max-h-[250px]",
+                  // Hairline at rest, coral on focus — a permanent focus ring
+                  // meant tabbing to Save left two focus indicators, one lying.
+                  "outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
+                  "focus:outline-2 focus:outline-(--color-focus-ring)",
+                  "transition-[outline-color] duration-[var(--duration-glass)] [transition-timing-function:var(--ease-glass)] motion-reduce:transition-none",
                   "disabled:opacity-50",
                 )}
               />
@@ -279,42 +319,40 @@ export function NoteRow({
                   </GlassButton>
                 </div>
               )}
-              <div className="flex h-[24px] items-center justify-between gap-2">
+              <div className="flex h-[24px] items-center justify-end gap-[6px]">
                 {/* Delete is reachable from the editor: Cancel/Save were
                     the only actions here, so a note you'd opened to fix
                     and then decided to bin had no way out. */}
                 <GlassButton
                   variant="ghost"
                   size="sm"
-                  className="!h-[24px] px-2 text-[11px] text-(--color-text-muted) hover:!text-(--color-danger)"
+                  className="!h-[24px] mr-[8px] px-[8px] text-[11px] text-(--color-text-muted) hover:!text-(--color-danger)"
                   disabled={saving}
                   title="Delete (⌫)"
                   onClick={onDelete}
                 >
-                  Delete
+                  Delete…
                 </GlassButton>
-                <div className="flex items-center gap-1.5">
-                  <GlassButton
-                    variant="ghost"
-                    size="sm"
-                    className="!h-[24px] px-2 text-[11px]"
-                    disabled={saving}
-                    title="Discard (Esc)"
-                    onClick={cancelEdit}
-                  >
-                    Cancel
-                  </GlassButton>
-                  <GlassButton
-                    variant="primary"
-                    size="sm"
-                    className="!h-[24px] px-2 text-[11px]"
-                    disabled={!canSave || saving}
-                    title={canSave ? "Save (⌘↵)" : "No changes to save"}
-                    onClick={() => void save()}
-                  >
-                    {saving ? "Saving…" : "Save"}
-                  </GlassButton>
-                </div>
+                <GlassButton
+                  variant="ghost"
+                  size="sm"
+                  className="!h-[24px] px-2 text-[11px]"
+                  disabled={saving}
+                  title="Discard (Esc)"
+                  onClick={cancelEdit}
+                >
+                  Cancel
+                </GlassButton>
+                <GlassButton
+                  variant="primary"
+                  size="sm"
+                  className="!h-[24px] px-2 text-[11px]"
+                  disabled={!canSave || saving}
+                  title={canSave ? "Save (⌘↵)" : "No changes to save"}
+                  onClick={() => void save()}
+                >
+                  {saving ? "Saving…" : "Save"}
+                </GlassButton>
               </div>
             </div>
           ) : collapsed ? (
