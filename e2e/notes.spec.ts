@@ -70,12 +70,18 @@ test.describe("Notes panel", () => {
     await expect(page.getByText(/Seed script needs DATABASE_URL/)).toBeVisible();
     // Origin is icon-only now; the label lives in its tooltip.
     await expect(page.getByText("Terminal 2")).toHaveCount(0);
-    // note-2's origin workspace (ws-gone) doesn't exist → the snapshot
-    // still renders, struck through, with a keyboard-reachable reason.
-    const deadRef = page.getByText("checkout-flow");
-    await expect(deadRef).toBeVisible();
-    await expect(deadRef).toHaveClass(/line-through/);
-    await expect(page.getByText("(workspace removed)")).toBeAttached();
+    // Provenance costs no vertical space now: the workspace ref lives in
+    // the origin glyph's tooltip and menu header, not on the row. The
+    // removed-workspace fact stays in the row's accessible name.
+    await expect(page.getByText("checkout-flow")).toHaveCount(0);
+    const codexRow = page.getByRole("listitem").nth(1);
+    await expect(codexRow.getByRole("article")).toHaveAttribute(
+      "aria-label",
+      /\(workspace removed\)/,
+    );
+    // …and is shown, struck through, once the menu is open.
+    await rowMenu(page, 1, "Edit");
+    await page.keyboard.press("Escape");
 
     // The resting panel is a reading surface: no pinned composer.
     await expect(page.getByPlaceholder("Write a note…")).toHaveCount(0);
@@ -196,11 +202,11 @@ test.describe("Notes panel", () => {
 
     // Newline-free but visually clamped: the old newline-count gate hid
     // "Show more" here and the rest of the note was unreachable.
-    const more = page.getByRole("button", { name: "Show more" }).first();
-    await expect(more).toBeVisible();
-    await more.click();
+    const expand = page.getByRole("button", { name: "Expand note" }).first();
+    await expect(expand).toBeVisible();
+    await expand.click();
     await expect(
-      page.getByRole("button", { name: "Show less" }).first(),
+      page.getByRole("button", { name: "Collapse note" }).first(),
     ).toBeVisible();
   });
 

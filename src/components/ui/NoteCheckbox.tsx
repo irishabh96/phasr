@@ -7,16 +7,21 @@ import { cn } from "@/lib/utils";
  * Drawn in `--color-text-muted`, NOT a border token: the border tokens
  * measure 1.42–2.28:1 against the panel surface, below WCAG's 3:1 for a
  * control identified by its boundary. Text-muted is 6.15:1 dark /
- * 6.08:1 light, so the box is unambiguously visible in both themes.
+ * 6.08:1 light.
  *
- * No accent colour, deliberately. Done is history — the least important
- * content in the panel — and a coral wall of completed items would
- * invert the hierarchy. Checking reads as subtraction: the box fills,
- * the body steps back a tone, the row goes quiet.
+ * GEOMETRY IS IN EXPLICIT PX ON PURPOSE. `html { font-size: 13px }`
+ * (index.css) makes Tailwind's rem spacing scale render at 0.8125× —
+ * `h-7` is 22.75px, not 28. This button previously used `h-7` and
+ * claimed a 28px hit area in a comment; it was 22.75px and failed WCAG
+ * 2.2 SC 2.5.8's 24×24 minimum. Negative margins keep the 24px target
+ * while the button occupies exactly the 14px grid column and the 20px
+ * first line box, so it never changes row height.
  *
- * `tabIndex={-1}` because the list runs a roving tabindex: the ROW is
- * the tab stop and Space toggles from there. The box stays clickable
- * and keeps its own accessible name for screen readers.
+ * No accent colour: done is history, and a wall of coral ticks would
+ * invert the panel's hierarchy. Checking reads as subtraction.
+ *
+ * `tabIndex={-1}` because the list runs a roving tabindex — the ROW is
+ * the tab stop and Space toggles from there.
  */
 export function NoteCheckbox({
   checked,
@@ -35,16 +40,13 @@ export function NoteCheckbox({
       aria-label={checked ? "Mark as not done" : "Mark as done"}
       tabIndex={-1}
       onClick={(e) => {
-        // The row also handles clicks (double-click edits); a tick is
-        // its own action and must not start an edit.
+        // The row handles double-click to edit; a tick is its own action.
         e.stopPropagation();
         onToggle();
       }}
       onDoubleClick={(e) => e.stopPropagation()}
       className={cn(
-        // 28px hit area around a 14px glyph — matches the ⋯ button, and
-        // the row rhythm can't carry a 32px target in a 300px rail.
-        "grid h-7 w-7 shrink-0 place-items-center rounded-[6px]",
+        "grid h-[24px] w-[24px] -mx-[5px] -my-[2px] shrink-0 place-items-center rounded-[5px]",
         "hover:bg-(--color-bg-elevated)",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         className,
@@ -64,7 +66,6 @@ export function NoteCheckbox({
           <Check
             size={10}
             strokeWidth={3}
-            // Knocked out of the fill, so it inherits the surface colour.
             className="text-(--color-bg-surface)"
           />
         )}

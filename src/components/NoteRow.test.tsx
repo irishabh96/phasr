@@ -39,7 +39,6 @@ function renderRow(
       <NoteRow
         note={note}
         originWorkspaceAlive={alive}
-        stamp="time"
         presentation={presentation}
         onToggleDone={onToggleDone}
         focusable
@@ -83,11 +82,12 @@ describe("NoteRow", () => {
     expect(
       screen.getByText(/Seed script needs DATABASE_URL/),
     ).toBeInTheDocument();
-    expect(screen.getByText("fix-auth")).toBeInTheDocument();
-    // Every note carries a stamp, whatever bucket it's in.
-    expect(screen.getByRole("time")).toBeInTheDocument();
-    // The word "Terminal 2" lives in the icon's tooltip, not the row.
-    expect(screen.queryByText("Terminal 2")).not.toBeInTheDocument();
+    // Provenance no longer costs a line: the ref and the absolute time
+    // live in the origin glyph's tooltip + menu, not on the row.
+    expect(screen.queryByText("fix-auth")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Note actions" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps origin and time in the row's accessible name (the SR path)", () => {
@@ -116,13 +116,11 @@ describe("NoteRow", () => {
     expect(row).toHaveAttribute("tabindex", "0");
   });
 
-  it("marks a dead origin workspace with strikethrough + an sr-only reason", () => {
+  it("names a removed origin workspace in the accessible name", () => {
     renderRow(makeNote(), { alive: false });
-    const ref = screen.getByText(/fix-auth/);
-    expect(ref.className).toContain("line-through");
-    // The explanation is not mouse-only: it's in the row's accessible
-    // name and as sr-only text, NOT as an extra tab stop (see below).
-    expect(screen.getByText("(workspace removed)")).toBeInTheDocument();
+    expect(screen.getByRole("article").getAttribute("aria-label")).toContain(
+      "(workspace removed)",
+    );
   });
 
   it("shows the edited badge only when updatedAt moved past createdAt", () => {
@@ -142,15 +140,21 @@ describe("NoteRow", () => {
     fakeParagraphMetrics(200, 100);
     renderRow(makeNote({ body: "x".repeat(600) }));
 
-    expect(screen.getByText("Show more")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Show more"));
-    expect(screen.getByText("Show less")).toBeInTheDocument();
+    // The affordance is a chevron in the hover cluster now, not a
+    // text button that cost the row a line.
+    const expand = screen.getByRole("button", { name: "Expand note" });
+    fireEvent.click(expand);
+    expect(
+      screen.getByRole("button", { name: "Collapse note" }),
+    ).toBeInTheDocument();
   });
 
   it("does not offer Show more when the body fits", () => {
     fakeParagraphMetrics(40, 40);
     renderRow(makeNote({ body: "short" }));
-    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Expand note" }),
+    ).not.toBeInTheDocument();
   });
 
   it("splits a multi-line note into a title line and a body", () => {
@@ -174,6 +178,20 @@ describe("NoteRow", () => {
     expect(
       screen.queryByRole("button", { name: "Note actions" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("→ expands an overflowing note and ← collapses it", () => {
+    fakeParagraphMetrics(200, 100);
+    renderRow(makeNote({ body: "x".repeat(600) }));
+    const row = screen.getByRole("article");
+    fireEvent.keyDown(row, { key: "ArrowRight" });
+    expect(
+      screen.getByRole("button", { name: "Collapse note" }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(row, { key: "ArrowLeft" });
+    expect(
+      screen.getByRole("button", { name: "Expand note" }),
+    ).toBeInTheDocument();
   });
 
   it("Enter on a focused row starts editing; Escape cancels", () => {
@@ -253,13 +271,12 @@ describe("NoteRow", () => {
     ).toBeInTheDocument();
   });
 
-  it("a done-presentation row collapses to one line with a done stamp", () => {
+  it("a done-presentation row collapses to one truncated line", () => {
     renderRow(makeNote({ doneAt: new Date().toISOString() }), {
       presentation: "done",
     });
-    expect(screen.getByText("now")).toBeInTheDocument();
-    // The open-row meta (origin ref) is not rendered when collapsed.
-    expect(screen.queryByText("fix-auth")).not.toBeInTheDocument();
+    const body = screen.getByText(/Seed script needs DATABASE_URL/);
+    expect(body.className).toContain("truncate");
   });
 
   it("states done-ness in the accessible name", () => {
