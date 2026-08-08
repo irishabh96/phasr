@@ -122,3 +122,40 @@ test("arrow keys and / work inside the composer", async ({ page }) => {
   await expect(field).toHaveValue("Xsrc/lib/foo.ts");
 });
 
+test("the editor is sized to its content, not inflated", async ({ page }) => {
+  // Regression: a 1-line note got a 2-row box wearing a ring drawn 6px
+  // OUTSIDE it, which inflated the block to 80px and left ~0.5px of
+  // clearance above the buttons. Padding + a compensating negative
+  // margin gives the field breathing room without moving the text.
+  const f = makeFixtures();
+  (f as { notes: Record<string, unknown>[] }).notes[0]!.body = "hei";
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await bootApp(page, f);
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await page.getByRole("button", { name: "Repository notes" }).click();
+  await expect(
+    page.getByRole("button", { name: "New note" }).first(),
+  ).toBeVisible();
+
+  const row = page.getByRole("listitem").nth(0);
+  await row.getByText("hei").dblclick();
+  await expect(row.getByRole("textbox")).toBeVisible();
+
+  const m = await page.evaluate(() => {
+    const art = document.querySelector("li article") as HTMLElement;
+    const ta = art.querySelector("textarea") as HTMLElement;
+    const footer = ta.parentElement!.querySelector(
+      "div.flex.h-\\[24px\\]",
+    ) as HTMLElement;
+    const t = ta.getBoundingClientRect();
+    const fr = footer.getBoundingClientRect();
+    return {
+      field: Math.round(t.height),
+      gap: Math.round(fr.top - t.bottom),
+    };
+  });
+  // 20px line box + 2×5px padding + 2×1px ring.
+  expect(m.field).toBeLessThanOrEqual(34);
+  expect(m.gap).toBeGreaterThanOrEqual(6);
+});
+
