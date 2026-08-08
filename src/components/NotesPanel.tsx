@@ -51,6 +51,8 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
   // not when the pointer leaves — the pointer is always still here
   // right after a click.
   const [doneOpen, setDoneOpen] = useState(false);
+  // A settle that remounts a row mid-edit discards the draft.
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Note | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const rowRefs = useRef<(HTMLElement | null)[]>([]);
@@ -69,31 +71,50 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
     return notes.filter((n) => n.body.toLowerCase().includes(q));
   }, [notes, filter]);
 
-  const { open: openNotes, done: doneNotes } = useSettledLayout(visible, pendingDelete !== null);
+  const { open: openNotes, done: doneNotes } = useSettledLayout(
+    visible,
+    pendingDelete !== null || editingId !== null,
+  );
+
+  // Only rows that are actually mounted are navigable: done rows exist
+  // in the DOM only while the section is expanded.
+  const navCount = openNotes.length + (doneOpen ? doneNotes.length : 0);
+  const active = Math.min(activeIndex, Math.max(0, navCount - 1));
 
   const focusRow = (i: number) => {
-    const clamped = Math.max(
-      0,
-      Math.min(i, openNotes.length + doneNotes.length - 1),
-    );
+    const clamped = Math.max(0, Math.min(i, navCount - 1));
     setActiveIndex(clamped);
     rowRefs.current[clamped]?.focus();
   };
 
   const handleListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // The handler sits on the scroll container, which also holds the
+    // composer, the filter and every row editor. Without this, arrows
+    // moved row focus instead of the caret, Home/End jumped rows, and
+    // "/" was un-typeable inside a note.
+    const t = e.target as HTMLElement;
+    if (
+      t.tagName === "TEXTAREA" ||
+      t.tagName === "INPUT" ||
+      t.isContentEditable
+    )
+      return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      focusRow(activeIndex + 1);
+      focusRow(active + 1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      focusRow(activeIndex - 1);
+      focusRow(active - 1);
     } else if (e.key === "Home") {
       e.preventDefault();
       focusRow(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      focusRow(openNotes.length + doneNotes.length - 1);
-    } else if (e.key === "/" && (notes?.length ?? 0) > FILTER_VISIBLE_AT) {
+      focusRow(navCount - 1);
+    } else if (
+      e.key === "/" &&
+      ((notes?.length ?? 0) > FILTER_VISIBLE_AT || filter.length > 0)
+    ) {
       e.preventDefault();
       scrollRef.current?.scrollTo({ top: 0 });
       filterRef.current?.focus();
@@ -124,7 +145,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
     <div className="flex h-full min-h-0 flex-col">
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
         onKeyDown={handleListKeyDown}
       >
         {/* A note written now belongs to Today, so the composer renders
@@ -134,11 +155,11 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
         {/* Composer is row zero — no synthesised day header above it. */}
         {composerEl}
 
-        {(notes?.length ?? 0) > FILTER_VISIBLE_AT && (
-          <div className="relative px-2 py-1.5">
+        {((notes?.length ?? 0) > FILTER_VISIBLE_AT || filter.length > 0) && (
+          <div className="relative px-[4px] py-[4px]">
             <Search
-              size={11}
-              className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-(--color-text-muted)"
+              size={12}
+              className="pointer-events-none absolute left-[13px] top-1/2 -translate-y-1/2 text-(--color-text-muted)"
             />
             <GlassInput
               ref={filterRef}
@@ -152,7 +173,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
               }}
               placeholder="Filter notes"
               aria-label="Filter notes"
-              className="!h-7 rounded-[6px] pl-7 text-[12px]"
+              className="!h-[26px] rounded-[6px] pl-[30px] pr-[8px] text-[12px]"
             />
           </div>
         )}
@@ -167,7 +188,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
             onRetry={() => void refetch()}
           />
         ) : isEmpty ? (
-          <div className="px-4 py-3">
+          <div className="px-[12px] py-[8px]">
             <h3 className="text-[13px] font-medium text-(--color-text-primary)">
               No notes yet
             </h3>
@@ -181,7 +202,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
             <span className="pl-[26px]">Nothing open.</span>
           </div>
         ) : visible.length === 0 ? (
-          <div className="px-4 py-3">
+          <div className="px-[12px] py-[8px]">
             <p className="text-[12px] text-(--color-text-muted)">
               No notes match “{filter.trim()}”.
             </p>
@@ -210,7 +231,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                     !note.originWorkspaceId ||
                     liveWorkspaceIds.has(note.originWorkspaceId)
                   }
-                  focusable={i === activeIndex}
+                  focusable={i === active}
                   onFocusRow={() => setActiveIndex(i)}
                   registerRef={(el) => {
                     rowRefs.current[i] = el;
@@ -221,6 +242,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                       input: { body, expectedUpdatedAt },
                     });
                   }}
+                  onEditingChange={(on) => setEditingId(on ? note.id : null)}
                   onDelete={() => setPendingDelete(note)}
                 />
               );
@@ -235,20 +257,25 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
               onClick={() => setDoneOpen((v) => !v)}
               aria-expanded={doneOpen}
               className={cn(
-                "flex h-7 w-full items-center gap-1.5 px-2 text-[11px] font-medium",
+                "mx-[4px] flex h-[24px] w-[calc(100%-8px)] items-center gap-[8px] rounded-[6px] px-[8px] text-[11px] font-medium",
                 "text-(--color-text-muted) hover:text-(--color-text-secondary)",
                 "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
               )}
             >
-              <ChevronRight
-                size={12}
-                className={cn(
-                  "shrink-0 transition-transform duration-[var(--duration-glass)] motion-reduce:transition-none",
-                  doneOpen && "rotate-90",
-                )}
-              />
+              <span className="grid w-[14px] shrink-0 place-items-center">
+                <ChevronRight
+                  size={12}
+                  className={cn(
+                    "transition-transform duration-[var(--duration-glass)] motion-reduce:transition-none",
+                    doneOpen && "rotate-90",
+                  )}
+                />
+              </span>
               <span className="flex-1 text-left">Done</span>
-              <span className="text-(--color-text-secondary)">
+              <span
+                aria-live="polite"
+                className="-mr-[6px] w-[24px] text-center text-(--color-text-secondary)"
+              >
                 {doneNotes.length}
               </span>
             </button>
@@ -269,7 +296,7 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                         !note.originWorkspaceId ||
                         liveWorkspaceIds.has(note.originWorkspaceId)
                       }
-                      focusable={i === activeIndex}
+                      focusable={i === active}
                       onFocusRow={() => setActiveIndex(i)}
                       registerRef={(el) => {
                         rowRefs.current[i] = el;
@@ -280,6 +307,9 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
                           input: { body, expectedUpdatedAt },
                         });
                       }}
+                      onEditingChange={(on) =>
+                        setEditingId(on ? note.id : null)
+                      }
                       onDelete={() => setPendingDelete(note)}
                     />
                   );
@@ -302,13 +332,15 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
               type="button"
               onClick={openComposer}
               className={cn(
-                "group/c mx-2 mt-1 flex h-7 shrink-0 items-center gap-2 rounded-[6px] px-2 text-left",
+                "group/c mx-[4px] mt-[2px] flex h-[30px] shrink-0 items-center gap-[8px] rounded-[6px] px-[8px] text-left",
                 "text-[12px] text-(--color-text-muted)",
                 "hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)",
                 "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
               )}
             >
-              <Plus size={13} />
+              <span className="grid w-[14px] shrink-0 place-items-center">
+                <Plus size={12} />
+              </span>
               <span className="flex-1">New note</span>
               <kbd
                 className={cn(
@@ -358,21 +390,27 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
 }
 
 /**
- * Skeleton shaped like real note rows (two ragged text bars + a meta
- * bar, same block geometry) so the panel doesn't visibly re-lay-out
- * when the query resolves.
+ * Skeleton at the REAL row geometry (30px, 14px checkbox column, 34px
+ * text origin) so data landing doesn't reflow the panel.
+ *
+ * Styling is self-contained on purpose: `.skeleton-bar` has no base
+ * rule — its only definition lives inside a prefers-reduced-motion
+ * media query — so relying on it rendered nothing at all.
  */
 function NotesSkeleton() {
+  const widths = ["72%", "54%", "83%", "46%"];
   return (
     <div aria-hidden>
-      {[0, 1, 2].map((i) => (
-        <div key={i} className="mx-2 my-1 flex flex-col gap-1.5 px-2 py-2">
-          <div className="skeleton-bar h-[10px] w-full rounded" />
+      {widths.map((width, i) => (
+        <div
+          key={i}
+          className="mx-[4px] flex h-[30px] items-center gap-x-[8px] px-[8px]"
+        >
+          <div className="h-[14px] w-[14px] shrink-0 animate-[pulse-skeleton_1.4s_ease-in-out_infinite] rounded-[4px] bg-(--color-bg-hover)" />
           <div
-            className="skeleton-bar h-[10px] rounded"
-            style={{ width: i === 1 ? "45%" : "62%" }}
+            className="h-[10px] animate-[pulse-skeleton_1.4s_ease-in-out_infinite] rounded-[3px] bg-(--color-bg-hover)"
+            style={{ width }}
           />
-          <div className="mt-1 skeleton-bar h-[10px] w-[60px] rounded" />
         </div>
       ))}
     </div>

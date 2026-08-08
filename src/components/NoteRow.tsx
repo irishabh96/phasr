@@ -53,6 +53,8 @@ export interface NoteRowProps {
    */
   presentation: "open" | "done";
   onToggleDone: (done: boolean) => void;
+  /** Lets the panel hold layout still while this row has an open editor. */
+  onEditingChange?: (editing: boolean) => void;
   /** Roving tabindex: the one row that is in the tab order. */
   focusable: boolean;
   onFocusRow: () => void;
@@ -72,6 +74,7 @@ export function NoteRow({
   originWorkspaceAlive,
   presentation,
   onToggleDone,
+  onEditingChange,
   focusable,
   onFocusRow,
   onSave,
@@ -109,16 +112,20 @@ export function NoteRow({
   const nl = note.body.indexOf("\n");
   const hasTitle = nl > 0 && nl <= TITLE_MAX;
   const title = hasTitle ? note.body.slice(0, nl) : null;
-  const rest = hasTitle ? note.body.slice(nl + 1).trimStart() : note.body;
+  const rest = (hasTitle ? note.body.slice(nl + 1) : note.body)
+    .replace(/^\s*\n+/, "")
+    .trimStart();
 
   const beginEdit = () => {
     setDraft(note.body);
     setSaveError(null);
     setEditing(true);
+    onEditingChange?.(true);
   };
 
   const cancelEdit = () => {
     setEditing(false);
+    onEditingChange?.(false);
     setSaveError(null);
     setDraft(note.body);
   };
@@ -131,6 +138,7 @@ export function NoteRow({
     try {
       await onSave(trimmed, note.updatedAt);
       setEditing(false);
+      onEditingChange?.(false);
     } catch (err) {
       setSaveError(humanizeError(err));
     } finally {
@@ -214,6 +222,7 @@ export function NoteRow({
           // its neighbours and clip at the scroll container.
           "focus-visible:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus-inset)]",
           pending && "opacity-90",
+          menuOpen && "bg-(--color-bg-hover)",
         )}
       >
         <NoteCheckbox
@@ -255,21 +264,21 @@ export function NoteRow({
                   <GlassButton
                     variant="ghost"
                     size="sm"
-                    className="!h-6 shrink-0 px-2 text-[11px]"
+                    className="!h-[24px] shrink-0 px-2 text-[11px]"
                     onClick={() => void save()}
                   >
                     Retry
                   </GlassButton>
                 </div>
               )}
-              <div className="flex h-6 items-center justify-between gap-2">
+              <div className="flex h-[24px] items-center justify-between gap-2">
                 {/* Delete is reachable from the editor: Cancel/Save were
                     the only actions here, so a note you'd opened to fix
                     and then decided to bin had no way out. */}
                 <GlassButton
                   variant="ghost"
                   size="sm"
-                  className="!h-6 px-2 text-[11px] text-(--color-text-muted) hover:!text-(--color-danger)"
+                  className="!h-[24px] px-2 text-[11px] text-(--color-text-muted) hover:!text-(--color-danger)"
                   disabled={saving}
                   title="Delete (⌫)"
                   onClick={onDelete}
@@ -280,7 +289,7 @@ export function NoteRow({
                   <GlassButton
                     variant="ghost"
                     size="sm"
-                    className="!h-6 px-2 text-[11px]"
+                    className="!h-[24px] px-2 text-[11px]"
                     disabled={saving}
                     title="Discard (Esc)"
                     onClick={cancelEdit}
@@ -290,7 +299,7 @@ export function NoteRow({
                   <GlassButton
                     variant="primary"
                     size="sm"
-                    className="!h-6 px-2 text-[11px]"
+                    className="!h-[24px] px-2 text-[11px]"
                     disabled={!canSave || saving}
                     title={canSave ? "Save (⌘↵)" : "No changes to save"}
                     onClick={() => void save()}
@@ -301,11 +310,15 @@ export function NoteRow({
               </div>
             </div>
           ) : collapsed ? (
-            // Body only. The stamp lives in the right cluster for EVERY
-            // state — rendering one here too put two on a done row.
-            <p className="min-w-0 truncate text-[13px] leading-[20px] text-(--color-text-secondary)">
-              {note.body}
-            </p>
+            // Body only — the stamp lives in the right cluster for EVERY
+            // state; rendering one here too put two on a done row.
+            // Tooltip because a collapsed row never measures overflow
+            // (no bodyRef), so the expand chevron can't appear here.
+            <GlassTooltip content={title ?? rest} side="top">
+              <p className="min-w-0 truncate text-[13px] leading-[20px] text-(--color-text-secondary)">
+                {title ?? rest}
+              </p>
+            </GlassTooltip>
           ) : (
             <>
               {title !== null ? (
@@ -323,7 +336,7 @@ export function NoteRow({
                   <p
                     ref={bodyRef}
                     className={cn(
-                      "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-(--color-text-secondary)",
+                      "whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-[20px] text-(--color-text-secondary)",
                       !expanded && "line-clamp-1",
                     )}
                   >
@@ -383,7 +396,16 @@ export function NoteRow({
                 />
               </button>
             )}
-            <span className="text-[11px] leading-[20px] tabular-nums text-(--color-text-muted) opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none">
+            <span
+              className={cn(
+                "min-w-[34px] shrink-0 text-right text-[11px] leading-[20px] tabular-nums text-(--color-text-muted)",
+                "transition-opacity duration-[var(--duration-glass)] motion-reduce:transition-none",
+                // A done row's stamp is its point — always visible.
+                collapsed || menuOpen
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+              )}
+            >
               {formatCompactStamp(
                 collapsed && note.doneAt ? note.doneAt : note.createdAt,
               )}
@@ -402,12 +424,17 @@ export function NoteRow({
                     aria-haspopup="menu"
                     className="grid h-[24px] w-[24px] -my-[2px] -mr-[6px] shrink-0 place-items-center rounded-[5px] hover:bg-(--color-bg-elevated) data-[state=open]:bg-(--color-bg-elevated)"
                   >
-                    <span className="group-hover:hidden">
+                    <span
+                      className={cn(menuOpen ? "hidden" : "group-hover:hidden")}
+                    >
                       <OriginIcon kind={note.originKind} />
                     </span>
                     <MoreHorizontal
                       size={13}
-                      className="hidden text-(--color-text-secondary) group-hover:block"
+                      className={cn(
+                        "text-(--color-text-secondary)",
+                        menuOpen ? "block" : "hidden group-hover:block",
+                      )}
                     />
                   </button>
                 </DropdownMenu.Trigger>
