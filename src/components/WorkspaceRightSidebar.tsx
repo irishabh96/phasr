@@ -1,15 +1,12 @@
-import { GitBranch, Plus } from "lucide-react";
+import { GitBranch } from "lucide-react";
 import { ChangesPanel } from "@/components/ChangesPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { NotesPanel } from "@/components/NotesPanel";
-import { GlassButton } from "@/components/ui/GlassButton";
-import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { PanelState } from "@/components/ui/PanelState";
 import { PanelTab, PanelTabBar } from "@/components/ui/PanelTabs";
 import { useGitStatus } from "@/lib/hooks/useGit";
 import { useNotes } from "@/lib/hooks/useNotes";
 import { originFromWorkspace } from "@/lib/noteProvenance";
-import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 
 interface WorkspaceRightSidebarProps {
@@ -38,25 +35,7 @@ export function WorkspaceRightSidebar({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PanelTabBar
-        actions={
-          activeTab === "notes" ? (
-            <GlassTooltip
-              content={`New note (${SHORTCUTS.openNotes.display.join("")})`}
-              side="bottom"
-            >
-              <GlassButton
-                variant="ghost"
-                size="icon"
-                aria-label="New note"
-                onClick={() => useUiStore.getState().openNotesComposer()}
-              >
-                <Plus size={14} />
-              </GlassButton>
-            </GlassTooltip>
-          ) : undefined
-        }
-      >
+      <PanelTabBar>
         <PanelTab
           label="Changes"
           count={changes?.length ?? 0}

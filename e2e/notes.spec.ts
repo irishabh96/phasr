@@ -26,13 +26,16 @@ async function boot(page: Page, fixtures = makeFixtures()) {
 /**
  * Open the rail on Notes. The composer is summoned, not pinned, so the
  * settled state is the Notes tab being selected.
- * ("New note" deliberately names two affordances — the header icon and
- * the canvas row — so tests scope rather than match it globally.)
+ * (The settled signal differs by state: a populated list shows the
+ * "New note" canvas row, an empty one opens the composer directly.)
  */
 async function openNotesTab(page: Page) {
   await page.getByRole("button", { name: "Repository notes" }).click();
   await expect(
-    page.getByRole("button", { name: "New note" }).first(),
+    page
+      .getByRole("button", { name: "New note" })
+      .or(page.getByPlaceholder("Write a note…"))
+      .first(),
   ).toBeVisible();
 }
 
