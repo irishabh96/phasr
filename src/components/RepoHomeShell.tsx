@@ -1,10 +1,7 @@
-import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NotesPanel } from "@/components/NotesPanel";
 import { RepoInnerTabBar } from "@/components/RepoInnerTabBar";
 import { RepoTabContent } from "@/components/RepoTabContent";
-import { GlassButton } from "@/components/ui/GlassButton";
-import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { PanelTab, PanelTabBar } from "@/components/ui/PanelTabs";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useNotes } from "@/lib/hooks/useNotes";
@@ -112,23 +109,7 @@ export function RepoHomeShell({ repo }: RepoHomeShellProps) {
             className="flex h-full flex-col"
             style={{ width: railWidth, minWidth: railWidth }}
           >
-            <PanelTabBar
-              actions={
-                <GlassTooltip
-                  content={`New note (${SHORTCUTS.openNotes.display.join("")})`}
-                  side="bottom"
-                >
-                  <GlassButton
-                    variant="ghost"
-                    size="icon"
-                    aria-label="New note"
-                    onClick={() => useUiStore.getState().openNotesComposer()}
-                  >
-                    <Plus size={14} />
-                  </GlassButton>
-                </GlassTooltip>
-              }
-            >
+            <PanelTabBar>
               <PanelTab
                 label="Notes"
                 count={notes?.filter((n) => !n.doneAt).length ?? 0}

@@ -192,10 +192,6 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
             <h3 className="text-[13px] font-medium text-(--color-text-primary)">
               No notes yet
             </h3>
-            <p className="mt-1 text-[12px] leading-[1.45] text-(--color-text-muted)">
-              Setup quirks, the command that works, why you did it that way —
-              kept with the repo.
-            </p>
           </div>
         ) : openNotes.length === 0 && doneNotes.length > 0 ? (
           <div className="flex h-[30px] items-center px-[8px] text-[13px] text-(--color-text-muted)">
