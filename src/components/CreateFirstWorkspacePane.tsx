@@ -9,7 +9,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { humanizeError } from "@/lib/humanizeError";
-import { useGitBranches } from "@/lib/hooks/useGit";
 import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
@@ -18,6 +17,7 @@ import { slugify } from "@/lib/slug";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { Agent, AgentOption, Repository } from "@/lib/types";
+import { BaseBranchField } from "@/components/ui/BaseBranchField";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { GlassSelect } from "@/components/ui/GlassSelect";
@@ -61,9 +61,6 @@ export function CreateFirstWorkspacePane({
   // actually lands (E3).
   const isGitConfirmed =
     isGitQuery.isSuccess && (isGitQuery.data?.isGitRepo ?? false);
-
-  const branchesQuery = useGitBranches(isGit ? repo.localPath : null);
-  const branches = branchesQuery.data ?? [];
 
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
@@ -194,7 +191,8 @@ export function CreateFirstWorkspacePane({
             previewBranch={previewBranch}
             baseBranch={baseBranch}
             setBaseBranch={setBaseBranch}
-            branches={branches}
+            repoPath={isGit ? repo.localPath : null}
+            defaultBranch={repo.defaultBranch}
             advancedOpen={advancedOpen}
             setAdvancedOpen={setAdvancedOpen}
             canContinue={trimmedName.length > 0 && isGitConfirmed}
@@ -226,7 +224,8 @@ function Step1({
   previewBranch,
   baseBranch,
   setBaseBranch,
-  branches,
+  repoPath,
+  defaultBranch,
   advancedOpen,
   setAdvancedOpen,
   canContinue,
@@ -237,7 +236,8 @@ function Step1({
   previewBranch: string;
   baseBranch: string;
   setBaseBranch: (v: string) => void;
-  branches: string[];
+  repoPath: string | null;
+  defaultBranch: string;
   advancedOpen: boolean;
   setAdvancedOpen: (v: boolean) => void;
   canContinue: boolean;
@@ -305,26 +305,15 @@ function Step1({
             >
               Base branch
             </label>
-            {branches.length > 0 ? (
-              <GlassSelect
-                id="first-task-base-branch"
-                value={branches.includes(baseBranch) ? baseBranch : branches[0]}
-                onChange={(e) => setBaseBranch(e.target.value)}
-                options={branches.map((b) => ({ label: b, value: b }))}
-                className="h-10 font-mono text-[12.5px]"
-              />
-            ) : (
-              // Fall back to a free-text field if the branch list isn't
-              // available (e.g. newly-init'd repo before the initial
-              // commit lands or a path that isn't a git repo yet).
-              <GlassInput
-                id="first-task-base-branch"
-                value={baseBranch}
-                onChange={(e) => setBaseBranch(e.target.value)}
-                placeholder="main"
-                className="h-10 font-mono"
-              />
-            )}
+            <BaseBranchField
+              id="first-task-base-branch"
+              repoPath={repoPath}
+              defaultBranch={defaultBranch}
+              value={baseBranch}
+              onChange={setBaseBranch}
+              placeholder="main"
+              className="h-10 text-[12.5px]"
+            />
           </div>
         )}
       </div>

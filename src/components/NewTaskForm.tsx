@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { BaseBranchField } from "@/components/ui/BaseBranchField";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { GlassInput, GlassTextarea } from "@/components/ui/GlassInput";
 import { GlassSelect } from "@/components/ui/GlassSelect";
@@ -67,13 +68,16 @@ export function NewTaskForm({
   const activeAgent = allAgents.find((a) => a.agent === activeAgentValue);
 
   // Seed the base-branch field once the repository row has loaded so
-  // the field shows "main" / "master" by default. The user can edit if
-  // they want to branch off something else.
+  // the field shows "main" / "master" by default. Seeding is once-only
+  // (not value-guarded) so the user can still clear the field — a guard
+  // on "" would snap it straight back on every keystroke.
+  const seededBaseBranchRef = useRef(false);
   useEffect(() => {
-    if (repository && baseBranch === "") {
+    if (repository && !seededBaseBranchRef.current) {
+      seededBaseBranchRef.current = true;
       setBaseBranch(repository.defaultBranch);
     }
-  }, [repository, baseBranch]);
+  }, [repository]);
 
   const trimmedName = name.trim();
   const trimmedPrompt = prompt.trim();
@@ -198,10 +202,13 @@ export function NewTaskForm({
         >
           Base branch
         </label>
-        <GlassInput
+        <BaseBranchField
           id="new-task-base-branch"
+          repoPath={repository?.localPath ?? null}
+          defaultBranch={repository?.defaultBranch}
           value={baseBranch}
-          onChange={(e) => setBaseBranch(e.target.value)}
+          onChange={setBaseBranch}
+          disabled={!repository || submitting}
           placeholder={repository?.defaultBranch ?? "main"}
         />
         <span className="text-[11px] text-(--color-text-muted)">
