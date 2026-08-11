@@ -21,8 +21,8 @@ use domain::WorkspaceStatus;
 use orchestrator::{RepoLockRegistry, TaskOrchestrator};
 use pty::TaskRuntime;
 use store::{
-    default_db_path, init_pool, NoteRepo, RepositoryRepo, RunCommandRepo, SettingsRepo, UserRepo,
-    WorkspaceRepo, WorkspaceUpdate,
+    checkpoint, checkpoint_and_close, default_db_path, init_pool, NoteRepo, RepositoryRepo,
+    RunCommandRepo, SettingsRepo, UserRepo, WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Manager;
@@ -207,8 +207,19 @@ pub fn run() {
             commands::session_terminal::stop_session_terminal,
             commands::files::read_text_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Last chance before the process dies: fold the WAL into the
+                // main db file and close the pool. Tauri never drops managed
+                // state, so without this the WAL grows forever and the
+                // .sqlite file alone is not a database.
+                if let Some(pool) = app_handle.try_state::<store::Db>() {
+                    tauri::async_runtime::block_on(checkpoint_and_close(pool.inner()));
+                }
+            }
+        });
 }
 
 async fn initialize_database_state(
@@ -217,6 +228,14 @@ async fn initialize_database_state(
     task_runtime: Arc<TaskRuntime>,
 ) -> Result<(), store::StoreError> {
     let pool = init_pool(db_path).await?;
+
+    // Heal whatever the previous process left in the WAL: exits that never
+    // closed the pool strand every row (and the schema) in the -wal
+    // sidecar, leaving the .sqlite file an empty header page that any
+    // backup/copy/cleanup would "preserve" as a total data loss.
+    if let Err(err) = checkpoint(&pool).await {
+        eprintln!("startup wal checkpoint failed: {err}");
+    }
 
     let repository_repo = RepositoryRepo::new(pool.clone());
     let workspace_repo = WorkspaceRepo::new(pool.clone());

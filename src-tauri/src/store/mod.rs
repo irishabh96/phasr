@@ -12,7 +12,7 @@ mod workspaces;
 
 pub use error::StoreError;
 pub use notes::{NoteRepo, NoteUpdate};
-pub use pool::{default_db_path, init_pool, Db};
+pub use pool::{checkpoint, checkpoint_and_close, default_db_path, init_pool, Db};
 pub use repositories::{RepositoryRepo, RepositoryUpdate};
 pub use run_commands::{RunCommandRepo, RunCommandUpdate};
 pub use settings::SettingsRepo;
