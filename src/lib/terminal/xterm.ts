@@ -37,16 +37,43 @@ export function applyXtermSettings(
   settings: Partial<TerminalSettings> | undefined,
 ) {
   const options = buildTerminalOptions(settings);
-  if (options.fontFamily !== undefined)
+  // Assign ONLY what actually changed. Every write to `term.options` fires
+  // xterm's options-changed path, and several of them (theme, fontFamily,
+  // fontSize) make the WebGL renderer throw away its whole glyph atlas.
+  // This runs on every terminal (re)mount — i.e. every tab switch — and an
+  // unconditional theme assignment meant scrolling right after a switch
+  // re-rasterized every visible glyph through WKWebView's synchronous
+  // GPU-process IPC: the "terminal scroll is never smooth" jank.
+  if (
+    options.fontFamily !== undefined &&
+    term.options.fontFamily !== options.fontFamily
+  )
     term.options.fontFamily = options.fontFamily;
-  if (options.fontSize !== undefined) term.options.fontSize = options.fontSize;
-  if (options.cursorStyle !== undefined)
+  if (
+    options.fontSize !== undefined &&
+    term.options.fontSize !== options.fontSize
+  )
+    term.options.fontSize = options.fontSize;
+  if (
+    options.cursorStyle !== undefined &&
+    term.options.cursorStyle !== options.cursorStyle
+  )
     term.options.cursorStyle = options.cursorStyle;
-  if (options.cursorBlink !== undefined)
+  if (
+    options.cursorBlink !== undefined &&
+    term.options.cursorBlink !== options.cursorBlink
+  )
     term.options.cursorBlink = options.cursorBlink;
-  if (options.scrollback !== undefined)
+  if (
+    options.scrollback !== undefined &&
+    term.options.scrollback !== options.scrollback
+  )
     term.options.scrollback = options.scrollback;
-  if (options.theme !== undefined) term.options.theme = options.theme;
+  if (
+    options.theme !== undefined &&
+    JSON.stringify(term.options.theme ?? {}) !== JSON.stringify(options.theme)
+  )
+    term.options.theme = options.theme;
 }
 
 function buildTerminalOptions(
@@ -60,6 +87,11 @@ function buildTerminalOptions(
     cursorStyle: normalizeCursorStyle(settings?.cursorStyle),
     convertEol: true,
     allowProposedApi: true,
+    // xterm's default scroll is discrete whole-line jumps, which reads as
+    // "janky" on a macOS trackpad no matter the frame rate. A short
+    // animation glides between positions the way every other surface in
+    // the app scrolls.
+    smoothScrollDuration: 120,
     scrollback: positiveNumber(
       settings?.terminalScrollback,
       DEFAULT_SCROLLBACK,
