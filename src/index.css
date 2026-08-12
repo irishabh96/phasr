@@ -217,7 +217,9 @@
   --diff-remove-fg: #b91c1c;
   --color-info: #2563eb;
   --color-accent-text: var(--color-accent-700); /* darker coral — AA on white */
-  --color-focus-ring: var(--color-accent-700); /* 4:1 on white, 3.63:1 on bg-input */
+  --color-focus-ring: var(
+    --color-accent-700
+  ); /* 4:1 on white, 3.63:1 on bg-input */
 
   /* Glass tokens — light variant. White-tinted instead of black-tinted. */
   --glass-rail: color-mix(in oklab, var(--color-bg-surface) 75%, transparent);
@@ -336,7 +338,7 @@ body {
 
 /* ---------- Reduced motion ----------
    One global fallback so every entrance transform/animation (modal-in,
-   pulse-dot, sidebar-width transition, toast enter/exit, hover lifts)
+   pulse-ring, sidebar-width transition, toast enter/exit, hover lifts)
    honors the OS "reduce motion" setting without per-component wiring.
    Near-zero (not 0) durations keep transitionend/animationend events
    firing so JS that awaits them still resolves. */
@@ -378,19 +380,20 @@ body {
 
 /* ---------- Animations ---------- */
 
-@keyframes pulse-dot {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0
-      color-mix(
-        in oklab,
-        var(--pulse-color, var(--color-info)) 60%,
-        transparent
-      );
+/* Runs forever on every "running" StatusDot, so it must stay off the main
+   thread: transform+opacity are compositor-animated in Blink AND WebKit.
+   The old box-shadow ripple forced a style resolve + repaint every frame
+   per dot — with a few running workspaces that alone kept WKWebView's
+   main thread ~10% busy at idle (profiled 2026-08-12). */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
   }
-  50% {
-    box-shadow: 0 0 0 6px
-      color-mix(in oklab, var(--pulse-color, var(--color-info)) 0%, transparent);
+  70%,
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
   }
 }
 
