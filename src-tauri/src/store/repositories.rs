@@ -166,6 +166,72 @@ impl RepositoryRepo {
         Ok(current)
     }
 
+    /// Every row `create_repository`'s dedupe must consider: the caller's
+    /// rows plus legacy `user_id IS NULL` rows, INCLUDING tombstones (the
+    /// second element is `true` when the row is soft-deleted). Deliberately
+    /// not a UI surface — everything user-facing keeps going through
+    /// `list_for_user`.
+    pub async fn list_for_dedupe(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<(Repository, bool)>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, name, remote_url, local_path, default_branch,
+                    created_at, updated_at, deleted_at
+             FROM repositories
+             WHERE user_id = ? OR user_id IS NULL
+             ORDER BY updated_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let deleted: Option<String> = row.try_get("deleted_at")?;
+                Ok((row_to_repository(row)?, deleted.is_some()))
+            })
+            .collect()
+    }
+
+    /// Bring a tombstoned row back to life for `user_id`, applying `patch`
+    /// in the same write. Used when the user re-adds a folder whose row was
+    /// previously removed: reusing the id keeps cloud children (and any
+    /// notes referencing the row) attached to the same repository instead
+    /// of stranding them under a dead id. `dirty = 1` makes the next push
+    /// clear the cloud-side tombstone too.
+    pub async fn revive_for_user(
+        &self,
+        id: &str,
+        user_id: &str,
+        patch: RepositoryUpdate,
+    ) -> Result<Repository, StoreError> {
+        let now = Utc::now();
+        let res = sqlx::query(
+            "UPDATE repositories SET
+                deleted_at = NULL,
+                user_id = ?,
+                name = COALESCE(?, name),
+                remote_url = COALESCE(?, remote_url),
+                local_path = COALESCE(?, local_path),
+                default_branch = COALESCE(?, default_branch),
+                updated_at = ?, dirty = 1
+             WHERE id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(user_id)
+        .bind(patch.name)
+        .bind(patch.remote_url.flatten())
+        .bind(patch.local_path.flatten())
+        .bind(patch.default_branch)
+        .bind(now.to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        self.get(id).await
+    }
+
     /// Soft-delete the repository row and hard-delete all of its
     /// children in one transaction. Soft-delete + dirty=1 means the
     /// row stays in the table (so future cloud-sync pulls can compare
@@ -225,10 +291,9 @@ impl RepositoryRepo {
         Ok(())
     }
 
-    /// Repositories that have been soft-deleted locally but haven't
-    /// been pushed to cloud yet. The cloud-sync bootstrap reads this
-    /// before pulling so any pending deletions land before we attempt
-    /// to reconcile.
+    /// Repositories soft-deleted locally but not yet pushed. Retained for
+    /// tests only — the sync worker queries this state with its own SQL.
+    #[cfg(test)]
     pub async fn list_dirty_soft_deletes(&self) -> Result<Vec<String>, StoreError> {
         let rows = sqlx::query(
             "SELECT id FROM repositories
@@ -241,8 +306,9 @@ impl RepositoryRepo {
             .collect()
     }
 
-    /// Clear `dirty` on a repository row after its cloud-side mirror
-    /// has confirmed (push for live rows, delete for tombstones).
+    /// Clear `dirty` after the cloud-side mirror confirms. Retained for
+    /// tests only — the sync worker has its own `mark_synced`.
+    #[cfg(test)]
     pub async fn mark_synced(&self, id: &str) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE repositories
@@ -256,9 +322,9 @@ impl RepositoryRepo {
         Ok(())
     }
 
-    /// `true` when a row with this id is soft-deleted locally. Used by
-    /// the cloud-sync pull to skip resurrection of locally-tombstoned
-    /// repositories.
+    /// `true` when a row with this id is soft-deleted locally. Retained
+    /// for tests only — the sync worker checks tombstones with its own SQL.
+    #[cfg(test)]
     pub async fn exists_soft_deleted(&self, id: &str) -> Result<bool, StoreError> {
         let row = sqlx::query(
             "SELECT 1 AS sentinel FROM repositories
@@ -413,6 +479,85 @@ mod tests {
             repo.get_for_user(&b.id, "user-a").await,
             Err(StoreError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn revive_for_user_brings_tombstone_back_with_patch() {
+        let repo = fresh_repo().await;
+        insert_user(&repo.db, "user-a").await;
+        let r = Repository::new("old-name".into(), Some("/tmp/app".into()), None);
+        repo.insert_for_user(&r, "user-a").await.unwrap();
+        repo.delete(&r.id).await.unwrap();
+
+        let revived = repo
+            .revive_for_user(
+                &r.id,
+                "user-a",
+                RepositoryUpdate {
+                    name: Some("new-name".into()),
+                    remote_url: Some(Some("https://example.com/app.git".into())),
+                    local_path: Some(Some("/tmp/app".into())),
+                    default_branch: Some("develop".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(revived.id, r.id, "revive must keep the original id");
+        assert_eq!(revived.name, "new-name");
+        assert_eq!(revived.local_path.as_deref(), Some("/tmp/app"));
+        assert_eq!(revived.default_branch, "develop");
+        // Live again, tombstone gone.
+        assert!(repo.get(&r.id).await.is_ok());
+        assert!(!repo.exists_soft_deleted(&r.id).await.unwrap());
+        // Reviving a LIVE row is NotFound — the guard is deleted_at IS NOT NULL.
+        assert!(matches!(
+            repo.revive_for_user(&r.id, "user-a", RepositoryUpdate::default())
+                .await,
+            Err(StoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_for_dedupe_sees_tombstones_and_legacy_rows_but_not_other_users() {
+        let repo = fresh_repo().await;
+        insert_user(&repo.db, "user-a").await;
+        insert_user(&repo.db, "user-b").await;
+
+        let mine = Repository::new("mine".into(), Some("/tmp/mine".into()), None);
+        repo.insert_for_user(&mine, "user-a").await.unwrap();
+        let legacy = Repository::new("legacy".into(), Some("/tmp/legacy".into()), None);
+        repo.insert(&legacy).await.unwrap(); // user_id IS NULL
+        let dead = Repository::new("dead".into(), Some("/tmp/dead".into()), None);
+        repo.insert_for_user(&dead, "user-a").await.unwrap();
+        repo.delete(&dead.id).await.unwrap();
+        let theirs = Repository::new("theirs".into(), Some("/tmp/theirs".into()), None);
+        repo.insert_for_user(&theirs, "user-b").await.unwrap();
+
+        let rows = repo.list_for_dedupe("user-a").await.unwrap();
+        let seen: Vec<(String, bool)> = rows
+            .iter()
+            .map(|(r, deleted)| (r.name.clone(), *deleted))
+            .collect();
+        assert!(seen.contains(&("mine".into(), false)));
+        assert!(seen.contains(&("legacy".into(), false)));
+        assert!(seen.contains(&("dead".into(), true)));
+        assert!(!seen.iter().any(|(name, _)| name == "theirs"));
+    }
+
+    #[tokio::test]
+    async fn unique_index_rejects_second_active_row_on_same_path() {
+        let repo = fresh_repo().await;
+        let a = Repository::new("a".into(), Some("/tmp/same-folder".into()), None);
+        repo.insert(&a).await.unwrap();
+
+        // A second ACTIVE row on the same path violates the partial index…
+        let b = Repository::new("b".into(), Some("/tmp/same-folder".into()), None);
+        assert!(repo.insert(&b).await.is_err());
+
+        // …but tombstones don't count against it.
+        repo.delete(&a.id).await.unwrap();
+        repo.insert(&b).await.unwrap();
     }
 
     #[tokio::test]

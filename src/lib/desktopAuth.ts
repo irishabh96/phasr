@@ -1,6 +1,6 @@
 import { CLERK_SESSION_JWT_TEMPLATE } from "./clerk";
 import { reportP0Error } from "./sentry";
-import { getMachineId, SUPABASE_ANON_KEY, SUPABASE_URL } from "./supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./supabase";
 import { tauri } from "./tauri";
 
 const DESKTOP_SESSION_STORAGE_KEY = "phasr.auth.desktopSession";
@@ -391,7 +391,6 @@ export async function syncRustSession(session: DesktopSession) {
   await tauri.startCloudSync({
     supabaseUrl: SUPABASE_URL!,
     supabaseAnonKey: SUPABASE_ANON_KEY!,
-    machineId: getMachineId(),
   });
 }
 

@@ -80,31 +80,27 @@ pub async fn create_repository(
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Repository, RepositoryCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
-    // Idempotent: same canonical path returns the existing row.
-    if let Some(input_path) = input.local_path.as_deref() {
-        let candidate = std::fs::canonicalize(input_path)
-            .ok()
-            .unwrap_or_else(|| std::path::PathBuf::from(input_path));
-        for existing in repo.list().await? {
-            if let Some(existing_path) = existing.local_path.as_deref() {
-                let resolved = std::fs::canonicalize(existing_path)
-                    .ok()
-                    .unwrap_or_else(|| std::path::PathBuf::from(existing_path));
-                if resolved == candidate {
-                    return Ok(existing);
-                }
-            }
-        }
-    }
 
     // Auto-detect the origin URL from the local repo if the caller
-    // didn't provide one.
-    let resolved_remote_url = input.remote_url.or_else(|| {
+    // didn't provide one. Resolved before the dedupe because the adopt
+    // path matches cloud-restored rows on it.
+    let resolved_remote_url = input.remote_url.clone().or_else(|| {
         input
             .local_path
             .as_deref()
             .and_then(|p| crate::git::get_remote_url(std::path::Path::new(p)))
     });
+
+    if let Some(existing) =
+        resolve_existing_repository(&repo, &current_session.user_id, &input, resolved_remote_url.as_deref()).await?
+    {
+        // Re-running this for a plain (a)-case hit is deliberate: after a
+        // wiped DB the repo row may exist while its local workspace row
+        // does not — "ensure" self-heals that.
+        ensure_local_workspace(&existing, &workspaces, Some(&current_session.user_id)).await?;
+        sync_state.request_sync();
+        return Ok(existing);
+    }
 
     let mut repository = Repository::new(input.name, input.local_path, resolved_remote_url);
 
@@ -122,6 +118,87 @@ pub async fn create_repository(
     ensure_local_workspace(&repository, &workspaces, Some(&current_session.user_id)).await?;
     sync_state.request_sync();
     Ok(repository)
+}
+
+/// Dedupe + recovery for `create_repository`, in precedence order:
+///
+/// (a) an ACTIVE row already on the same canonical path → reuse it
+///     (the original idempotency contract);
+/// (b) a TOMBSTONED row on the same path → revive it, so re-adding a
+///     previously-removed folder keeps its original id — cloud children
+///     and notes stay attached instead of stranding under a dead id;
+/// (c) an ACTIVE row with no path on this machine but the same
+///     remote_url → adopt it by attaching the path. This is the
+///     cloud-restored row (`local_paths` missed this machine's key);
+///     without adoption the user's re-add minted a duplicate id, which
+///     is exactly what happened in the 2026-08-12 wipe recovery.
+///     remote_url only — matching on name alone is too collision-prone.
+///
+/// Returns `None` when the caller should insert a fresh row.
+async fn resolve_existing_repository(
+    repo: &RepositoryRepo,
+    user_id: &str,
+    input: &CreateRepositoryInput,
+    resolved_remote_url: Option<&str>,
+) -> Result<Option<Repository>, RepositoryCmdError> {
+    let Some(input_path) = input.local_path.as_deref() else {
+        return Ok(None);
+    };
+    fn canonical(p: &str) -> std::path::PathBuf {
+        std::fs::canonicalize(p)
+            .ok()
+            .unwrap_or_else(|| std::path::PathBuf::from(p))
+    }
+    let candidate = canonical(input_path);
+    let same_path = |r: &Repository| {
+        r.local_path
+            .as_deref()
+            .is_some_and(|p| canonical(p) == candidate)
+    };
+
+    let rows = repo.list_for_dedupe(user_id).await?;
+
+    if let Some((existing, _)) = rows.iter().find(|(r, deleted)| !*deleted && same_path(r)) {
+        return Ok(Some(existing.clone()));
+    }
+
+    let detected_branch = crate::git::get_default_branch(std::path::Path::new(input_path));
+
+    if let Some((tombstone, _)) = rows.iter().find(|(r, deleted)| *deleted && same_path(r)) {
+        let revived = repo
+            .revive_for_user(
+                &tombstone.id,
+                user_id,
+                RepositoryUpdate {
+                    name: Some(input.name.clone()),
+                    remote_url: resolved_remote_url.map(|u| Some(u.to_string())),
+                    local_path: Some(Some(input_path.to_string())),
+                    default_branch: detected_branch,
+                },
+            )
+            .await?;
+        return Ok(Some(revived));
+    }
+
+    if let Some(remote_url) = resolved_remote_url {
+        if let Some((restored, _)) = rows.iter().find(|(r, deleted)| {
+            !*deleted && r.local_path.is_none() && r.remote_url.as_deref() == Some(remote_url)
+        }) {
+            let adopted = repo
+                .update(
+                    &restored.id,
+                    RepositoryUpdate {
+                        local_path: Some(Some(input_path.to_string())),
+                        default_branch: detected_branch,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            return Ok(Some(adopted));
+        }
+    }
+
+    Ok(None)
 }
 
 #[tauri::command]
@@ -225,43 +302,6 @@ pub async fn delete_repository(
     repo.delete(&id).await?;
     sync_state.request_sync();
     Ok(())
-}
-
-/// IDs of repositories soft-deleted locally but not yet pushed to
-/// cloud. The bootstrap step in `useCloudSync` reads this before
-/// pulling so any pending deletions land remotely first.
-#[tauri::command]
-pub async fn list_soft_deleted_repositories(
-    repo: State<'_, RepositoryRepo>,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<Vec<String>, RepositoryCmdError> {
-    session.require()?;
-    Ok(repo.list_dirty_soft_deletes().await?)
-}
-
-/// Clear `dirty` on a repository row once its cloud-side delete has
-/// confirmed.
-#[tauri::command]
-pub async fn mark_repository_synced(
-    id: String,
-    repo: State<'_, RepositoryRepo>,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<(), RepositoryCmdError> {
-    session.require()?;
-    repo.mark_synced(&id).await?;
-    Ok(())
-}
-
-/// `true` when this id is soft-deleted locally. The cloud-sync pull
-/// uses this to skip resurrection of locally-tombstoned repositories.
-#[tauri::command]
-pub async fn repository_is_soft_deleted(
-    id: String,
-    repo: State<'_, RepositoryRepo>,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<bool, RepositoryCmdError> {
-    session.require()?;
-    Ok(repo.exists_soft_deleted(&id).await?)
 }
 
 /// Initialize the repository's local folder as a git repo (mockup 4

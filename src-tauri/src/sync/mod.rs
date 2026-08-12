@@ -92,7 +92,12 @@ impl CloudSyncState {
 pub struct StartCloudSyncInput {
     supabase_url: String,
     supabase_anon_key: String,
-    machine_id: String,
+    /// Legacy fallback only. The effective machine id is derived from the
+    /// hardware in Rust (`effective_machine_id`); older frontends still
+    /// send their localStorage uuid, which is used only when the hardware
+    /// lookup fails.
+    #[serde(default)]
+    machine_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,15 +123,63 @@ impl TryFrom<StartCloudSyncInput> for SyncConfig {
         if input.supabase_anon_key.trim().is_empty() {
             return Err(SyncError::InvalidConfig("missing Supabase anon key".into()));
         }
-        if input.machine_id.trim().is_empty() {
-            return Err(SyncError::InvalidConfig("missing machine id".into()));
-        }
+        let machine_id = effective_machine_id(input.machine_id.as_deref())?;
         Ok(Self {
             supabase_url,
             supabase_anon_key: input.supabase_anon_key,
-            machine_id: input.machine_id,
+            machine_id,
         })
     }
+}
+
+/// The key under which this machine's clone paths live in the cloud
+/// `repositories.local_paths` map. Derived from the hardware uid
+/// (sha256-hashed — the raw IOPlatformUUID never leaves the machine) so it
+/// survives a wiped profile; the localStorage uuid it replaces did not,
+/// which is how every repo pulled down with `local_path = NULL` after the
+/// 2026-08-12 wipe. Falls back to the frontend-supplied legacy id when the
+/// hardware lookup fails.
+fn effective_machine_id(legacy: Option<&str>) -> Result<String, SyncError> {
+    if let Ok(raw) = machine_uid::get() {
+        if !raw.trim().is_empty() {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(raw.trim().as_bytes());
+            return Ok(format!("{:x}", hasher.finalize()));
+        }
+    }
+    match legacy {
+        Some(id) if !id.trim().is_empty() => Ok(id.trim().to_string()),
+        _ => Err(SyncError::InvalidConfig(
+            "no machine id available (hardware lookup failed and none supplied)".into(),
+        )),
+    }
+}
+
+/// Repositories publish their clone path under the machine id; when that id
+/// changes (first run after the hardware-id upgrade, or a restored profile),
+/// every cloud row is still keyed by the OLD id. Mark every pathed repo
+/// dirty once so the next push re-publishes `local_paths` under the new
+/// key, then remember the id in `app_meta`.
+async fn note_machine_id_transition(db: &Db, machine_id: &str) -> Result<(), SyncError> {
+    let previous: Option<String> =
+        sqlx::query_scalar("SELECT value FROM app_meta WHERE key = 'machine_id'")
+            .fetch_optional(db)
+            .await?;
+    if previous.as_deref() == Some(machine_id) {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE repositories SET dirty = 1
+         WHERE local_path IS NOT NULL AND deleted_at IS NULL",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('machine_id', ?)")
+        .bind(machine_id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -139,8 +192,11 @@ pub async fn start_cloud_sync(
 ) -> Result<(), SyncError> {
     let session = session_state.require()?.ok_or(SyncError::NotSignedIn)?;
     let config = SyncConfig::try_from(input)?;
-    let client = SupabaseRestClient::new(config, session.user_id, session.jwt)?;
     let db = db.inner().clone();
+    // Re-publish local_paths under a changed machine id BEFORE the first
+    // cycle, so its pull doesn't null out paths keyed under the old id.
+    note_machine_id_transition(&db, &config.machine_id).await?;
+    let client = SupabaseRestClient::new(config, session.user_id, session.jwt)?;
     let app_for_loop = app.clone();
     let trigger = sync_state.trigger.clone();
 
@@ -477,7 +533,7 @@ async fn upsert_repository_from_cloud(
     db: &Db,
     row: &CloudRepositoryRow,
 ) -> Result<(), SyncError> {
-    if repository_is_soft_deleted(db, &row.id, &client.user_id).await? {
+    if repository_is_soft_deleted(db, &row.id).await? {
         return Ok(());
     }
 
@@ -487,8 +543,15 @@ async fn upsert_repository_from_cloud(
     // `repository_notes` is deliberately absent from the child wipe:
     // notes are the user's todos and outlive the repository, including
     // when the removal arrives from another device.
+    //
+    // EXCEPT when the live local row is dirty: a pending local write (most
+    // importantly a revive — the user just re-added this folder) must not
+    // be clobbered by a stale cloud tombstone. The pending push runs later
+    // in this same cycle and clears the cloud tombstone instead.
     if row.deleted_at.is_some() {
-        if get_repository_row(db, &row.id, &client.user_id).await?.is_some() {
+        let local = get_repository_row(db, &row.id, &client.user_id).await?;
+        let local_is_dirty = local.as_ref().is_some_and(|(_, dirty)| *dirty);
+        if local.is_some() && !local_is_dirty {
             let mut tx = db.begin().await?;
             for child in ["run_commands", "repository_config", "workspaces"] {
                 sqlx::query(&format!("DELETE FROM {child} WHERE repository_id = ?"))
@@ -517,9 +580,37 @@ async fn upsert_repository_from_cloud(
         .local_paths
         .get(&client.config.machine_id)
         .cloned()
-        .or_else(|| current.as_ref().and_then(|repo| repo.local_path.clone()));
+        .or_else(|| {
+            current
+                .as_ref()
+                .and_then(|(repo, _)| repo.local_path.clone())
+        });
 
-    if let Some(current) = current {
+    // A DIFFERENT active local row may already own this path (the local
+    // row is authoritative for the folder). Writing it anyway would trip
+    // the unique active-local_path index and wedge this sync step forever
+    // — land the row pathless instead.
+    let local_path = match local_path {
+        Some(path) => {
+            let taken = sqlx::query(
+                "SELECT 1 AS sentinel FROM repositories
+                 WHERE local_path = ? AND deleted_at IS NULL AND id != ?",
+            )
+            .bind(&path)
+            .bind(&row.id)
+            .fetch_optional(db)
+            .await?
+            .is_some();
+            if taken {
+                None
+            } else {
+                Some(path)
+            }
+        }
+        None => None,
+    };
+
+    if let Some((current, _)) = current {
         if current.updated_at >= row.updated_at {
             return Ok(());
         }
@@ -584,6 +675,11 @@ async fn push_dirty_repositories(client: &SupabaseRestClient, db: &Db) -> Result
                     "default_branch": &repo.default_branch,
                     "created_at": repo.created_at,
                     "updated_at": repo.updated_at,
+                    // Explicitly null: this push only ever carries LIVE rows
+                    // (`deleted_at IS NULL` in dirty_repository_rows), and a
+                    // revived repository must clear the cloud-side tombstone
+                    // or the next pull would re-delete it locally.
+                    "deleted_at": serde_json::Value::Null,
                 }),
             )
             .await?;
@@ -645,7 +741,7 @@ async fn upsert_workspace_from_cloud(
     row: &CloudWorkspaceRow,
 ) -> Result<(), SyncError> {
     // Already tombstoned locally — never resurrect it.
-    if workspace_is_soft_deleted(db, &row.id, &client.user_id).await? {
+    if workspace_is_soft_deleted(db, &row.id).await? {
         return Ok(());
     }
     // Cloud tombstone (deleted on another device) — mirror it locally on
@@ -827,13 +923,14 @@ async fn push_workspace_deletes(client: &SupabaseRestClient, db: &Db) -> Result<
     Ok(())
 }
 
-async fn workspace_is_soft_deleted(db: &Db, id: &str, user_id: &str) -> Result<bool, SyncError> {
+/// Not user-scoped for the same reason as `repository_is_soft_deleted`:
+/// a `user_id IS NULL` tombstone must still block resurrection.
+async fn workspace_is_soft_deleted(db: &Db, id: &str) -> Result<bool, SyncError> {
     let row = sqlx::query(
         "SELECT 1 AS sentinel FROM workspaces
-         WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
+         WHERE id = ? AND deleted_at IS NOT NULL",
     )
     .bind(id)
-    .bind(user_id)
     .fetch_optional(db)
     .await?;
     Ok(row.is_some())
@@ -1144,13 +1241,15 @@ async fn local_repository_ids(db: &Db, user_id: &str) -> Result<HashSet<String>,
         .collect()
 }
 
+/// The live local row plus its `dirty` flag — the pull path needs the flag
+/// to avoid clobbering rows with pending local writes.
 async fn get_repository_row(
     db: &Db,
     id: &str,
     user_id: &str,
-) -> Result<Option<Repository>, SyncError> {
+) -> Result<Option<(Repository, bool)>, SyncError> {
     let row = sqlx::query(
-        "SELECT id, name, remote_url, local_path, default_branch, created_at, updated_at
+        "SELECT id, name, remote_url, local_path, default_branch, created_at, updated_at, dirty
          FROM repositories
          WHERE id = ? AND deleted_at IS NULL AND user_id = ?",
     )
@@ -1158,7 +1257,12 @@ async fn get_repository_row(
     .bind(user_id)
     .fetch_optional(db)
     .await?;
-    row.as_ref().map(repository_from_row).transpose()
+    row.as_ref()
+        .map(|row| {
+            let dirty: i64 = row.try_get("dirty")?;
+            Ok((repository_from_row(row)?, dirty != 0))
+        })
+        .transpose()
 }
 
 fn repository_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Repository, SyncError> {
@@ -1173,13 +1277,16 @@ fn repository_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Repository, Sync
     })
 }
 
-async fn repository_is_soft_deleted(db: &Db, id: &str, user_id: &str) -> Result<bool, SyncError> {
+/// Deliberately NOT user-scoped: ids are UUIDs, and a tombstone written
+/// before `user_id` stamping existed (or by a legacy code path) has
+/// `user_id IS NULL` — a user-scoped check can't see it, and the pull then
+/// resurrects a repository the user explicitly deleted.
+async fn repository_is_soft_deleted(db: &Db, id: &str) -> Result<bool, SyncError> {
     let row = sqlx::query(
         "SELECT 1 AS sentinel FROM repositories
-         WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
+         WHERE id = ? AND deleted_at IS NOT NULL",
     )
     .bind(id)
-    .bind(user_id)
     .fetch_optional(db)
     .await?;
     Ok(row.is_some())
@@ -2124,5 +2231,142 @@ mod tests {
         .unwrap();
         assert_eq!(row.try_get::<i64, _>("live").unwrap(), 0); // still tombstoned
         assert_eq!(row.try_get::<i64, _>("dirty").unwrap(), 1); // tombstone still pending push
+    }
+
+    async fn set_local_path(db: &Db, id: &str, path: &str) {
+        sqlx::query("UPDATE repositories SET local_path = ? WHERE id = ?")
+            .bind(path)
+            .bind(id)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn repo_flags(db: &Db, id: &str) -> (i64, Option<String>) {
+        let row = sqlx::query("SELECT dirty, local_path FROM repositories WHERE id = ?")
+            .bind(id)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        (
+            row.try_get::<i64, _>("dirty").unwrap(),
+            row.try_get::<Option<String>, _>("local_path").unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn machine_id_transition_marks_only_pathed_repos_dirty() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "pathed", "user-a", 0).await;
+        set_local_path(&db, "pathed", "/tmp/pathed").await;
+        insert_repo(&db, "pathless", "user-a", 0).await;
+
+        note_machine_id_transition(&db, "hw-id-1").await.unwrap();
+        assert_eq!(repo_flags(&db, "pathed").await.0, 1);
+        assert_eq!(repo_flags(&db, "pathless").await.0, 0);
+
+        // Same id again → no-op.
+        sqlx::query("UPDATE repositories SET dirty = 0")
+            .execute(&db)
+            .await
+            .unwrap();
+        note_machine_id_transition(&db, "hw-id-1").await.unwrap();
+        assert_eq!(repo_flags(&db, "pathed").await.0, 0);
+
+        // A NEW id → re-publish again.
+        note_machine_id_transition(&db, "hw-id-2").await.unwrap();
+        assert_eq!(repo_flags(&db, "pathed").await.0, 1);
+    }
+
+    #[tokio::test]
+    async fn tombstone_check_sees_null_user_rows() {
+        let db = fresh_db().await;
+        let now = Utc::now().to_rfc3339();
+        // A tombstone written before user_id stamping existed.
+        sqlx::query(
+            "INSERT INTO repositories (id, name, default_branch, created_at, updated_at, deleted_at, dirty)
+             VALUES ('ghost', 'R', 'main', ?, ?, ?, 0)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        assert!(repository_is_soft_deleted(&db, "ghost").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cloud_tombstone_does_not_clobber_dirty_local_row() {
+        let db = fresh_db().await;
+        let client = test_client("user-a");
+        insert_user(&db, "user-a").await;
+        // A freshly revived row: live locally, dirty (push pending) —
+        // while the cloud still carries the tombstone from before.
+        insert_repo(&db, "repo-a", "user-a", 1).await;
+
+        let now_dt = Utc::now();
+        upsert_repository_from_cloud(
+            &client,
+            &db,
+            &CloudRepositoryRow {
+                id: "repo-a".into(),
+                name: "R".into(),
+                remote_url: None,
+                local_paths: HashMap::new(),
+                default_branch: "main".into(),
+                created_at: now_dt,
+                updated_at: now_dt + chrono::Duration::seconds(60),
+                deleted_at: Some(now_dt),
+            },
+        )
+        .await
+        .unwrap();
+
+        let live: i64 =
+            sqlx::query_scalar("SELECT deleted_at IS NULL FROM repositories WHERE id = 'repo-a'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(live, 1, "a dirty local row must survive a stale cloud tombstone");
+    }
+
+    #[tokio::test]
+    async fn pull_lands_pathless_when_another_row_owns_the_path() {
+        let db = fresh_db().await;
+        let client = test_client("user-a");
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "local-owner", "user-a", 0).await;
+        set_local_path(&db, "local-owner", "/Users/x/code/app").await;
+
+        let now_dt = Utc::now();
+        let mut local_paths = HashMap::new();
+        local_paths.insert("machine-a".to_string(), "/Users/x/code/app".to_string());
+        upsert_repository_from_cloud(
+            &client,
+            &db,
+            &CloudRepositoryRow {
+                id: "cloud-dupe".into(),
+                name: "R2".into(),
+                remote_url: None,
+                local_paths,
+                default_branch: "main".into(),
+                created_at: now_dt,
+                updated_at: now_dt,
+                deleted_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The incoming row must not steal the folder (or trip the unique
+        // active-local_path index) — it lands pathless.
+        assert_eq!(repo_flags(&db, "cloud-dupe").await.1, None);
+        assert_eq!(
+            repo_flags(&db, "local-owner").await.1.as_deref(),
+            Some("/Users/x/code/app")
+        );
     }
 }

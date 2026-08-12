@@ -132,9 +132,6 @@ pub fn run() {
             commands::repositories::get_repository,
             commands::repositories::update_repository,
             commands::repositories::delete_repository,
-            commands::repositories::list_soft_deleted_repositories,
-            commands::repositories::mark_repository_synced,
-            commands::repositories::repository_is_soft_deleted,
             commands::repositories::git_init_repository,
             commands::repositories::git_clone_repository,
             commands::repositories::git_init_from_template,
@@ -190,7 +187,6 @@ pub fn run() {
             commands::run_commands::list_run_commands,
             commands::run_commands::update_run_command,
             commands::run_commands::delete_run_command,
-            commands::run_commands::upsert_run_command_from_cloud,
             commands::run_commands::start_run_command,
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,
@@ -235,6 +231,18 @@ async fn initialize_database_state(
     // backup/copy/cleanup would "preserve" as a total data loss.
     if let Err(err) = checkpoint(&pool).await {
         eprintln!("startup wal checkpoint failed: {err}");
+    }
+
+    // Daily safety-net snapshot OUTSIDE the app data dir (uninstall
+    // cleaners delete that dir wholesale). Best-effort: a failed backup
+    // must never block boot.
+    match store::default_backups_dir() {
+        Some(backups_dir) => {
+            if let Err(err) = store::backup_rotate(&pool, &backups_dir, 7).await {
+                eprintln!("startup db backup failed: {err}");
+            }
+        }
+        None => eprintln!("startup db backup skipped: HOME is not set"),
     }
 
     let repository_repo = RepositoryRepo::new(pool.clone());

@@ -43,6 +43,11 @@ notify = "6"
 notify-debouncer-mini = { version = "0.4", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 jsonwebtoken = { version = "9", default-features = false }
+# Hardware-derived machine id (IOPlatformUUID on macOS) so cloud-sync's
+# per-machine local_paths key survives a wiped profile — the localStorage
+# id it replaces did not.
+machine-uid = "0.5"
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

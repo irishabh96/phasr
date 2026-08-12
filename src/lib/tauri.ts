@@ -75,7 +75,8 @@ interface StartTaskInput {
 interface StartCloudSyncInput {
   supabaseUrl: string;
   supabaseAnonKey: string;
-  machineId: string;
+  // The machine id is derived from the hardware on the Rust side (so it
+  // survives a wiped profile); there is no frontend field for it anymore.
 }
 
 interface RegisterNotificationRouteInput {
@@ -103,12 +104,6 @@ export const tauri = {
   updateRepository: (id: string, input: UpdateRepositoryInput) =>
     invoke<Repository>("update_repository", { id, input }),
   deleteRepository: (id: string) => invoke<void>("delete_repository", { id }),
-  listSoftDeletedRepositories: () =>
-    invoke<string[]>("list_soft_deleted_repositories"),
-  markRepositorySynced: (id: string) =>
-    invoke<void>("mark_repository_synced", { id }),
-  repositoryIsSoftDeleted: (id: string) =>
-    invoke<boolean>("repository_is_soft_deleted", { id }),
   gitInitRepository: (id: string) =>
     invoke<Repository>("git_init_repository", { id }),
   gitCloneRepository: (url: string, destinationPath: string) =>
@@ -287,8 +282,6 @@ export const tauri = {
   setNoteDone: (id: string, done: boolean) =>
     invoke<Note>("set_note_done", { id, done }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
-  upsertRunCommandFromCloud: (input: RunCommand) =>
-    invoke<RunCommand>("upsert_run_command_from_cloud", { input }),
   startRunCommand: (
     id: string,
     onEvent: Channel<PtyEvent>,

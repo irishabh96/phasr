@@ -66,20 +66,6 @@ pub struct UpdateRunCommandInput {
     pub sort_order: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CloudRunCommandInput {
-    pub id: String,
-    pub repository_id: String,
-    pub name: String,
-    pub command: String,
-    pub shortcut: Option<String>,
-    pub pinned: bool,
-    pub sort_order: i64,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
 // ── CRUD ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -149,27 +135,6 @@ pub async fn delete_run_command(
     repo.delete(&id).await?;
     sync_state.request_sync();
     Ok(())
-}
-
-#[tauri::command]
-pub async fn upsert_run_command_from_cloud(
-    input: CloudRunCommandInput,
-    repo: State<'_, RunCommandRepo>,
-    session: State<'_, Arc<SessionState>>,
-) -> Result<RunCommand, RunCommandError> {
-    session.require()?;
-    let rc = RunCommand {
-        id: input.id,
-        repository_id: input.repository_id,
-        name: input.name,
-        command: input.command,
-        shortcut: input.shortcut,
-        pinned: input.pinned,
-        sort_order: input.sort_order,
-        created_at: input.created_at,
-        updated_at: input.updated_at,
-    };
-    Ok(repo.upsert_from_cloud(&rc).await?)
 }
 
 // ── Runtime ─────────────────────────────────────────────────────────
