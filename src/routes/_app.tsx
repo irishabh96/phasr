@@ -13,6 +13,7 @@ import { disposeSessionXterm } from "@/components/SessionTerminalTab";
 import { disposeMainXterm } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
+import { useAdjustTerminalFontSize } from "@/lib/hooks/useUserSettings";
 import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
 import { useFileDrop } from "@/lib/hooks/useFileDrop";
 import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
@@ -59,6 +60,7 @@ function AppShell() {
   const toggleSidebarPin = useUiStore((s) => s.toggleSidebarPin);
   const toggleSidebarHidden = useUiStore((s) => s.toggleSidebarHidden);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
+  const adjustTerminalFontSize = useAdjustTerminalFontSize();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -95,6 +97,27 @@ function AppShell() {
         // Don't steal ⌘⇧J — that's "Reload window" in some browsers.
         e.preventDefault();
         toggleRightPanel();
+        return;
+      }
+      if (matchShortcut(e, SHORTCUTS.increaseFontSize)) {
+        // Fires even while a terminal is focused (capture phase on window
+        // runs before xterm's own listeners) — stop propagation so the
+        // keypress never reaches the PTY.
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        adjustTerminalFontSize(1);
+        return;
+      }
+      if (matchShortcut(e, SHORTCUTS.decreaseFontSize)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        adjustTerminalFontSize(-1);
+        return;
+      }
+      if (matchShortcut(e, SHORTCUTS.resetFontSize)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        adjustTerminalFontSize("reset");
         return;
       }
       if (matchShortcut(e, SHORTCUTS.openNotes)) {
@@ -176,7 +199,7 @@ function AppShell() {
     window.addEventListener("keydown", handler, { capture: true });
     return () =>
       window.removeEventListener("keydown", handler, { capture: true });
-  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, queryClient, navigate]);
+  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, adjustTerminalFontSize, queryClient, navigate]);
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">

@@ -136,7 +136,10 @@ export function Terminal({
       const container = document.createElement("div");
       container.className = "h-full w-full";
 
-      const term = createXtermTerminal();
+      // Born at the user's font size (when the query has resolved) so the
+      // settings effect below doesn't rewrite fontSize on mount — that
+      // write costs a WebGL glyph-atlas rebuild.
+      const term = createXtermTerminal(settings);
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(container);

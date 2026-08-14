@@ -259,7 +259,9 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       }
       case "list_agents": return f.agents;
       case "get_user_settings": return f.userSettings;
-      case "update_user_settings": return f.userSettings;
+      // Echo the payload — the real command returns the updated row, and
+      // the settings UI renders the mutation's response.
+      case "update_user_settings": return a?.settings ?? f.userSettings;
       case "list_run_commands": return f.runCommands.filter((r) => r.repositoryId === a?.repositoryId);
       case "create_run_command":
       case "update_run_command": return { ...f.runCommands[0], ...a, id: a?.id ?? "rc-new" };

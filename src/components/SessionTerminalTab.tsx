@@ -148,7 +148,8 @@ export function SessionTerminalTab({
       const container = document.createElement("div");
       container.className = "h-full w-full";
 
-      const term = createXtermTerminal();
+      // Born at the user's font size — see Terminal.tsx for why.
+      const term = createXtermTerminal(settings);
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(container);
