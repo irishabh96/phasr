@@ -60,7 +60,14 @@ export async function initSentry(router: unknown): Promise<void> {
     integrations: [
       Sentry.tanstackRouterBrowserTracingIntegration(router),
       Sentry.replayIntegration({
-        blockAllMedia: true,
+        // NOT blockAllMedia: its selector includes `svg`, and every icon in
+        // this app is a lucide <svg>. Replay measures each blocked element
+        // with getBoundingClientRect() from inside its whole-document
+        // MutationObserver, so one blocked icon per mutation batch forces a
+        // synchronous full-document layout. Switching tasks remounts a
+        // subtree carrying hundreds of icons and the renderer stops
+        // responding. Block real media explicitly instead.
+        block: ["img", "image", "video", "audio", "canvas", "embed", "object"],
         maskAllText: true,
       }),
     ],
