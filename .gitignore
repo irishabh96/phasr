@@ -14,6 +14,13 @@ dist-ssr
 .vercel
 *.local
 
+# A repo-local pnpm store, which `pnpm install` falls back to when it can't
+# reach the global one. node_modules is ignored; this never was — and since
+# a phasr worktree is itself a workspace, the ~17k untracked paths it adds
+# come straight back through `git status --untracked-files=all` and wedge
+# the UI on open.
+.pnpm-store/
+
 # Tauri / Rust build artifacts
 src-tauri/target/
 src-tauri/gen/schemas
