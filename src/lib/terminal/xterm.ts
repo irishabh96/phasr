@@ -1,10 +1,10 @@
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import type { ITerminalOptions, ITheme } from "@xterm/xterm";
+import { clampTerminalFontSize } from "@/lib/terminal/fontSize";
 import { itermSequenceFor } from "@/lib/terminal/keymap";
 import type { UserSettings } from "@/lib/types";
 
 const DEFAULT_MONO_FONT = "ui-monospace, Menlo, monospace";
-const DEFAULT_FONT_SIZE = 13;
 const DEFAULT_SCROLLBACK = 10000;
 
 type TerminalSettings = Pick<
@@ -81,7 +81,7 @@ function buildTerminalOptions(
 ): ITerminalOptions {
   return {
     fontFamily: terminalFontFamily(settings?.monoFont),
-    fontSize: positiveNumber(settings?.baseFontSize, DEFAULT_FONT_SIZE),
+    fontSize: clampTerminalFontSize(settings?.baseFontSize),
     lineHeight: 1.0,
     cursorBlink: settings?.cursorBlink ?? true,
     cursorStyle: normalizeCursorStyle(settings?.cursorStyle),

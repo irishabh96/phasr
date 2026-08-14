@@ -51,12 +51,15 @@ export function RunCommandTerminal({
   onExitRef.current = onExit;
   const editorIdRef = useRef<string | null>(null);
   editorIdRef.current = settings?.defaultEditor ?? null;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     let cancelled = false;
-    const term = createXtermTerminal();
+    // Born at the user's font size — see Terminal.tsx for why.
+    const term = createXtermTerminal(settingsRef.current);
     termRef.current = term;
     const fit = new FitAddon();
     fitRef.current = fit;

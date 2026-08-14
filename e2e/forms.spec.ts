@@ -515,6 +515,118 @@ test.describe("Settings · appearance", () => {
     }
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
+
+  test("terminal font size: stepper + ⌘=/⌘-/⌘0 fire update_user_settings and the readout tracks", async ({
+    page,
+  }) => {
+    const { errors } = await bootApp(page);
+    await page.goto("/settings/appearance");
+    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
+      { timeout: 20_000 },
+    );
+    await expect(page.getByText("13 px")).toBeVisible();
+    // At the default size Reset has nothing to do.
+    await expect(page.getByRole("button", { name: "Reset" })).toBeDisabled();
+    await clearCalls(page);
+
+    await page
+      .getByRole("button", { name: "Increase terminal font size" })
+      .click();
+    await expect(page.getByText("14 px")).toBeVisible();
+
+    // Global shortcuts — the dispatcher owns these, not the page.
+    await page.keyboard.press("Meta+=");
+    await expect(page.getByText("15 px")).toBeVisible();
+    await page.keyboard.press("Meta+-");
+    await expect(page.getByText("14 px")).toBeVisible();
+    await page.keyboard.press("Meta+0");
+    await expect(page.getByText("13 px")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reset" })).toBeDisabled();
+
+    const updates = (await calls(page))
+      .filter((c) => c.cmd === "update_user_settings")
+      .map((c) => c.args?.settings?.baseFontSize);
+    expect(updates).toEqual([14, 15, 14, 13]);
+    expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
+  });
+
+  test("terminal font size: bounds disable the stepper and edge presses fire no IPC", async ({
+    page,
+  }) => {
+    const { errors } = await bootApp(page);
+    await page.goto("/settings/appearance");
+    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
+      { timeout: 20_000 },
+    );
+    await expect(page.getByText("13 px")).toBeVisible();
+    await clearCalls(page);
+
+    const increase = page.getByRole("button", {
+      name: "Increase terminal font size",
+    });
+    const decrease = page.getByRole("button", {
+      name: "Decrease terminal font size",
+    });
+
+    // Walk to the ceiling: 13 → 24 is 11 steps.
+    for (let s = 14; s <= 24; s++) {
+      await increase.click();
+      await expect(page.getByText(`${s} px`)).toBeVisible();
+    }
+    await expect(increase).toBeDisabled();
+    // At the bound the shortcut no-ops — the guard fires no IPC at all.
+    await page.keyboard.press("Meta+=");
+    await page.waitForTimeout(250);
+
+    await page.getByRole("button", { name: "Reset" }).click();
+    await expect(page.getByText("13 px")).toBeVisible();
+
+    // Walk to the floor: 13 → 9 is 4 steps.
+    for (let s = 12; s >= 9; s--) {
+      await decrease.click();
+      await expect(page.getByText(`${s} px`)).toBeVisible();
+    }
+    await expect(decrease).toBeDisabled();
+    await page.keyboard.press("Meta+-");
+    await page.waitForTimeout(250);
+
+    const updates = (await calls(page))
+      .filter((c) => c.cmd === "update_user_settings")
+      .map((c) => c.args?.settings?.baseFontSize);
+    expect(updates).toEqual([
+      14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 13, 12, 11, 10, 9,
+    ]);
+    expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
+  });
+
+  test("terminal font size: a failed update rolls the readout back", async ({
+    page,
+  }) => {
+    const { errors } = await bootApp(page);
+    await page.goto("/settings/appearance");
+    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
+      { timeout: 20_000 },
+    );
+    await expect(page.getByText("13 px")).toBeVisible();
+    // goto() re-ran the initScript, so the override must be set AFTER it.
+    await setResponse(page, "update_user_settings", {
+      __reject: "sqlite is on fire",
+    });
+    await clearCalls(page);
+
+    await page
+      .getByRole("button", { name: "Increase terminal font size" })
+      .click();
+    await waitForCall(page, "update_user_settings");
+
+    // Optimistic 14 flashes, then the rejection rolls the cache back.
+    await expect(page.getByText("13 px")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reset" })).toBeDisabled();
+    expect(
+      (await calls(page)).filter((c) => c.cmd === "update_user_settings"),
+    ).toHaveLength(1);
+    expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

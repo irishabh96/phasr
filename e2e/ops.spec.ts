@@ -81,6 +81,46 @@ test.describe("Workspace & terminals", () => {
     await expect.poll(() => fired(page, "git_branch_status")).toBe(true);
     await expect(page.getByText("phasr/add-feature").first()).toBeVisible();
   });
+
+  test("⌘=/⌘⇧=/⌘-/⌘0 adjust the font WITH the terminal focused — and never leak into the PTY", async ({ page }) => {
+    const { errors } = await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await expect.poll(() => fired(page, "open_task_terminal")).toBe(true);
+    await page.waitForTimeout(800);
+    // Focus the terminal for real — the window capture-phase dispatcher must
+    // win against xterm's own key handling.
+    await page.locator(".xterm").first().click();
+    // Let boot-time refits drain so the resize below can only come from the
+    // font change.
+    await page.waitForTimeout(500);
+    await clearCalls(page);
+
+    // One sustained change first: the LIVE terminal adopts the size —
+    // fontSize write → fit() reflow → PTY resize. (Asserted on its own
+    // because the full round trip below ends back at 13, where a coalesced
+    // render would leave the dimensions untouched and nothing to reflow.)
+    await pressMeta(page, "=");
+    await expect.poll(() => fired(page, "resize_task"), { timeout: 8000 }).toBe(true);
+
+    // ⌘⇧= is the same physical key as ⌘=; browsers disagree on whether it
+    // reports "+" or "=" with shiftKey, and both must increase.
+    await page.keyboard.press("Meta+Shift+=");
+    await pressMeta(page, "-");
+    await pressMeta(page, "0");
+
+    await expect
+      .poll(async () =>
+        (await calls(page))
+          .filter((c) => c.cmd === "update_user_settings")
+          .map((c) => c.args?.settings?.baseFontSize),
+      )
+      .toEqual([14, 15, 14, 13]);
+
+    // stopImmediatePropagation kept every chord out of the PTY input path.
+    const leaked = (await calls(page)).filter((c) => c.cmd.startsWith("send_"));
+    expect(leaked).toEqual([]);
+    expect(realErrors(errors)).toEqual([]);
+  });
 });
 
 test.describe("Git / diff / changes", () => {
