@@ -19,7 +19,6 @@ import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
-import { StatusDot } from "@/components/ui/StatusDot";
 import type { Workspace, Repository } from "@/lib/types";
 
 export function AppSidebar() {
@@ -296,6 +295,15 @@ function RepoWorkspaces({
   );
 }
 
+/**
+ * First character of a workspace name for the collapsed rail. Array.from
+ * so an emoji or other astral-plane first character isn't split into half
+ * a surrogate pair.
+ */
+function workspaceInitial(name: string): string {
+  return Array.from(name.trim())[0] ?? "?";
+}
+
 function WorkspaceLink({
   ws,
   repoId,
@@ -323,13 +331,26 @@ function WorkspaceLink({
           active && "bg-(--color-bg-selected)",
         )}
       >
-        <GlassTooltip content={ws.name} side="right" disabled={isExpanded}>
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-            <StatusDot status={ws.status} />
-          </span>
-        </GlassTooltip>
+        {!isExpanded && (
+          // Collapsed rail: the row has no room for the name, so a single
+          // initial keeps the workspaces distinguishable at a glance. The
+          // tooltip still carries the full name on hover.
+          <GlassTooltip content={ws.name} side="right">
+            <span
+              className={cn(
+                "flex h-4 w-4 shrink-0 items-center justify-center",
+                "text-[11px] font-medium uppercase leading-none",
+                active
+                  ? "text-(--color-text-primary)"
+                  : "text-(--color-text-secondary)",
+              )}
+            >
+              {workspaceInitial(ws.name)}
+            </span>
+          </GlassTooltip>
+        )}
         {isExpanded && (
-          <span className="ml-2 flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span
               className={cn(
                 "truncate text-left text-[13px] leading-none",
