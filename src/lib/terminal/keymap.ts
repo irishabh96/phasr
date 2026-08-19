@@ -1,22 +1,23 @@
 /**
  * iTerm-parity terminal keymap.
  *
- * xterm.js ignores meta-modified keys entirely — nothing reaches the PTY
- * for ⌘⌫, ⌘←, ⌘→ — and it emits a plain `\r` for ⇧↵, which agent CLIs
- * (Claude Code) can't distinguish from ↵. This table is a 1:1 translation
+ * Emulators ignore meta-modified keys — nothing reaches the PTY for ⌘⌫,
+ * ⌘←, ⌘→ — and they emit a plain `\r` for ⇧↵, which agent CLIs (Claude
+ * Code) can't distinguish from ↵. This table is a 1:1 translation
  * of the user's iTerm key mappings (`hello.itermkeymap`, the
  * natural-text-editing preset) plus ⇧↵ → `ESC CR`, the sequence
  * `claude /terminal-setup` installs for "insert newline".
  *
- * Installed once in `createXtermTerminal` via `attachCustomKeyEventHandler`,
- * so every terminal surface (agent, session tabs, run commands) gets the
- * same chords. Sequences are fed through `term.input()`, which emits
+ * Installed once in `createTerminalSurface()` (which routes it to the
+ * backend's `attachCustomKeyEventHandler`), so every terminal surface
+ * (agent, session tabs, run commands) gets the same chords. Sequences are fed through `term.input()`, which emits
  * `onData` — the existing PTY send paths are reused untouched.
  *
  * Combos NOT in this table return `null` and keep their default handling:
  * app chrome shortcuts (⌘K/⌘W/⌘T… in `_app.tsx`) run in window capture
- * phase before xterm sees the event, and ⌘C/⌘V stay native via the Edit
- * menu. Only ever add MODIFIED keys here — plain keys belong to xterm.
+ * phase before the emulator sees the event, and ⌘C/⌘V stay native via the
+ * Edit menu. Only ever add MODIFIED keys here — plain keys belong to the
+ * emulator's own encoder.
  */
 
 /** Modifier-canonical combo key: "Meta+Alt+Ctrl+Shift+<KeyboardEvent.key>". */
@@ -106,8 +107,8 @@ const KEYMAP: Record<string, string> = {
 
 /**
  * The sequence to send to the PTY for this keydown, or `null` when the
- * combo is not ours and default handling (xterm / app shortcuts / native
- * menu) should proceed.
+ * combo is not ours and default handling (the emulator / app shortcuts /
+ * the native menu) should proceed.
  */
 export function itermSequenceFor(e: KeyboardEvent): string | null {
   return KEYMAP[comboOf(e)] ?? null;

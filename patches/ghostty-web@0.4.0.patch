@@ -1,0 +1,169 @@
+diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
+index a4ca427b95288e70c782ce303013cd644893dcec..4552cc707c4dbb3d25202e4425e61bce7a1dc373 100644
+--- a/dist/ghostty-web.js
++++ b/dist/ghostty-web.js
+@@ -1311,10 +1311,12 @@ const f = {
+   background: "#1e1e1e",
+   cursor: "#ffffff",
+   cursorAccent: "#1e1e1e",
+-  // Selection colors: solid colors that replace cell bg/fg when selected
+-  // Using Ghostty's approach: selection bg = default fg, selection fg = default bg
+-  selectionBackground: "#d4d4d4",
+-  selectionForeground: "#1e1e1e",
++  // PHASR PATCH: selection is a TRANSLUCENT WASH over the normally painted
++  // cell (the conventional model), not inverse video. `selectionForeground` has
++  // NO default on purpose: renderCellText only overrides the glyph colour
++  // when a theme sets it explicitly, so the default is "keep the cell's own
++  // foreground". Restore inverse video by passing both colours.
++  selectionBackground: "rgba(255, 255, 255, 0.3)",
+   black: "#000000",
+   red: "#cd3131",
+   green: "#0dbc79",
+@@ -1508,12 +1510,15 @@ class $ {
+    */
+   renderCellBackground(A, B, g) {
+     const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
+-    if (this.isInSelection(B, g)) {
+-      this.ctx.fillStyle = this.theme.selectionBackground, this.ctx.fillRect(E, C, I, this.metrics.height);
+-      return;
+-    }
+     let i = A.bg_r, w = A.bg_g, s = A.bg_b;
+     A.flags & e.INVERSE && (i = A.fg_r, w = A.fg_g, s = A.fg_b), i === 0 && w === 0 && s === 0 || (this.ctx.fillStyle = this.rgbToCSS(i, w, s), this.ctx.fillRect(E, C, I, this.metrics.height));
++    // PHASR PATCH: paint the cell's OWN background first, then composite the
++    // selection colour over it. Upstream returned early here, so a selected
++    // cell never got its background at all and a translucent
++    // `selectionBackground` blended with the line fill instead of with the
++    // cell — every coloured background (diff hunks, SGR runs, INVERSE) lost
++    // its colour the moment it was selected.
++    this.isInSelection(B, g) && this.theme.selectionBackground && (this.ctx.fillStyle = this.theme.selectionBackground, this.ctx.fillRect(E, C, I, this.metrics.height));
+   }
+   /**
+    * Render a cell's text and decorations (Pass 2 of two-pass rendering)
+@@ -1526,7 +1531,12 @@ class $ {
+       return;
+     const D = this.isInSelection(B, g);
+     let i = "";
+-    if (A.flags & e.ITALIC && (i += "italic "), A.flags & e.BOLD && (i += "bold "), this.ctx.font = `${i}${this.fontSize}px ${this.fontFamily}`, D)
++    if (A.flags & e.ITALIC && (i += "italic "), A.flags & e.BOLD && (i += "bold "), this.ctx.font = `${i}${this.fontSize}px ${this.fontFamily}`, D && this.theme.selectionForeground)
++      // PHASR PATCH: only when the theme asks for inverse-video selection.
++      // Unset, the glyph keeps its own colour under the wash, which is
++      // the conventional behaviour. Upstream always took this branch, so selected text was
++      // repainted in the default `selectionForeground` (#1e1e1e) — near
++      // black on a dark terminal, i.e. selected output became unreadable.
+       this.ctx.fillStyle = this.theme.selectionForeground;
+     else {
+       let M = A.fg_r, a = A.fg_g, h = A.fg_b;
+@@ -2633,12 +2643,60 @@ class IA {
+   // ==========================================================================
+   // Private Methods
+   // ==========================================================================
++  /**
++   * Pause the render loop.
++   *
++   * The loop is otherwise unconditional from open() to dispose(), so a
++   * host that keeps terminals alive off-screen pays one render callback
++   * per terminal per frame forever. Writes still parse into WASM while
++   * paused; only painting stops.
++   */
++  pause() {
++    this.isPaused || (this.isPaused = !0, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0));
++  }
++  /**
++   * Resume the render loop and repaint in full.
++   */
++  resume() {
++    this.isPaused && (this.isPaused = !1, !this.isDisposed && this.isOpen && this.startRenderLoop());
++  }
++  /**
++   * PHASR PATCH: DEC mode 2026 (synchronized output).
++   *
++   * A TUI brackets each frame with `\x1b[?2026h` … `\x1b[?2026l` so the
++   * terminal shows the previous frame until the new one is complete.
++   * ghostty-web never read the mode (the string "2026" did not appear in
++   * this bundle), so a frame split across two PTY reads was painted
++   * half-applied — the erase-then-redraw a full-screen app does every frame
++   * became a visible flash. Claude Code emits 2026 around every repaint.
++   *
++   * Bounded: a program that sets the mode and then hangs (or is killed
++   * mid-frame) must not freeze the display, so painting resumes after
++   * SYNC_TIMEOUT_MS no matter what. That is what the spec's "timeout"
++   * language exists for, and matches what other implementations use.
++   */
++  isFrameSynchronized() {
++    let A = !1;
++    try {
++      A = this.wasmTerm?.getMode(2026, !1) ?? !1;
++    } catch {
++      A = !1;
++    }
++    if (!A)
++      return this.syncFrameDeadline = void 0, !1;
++    const B = Date.now();
++    return this.syncFrameDeadline === void 0 ? (this.syncFrameDeadline = B + 150, !0) : B < this.syncFrameDeadline;
++  }
+   /**
+    * Start the render loop
+    */
+   startRenderLoop() {
+     const A = () => {
+-      if (!this.isDisposed && this.isOpen) {
++      if (!this.isDisposed && this.isOpen && !this.isPaused) {
++        if (this.isFrameSynchronized()) {
++          this.animationFrameId = requestAnimationFrame(A);
++          return;
++        }
+         this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
+         const B = this.wasmTerm.getCursor();
+         B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire()), this.animationFrameId = requestAnimationFrame(A);
+@@ -2664,7 +2722,7 @@ class IA {
+    * Clean up components (called on dispose or error)
+    */
+   cleanupComponents() {
+-    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), this.isOpen && typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
++    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
+   }
+   /**
+    * Assert terminal is open (throw if not)
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..bfb9006fda7bd17e73f7b17f9eb5679a6951c95e 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -903,7 +903,9 @@ export declare interface ITheme {
+     background?: string;
+     cursor?: string;
+     cursorAccent?: string;
++    /** Composited OVER the cell's own background — use an alpha colour. */
+     selectionBackground?: string;
++    /** Unset = selected text keeps its own colour (translucent wash). */
+     selectionForeground?: string;
+     black?: string;
+     red?: string;
+@@ -1497,6 +1499,8 @@ export declare class Terminal implements ITerminalCore {
+     private isOpen;
+     private isDisposed;
+     private animationFrameId?;
++    private isPaused?;
++    private syncFrameDeadline?;
+     private addons;
+     private customKeyEventHandler?;
+     private currentTitle;
+@@ -1686,6 +1690,19 @@ export declare class Terminal implements ITerminalCore {
+      * Dispose terminal and clean up resources
+      */
+     dispose(): void;
++    /**
++     * Pause the render loop (writes still parse; only painting stops).
++     */
++    pause(): void;
++    /**
++     * Resume the render loop and repaint in full.
++     */
++    resume(): void;
++    /**
++     * True while a DEC 2026 synchronized update is in flight (bounded by a
++     * 150 ms timeout). The render loop skips painting while it is.
++     */
++    isFrameSynchronized(): boolean;
+     /**
+      * Start the render loop
+      */

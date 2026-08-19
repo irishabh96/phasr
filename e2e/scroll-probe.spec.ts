@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootApp, pty } from "./harness";
+import { bootApp, ptyOut, terminal } from "./harness";
 
 /**
  * Scroll-smoothness probe. Feeds the terminal deep scrollback, drives
@@ -15,13 +15,14 @@ async function feedScrollback(page: Page, lines: number) {
       `line ${String(i).padStart(5, "0")}  ${"lorem ipsum dolor sit amet ".repeat(3)}`,
     );
   }
-  // Feed in bursts so xterm parses without one giant string alloc.
+  // Feed in bursts so the emulator parses without one giant string alloc.
   const burst = 500;
   for (let i = 0; i < chunkLines.length; i += burst) {
-    await pty(page, "ws-agent", {
-      type: "output",
-      chunk: chunkLines.slice(i, i + burst).join("\r\n") + "\r\n",
-    });
+    await ptyOut(
+      page,
+      "ws-agent",
+      chunkLines.slice(i, i + burst).join("\r\n") + "\r\n",
+    );
     await page.waitForTimeout(50);
   }
   await page.waitForTimeout(500);
@@ -61,7 +62,7 @@ async function measureWheelScroll(
   steps: number,
   deltaY: number,
 ) {
-  const box = await page.locator(".xterm-screen").first().boundingBox();
+  const box = await terminal(page).boundingBox();
   if (!box) throw new Error("terminal not found");
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;

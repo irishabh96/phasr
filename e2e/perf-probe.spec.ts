@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootApp, pty } from "./harness";
+import { bootApp, ptyBurst, ptyOut, tuiFrame } from "./harness";
 
 /**
  * Perf probe for the 0.3.5 -> 0.3.6 lag regression. Measures Chromium's
@@ -50,6 +50,7 @@ async function phase(
   console.log(`PERF ${label}: ${JSON.stringify(delta(before, after))}`);
 }
 
+
 test("perf probe across app states", async ({ page }) => {
   test.skip(
     !process.env.PERF_PROBE,
@@ -69,12 +70,27 @@ test("perf probe across app states", async ({ page }) => {
 
   await phase(page, client, "PTY_SPINNER_10HZ_8S", async () => {
     for (let i = 0; i < 80; i++) {
-      await pty(page, "ws-agent", {
-        type: "output",
-        chunk: `\r[2K⠋ Thinking… (${i}s · esc to interrupt)`,
-      });
+      await ptyOut(page, "ws-agent", `\r[2K⠋ Thinking… (${i}s · esc to interrupt)`);
       await page.waitForTimeout(100);
     }
+  });
+
+  // Throughput, not idle. This is the phase that can decide a change to the
+  // OUTPUT WIRE FORMAT; the 10 Hz spinner above is far too small to resolve
+  // one (80 x ~40 B is ~3 KB in total). Escape-dense frames at volume are
+  // what phasr actually gets from an agent repainting its TUI.
+  await phase(page, client, "PTY_BULK_TUI_2MB", async () => {
+    for (let round = 0; round < 8; round++) {
+      // 8 x ~32 KiB per round trip - one `evaluate` per burst so what is
+      // measured is the write path, not Playwright's round-trip cost.
+      await ptyBurst(
+        page,
+        "ws-agent",
+        Array.from({ length: 8 }, (_, i) => tuiFrame(round * 8 + i)),
+      );
+      await page.waitForTimeout(50);
+    }
+    await page.waitForTimeout(500);
   });
 
   await phase(page, client, "IDLE_AFTER_STREAM_8S", async () => {

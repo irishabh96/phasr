@@ -1,0 +1,7 @@
+# Pinned deliberately. `src-tauri/src/vt` is about to gain a native dependency
+# whose build is version-sensitive (`libghostty-vt` drives a Zig toolchain),
+# and at that point a silently-rolling `@stable` becomes a latent break that
+# shows up as a mystery CI failure on an unrelated PR.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

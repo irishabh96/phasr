@@ -3,8 +3,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useNavigate } from "@tanstack/react-router";
 import { Pencil, Terminal as TerminalIcon, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { disposeSessionXterm } from "@/components/SessionTerminalTab";
-import { disposeMainXterm } from "@/components/Terminal";
+import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
+import { disposeMainTerminal } from "@/components/Terminal";
 import { GlassButton } from "@/components/ui/GlassButton";
 import {
   useCheckWorkspaceDelete,
@@ -73,21 +73,21 @@ export function WorkspaceSidebarMenu({
         onSuccess: () => {
           setConfirming(false);
 
-          // Free cached xterm instances for this workspace before the
+          // Free cached terminal surfaces for this workspace before the
           // record disappears from the store / route.
           const store = useUiStore.getState();
           const inner = store.innerTabs[workspace.id];
           if (inner) {
             for (const tab of inner.tabs) {
-              if (tab.kind === "terminal") disposeSessionXterm(tab.id);
-              else if (tab.kind === "main") disposeMainXterm(workspace.id);
+              if (tab.kind === "terminal") disposeSessionTerminal(tab.id);
+              else if (tab.kind === "main") disposeMainTerminal(workspace.id);
             }
           }
-          // Belt-and-braces: dispose the main xterm even if there was no
+          // Belt-and-braces: dispose the main terminal even if there was no
           // open main tab (e.g. user closed it explicitly earlier and
           // hasn't reopened it but the cache might still hold an entry
           // from a prior session).
-          disposeMainXterm(workspace.id);
+          disposeMainTerminal(workspace.id);
 
           // If the closed workspace is currently active in the main area,
           // bounce the user home. Otherwise the sidebar mutation suffices.

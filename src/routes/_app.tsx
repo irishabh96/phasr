@@ -9,8 +9,8 @@ import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { RenameWorkspaceModal } from "@/components/RenameWorkspaceModal";
 import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
-import { disposeSessionXterm } from "@/components/SessionTerminalTab";
-import { disposeMainXterm } from "@/components/Terminal";
+import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
+import { disposeMainTerminal } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
 import { useAdjustTerminalFontSize } from "@/lib/hooks/useUserSettings";
@@ -101,7 +101,7 @@ function AppShell() {
       }
       if (matchShortcut(e, SHORTCUTS.increaseFontSize)) {
         // Fires even while a terminal is focused (capture phase on window
-        // runs before xterm's own listeners) — stop propagation so the
+        // runs before the terminal's own listeners) — stop propagation so the
         // keypress never reaches the PTY.
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -181,9 +181,9 @@ function AppShell() {
           if (closed.ptySessionId) {
             void tauri.stopSessionTerminal(closed.ptySessionId).catch(() => {});
           }
-          disposeSessionXterm(closed.id);
+          disposeSessionTerminal(closed.id);
         } else if (closed.kind === "main") {
-          disposeMainXterm(ctx.workspaceId);
+          disposeMainTerminal(ctx.workspaceId);
         }
         const remainingTabs =
           useUiStore.getState().innerTabs[ctx.workspaceId]?.tabs.length ?? 0;

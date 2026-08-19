@@ -1,7 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { IDisposable, ILink, Terminal as XtermTerminal } from "@xterm/xterm";
 import { showToast } from "@/lib/toast";
 import { tauri } from "@/lib/tauri";
+import type { LinkSource, SurfaceLink } from "@/lib/terminal/surface";
 
 /**
  * ⌘-click links for terminal output — URLs open in the default browser,
@@ -124,11 +124,6 @@ function openPathInEditor(path: string, editorId: string | null): void {
   });
 }
 
-/**
- * Install both link layers on a terminal. Call once per xterm instance;
- * the returned disposable unregisters the path provider (the web-links
- * addon is owned by the terminal and dies with it).
- */
 /** Open an http(s) URL externally, surfacing a failure instead of eating it. */
 function openExternalUrl(url: string): void {
   void openUrl(url).catch((err) => {
@@ -145,44 +140,37 @@ export function isOpenableUrl(text: string): boolean {
   return /^https?:\/\//i.test(text);
 }
 
-export function installTerminalLinks(
-  term: XtermTerminal,
+/**
+ * Both link layers for one terminal, in backend-neutral terms. A backend
+ * adapter binds this to whatever its emulator's link API looks like, so
+ * all policy lives here and no backend can quietly weaken it.
+ *
+ * `activateHyperlink` is the OSC 8 path — the escape sequence a program
+ * uses to say "this text IS a link" (Claude Code emits its URLs this
+ * way). The scheme is re-checked at activation because OSC 8 lets the
+ * program pick an arbitrary target and terminal output is untrusted
+ * (it's whatever an agent printed).
+ *
+ * `provide` detects URLs itself rather than via a library's link addon:
+ * the previous engine's web-links addon registered a provider that never
+ * yielded a link (verified — clicking a URL did nothing even with this provider
+ * removed), so it was silently dead weight. One provider also means URLs
+ * and paths can't fight over the same span.
+ */
+export function createTerminalLinkSource(
   opts: TerminalLinkOptions,
-): IDisposable {
-  // OSC 8 hyperlinks — the escape sequence a program uses to say "this
-  // text IS a link" (Claude Code emits its URLs this way). xterm renders
-  // them underlined but routes activation through `options.linkHandler`,
-  // NOT through registerLinkProvider, so without this they looked like
-  // links and did nothing on click.
-  //
-  // `allowNonHttpProtocols` stays off and `activate` re-checks the
-  // scheme: OSC 8 lets the program choose an arbitrary target, and
-  // terminal output is untrusted (it's whatever an agent printed).
-  term.options.linkHandler = {
-    allowNonHttpProtocols: false,
-    activate(event, text) {
+): LinkSource {
+  return {
+    activateHyperlink(uri, event) {
       if (!event.metaKey) return;
-      if (!isOpenableUrl(text)) return;
-      openExternalUrl(text);
+      if (!isOpenableUrl(uri)) return;
+      openExternalUrl(uri);
     },
-  };
 
-  // URLs are detected here rather than via @xterm/addon-web-links: that
-  // addon registers a provider that never yields a link under xterm 6
-  // (verified — clicking a URL did nothing even with this provider
-  // removed), so it was silently dead weight. One provider also means
-  // URLs and paths can't fight over the same span.
-  return term.registerLinkProvider({
-    provideLinks(bufferLineNumber, callback) {
-      const line = term.buffer.active.getLine(bufferLineNumber - 1);
-      if (!line) {
-        callback(undefined);
-        return;
-      }
-      const text = line.translateToString(true);
-      const links: ILink[] = [];
-      for (const token of findLinkTokens(text)) {
-        const activate =
+    provide(_row, lineText) {
+      const links: SurfaceLink[] = [];
+      for (const token of findLinkTokens(lineText)) {
+        const open =
           token.kind === "url"
             ? () => openExternalUrl(token.target)
             : (() => {
@@ -190,21 +178,19 @@ export function installTerminalLinks(
                 if (!resolved) return null;
                 return () => openPathInEditor(resolved, opts.getEditorId());
               })();
-        if (!activate) continue;
+        if (!open) continue;
         links.push({
-          text: text.slice(token.start, token.end),
-          range: {
-            start: { x: token.start + 1, y: bufferLineNumber },
-            end: { x: token.end, y: bufferLineNumber },
-          },
-          decorations: { pointerCursor: true, underline: true },
+          text: lineText.slice(token.start, token.end),
+          // 0-based, half-open — the same indices findLinkTokens reports.
+          // Each backend translates into its own convention.
+          span: { startCol: token.start, endCol: token.end },
           activate(event) {
             if (!event.metaKey) return;
-            activate();
+            open();
           },
         });
       }
-      callback(links.length > 0 ? links : undefined);
+      return links;
     },
-  });
+  };
 }

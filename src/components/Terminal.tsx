@@ -1,14 +1,23 @@
 import { Channel } from "@tauri-apps/api/core";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal as XtermTerminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
+import { useUiStore } from "@/lib/store";
+import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
-import { installTerminalLinks } from "@/lib/terminal/links";
-import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
+import {
+  isSurfaceVisible,
+  parkSurface,
+  TerminalSurfaceCache,
+} from "@/lib/terminal/cache";
+import { createTerminalSurface } from "@/lib/terminal/factory";
+import { createTerminalLinkSource } from "@/lib/terminal/links";
+import type {
+  SurfaceDisposable,
+  TerminalBackendKind,
+  TerminalSurface,
+} from "@/lib/terminal/surface";
+import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
 export interface TerminalProps {
@@ -38,22 +47,19 @@ type TermStatus =
   | null;
 
 /**
- * Workspace agent terminal. Each instance owns a persistent container
- * DIV that stays in the document forever — when the React component
- * unmounts the container is parked in a hidden host so xterm's canvas
- * never leaves the DOM. WebGL keeps its GPU context, scrollback stays,
- * and the next mount just moves the container back into the visible slot.
+ * Workspace agent terminal. Each instance owns a persistent
+ * `TerminalSurface` whose element stays in the document forever — when
+ * the React component unmounts the element is parked offscreen so the
+ * renderer never leaves the DOM. The GPU context survives, scrollback
+ * stays, and the next mount just moves the element back into the visible
+ * slot.
  *
- * Only `disposeMainXterm(workspaceId)` destroys the xterm.
+ * Only `disposeMainTerminal(workspaceId)` destroys the terminal.
  */
 interface CachedMain {
-  term: XtermTerminal;
-  fit: FitAddon;
-  webgl: WebglAddon | null;
-  /** Persistent DOM container — always somewhere in the document. */
-  container: HTMLDivElement;
+  surface: TerminalSurface;
   /** Input/resize handlers — replaced on each remount. */
-  inputDisposables: { dispose(): void }[];
+  inputDisposables: SurfaceDisposable[];
   /** True once openTaskTerminal / loadLog has resolved. */
   started: boolean;
   /** Latest onExit callback (kept fresh across remounts via ref). */
@@ -64,49 +70,15 @@ interface CachedMain {
   /** Set when the PTY exits so a later remount can restore the overlay. */
   exitStatus: { exitCode: number | null } | null;
   /** Read at click time by the link layer — kept fresh across remounts
-   *  (the xterm and its link closures outlive component instances). */
+   *  (the surface and its link closures outlive component instances). */
   linkContext: { cwd: string | null; editorId: string | null };
 }
 
-const mainXtermCache = new Map<string, CachedMain>();
-
-let hiddenHost: HTMLDivElement | null = null;
-function getHiddenHost(): HTMLDivElement {
-  if (!hiddenHost) {
-    hiddenHost = document.createElement("div");
-    hiddenHost.setAttribute("aria-hidden", "true");
-    Object.assign(hiddenHost.style, {
-      position: "fixed",
-      left: "-9999px",
-      top: "0",
-      width: "1px",
-      height: "1px",
-      overflow: "hidden",
-      visibility: "hidden",
-      pointerEvents: "none",
-    });
-    document.body.appendChild(hiddenHost);
-  }
-  return hiddenHost;
-}
+const mainSurfaceCache = new TerminalSurfaceCache<CachedMain>("agent");
 
 /** Public teardown. Called by explicit close paths only. */
-export function disposeMainXterm(workspaceId: string) {
-  const entry = mainXtermCache.get(workspaceId);
-  if (!entry) return;
-  for (const d of entry.inputDisposables) d.dispose();
-  if (entry.webgl) {
-    try {
-      entry.webgl.dispose();
-    } catch {
-      /* noop */
-    }
-  }
-  entry.term.dispose();
-  if (entry.container.parentNode) {
-    entry.container.parentNode.removeChild(entry.container);
-  }
-  mainXtermCache.delete(workspaceId);
+export function disposeMainTerminal(workspaceId: string) {
+  mainSurfaceCache.dispose(workspaceId);
 }
 
 export function Terminal({
@@ -119,7 +91,15 @@ export function Terminal({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const initialStatusRef = useRef(status);
   const { data: settings } = useUserSettings();
+  const theme = useUiStore((s) => s.theme);
   const [termStatus, setTermStatus] = useState<TermStatus>(null);
+  // Which surface this slot is showing, mirrored onto the container as
+  // data-* so e2e can find a terminal and cross-reference the bridge
+  // without knowing anything about the emulator's markup.
+  const [surfaceInfo, setSurfaceInfo] = useState<{
+    kind: TerminalBackendKind;
+    id: string;
+  } | null>(null);
   // Set inside the mount effect so the overlay's Retry/Restart can re-run
   // the PTY without recreating the whole terminal.
   const retryStartRef = useRef<(() => void) | null>(null);
@@ -129,48 +109,31 @@ export function Terminal({
     const mount = mountRef.current;
     if (!mount) return;
 
-    let entry = mainXtermCache.get(workspaceId);
+    let entry = mainSurfaceCache.get(workspaceId);
     const isFresh = !entry;
 
     if (!entry) {
-      const container = document.createElement("div");
-      container.className = "h-full w-full";
-
       // Born at the user's font size (when the query has resolved) so the
       // settings effect below doesn't rewrite fontSize on mount — that
       // write costs a WebGL glyph-atlas rebuild.
-      const term = createXtermTerminal(settings);
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.open(container);
-      let webgl: WebglAddon | null = null;
-      try {
-        webgl = new WebglAddon();
-        term.loadAddon(webgl);
-      } catch {
-        /* canvas fallback */
-      }
+      const surface = createTerminalSurface(settings);
 
-      mount.appendChild(container);
+      mount.appendChild(surface.element);
 
       // Fit synchronously before starting the PTY so the agent process
       // (e.g. `claude`) inherits the real terminal width on launch.
-      // Without this, term defaults to 80×24, the PTY is started at
+      // Without this, the grid defaults to 80×24, the PTY is started at
       // 80×24, and the agent draws its welcome screen narrow even
       // though later refits resize the grid.
-      try {
-        if (container.clientWidth >= 1 && container.clientHeight >= 1) {
-          fit.fit();
-        }
-      } catch {
-        /* layout settling — trailing refits will catch up */
+      if (
+        surface.element.clientWidth >= 1 &&
+        surface.element.clientHeight >= 1
+      ) {
+        surface.fit();
       }
 
       entry = {
-        term,
-        fit,
-        webgl,
-        container,
+        surface,
         inputDisposables: [],
         started: false,
         onExit,
@@ -179,14 +142,16 @@ export function Terminal({
         linkContext: { cwd: null, editorId: null },
       };
       const created = entry;
-      installTerminalLinks(term, {
-        getCwd: () => created.linkContext.cwd,
-        getEditorId: () => created.linkContext.editorId,
-      });
-      mainXtermCache.set(workspaceId, entry);
+      surface.installLinks(
+        createTerminalLinkSource({
+          getCwd: () => created.linkContext.cwd,
+          getEditorId: () => created.linkContext.editorId,
+        }),
+      );
+      mainSurfaceCache.set(workspaceId, entry);
     } else {
-      // Cache hit — move the persistent container back into this mount.
-      mount.appendChild(entry.container);
+      // Cache hit — move the persistent element back into this mount.
+      mount.appendChild(entry.surface.element);
       entry.onExit = onExit;
     }
     entry.linkContext = {
@@ -194,7 +159,8 @@ export function Terminal({
       editorId: settings?.defaultEditor ?? null,
     };
 
-    const term = entry.term;
+    const surface = entry.surface;
+    setSurfaceInfo({ kind: surface.kind, id: surface.id });
     // Route lifecycle updates from the (persistent) PTY channel to the
     // CURRENT mount's React state, so an exit that lands after a remount
     // still reaches the live component instead of a stale setter.
@@ -203,7 +169,7 @@ export function Terminal({
     const wireInteractive = () => {
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [
-        term.onData((data) => {
+        surface.onData((data) => {
           // Routes user keystrokes through the orchestrator's
           // `send_input_to_task` command so the React side speaks
           // task vocabulary end-to-end.
@@ -211,11 +177,11 @@ export function Terminal({
             entry!.setStatus?.({ state: "failed", error: String(err) });
           });
         }),
-        term.onResize(({ rows, cols }) => {
+        surface.onResize(({ rows, cols }) => {
           void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
         }),
       ];
-      term.focus();
+      surface.focus();
     };
 
     const startOrAttach = async (mode: StartMode = "initial") => {
@@ -230,7 +196,7 @@ export function Terminal({
       const channel = new Channel<PtyEvent>();
       channel.onmessage = (event) => {
         if (event.type === "output") {
-          term.write(event.chunk);
+          surface.write(decodePtyChunk(event.chunk));
         } else if (event.type === "exit") {
           entry!.exitStatus = { exitCode: event.exitCode };
           entry!.setStatus?.({ state: "exited", exitCode: event.exitCode });
@@ -241,8 +207,8 @@ export function Terminal({
         await tauri.openTaskTerminal(
           workspaceId,
           channel,
-          term.rows,
-          term.cols,
+          surface.rows,
+          surface.cols,
         );
         entry!.started = true;
         entry!.setStatus?.(null);
@@ -251,7 +217,7 @@ export function Terminal({
         // onResize handler isn't wired during the await, so a resize there
         // is otherwise lost.
         void tauri
-          .resizeTask(workspaceId, term.rows, term.cols)
+          .resizeTask(workspaceId, surface.rows, surface.cols)
           .catch(() => {});
       } catch (err) {
         entry!.setStatus?.({ state: "failed", error: String(err) });
@@ -262,7 +228,9 @@ export function Terminal({
       if (retry) entry!.setStatus?.({ state: "retrying" });
       try {
         const log = await tauri.readTaskLog(workspaceId);
-        term.write(log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n");
+        surface.write(
+          log.length > 0 ? log : "\x1b[2m(no log output)\x1b[0m\r\n",
+        );
         entry!.started = true;
         entry!.setStatus?.(null);
       } catch (err) {
@@ -283,8 +251,8 @@ export function Terminal({
       }
     } else {
       // Cache hit — the PTY (and its channel) are still live and writing to
-      // the persistent xterm. Restore the exit overlay if the process ended
-      // while this workspace was away; otherwise re-wire input against it.
+      // the persistent surface. Restore the exit overlay if the process
+      // ended while this workspace was away; otherwise re-wire input.
       retryStartRef.current = () => void startOrAttach("retry");
       restartRef.current = () => void startOrAttach("restart");
       if (entry.exitStatus) {
@@ -295,38 +263,15 @@ export function Terminal({
     }
 
     const refit = () => {
-      try {
-        const c = entry!.container;
-        // Skip when hidden — fit on a 0×0 container collapses xterm to
-        // a 1×1 grid and the WebGL canvas gets stuck rendering into a
-        // tiny region even after the tab becomes visible again. The
-        // offscreen park host is 1px, so guard on < 2 (not < 1) so a
-        // parked container isn't treated as visible.
-        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
-        entry!.fit.fit();
-        if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
-      } catch {
-        /* layout settling */
-      }
+      // Skip when hidden — see isSurfaceVisible.
+      if (!isSurfaceVisible(surface.element)) return;
+      surface.fit();
     };
-    // After the canvas is reparented out of the offscreen park host on a
-    // same-size workspace switch, fit() no-ops (cols/rows unchanged) and
-    // a bare refresh() never resets the reparented WebGL canvas → blank
-    // until some resize forces it (which is why toggling a sidebar
-    // fixes it). clearTextureAtlas() resets the atlas + glyph model and
-    // redraws WITHOUT a resize (no spurious PTY reflow) — reproducing
-    // the sidebar-toggle cure. One-shot only; NOT inside refit (which
-    // fires on every resize tick and would thrash the atlas on drags).
+    // One-shot full redraw after a re-parent; see TerminalSurface.repaint.
+    // NOT inside refit (which fires on every resize tick).
     const forceRepaint = () => {
-      try {
-        const c = entry!.container;
-        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
-        if (entry!.webgl) entry!.webgl.clearTextureAtlas();
-        else if (entry!.term.rows > 0)
-          entry!.term.refresh(0, entry!.term.rows - 1);
-      } catch {
-        /* renderer paused / layout settling */
-      }
+      if (!isSurfaceVisible(surface.element)) return;
+      surface.repaint();
     };
     const rafId = requestAnimationFrame(() => {
       refit();
@@ -351,7 +296,7 @@ export function Terminal({
     window.addEventListener("resize", onWindowResize);
 
     const resizeObserver = new ResizeObserver(refit);
-    resizeObserver.observe(entry.container);
+    resizeObserver.observe(surface.element);
 
     return () => {
       cancelAnimationFrame(rafId);
@@ -363,55 +308,59 @@ export function Terminal({
       // Stop routing channel updates to this (unmounting) instance — a
       // later mount re-points it and restores state from `exitStatus`.
       if (entry!.setStatus === setTermStatus) entry!.setStatus = null;
-      // Park the persistent container in the hidden host so the canvas
-      // stays in the document — preserves the WebGL GPU context.
-      getHiddenHost().appendChild(entry!.container);
+      // Park the persistent element offscreen so the canvas stays in the
+      // document — preserves the WebGL GPU context.
+      parkSurface(entry!.surface);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
   useEffect(() => {
-    const entry = mainXtermCache.get(workspaceId);
+    const entry = mainSurfaceCache.get(workspaceId);
     if (!entry) return;
     entry.linkContext.editorId = settings?.defaultEditor ?? null;
-    applyXtermSettings(entry.term, settings);
-    try {
-      entry.fit.fit();
-      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
-    } catch {
-      /* layout settling */
-    }
+    entry.surface.applySettings(settings);
+    entry.surface.fit();
   }, [settings, workspaceId]);
 
+  // Colours come from CSS custom properties read at call time, so a theme
+  // flip has to push them into the terminal — the emulator has already
+  // rasterized its own copy. Diffed inside the surface, so the mount-time
+  // run is a no-op.
+  useEffect(() => {
+    const entry = mainSurfaceCache.get(workspaceId);
+    if (!entry) return;
+    entry.surface.applyTheme(readTerminalTheme());
+  }, [theme, workspaceId]);
+
   // When the tab becomes visible (display: none → block), the browser
-  // has just laid out the container — fit + refresh synchronously here
+  // has just laid out the container — fit + repaint synchronously here
   // so the first frame after the visibility flip uses correct
   // dimensions. Prevents the squeezed-to-strip render after a tab
   // switch in. ResizeObserver alone fires on a later tick; doing this
   // synchronously in useLayoutEffect avoids the flicker frame.
   useLayoutEffect(() => {
-    if (!visible) return;
-    const entry = mainXtermCache.get(workspaceId);
+    const entry = mainSurfaceCache.get(workspaceId);
     if (!entry) return;
-    try {
-      const c = entry.container;
-      if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
-      entry.fit.fit();
-      // Reset the reparented WebGL canvas (see forceRepaint above) so an
-      // inner-tab visibility flip repaints without needing a resize.
-      if (entry.webgl) entry.webgl.clearTextureAtlas();
-      else if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
-    } catch {
-      /* layout still settling */
-    }
+    // Finer-grained than mount: this tab stays mounted when it is not the
+    // active one, so a `display: none` terminal must be told it is
+    // inactive too — ghostty-web's free-running frame loop would otherwise
+    // render every hidden tab, forever.
+    entry.surface.setActive(visible);
+    if (!visible) return;
+    if (!isSurfaceVisible(entry.surface.element)) return;
+    entry.surface.fit();
+    // Reset the re-parented canvas so an inner-tab visibility flip
+    // repaints without needing a resize.
+    entry.surface.repaint();
   }, [visible, workspaceId]);
 
   return (
     <div
-      onClick={() => {
-        const buf = mountRef.current?.querySelector("textarea");
-        (buf as HTMLTextAreaElement | null)?.focus();
-      }}
+      onClick={() => mainSurfaceCache.get(workspaceId)?.surface.focus()}
+      data-testid="terminal-surface"
+      data-terminal-kind={surfaceInfo?.kind}
+      data-terminal-id={surfaceInfo?.id}
       className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
       style={{
         display: visible ? "block" : "none",

@@ -23,8 +23,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
-      # `pnpm test` skipped — re-enable once test files exist.
-      # - run: pnpm test
+      - run: pnpm test
 
   rust:
     name: Rust — check + test
@@ -46,3 +45,37 @@ jobs:
             libsoup-3.0-dev
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  vt:
+    name: Rust — VT engine (vt-alacritty)
+    runs-on: ubuntu-latest
+    # `src-tauri/src/vt` is feature-gated and NOT in the default build, so the
+    # job above never compiles it. Without this, the engine could break on a
+    # PR that never touches it and nobody would find out until someone turned
+    # the feature on.
+    #
+    # The corpus tests in `vt/conformance.rs` are no-ops here on purpose: they
+    # read `~/Library/Application Support/sh.phasr.desktop/logs`, which only
+    # exists on a machine phasr has actually run on. CI proves it compiles and
+    # that the synthetic conformance holds; the real evidence is local.
+    #
+    # If `vt-ghostty` is ever implemented it needs its own job on `macos-14`
+    # with Zig 0.16.x on PATH — `libghostty-vt` builds Ghostty from source and
+    # needs the toolchain for `cargo check`, not just for a release build.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Linux deps for tauri-build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --features vt-alacritty
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --features vt-alacritty vt::
