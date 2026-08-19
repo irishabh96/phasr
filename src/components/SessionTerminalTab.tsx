@@ -1,15 +1,23 @@
 import { Channel } from "@tauri-apps/api/core";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal as XtermTerminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
+import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
-import { installTerminalLinks } from "@/lib/terminal/links";
-import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
+import {
+  isSurfaceVisible,
+  parkSurface,
+  TerminalSurfaceCache,
+} from "@/lib/terminal/cache";
+import { createTerminalSurface } from "@/lib/terminal/factory";
+import { createTerminalLinkSource } from "@/lib/terminal/links";
+import type {
+  SurfaceDisposable,
+  TerminalBackendKind,
+  TerminalSurface,
+} from "@/lib/terminal/surface";
+import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent } from "@/lib/types";
 
 type StartMode = "initial" | "retry" | "restart";
@@ -41,28 +49,22 @@ interface SessionTerminalTabProps {
 }
 
 /**
- * In-app shell terminal. Each instance owns a persistent container DIV
- * that stays in the document forever — when the React component
- * unmounts (route swap, tab visibility flip, HMR) the container is
- * parked in a hidden offscreen host so xterm's canvas never leaves the
- * DOM. WebGL keeps its GPU context, scrollback stays, and the next
- * mount just moves the container back into the visible slot.
+ * In-app shell terminal. Each instance owns a persistent
+ * `TerminalSurface` whose element stays in the document forever — when
+ * the React component unmounts (route swap, tab visibility flip, HMR) the
+ * element is parked in the shared offscreen host so the renderer never
+ * leaves the DOM. The GPU context survives, scrollback stays, and the next
+ * mount just moves the element back into the visible slot.
  *
- * Only the explicit `disposeSessionXterm(tabId)` call (close-tab,
- * close-workspace, ⌘W on a terminal pill) destroys the xterm.
+ * Only the explicit `disposeSessionTerminal(tabId)` call (close-tab,
+ * close-workspace, ⌘W on a terminal pill) destroys the terminal.
  */
 interface CachedSession {
-  term: XtermTerminal;
-  fit: FitAddon;
-  webgl: WebglAddon | null;
-  /** Persistent DOM container that hosts the xterm canvas. Lives in
-   *  either a workspace's mount slot or the hidden host — never
-   *  detached from the document. */
-  container: HTMLDivElement;
+  surface: TerminalSurface;
   channel: Channel<PtyEvent>;
   sessionId: string | null;
   /** Input/resize handlers — replaced on each remount. */
-  inputDisposables: { dispose(): void }[];
+  inputDisposables: SurfaceDisposable[];
   /** Read at click time by the link layer — kept fresh across remounts. */
   linkContext: { cwd: string | null; editorId: string | null };
   /** Latest mount's status setter — lets the persistent channel reach the
@@ -72,45 +74,11 @@ interface CachedSession {
   exitStatus: { exitCode: number | null } | null;
 }
 
-const sessionXtermCache = new Map<string, CachedSession>();
-
-let hiddenHost: HTMLDivElement | null = null;
-function getHiddenHost(): HTMLDivElement {
-  if (!hiddenHost) {
-    hiddenHost = document.createElement("div");
-    hiddenHost.setAttribute("aria-hidden", "true");
-    Object.assign(hiddenHost.style, {
-      position: "fixed",
-      left: "-9999px",
-      top: "0",
-      width: "1px",
-      height: "1px",
-      overflow: "hidden",
-      visibility: "hidden",
-      pointerEvents: "none",
-    });
-    document.body.appendChild(hiddenHost);
-  }
-  return hiddenHost;
-}
+const sessionSurfaceCache = new TerminalSurfaceCache<CachedSession>("shell");
 
 /** Public teardown. Called when the user explicitly closes a terminal tab. */
-export function disposeSessionXterm(tabId: string) {
-  const entry = sessionXtermCache.get(tabId);
-  if (!entry) return;
-  for (const d of entry.inputDisposables) d.dispose();
-  if (entry.webgl) {
-    try {
-      entry.webgl.dispose();
-    } catch {
-      /* noop */
-    }
-  }
-  entry.term.dispose();
-  if (entry.container.parentNode) {
-    entry.container.parentNode.removeChild(entry.container);
-  }
-  sessionXtermCache.delete(tabId);
+export function disposeSessionTerminal(tabId: string) {
+  sessionSurfaceCache.dispose(tabId);
 }
 
 export function SessionTerminalTab({
@@ -124,7 +92,13 @@ export function SessionTerminalTab({
 }: SessionTerminalTabProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const { data: settings } = useUserSettings();
+  const theme = useUiStore((s) => s.theme);
   const [status, setStatus] = useState<TermStatus>(null);
+  // See Terminal.tsx — mirrored onto the container for e2e.
+  const [surfaceInfo, setSurfaceInfo] = useState<{
+    kind: TerminalBackendKind;
+    id: string;
+  } | null>(null);
   const retryStartRef = useRef<(() => void) | null>(null);
   const restartRef = useRef<(() => void) | null>(null);
   const setInnerTabPtySession = useUiStore((s) => s.setInnerTabPtySession);
@@ -140,48 +114,31 @@ export function SessionTerminalTab({
     const mount = mountRef.current;
     if (!mount) return;
 
-    let entry = sessionXtermCache.get(tabId);
+    let entry = sessionSurfaceCache.get(tabId);
     const isFresh = !entry;
 
     if (!entry) {
-      // Fresh — create the persistent container and open xterm in it.
-      const container = document.createElement("div");
-      container.className = "h-full w-full";
-
+      // Fresh — create the persistent surface and mount its element.
       // Born at the user's font size — see Terminal.tsx for why.
-      const term = createXtermTerminal(settings);
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.open(container);
-      let webgl: WebglAddon | null = null;
-      try {
-        webgl = new WebglAddon();
-        term.loadAddon(webgl);
-      } catch {
-        /* canvas fallback */
-      }
+      const surface = createTerminalSurface(settings);
 
-      mount.appendChild(container);
+      mount.appendChild(surface.element);
 
-      // Fit synchronously now that the container is in the DOM so the
+      // Fit synchronously now that the element is in the DOM so the
       // PTY is started at the real terminal width — otherwise the
-      // shell (and anything it spawns, like `claude`) inherits xterm's
+      // shell (and anything it spawns, like `claude`) inherits the
       // 80×24 defaults and draws its welcome screen at the narrow
       // width even after later resizes.
-      try {
-        if (container.clientWidth >= 1 && container.clientHeight >= 1) {
-          fit.fit();
-        }
-      } catch {
-        /* layout settling — trailing refits will catch up */
+      if (
+        surface.element.clientWidth >= 1 &&
+        surface.element.clientHeight >= 1
+      ) {
+        surface.fit();
       }
 
       const channel = new Channel<PtyEvent>();
       entry = {
-        term,
-        fit,
-        webgl,
-        container,
+        surface,
         channel,
         sessionId: ptySessionId ?? null,
         inputDisposables: [],
@@ -190,45 +147,48 @@ export function SessionTerminalTab({
         linkContext: { cwd: null, editorId: null },
       };
       const created = entry;
-      installTerminalLinks(term, {
-        getCwd: () => created.linkContext.cwd,
-        getEditorId: () => created.linkContext.editorId,
-      });
-      sessionXtermCache.set(tabId, entry);
+      surface.installLinks(
+        createTerminalLinkSource({
+          getCwd: () => created.linkContext.cwd,
+          getEditorId: () => created.linkContext.editorId,
+        }),
+      );
+      sessionSurfaceCache.set(tabId, entry);
 
       channel.onmessage = (event) => {
         if (event.type === "output") {
-          term.write(event.chunk);
+          surface.write(decodePtyChunk(event.chunk));
         } else if (event.type === "exit") {
-          entry!.exitStatus = { exitCode: event.exitCode };
-          entry!.setStatus?.({ state: "exited", exitCode: event.exitCode });
+          created.exitStatus = { exitCode: event.exitCode };
+          created.setStatus?.({ state: "exited", exitCode: event.exitCode });
         }
       };
     } else {
-      // Cache hit — move the persistent container back into this mount.
+      // Cache hit — move the persistent element back into this mount.
       // appendChild moves the node from wherever it currently lives
-      // (hidden host, or a previous mount) without disposing anything.
-      mount.appendChild(entry.container);
+      // (park host, or a previous mount) without disposing anything.
+      mount.appendChild(entry.surface.element);
     }
 
-    const term = entry.term;
+    const surface = entry.surface;
     const channel = entry.channel;
+    setSurfaceInfo({ kind: surface.kind, id: surface.id });
     entry.setStatus = setStatus;
     entry.linkContext.cwd = cwd ?? null;
 
     const wireInteractive = (id: string) => {
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [
-        term.onData((data) => {
+        surface.onData((data) => {
           void tauri.sendSessionInput(id, data).catch((err) => {
             entry!.setStatus?.({ state: "failed", error: String(err) });
           });
         }),
-        term.onResize(({ rows, cols }) => {
+        surface.onResize(({ rows, cols }) => {
           void tauri.resizeSession(id, rows, cols).catch(() => {});
         }),
       ];
-      term.focus();
+      surface.focus();
     };
 
     const start = async (mode: StartMode = "initial") => {
@@ -244,8 +204,8 @@ export function SessionTerminalTab({
         const id = await tauri.startSessionTerminal(
           cwd,
           channel,
-          term.rows,
-          term.cols,
+          surface.rows,
+          surface.cols,
           initialCommand,
         );
         entry!.sessionId = id;
@@ -255,7 +215,9 @@ export function SessionTerminalTab({
         // Catch any fit() that fired between start request and reply — the
         // onResize handler isn't wired during the await, so a resize there
         // is otherwise lost.
-        void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
+        void tauri
+          .resizeSession(id, surface.rows, surface.cols)
+          .catch(() => {});
       } catch (err) {
         entry!.setStatus?.({ state: "failed", error: String(err) });
       }
@@ -266,7 +228,9 @@ export function SessionTerminalTab({
         await tauri.attachSessionTerminal(id, channel);
         entry!.setStatus?.(null);
         wireInteractive(id);
-        void tauri.resizeSession(id, term.rows, term.cols).catch(() => {});
+        void tauri
+          .resizeSession(id, surface.rows, surface.cols)
+          .catch(() => {});
       } catch {
         // Previous shell is gone — spin up a fresh one (start() shows the
         // "Starting…" overlay in place of the old raw-ANSI note).
@@ -295,35 +259,15 @@ export function SessionTerminalTab({
     }
 
     const refit = () => {
-      try {
-        const c = entry!.container;
-        // Skip when hidden — fit on a 0×0 container collapses xterm to
-        // a 1×1 grid and the WebGL canvas gets stuck rendering into a
-        // tiny region even after the tab becomes visible again. The
-        // offscreen park host is 1px, so guard on < 2 (not < 1) so a
-        // parked container isn't treated as visible.
-        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
-        entry!.fit.fit();
-        if (entry!.term.rows > 0) entry!.term.refresh(0, entry!.term.rows - 1);
-      } catch {
-        /* layout settling */
-      }
+      // Skip when hidden — see isSurfaceVisible.
+      if (!isSurfaceVisible(surface.element)) return;
+      surface.fit();
     };
-    // See Terminal.tsx — after the canvas is reparented out of the
-    // offscreen park host on a same-size switch, fit() no-ops and a bare
-    // refresh() leaves the reparented WebGL canvas blank. clearTextureAtlas()
-    // resets the atlas + glyph model and redraws without a resize. One-shot
-    // only; NOT inside refit (which fires on every resize tick).
+    // See Terminal.tsx — one-shot full redraw after a re-parent, never on
+    // a resize tick.
     const forceRepaint = () => {
-      try {
-        const c = entry!.container;
-        if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
-        if (entry!.webgl) entry!.webgl.clearTextureAtlas();
-        else if (entry!.term.rows > 0)
-          entry!.term.refresh(0, entry!.term.rows - 1);
-      } catch {
-        /* renderer paused / layout settling */
-      }
+      if (!isSurfaceVisible(surface.element)) return;
+      surface.repaint();
     };
     const rafId = requestAnimationFrame(() => {
       refit();
@@ -344,7 +288,7 @@ export function SessionTerminalTab({
     window.addEventListener("resize", onWindowResize);
 
     const resizeObserver = new ResizeObserver(refit);
-    resizeObserver.observe(entry.container);
+    resizeObserver.observe(surface.element);
 
     return () => {
       cancelAnimationFrame(rafId);
@@ -356,55 +300,54 @@ export function SessionTerminalTab({
       // Stop routing channel updates to this (unmounting) instance — a
       // later mount re-points it and restores state from `exitStatus`.
       if (entry!.setStatus === setStatus) entry!.setStatus = null;
-      // Park the persistent container in the hidden host so the canvas
-      // stays in the document — preserves the WebGL GPU context.
-      getHiddenHost().appendChild(entry!.container);
+      // Park the persistent element offscreen so the canvas stays in the
+      // document — preserves the WebGL GPU context.
+      parkSurface(entry!.surface);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, repositoryId, tabId, cwd, initialCommand]);
 
   useEffect(() => {
-    const entry = sessionXtermCache.get(tabId);
+    const entry = sessionSurfaceCache.get(tabId);
     if (!entry) return;
     entry.linkContext.editorId = settings?.defaultEditor ?? null;
-    applyXtermSettings(entry.term, settings);
-    try {
-      entry.fit.fit();
-      if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
-    } catch {
-      /* layout settling */
-    }
+    entry.surface.applySettings(settings);
+    entry.surface.fit();
   }, [settings, tabId]);
 
+  // See Terminal.tsx — a theme flip has to be pushed into the emulator,
+  // which holds its own rasterized copy of the palette.
+  useEffect(() => {
+    const entry = sessionSurfaceCache.get(tabId);
+    if (!entry) return;
+    entry.surface.applyTheme(readTerminalTheme());
+  }, [theme, tabId]);
+
   // When the tab becomes visible (display: none → block), the browser
-  // has just laid out the container — fit + refresh synchronously here
+  // has just laid out the container — fit + repaint synchronously here
   // so the first frame after the visibility flip uses correct
   // dimensions. Prevents the squeezed-to-strip render after a tab
   // switch in. ResizeObserver alone fires on a later tick; doing this
   // synchronously in useLayoutEffect avoids the flicker frame.
   useLayoutEffect(() => {
-    if (!visible) return;
-    const entry = sessionXtermCache.get(tabId);
+    const entry = sessionSurfaceCache.get(tabId);
     if (!entry) return;
-    try {
-      const c = entry.container;
-      if (!c.isConnected || c.clientWidth < 2 || c.clientHeight < 2) return;
-      entry.fit.fit();
-      // Reset the reparented WebGL canvas (see forceRepaint above) so an
-      // inner-tab visibility flip repaints without needing a resize.
-      if (entry.webgl) entry.webgl.clearTextureAtlas();
-      else if (entry.term.rows > 0) entry.term.refresh(0, entry.term.rows - 1);
-    } catch {
-      /* layout still settling */
-    }
+    // See Terminal.tsx — a mounted-but-hidden tab must be inactive too.
+    entry.surface.setActive(visible);
+    if (!visible) return;
+    if (!isSurfaceVisible(entry.surface.element)) return;
+    entry.surface.fit();
+    // Reset the re-parented canvas so an inner-tab visibility flip
+    // repaints without needing a resize.
+    entry.surface.repaint();
   }, [visible, tabId]);
 
   return (
     <div
-      onClick={() => {
-        const buf = mountRef.current?.querySelector("textarea");
-        (buf as HTMLTextAreaElement | null)?.focus();
-      }}
+      onClick={() => sessionSurfaceCache.get(tabId)?.surface.focus()}
+      data-testid="terminal-surface"
+      data-terminal-kind={surfaceInfo?.kind}
+      data-terminal-id={surfaceInfo?.id}
       style={{
         display: visible ? "block" : "none",
         paddingTop: 8,

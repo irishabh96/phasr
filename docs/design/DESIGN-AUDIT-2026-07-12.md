@@ -124,7 +124,7 @@ System Architect** (they touch shared primitives + `[data-theme="light"]` tokens
 - Native `title` vs GlassTooltip — `$workspaceId.tsx:191`, `RunCommandsSection.tsx:201`. [OVERLAP: A2]
 - ChangesToggle h-7-in-40px + hardcoded ⌘J — `$workspaceId.tsx:191-193`. [OVERLAP: A3/A4]
 - Off-token padding/radius/duration (10/8/2/16, `rounded-[14px]`, `duration-[220ms]`). [NEW → systemic #8]
-- Live theme switch doesn't re-theme mounted terminals — `xterm.ts:58`. [NEW — verify in-app]
+- Live theme switch doesn't re-theme mounted terminals — `the previous engine.ts:58`. [NEW — verify in-app]
 - Error-detail/loading text fail AA light — `TerminalStartError.tsx:28` (4.36:1), `$workspaceId.tsx:95`. [NEW → T4]
 
 **🟢 Polish:** run-cmd name no truncate, terminal focus affordance mouse-only, count badge no `99+` cap, mixed border tokens, aria-hidden during collapse.

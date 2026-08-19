@@ -61,7 +61,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, common commands, and 
 - **Frontend**: React 19 + Vite + Tailwind v4
 - **Router / data**: TanStack Router + Query, Zustand
 - **Local DB**: SQLite via `sqlx`
-- **Terminals**: xterm.js + WebGL renderer, backed by a per-workspace PTY in Rust
+- **Terminals**: ghostty-web (libghostty-vt via WebAssembly), backed by a per-workspace PTY in Rust
 - **Auth + cloud sync**: Clerk + Supabase, required at runtime
 
 ## Releases

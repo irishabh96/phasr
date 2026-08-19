@@ -6,8 +6,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { disposeMainXterm } from "@/components/Terminal";
-import { disposeSessionXterm } from "@/components/SessionTerminalTab";
+import { disposeMainTerminal } from "@/components/Terminal";
+import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
@@ -92,9 +92,9 @@ export function WorkspaceInnerTabBar({
                     .stopSessionTerminal(closed.ptySessionId)
                     .catch(() => {});
                 }
-                disposeSessionXterm(closed.id);
+                disposeSessionTerminal(closed.id);
               } else if (closed.kind === "main") {
-                disposeMainXterm(workspaceId);
+                disposeMainTerminal(workspaceId);
               }
               const remainingTabs =
                 useUiStore.getState().innerTabs[workspaceId]?.tabs.length ?? 0;

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { disposeSessionXterm } from "@/components/SessionTerminalTab";
-import { disposeMainXterm } from "@/components/Terminal";
+import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
+import { disposeMainTerminal } from "@/components/Terminal";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -76,10 +76,10 @@ export function useDeleteRepository() {
       for (const ws of workspaces) {
         store.innerTabs[ws.id]?.tabs.forEach((t) =>
           t.kind === "terminal"
-            ? disposeSessionXterm(t.id)
-            : disposeMainXterm(ws.id),
+            ? disposeSessionTerminal(t.id)
+            : disposeMainTerminal(ws.id),
         );
-        disposeMainXterm(ws.id);
+        disposeMainTerminal(ws.id);
       }
       store.forgetRepository(
         id,

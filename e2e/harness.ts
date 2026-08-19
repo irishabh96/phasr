@@ -397,6 +397,17 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   };
 }
 
+/**
+ * There is one emulator (ADR-002 — the previous engine was removed after
+ * ghostty-web had been used in anger). `expectBackend` survives that because a
+ * terminal that fails to construct leaves the mount empty rather than
+ * throwing, and every terminal spec below is meaningless if that happens.
+ */
+export interface BootOptions {
+  /** Reserved for the next engine swap; nothing reads it today. */
+  backend?: never;
+}
+
 export async function bootApp(page: Page, fixtures = makeFixtures()) {
   const errors: string[] = [];
   page.on("console", (m) => {
@@ -406,6 +417,17 @@ export async function bootApp(page: Page, fixtures = makeFixtures()) {
   await page.addInitScript(installMock, fixtures);
   await page.goto("/");
   return { errors };
+}
+
+/**
+ * Wait until a real emulator has been built into the visible mount. The
+ * attribute is only set once the surface exists, so this doubles as "the
+ * terminal is ready" for every spec that then writes to it.
+ */
+export async function expectBackend(page: Page, backend = "ghostty") {
+  await expect(terminal(page)).toHaveAttribute("data-terminal-kind", backend, {
+    timeout: 20_000,
+  });
 }
 
 export const calls = (page: Page) =>
@@ -418,6 +440,33 @@ export const emit = (page: Page, event: string, payload: unknown) =>
   page.evaluate(([e, p]) => (window as any).__E2E__.emit(e, p), [event, payload] as const);
 export const pty = (page: Page, key: string, msg: unknown) =>
   page.evaluate(([k, m]) => (window as any).__E2E__.pty(k, m), [key, msg] as const);
+
+/**
+ * Emit PTY output. **Use this instead of hand-building `{type:"output"}`** —
+ * the wire encoding of `chunk` is a backend detail, and every spec that
+ * spelled it out inline had to be edited by hand when it changed. This is
+ * the single place that knows.
+ */
+export const ptyOut = (page: Page, key: string, text: string) =>
+  pty(page, key, { type: "output", chunk: encodeChunk(text) });
+
+/** Feed many chunks inside ONE round trip — for throughput probes, where
+ *  per-`evaluate` overhead would otherwise swamp what is being measured. */
+export const ptyBurst = (page: Page, key: string, texts: string[]) =>
+  page.evaluate(
+    ([k, chunks]) => {
+      for (const chunk of chunks as string[]) {
+        (window as any).__E2E__.pty(k, { type: "output", chunk });
+      }
+    },
+    [key, texts.map(encodeChunk)] as const,
+  );
+
+/** `PtyEvent.output.chunk` is base64 of the PTY's raw bytes — see
+ *  `src/lib/ptyChunk.ts`. Specs pass plain text and this encodes it. */
+function encodeChunk(text: string): string {
+  return Buffer.from(text, "utf8").toString("base64");
+}
 export const setResponse = (page: Page, cmd: string, val: unknown) =>
   page.evaluate(([c, v]) => (window as any).__E2E__.setResponse(c, v), [cmd, val] as const);
 
@@ -426,4 +475,120 @@ export async function waitForCall(page: Page, cmd: string, timeout = 5000) {
   await expect
     .poll(async () => (await callNames(page)).includes(cmd), { timeout })
     .toBe(true);
+}
+
+// ---------------------------------------------------------------------------
+// Terminal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * The one visible terminal. Specs used to reach for the emulator's own class
+ * names, which pinned them to its markup; `data-testid` is set by all three terminal
+ * components and survives a backend swap. `visible: true` matters because
+ * the workspace mounts EVERY inner tab and hides the inactive ones with
+ * `display: none` — `.first()` alone can resolve to a hidden one.
+ */
+export const terminal = (page: Page) =>
+  page.getByTestId("terminal-surface").filter({ visible: true }).first();
+
+/**
+ * Mirror of `src/lib/terminal/bridge.ts`'s DEV-only global. Declared here
+ * rather than imported because `tsconfig.json` only includes `src`, so this
+ * directory is transpiled but never typechecked against it.
+ */
+interface TerminalBridge {
+  ids(): string[];
+  grid(id: string): { rows: number; cols: number } | null;
+  cellRect(
+    id: string,
+    col: number,
+    row: number,
+  ): { x: number; y: number; width: number; height: number } | null;
+  lineText(id: string, row: number): string | null;
+  backend(id: string): string | null;
+}
+
+const BRIDGE = "__PHASR_TERM__";
+
+/**
+ * Locate a cell's click point by the text on its line, via the DEV-only
+ * `window.__PHASR_TERM__` bridge. Replaces dividing a bounding box by
+ * hardcoded grid dimensions, which was wrong at any other viewport size and
+ * failed silently when it was.
+ *
+ * `row` is viewport-relative for the rect and buffer-absolute for the text
+ * (mirroring `TerminalSurface`); they coincide until something scrolls off,
+ * and `expectLine` makes a mismatch fail loudly instead of silently
+ * clicking the wrong character.
+ */
+export async function cellPoint(
+  page: Page,
+  col: number,
+  row: number,
+  expectLine: string,
+): Promise<{ x: number; y: number }> {
+  return page.evaluate(
+    ([bridgeKey, col, row, expectLine]) => {
+      const bridge = (window as any)[bridgeKey as string] as
+        | TerminalBridge
+        | undefined;
+      if (!bridge) throw new Error(`${bridgeKey} missing (not a DEV build?)`);
+      for (const id of bridge.ids()) {
+        const line = bridge.lineText(id, row as number);
+        if (!line?.includes(expectLine as string)) continue;
+        const r = bridge.cellRect(id, col as number, row as number);
+        if (!r) throw new Error(`no cell ${col},${row} on ${id}`);
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      }
+      const seen = bridge
+        .ids()
+        .map(
+          (id) => `${id}: ${JSON.stringify(bridge.lineText(id, row as number))}`,
+        )
+        .join(" | ");
+      throw new Error(
+        `no terminal has ${JSON.stringify(expectLine)} on row ${row}. Saw: ${seen}`,
+      );
+    },
+    [BRIDGE, col, row, expectLine] as const,
+  );
+}
+
+/** Grid of the first live surface — `null` if the bridge sees no terminal. */
+export const terminalGrid = (page: Page) =>
+  page.evaluate((bridgeKey) => {
+    const bridge = (window as any)[bridgeKey] as TerminalBridge | undefined;
+    const id = bridge?.ids()[0];
+    return id ? bridge!.grid(id) : null;
+  }, BRIDGE);
+
+/**
+ * One ~32 KiB burst of agent-TUI repaint traffic: absolute cursor moves, SGR
+ * colour runs, clear-to-EOL, box drawing and a spinner - i.e. dense in bytes
+ * that JSON has to escape and that a byte-native emulator would rather have
+ * raw. Deterministic in `seed` so before/after runs feed identical bytes.
+ *
+ * Calibrated against 49 MB of real phasr PTY logs: agent TUI streams cost
+ * 1.355-1.461x their raw size once serde_json has escaped them (base64 is a
+ * flat 1.333x). This frame lands at 1.423x, i.e. inside that band rather
+ * than at the flattering end of it.
+ */
+export function tuiFrame(seed: number): string {
+  const spin = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827";
+  const out: string[] = [];
+  for (let row = 1; row <= 220; row++) {
+    const n = (seed * 220 + row) % 1000;
+    out.push(
+      `\x1b[${(row % 40) + 1};1H` +
+        `\x1b[2K` +
+        `\x1b[38;5;${n % 256}m\u2502\x1b[0m ` +
+        `${spin[n % spin.length]} ` +
+        `\x1b[1mfile ${n}\x1b[22m ` +
+        `\x1b[7m ${n % 100}% \x1b[27m ` +
+        `\x1b[38;5;244m src/lib/module_${n}.ts\x1b[39m ` +
+        `\x1b[38;5;${(n * 7) % 256}m\u2500\u2500\x1b[0m ` +
+        `${"tokens ".repeat(3)}${n}\x1b[K`,
+    );
+  }
+  return out.join("");
 }

@@ -362,7 +362,7 @@ Small items that compound into "this tool feels considered":
 - **Restart on finished run-commands** (WS-D4) and a live status pulse so a completed run
   command isn't a static dot with no next action.
 - **Live theme re-theming of mounted terminals** (R2-N5) — verify a theme switch repaints
-  open xterms, so the app never looks half-dressed after toggling.
+  open terminals, so the app never looks half-dressed after toggling.
 
 ---
 

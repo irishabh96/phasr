@@ -5,7 +5,7 @@
  * file-drop handler (`useFileDrop`) calls it to drop a path at the
  * caret. Kept out of the zustand store on purpose — this is imperative
  * and must not trigger re-renders. Mirrors the module-singleton style
- * of `disposeMainXterm` / `disposeSessionXterm`.
+ * of `disposeMainTerminal` / `disposeSessionTerminal`.
  */
 type Inserter = (text: string) => void;
 

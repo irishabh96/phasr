@@ -124,7 +124,7 @@ describe("itermSequenceFor — hello.itermkeymap parity", () => {
   });
 
   it("leaves unmapped combos to their default handling", () => {
-    // Plain keys — xterm's own encoder owns these.
+    // Plain keys — the emulator's own encoder owns these.
     expect(itermSequenceFor(keydown("Enter"))).toBeNull();
     expect(itermSequenceFor(keydown("Backspace"))).toBeNull();
     expect(itermSequenceFor(keydown("ArrowLeft"))).toBeNull();

@@ -7,6 +7,11 @@ settings:
 overrides:
   '@radix-ui/react-dismissable-layer': 1.1.19
 
+patchedDependencies:
+  ghostty-web@0.4.0:
+    hash: afspbnzziziec5wv7mjpxrwxcy
+    path: patches/ghostty-web@0.4.0.patch
+
 dependencies:
   '@clerk/react':
     specifier: ^6.6.6
@@ -62,15 +67,6 @@ dependencies:
   '@tauri-apps/plugin-opener':
     specifier: ^2
     version: 2.5.4
-  '@xterm/addon-fit':
-    specifier: ^0.11.0
-    version: 0.11.0
-  '@xterm/addon-webgl':
-    specifier: ^0.19.0
-    version: 0.19.0
-  '@xterm/xterm':
-    specifier: ^6.0.0
-    version: 6.0.0
   class-variance-authority:
     specifier: ^0.7.1
     version: 0.7.1
@@ -80,6 +76,9 @@ dependencies:
   cmdk:
     specifier: ^1.1.1
     version: 1.1.1(@types/react-dom@19.2.3)(@types/react@19.2.14)(react-dom@19.2.6)(react@19.2.6)
+  ghostty-web:
+    specifier: 0.4.0
+    version: 0.4.0(patch_hash=afspbnzziziec5wv7mjpxrwxcy)
   lucide-react:
     specifier: ^0.451.0
     version: 0.451.0(react@19.2.6)
@@ -2936,18 +2935,6 @@ packages:
       tinyrainbow: 1.2.0
     dev: true
 
-  /@xterm/addon-fit@0.11.0:
-    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
-    dev: false
-
-  /@xterm/addon-webgl@0.19.0:
-    resolution: {integrity: sha512-b3fMOsyLVuCeNJWxolACEUED0vm7qC0cy4wRvf3oURSzDTYVQiGPhTnhWZwIHdvC48Y+oLhvYXnY4XDXPoJo6A==}
-    dev: false
-
-  /@xterm/xterm@6.0.0:
-    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
-    dev: false
-
   /agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
@@ -3451,6 +3438,11 @@ packages:
       dunder-proto: 1.0.1
       es-object-atoms: 1.1.1
     dev: true
+
+  /ghostty-web@0.4.0(patch_hash=afspbnzziziec5wv7mjpxrwxcy):
+    resolution: {integrity: sha512-0puDBik2qapbD/QQBW9o5ZHfXnZBqZWx/ctBiVtKZ6ZLds4NYb+wZuw1cRLXZk9zYovIQ908z3rvFhexAvc5Hg==}
+    dev: false
+    patched: true
 
   /glob-parent@5.1.2:
     resolution: {integrity: sha512-AOIgSQCepiJYwP3ARnGx+5VnTu2HBYdzbGP45eLw1vr3zB3vZLeyed1sC9hnbcOc9/SrMyM5RPQrkGz4aS9Zow==}

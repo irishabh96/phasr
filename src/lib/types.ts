@@ -71,6 +71,12 @@ export interface UserSettings {
 }
 
 export type PtyEvent =
+  /**
+   * `chunk` is **base64** of the PTY's raw bytes, not text — decode it with
+   * `decodePtyChunk` before handing it to a terminal. A terminal is a byte
+   * protocol; carrying it as a string forced a lossy UTF-8 decode that
+   * destroyed non-UTF-8 output and needed a split-codepoint carry in Rust.
+   */
   | { type: "output"; taskId: string; chunk: string }
   | { type: "exit"; taskId: string; exitCode: number | null };
 

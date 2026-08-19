@@ -11,7 +11,7 @@ interface RepoTabContentProps {
 /**
  * Renders the body of the currently-active repo inner tab. Mirrors
  * `WorkspaceTabContent` — every tab is rendered with `visible` toggling
- * `display: none` so xterm.js / Shiki / read caches don't churn on
+ * `display: none` so the terminal / Shiki / read caches don't churn on
  * tab switches.
  */
 export function RepoTabContent({ repo }: RepoTabContentProps) {

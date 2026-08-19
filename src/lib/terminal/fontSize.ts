@@ -1,7 +1,7 @@
 /**
- * Terminal font-size bounds, shared by the xterm factory and the settings
+ * Terminal font-size bounds, shared by the terminal factory and the settings
  * UI. Its own module so the settings page can bounds-check a value without
- * importing the xterm library.
+ * importing a terminal library.
  */
 
 // `default` mirrors the sqlite column default for user_settings.base_font_size

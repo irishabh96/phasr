@@ -309,7 +309,7 @@ interface UiState {
   /**
    * Drop all tab state for a deleted repository: its workspaces' inner
    * tabs, the repo's own inner tabs, and the active workspace context if
-   * it points at this repo. Callers dispose the xterm instances first.
+   * it points at this repo. Callers dispose the terminal surfaces first.
    */
   forgetRepository: (repositoryId: string, workspaceIds: string[]) => void;
   /**

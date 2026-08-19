@@ -6,7 +6,7 @@ import {
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import { disposeSessionXterm } from "@/components/SessionTerminalTab";
+import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { REPO_HOME_TAB_ID, useUiStore, type RepoInnerTab } from "@/lib/store";
@@ -45,7 +45,7 @@ export function RepoInnerTabBar({
       if (closed.ptySessionId) {
         void tauri.stopSessionTerminal(closed.ptySessionId).catch(() => {});
       }
-      disposeSessionXterm(closed.id);
+      disposeSessionTerminal(closed.id);
     }
   };
 

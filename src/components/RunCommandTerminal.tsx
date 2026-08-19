@@ -1,13 +1,18 @@
 import { Channel } from "@tauri-apps/api/core";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
-import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
+import { useUiStore } from "@/lib/store";
+import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
-import { installTerminalLinks } from "@/lib/terminal/links";
-import { applyXtermSettings, createXtermTerminal } from "@/lib/terminal/xterm";
+import { createTerminalSurface } from "@/lib/terminal/factory";
+import { createTerminalLinkSource } from "@/lib/terminal/links";
+import type {
+  SurfaceDisposable,
+  TerminalBackendKind,
+  TerminalSurface,
+} from "@/lib/terminal/surface";
+import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent } from "@/lib/types";
 
 type StartMode = "initial" | "retry" | "restart";
@@ -27,13 +32,14 @@ interface RunCommandTerminalProps {
 }
 
 /**
- * xterm.js terminal wired to a Phasr run-command PTY. Built on the same
- * pattern as the workspace `<Terminal>` but talks to the run-command
- * tauri commands (which key PTYs under `run:<id>` so they coexist with
- * workspace PTYs).
+ * Terminal wired to a Phasr run-command PTY. Built on the same pattern as
+ * the workspace `<Terminal>` but talks to the run-command tauri commands
+ * (which key PTYs under `run:<id>` so they coexist with workspace PTYs).
  *
- * Renders even when hidden so the PTY connection survives tab switches;
- * a parent simply toggles its container's display.
+ * Unlike the other two surfaces this one is NOT cached: it is created and
+ * disposed with the component. Renders even when hidden so the PTY
+ * connection survives tab switches; a parent simply toggles its
+ * container's display.
  */
 export function RunCommandTerminal({
   runCommandId,
@@ -42,12 +48,17 @@ export function RunCommandTerminal({
 }: RunCommandTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onExitRef = useRef(onExit);
-  const termRef = useRef<ReturnType<typeof createXtermTerminal> | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
+  const surfaceRef = useRef<TerminalSurface | null>(null);
   const [status, setStatus] = useState<TermStatus>(null);
+  // See Terminal.tsx — mirrored onto the container for e2e.
+  const [surfaceInfo, setSurfaceInfo] = useState<{
+    kind: TerminalBackendKind;
+    id: string;
+  } | null>(null);
   const retryStartRef = useRef<(() => void) | null>(null);
   const restartRef = useRef<(() => void) | null>(null);
   const { data: settings } = useUserSettings();
+  const theme = useUiStore((s) => s.theme);
   onExitRef.current = onExit;
   const editorIdRef = useRef<string | null>(null);
   editorIdRef.current = settings?.defaultEditor ?? null;
@@ -59,45 +70,33 @@ export function RunCommandTerminal({
     if (!container) return;
     let cancelled = false;
     // Born at the user's font size — see Terminal.tsx for why.
-    const term = createXtermTerminal(settingsRef.current);
-    termRef.current = term;
-    const fit = new FitAddon();
-    fitRef.current = fit;
-    term.loadAddon(fit);
+    const surface = createTerminalSurface(settingsRef.current);
+    surfaceRef.current = surface;
+    setSurfaceInfo({ kind: surface.kind, id: surface.id });
+    container.appendChild(surface.element);
     // No cwd context on this surface — URL + absolute-path links only.
-    installTerminalLinks(term, {
-      getCwd: () => null,
-      getEditorId: () => editorIdRef.current,
-    });
-    term.open(container);
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch {
-      /* canvas fallback */
-    }
+    surface.installLinks(
+      createTerminalLinkSource({
+        getCwd: () => null,
+        getEditorId: () => editorIdRef.current,
+      }),
+    );
 
-    const fitNow = () => {
-      try {
-        fit.fit();
-        if (term.rows > 0) term.refresh(0, term.rows - 1);
-      } catch {
-        /* layout settling */
-      }
-    };
     // Fit synchronously so startRunCommand receives real rows/cols rather
-    // than xterm's default 24x80 — see Terminal.tsx for context.
+    // than the 80×24 defaults — see Terminal.tsx for context.
+    const fitNow = () => surface.fit();
     fitNow();
 
     const resizeObserver = new ResizeObserver(fitNow);
     resizeObserver.observe(container);
 
-    const disposables: { dispose(): void }[] = [];
+    const disposables: SurfaceDisposable[] = [];
 
     const channel = new Channel<PtyEvent>();
     channel.onmessage = (event) => {
       if (cancelled) return;
       if (event.type === "output") {
-        term.write(event.chunk);
+        surface.write(decodePtyChunk(event.chunk));
       } else if (event.type === "exit") {
         setStatus({ state: "exited", exitCode: event.exitCode });
         onExitRef.current?.(event.exitCode);
@@ -117,27 +116,27 @@ export function RunCommandTerminal({
         await tauri.startRunCommand(
           runCommandId,
           channel,
-          term.rows,
-          term.cols,
+          surface.rows,
+          surface.cols,
         );
         if (cancelled) return;
         setStatus(null);
         disposables.push(
-          term.onData((data) => {
+          surface.onData((data) => {
             if (cancelled) return;
             void tauri.sendRunCommandInput(runCommandId, data).catch((err) => {
               if (cancelled) return;
               setStatus({ state: "failed", error: String(err) });
             });
           }),
-          term.onResize(({ rows, cols }) => {
+          surface.onResize(({ rows, cols }) => {
             if (cancelled) return;
             void tauri
               .resizeRunCommand(runCommandId, rows, cols)
               .catch(() => {});
           }),
         );
-        term.focus();
+        surface.focus();
       } catch (err) {
         if (cancelled) return;
         setStatus({ state: "failed", error: String(err) });
@@ -152,31 +151,43 @@ export function RunCommandTerminal({
       cancelled = true;
       resizeObserver.disconnect();
       for (const d of disposables) d.dispose();
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
+      // Disposes the renderer too — this surface owns a WebGL context
+      // that used to be leaked on every unmount.
+      surface.dispose();
+      surfaceRef.current = null;
     };
   }, [runCommandId]);
 
   useEffect(() => {
-    const term = termRef.current;
-    const fit = fitRef.current;
-    if (!term || !fit) return;
-    applyXtermSettings(term, settings);
-    try {
-      fit.fit();
-      if (term.rows > 0) term.refresh(0, term.rows - 1);
-    } catch {
-      /* layout settling */
-    }
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    surface.applySettings(settings);
+    surface.fit();
   }, [settings]);
+
+  // See Terminal.tsx — a theme flip has to be pushed into the emulator,
+  // which holds its own rasterized copy of the palette.
+  useEffect(() => {
+    surfaceRef.current?.applyTheme(readTerminalTheme());
+  }, [theme]);
+
+  // This surface renders even while its tab is hidden so the PTY stays
+  // connected — which is exactly why it has to be told when it is offscreen.
+  useLayoutEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    surface.setActive(visible);
+    if (!visible) return;
+    surface.fit();
+    surface.repaint();
+  }, [visible]);
 
   return (
     <div
-      onClick={() => {
-        const buf = containerRef.current?.querySelector("textarea");
-        (buf as HTMLTextAreaElement | null)?.focus();
-      }}
+      onClick={() => surfaceRef.current?.focus()}
+      data-testid="terminal-surface"
+      data-terminal-kind={surfaceInfo?.kind}
+      data-terminal-id={surfaceInfo?.id}
       style={{
         display: visible ? "block" : "none",
         paddingTop: 8,

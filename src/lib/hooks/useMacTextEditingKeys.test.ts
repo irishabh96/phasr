@@ -117,9 +117,15 @@ describe("⌘← / ⌘→ — line boundaries", () => {
 });
 
 describe("scoping", () => {
-  it("ignores xterm's helper textarea", () => {
+  it("ignores the emulator's hidden textarea", () => {
+    // Matched by the phasr container the emulator is mounted into, not by
+    // an emulator-specific class — the class test silently stopped
+    // matching when the engine changed.
+    const host = document.createElement("div");
+    host.dataset.testid = "terminal-surface";
+    document.body.appendChild(host);
     const el = makeField("textarea", "abc", 3);
-    el.classList.add("xterm-helper-textarea");
+    host.appendChild(el);
     const e = fire(el, "Backspace");
     expect(el.value).toBe("abc");
     expect(e.defaultPrevented).toBe(false);

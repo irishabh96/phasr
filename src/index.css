@@ -92,7 +92,7 @@
   --color-purple: #bc8cff;
   --color-cyan: #39c5cf;
 
-  /* ANSI palette — consumed by xterm wiring in Terminal components */
+  /* ANSI palette — read by lib/terminal/theme.ts into the emulator */
   --ansi-black: #484f58;
   --ansi-red: #ff7b72;
   --ansi-green: #3fb950;
@@ -109,6 +109,12 @@
   --ansi-bright-magenta: #d2a8ff;
   --ansi-bright-cyan: #56d4dd;
   --ansi-bright-white: #ffffff;
+  /* Terminal selection wash — accent-500 at 28%. Kept as a literal rather
+     than color-mix(): this is read back through getPropertyValue() and handed
+     straight to the terminal engine, which parses plain CSS colors only.
+     Not overridden in the light block, so both themes get today's value;
+     light can take its own once it's been contrast-checked. */
+  --ansi-selection: rgba(247, 129, 102, 0.28);
 
   /* Glass material tokens. Derived from the base palette via color-mix so
      accent and theme swaps recolor every glass surface automatically. */
@@ -244,7 +250,7 @@
   --color-purple: #8b5cf6;
   --color-cyan: #06b6d4;
 
-  /* GitHub Light syntax palette — used by xterm when --data-theme is light. */
+  /* GitHub Light syntax palette — used when --data-theme is light. */
   --ansi-black: #24292f;
   --ansi-red: #cf222e;
   --ansi-green: #116329;
@@ -502,18 +508,3 @@ body {
   }
 }
 
-/* ---------- xterm.js scrollbar ----------
-   xterm.css sets `overflow-y: scroll` on .xterm-viewport. On WKWebView
-   (Tauri on macOS) the native scrollbar ignores width/appearance overrides
-   and stays visible at system size. Hide it — xterm.js handles scroll via
-   mouse wheel, trackpad, and Shift+PgUp/PgDn just fine without a bar. */
-
-.xterm .xterm-viewport {
-  scrollbar-width: none;
-}
-
-.xterm .xterm-viewport::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
-}

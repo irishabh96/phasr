@@ -9,7 +9,7 @@ import { useEffect } from "react";
  * ⌘⌫ / ⌘← / ⌘→ have always been dead in fields. This hook implements
  * them directly on the focused field.
  *
- * Terminals are excluded — xterm's helper textarea gets the iTerm keymap
+ * Terminals are excluded — the emulator's helper textarea gets the iTerm keymap
  * (`src/lib/terminal/keymap.ts`) instead.
  *
  * Line boundaries are logical (`\n`), not visual wraps: single-line
@@ -30,8 +30,14 @@ type Field = HTMLInputElement | HTMLTextAreaElement;
 function editableFieldOf(e: KeyboardEvent): Field | null {
   const t = e.target;
   if (t instanceof HTMLTextAreaElement) {
-    // xterm's hidden textarea — the terminal keymap owns those keys.
-    if (t.classList.contains("xterm-helper-textarea")) return null;
+    // The emulator's hidden input textarea — the terminal keymap owns
+    // those keys. Matched on phasr's own container marker rather than on
+    // an emulator class name: this used to test for
+    // the previous engine's helper-textarea class, which ghostty-web's does not
+    // have, so with the engine swapped this guard silently stopped
+    // matching and these chords started editing the hidden textarea (in
+    // capture phase, before the terminal ever saw them).
+    if (t.closest("[data-testid='terminal-surface']")) return null;
     return t.readOnly || t.disabled ? null : t;
   }
   if (t instanceof HTMLInputElement) {

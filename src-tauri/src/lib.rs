@@ -9,9 +9,13 @@ mod git;
 mod launcher;
 mod localfs;
 mod orchestrator;
+/// Benchmark harness for docs/PERF-TERMINAL-BENCHMARKS.md. Test-only.
+#[cfg(test)]
+mod perfbench;
 mod pty;
 mod store;
 mod sync;
+mod vt;
 
 use std::path::Path;
 use std::sync::Arc;

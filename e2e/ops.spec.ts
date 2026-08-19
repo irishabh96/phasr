@@ -1,5 +1,15 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootApp, makeFixtures, callNames, calls, clearCalls, pty, setResponse } from "./harness";
+import {
+  bootApp,
+  makeFixtures,
+  callNames,
+  calls,
+  clearCalls,
+  expectBackend,
+  pty,
+  setResponse,
+  terminal,
+} from "./harness";
 
 /**
  * End-to-end operation critique: workspace/terminals, git/diff/changes, nav.
@@ -82,14 +92,22 @@ test.describe("Workspace & terminals", () => {
     await expect(page.getByText("phasr/add-feature").first()).toBeVisible();
   });
 
+  /**
+   * The best whole-stack test in the suite: one chord has to win a window
+   * capture-phase race against the emulator's own key handling, land as a
+   * settings write, reflow the live grid (fontSize → refit →
+   * `resize_task`), and leak nothing into the PTY. Every one of those four
+   * is a different subsystem, and all four are emulator-specific.
+   */
   test("⌘=/⌘⇧=/⌘-/⌘0 adjust the font WITH the terminal focused — and never leak into the PTY", async ({ page }) => {
-    const { errors } = await bootApp(page);
+    const { errors } = await bootApp(page, makeFixtures());
     await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
     await expect.poll(() => fired(page, "open_task_terminal")).toBe(true);
+    await expectBackend(page);
     await page.waitForTimeout(800);
     // Focus the terminal for real — the window capture-phase dispatcher must
-    // win against xterm's own key handling.
-    await page.locator(".xterm").first().click();
+    // win against the emulator's own key handling.
+    await terminal(page).click();
     // Let boot-time refits drain so the resize below can only come from the
     // font change.
     await page.waitForTimeout(500);
@@ -121,6 +139,7 @@ test.describe("Workspace & terminals", () => {
     expect(leaked).toEqual([]);
     expect(realErrors(errors)).toEqual([]);
   });
+
 });
 
 test.describe("Git / diff / changes", () => {
@@ -213,6 +232,28 @@ test.describe("Git / diff / changes", () => {
   });
 });
 
+/**
+ * Record every Tauri opener invoke. The harness answers `plugin:*`
+ * commands without recording them (they are benign), so the spec wraps
+ * `invoke` itself — the same technique `terminal-links.spec.ts` uses.
+ */
+async function recordOpener(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__openerSeen = [];
+    const orig = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = (cmd: string, args: any, opts: any) => {
+      if (/opener/.test(cmd)) w.__openerSeen.push({ cmd, args });
+      return orig(cmd, args, opts);
+    };
+  });
+}
+
+const openerCalls = (page: Page) =>
+  page.evaluate(
+    () => (window as any).__openerSeen as { cmd: string; args: any }[],
+  );
+
 test.describe("Navigation & chrome", () => {
   test("command palette opens on ⌘K (even with terminal focused)", async ({ page }) => {
     await bootApp(page);
@@ -221,13 +262,79 @@ test.describe("Navigation & chrome", () => {
     await expect(page.locator("[cmdk-root]").first()).toBeVisible({ timeout: 5000 });
   });
 
-  test("selecting a workspace navigates to it", async ({ page }) => {
+  /**
+   * REGRESSION: in-app navigation vs the external-link opener.
+   *
+   * `useExternalLinkOpener` installs a CAPTURE-phase window click listener
+   * that hands `http(s)` hrefs to the OS. Under `pnpm tauri dev` the app's
+   * own origin IS `http://localhost:1420`, so a scheme-only test matched
+   * every in-app `<Link>`: clicking a sidebar row called the OS opener and
+   * the router never moved. (Packaged builds hid it — there the origin is
+   * `tauri://localhost`.) The test now checks CROSS-ORIGIN.
+   *
+   * The old "selecting a workspace navigates to it" test did not cover
+   * this: it clicked immediately after `bootApp`, i.e. before the effect
+   * had installed the listener, and its assertions were wrapped in an
+   * `if (await link.count())` that skipped silently. Both are fixed here —
+   * settle first, and assert on the opener, not just the URL.
+   */
+  test("clicking an in-app row navigates and never reaches the OS opener", async ({
+    page,
+  }) => {
     await bootApp(page);
-    const link = page.getByText("fix-bug").first();
-    if (await link.count()) {
-      await link.click();
-      await expect(page).toHaveURL(/ws-done/, { timeout: 5000 });
-    }
+    // Wait for the app to be interactive: the listener is installed in an
+    // effect, and clicking before that passes with the bug fully present.
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await page.waitForTimeout(1200);
+    await recordOpener(page);
+
+    await page.getByText("fix-bug").first().click();
+    await expect(page).toHaveURL(/ws-done/, { timeout: 5000 });
+    expect(await openerCalls(page)).toEqual([]);
+  });
+
+  test("a cross-origin link still goes to the OS, and a same-origin target=_blank opts in", async ({
+    page,
+  }) => {
+    await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await page.waitForTimeout(1200);
+    await recordOpener(page);
+
+    const clickAnchor = (href: string, target?: string) =>
+      page.evaluate(
+        ([href, target]) => {
+          const a = document.createElement("a");
+          a.href = href!;
+          if (target) a.target = target;
+          // Bubble-phase cancel: the app's capture-phase listener has
+          // already run and decided by then, so this only stops the
+          // browser from actually navigating (which would wipe the page
+          // and everything recorded on it).
+          a.addEventListener("click", (e) => e.preventDefault());
+          a.textContent = "probe";
+          a.style.position = "fixed";
+          a.style.zIndex = "99999";
+          a.style.top = "0";
+          a.style.left = "0";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        },
+        [href, target] as const,
+      );
+
+    await clickAnchor("https://example.com/external");
+    await clickAnchor(`${new URL(page.url()).origin}/repositories/repo-1`, "_blank");
+    // …and one that must NOT be handed over: same origin, no opt-out.
+    await clickAnchor(`${new URL(page.url()).origin}/repositories/repo-1`);
+    await page.waitForTimeout(300);
+
+    const urls = (await openerCalls(page)).map((c) => c.args?.url ?? c.args?.path);
+    console.log(`OPENER saw: ${JSON.stringify(urls)}`);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe("https://example.com/external");
+    expect(urls[1]).toContain("/repositories/repo-1");
   });
 
   test("empty repositories → welcome/first-run state (no crash)", async ({ page }) => {
