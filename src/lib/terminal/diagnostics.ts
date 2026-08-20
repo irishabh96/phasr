@@ -34,17 +34,67 @@ export function terminalDiagnosticsEnabled(): boolean {
 }
 
 /**
- * `parseColorToHex` in `ghostty-web` understands `#rgb`, `#rrggbb` and
- * `rgb(r, g, b)` and returns 0 for anything else — so a token written as
- * `rgba(…)`, `oklch(…)`, a named colour, or CSS Color 4's space-separated
- * `rgb(r g b)` silently becomes "no colour" in the WASM palette. Measured:
- * that makes the engine fall back to its OWN palette rather than to the
- * theme's, so the terminal stays colourful but stops matching phasr.
+ * Theme entries that become the WASM palette, and therefore go through
+ * `ghostty-web`'s `parseColorToHex`.
+ *
+ * `buildWasmConfig()` reads exactly these nineteen: the sixteen ANSI slots
+ * plus `foreground`, `background` and `cursor`. Nothing else is passed to
+ * WASM.
+ */
+export const WASM_BOUND_THEME_KEYS = [
+  "background", "foreground", "cursor",
+  "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow",
+  "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+] as const;
+
+/**
+ * Theme entries the RENDERER uses as a raw canvas `fillStyle`, never through
+ * `parseColorToHex`. Any valid CSS colour works here, alpha included — that
+ * is the whole mechanism behind the translucent selection wash in
+ * `patches/ghostty-web@0.4.0.patch`. Measured: `ctx.fillStyle = "#f7816647"`
+ * is accepted and composites over black to rgb(69,36,28), the alpha-honoured
+ * value.
+ */
+export const CANVAS_BOUND_THEME_KEYS = [
+  "cursorAccent", "selectionBackground", "selectionForeground",
+] as const;
+
+/**
+ * Whether a value survives `parseColorToHex`, which understands `#rgb`,
+ * `#rrggbb` and `rgb(r, g, b)` and returns 0 for anything else.
+ *
+ * Deliberately a POSITIVE test — "this is a form the engine handles" — not
+ * "it did not return 0". The dangerous case is not rejection but a silent
+ * success: `#rrggbbaa` takes the `#` branch, `parseInt("f7816647", 16)` is
+ * not NaN, and the engine keeps a 32-bit number it will read as 24-bit,
+ * yielding a colour nobody chose. So eight-digit hex must fail here even
+ * though `parseColorToHex` "accepts" it.
+ *
+ * WKWebView is why this matters and why no test engine can catch it:
+ * `getPropertyValue` on a custom property returns the author's literal text
+ * in Chromium and in Playwright's WebKit (`rgba(247, 129, 102, 0.28)`), but
+ * WKWebView normalises it to `#f7816647`. A WASM-bound token carrying alpha
+ * therefore ships broken and passes every suite we can run — so the rule
+ * enforced in `theme.test.ts` is engine-independent: WASM-bound tokens are
+ * opaque.
  */
 export function isParseableByGhostty(value: string): boolean {
   const v = value.trim();
   if (/^#[0-9a-f]{3}$/i.test(v) || /^#[0-9a-f]{6}$/i.test(v)) return true;
   return /^rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)$/.test(v);
+}
+
+/** Does this colour carry alpha in any form WKWebView might normalise? */
+export function carriesAlpha(value: string): boolean {
+  const v = value.trim();
+  return (
+    /^#[0-9a-f]{4}$/i.test(v) ||
+    /^#[0-9a-f]{8}$/i.test(v) ||
+    /^rgba\(/i.test(v) ||
+    /^hsla\(/i.test(v) ||
+    /\/\s*[\d.]+%?\s*\)$/.test(v)
+  );
 }
 
 export interface SurfaceDiagnostics {
@@ -57,8 +107,10 @@ export interface SurfaceDiagnostics {
   openedGrid: { rows: number; cols: number } | null;
   /** The theme the WASM palette was actually built from. */
   theme: Record<string, string> | null;
-  /** Theme entries `ghostty-web` cannot parse — these become 0. */
+  /** WASM-bound entries `ghostty-web` cannot parse — these become 0. */
   unparseableTheme: string[];
+  /** WASM-bound entries carrying alpha — these are silently misread. */
+  alphaInWasmTheme: string[];
   bytesWritten: number;
   /** First `MAX_BYTES` of PTY output, escaped — the ground truth for "did
    *  the SGR actually arrive". */
@@ -78,6 +130,7 @@ export function diagCreate(id: string): void {
     openedGrid: null,
     theme: null,
     unparseableTheme: [],
+    alphaInWasmTheme: [],
     bytesWritten: 0,
     head: "",
     notes: [],
@@ -94,9 +147,18 @@ export function diagAttach(
   r.attachedAt = Math.round(performance.now());
   r.openedGrid = grid;
   r.theme = theme ? { ...theme } : null;
-  r.unparseableTheme = Object.entries(theme ?? {})
-    .filter(([, v]) => typeof v === "string" && !isParseableByGhostty(v))
-    .map(([k, v]) => `${k}=${v}`);
+  // ONLY the WASM-bound keys. Flagging the canvas-bound ones was a false
+  // alarm in the first field dump: `selectionBackground=#f7816647` was
+  // reported as unparseable and read as a shipped bug, when that value never
+  // reaches `parseColorToHex` and renders exactly as intended.
+  r.unparseableTheme = WASM_BOUND_THEME_KEYS.filter((k) => {
+    const v = theme?.[k];
+    return typeof v === "string" && !isParseableByGhostty(v);
+  }).map((k) => `${k}=${theme?.[k]}`);
+  r.alphaInWasmTheme = WASM_BOUND_THEME_KEYS.filter((k) => {
+    const v = theme?.[k];
+    return typeof v === "string" && carriesAlpha(v);
+  }).map((k) => `${k}=${theme?.[k]}`);
 }
 
 export function diagWrite(id: string, data: string | Uint8Array): void {

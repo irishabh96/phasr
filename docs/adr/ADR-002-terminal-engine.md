@@ -1359,3 +1359,90 @@ screen recording. That single field splits the remaining space in two: bytes
 arrived with colour (engine/renderer) or they did not (delivery).
 
 **Q2** (native Edit ▸ Copy) remains the only open spike question.
+
+---
+
+## 2026-08-21 (third pass) — the field dump, a false alarm of my own making, and reflow ruled out
+
+### Delivery is exonerated
+
+The diagnostic ran on the packaged app. **`headHasSgrColour: true` on all four
+surfaces** (seq 1, 2, 3, 7). The SGR bytes reach every terminal. The
+decolouring is between the WASM parse and the paint; nothing is lost in the
+PTY, the broadcast, the replay handoff or the IPC.
+
+### `selectionBackground=#f7816647` is NOT a bug — and the report was my fault
+
+Every surface reported `unparseableTheme: ["selectionBackground=#f7816647"]`,
+which reads like a shipped colour bug. It is not one, and the finding was an
+artifact of the diagnostic being sloppier than the engine.
+
+`buildWasmConfig()` passes exactly nineteen theme entries through
+`parseColorToHex`: the sixteen ANSI slots plus `foreground`, `background`,
+`cursor`. **`selectionBackground`, `selectionForeground` and `cursorAccent`
+are not among them** — the renderer assigns them straight to
+`ctx.fillStyle`, where eight-digit hex is valid CSS. Measured on WebKit:
+
+```
+ctx.fillStyle = "#f7816647"  ->  accepted as "rgba(247, 129, 102, 0.28)"
+composited over black        ->  rgb(69, 36, 28)      (alpha honoured)
+NOT                          ->  rgb(129, 102, 71)    (24-bit truncation)
+```
+
+So the selection wash renders exactly as the patch intends, and
+pre-multiplying it to an opaque `#rrggbb` would be a **regression** — it would
+throw away the translucent-wash behaviour that patch deliberately introduced.
+No colour change was made. The diagnostic now classifies
+`WASM_BOUND_THEME_KEYS` against `CANVAS_BOUND_THEME_KEYS` and only flags the
+former, so it cannot send anyone down this path again.
+
+This also rules the earlier `f04` box back out: it measured 225,234,241 —
+`--color-text-primary`, i.e. INVERSE video — where selection composites to
+rgb(69,36,28).
+
+### The real find: a Chromium / Playwright-WebKit / WKWebView divergence
+
+The general point stands even though this instance was benign, and it is
+worse than "the suites disagree":
+
+| engine | `getPropertyValue("--ansi-selection")` |
+|---|---|
+| Chromium | `rgba(247, 129, 102, 0.28)` |
+| Playwright WebKit | `rgba(247, 129, 102, 0.28)` |
+| **WKWebView (shipped)** | **`#f7816647`** |
+
+**No engine we can drive reproduces what phasr ships.** And the failure mode
+is silent: `parseColorToHex` takes the `#` branch, `parseInt("f7816647", 16)`
+is not NaN, so there is no rejection and no fallback — the engine keeps a
+32-bit value it reads as 24-bit. A silent success is worse than a rejection.
+
+`themeTokens.test.ts` therefore asserts on the **token**, not on whatever the
+engine stored, and the rule is engine-independent: *a token that becomes part
+of the WASM palette must be opaque and in a form `parseColorToHex` handles.*
+The check is positive ("this is a form the engine handles"), so eight-digit
+hex fails it even though `parseColorToHex` "accepts" it. Verified to fail on
+both shapes — alpha on `--ansi-cyan`, and `--ansi-green` in `oklch()`.
+
+**Audit result: clean.** All nineteen WASM-bound tokens are plain six-digit
+hex in both the dark and light blocks, as are `readTerminalTheme`'s
+fallbacks (covered too — they ship whenever a token is renamed).
+`--ansi-selection` is the only alpha-bearing token and it is canvas-bound.
+
+### Reflow ruled out
+
+`openedGrid` is `{rows: 17, cols: 94}` on all four surfaces, so the theory was
+a large reflow shortly after attach. Reproduced the shape exactly — a short
+pane opens at **17 rows** — then grew 17→51→78, shrank to 25, and forced wrap
+reflows down to 5 columns, with a coloured prompt on screen throughout.
+Chroma held at **85–93%** across every transition on Chromium and **87–100%**
+on WebKit. A reflow does not drop SGR state, at any magnitude, in either
+direction, on either engine.
+
+### Where the ~1s decolouring now stands
+
+Excluded so far: the shell (bytes captured, prompt emitted once, coloured),
+delivery (`headHasSgrColour: true` in the field), the palette (a broken one
+yields *different* colours, never none), fresh-surface creation, and reflow.
+It sits between the WASM parse and the paint, on WKWebView specifically —
+which the divergence above shows is exactly where our test engines stop being
+evidence.
