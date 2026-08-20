@@ -40,7 +40,6 @@
     "targets": ["dmg", "app"],
     "category": "DeveloperTool",
     "copyright": "Copyright © 2026 Phasr Contributors",
-    "licenseFile": "../LICENSE",
     "resources": ["../THIRD-PARTY-NOTICES.md", "../LICENSE"],
     "icon": [
       "icons/32x32.png",
