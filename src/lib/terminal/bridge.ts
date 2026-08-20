@@ -37,6 +37,13 @@ export interface TerminalBridge {
    *  viewport. Mirrors `TerminalSurface.readLine`; the two coincide only
    *  while nothing has scrolled off. */
   lineText(id: string, row: number): string | null;
+  /**
+   * Scroll state — the discriminator between "the buffer really has blank
+   * rows at the top" and "the viewport is scrolled off the bottom". Those
+   * are pixel-identical on screen and have opposite fixes, so a spec that
+   * asserts on content POSITION has to be able to ask.
+   */
+  viewport(id: string): { offset: number; scrollback: number } | null;
   backend(id: string): TerminalBackendKind | null;
   /** OS file drops arrive through Tauri, which Playwright cannot emit, so
    *  a spec exercises the routing directly at a real screen point. */
@@ -75,6 +82,7 @@ function bridge(): TerminalBridge {
       return { x, y, width, height };
     },
     lineText: (id, row) => live.get(id)?.readLine(row) ?? null,
+    viewport: (id) => live.get(id)?.readViewport() ?? null,
     backend: (id) => live.get(id)?.kind ?? null,
     dropPaths: (paths, x, y) => routeDroppedPaths(paths, { x, y }),
     repaint: (id) => live.get(id)?.repaint(),

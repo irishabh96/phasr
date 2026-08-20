@@ -1446,3 +1446,132 @@ yields *different* colours, never none), fresh-surface creation, and reflow.
 It sits between the WASM parse and the paint, on WKWebView specifically —
 which the divergence above shows is exactly where our test engines stop being
 evidence.
+
+## 2026-08-21 (fourth pass) — the reflow anchor: content marches down the screen on every width change
+
+A second, unrelated defect, reported from the same recording as the ~1s
+decolouring and initially confused with it. It is about **position, not
+colour**, and the reflow work above could not have caught it: "chroma held at
+85-100%" is a colour oracle, and a reflow that preserves every attribute and
+still moves the first line four rows down passes every assertion it makes.
+
+### What reproduces
+
+Toggling **either** side panel — the left sidebar (⌘B) or the right Changes
+panel — pushes the terminal's content one or two rows further down the
+screen, every time, and it never comes back up. Both are pinned in
+`e2e/terminal-reflow-anchor.spec.ts`. It is the width change that matters,
+not which panel caused it; direction does not matter either, since a round
+trip always contains one of each.
+
+Measured off the recording's 38 frames (chrome above the terminal is
+pixel-identical throughout, so the container did not move — the content
+inside it did):
+
+```
+frame   right edge   topmost content row (px)
+d13        1398            120        <- panel closed
+d15        1066            146
+d19        1066            172
+d22        1066            198
+d27        1066            237
+d31        1065            263
+d35        1066            289        <- 13 rows lower, still climbing
+```
+
+### Root cause — an anchor the engine does not keep
+
+The engine's active area is the last `rows` rows of a page list that
+includes the blank rows below the cursor. Those two facts do not compose:
+
+- **Narrowing** rewraps lines, so the content above the cursor needs *k*
+  more rows. The engine spends *k* of the trailing blank rows and pushes the
+  cursor down. Total list length unchanged, history unchanged.
+- **Widening** unwraps them, freeing *k* rows. The engine shortens the list
+  instead of returning the blanks, so the active window slides up and *k*
+  more lines of history appear at the top. Trailing blanks unchanged.
+
+So every width round trip permanently converts *k* trailing blank rows into
+*k* leading history rows. The drift is bounded by the blank space below the
+cursor — which, on a screen that was just cleared, is nearly the whole
+terminal. It stops only once the blanks are exhausted, after which round
+trips are symmetric again (measured: scrollback settles into a stable 134 ↔
+144 oscillation).
+
+Measured across eight toggles, sparse screen, viewport never touched:
+
+```
+toggle:        -    1     2     3     4     5     6     7     8
+cols:         77   122    77   122    77   122    77   122    77
+scrollback:  162   160   160   158   158   156   156   154   154
+                    ^-2         ^-2         ^-2         ^-2
+```
+
+Scrollback drops by exactly 2 on every **widening** and never recovers on the
+narrowing. The content sinks by exactly the number of lines lost.
+
+### Not a scrolled viewport — the discriminator that settles it
+
+"The content is painted four rows lower" has two pixel-identical causes with
+opposite fixes, and only the buffer can tell them apart. `TerminalSurface`
+now exposes `readViewport()` (`{ offset, scrollback }`, on the DEV bridge as
+`viewport(id)`) for exactly this:
+
+- `offset` is **0 at every single reading**, before, during and after. The
+  viewport never leaves the live bottom.
+- `paintedTop === bufferTop` at every reading: the topmost row with ink on
+  the canvas is the topmost row with text in the buffer.
+
+The blank rows are really in the buffer. **"Scroll to the bottom after the
+resize settles" is therefore a no-op and cannot be the fix**, and the spec
+asserts both of these so nobody re-derives it.
+
+### Fixes ruled out, with evidence
+
+| candidate | result |
+|---|---|
+| Scroll to bottom after a settle | No-op. `offset` is already 0. |
+| Coalesce the resize storm | No effect. One clean resize per toggle drifts **identically** to the thirteen the animation produces — verified by disabling the transition. |
+| Rows round trip (`rows-3` then `rows`) after the width change | No effect. Scrollback unchanged; row resizes do not move the anchor either. |
+| `CSI k S` + `CSI k A` to push the reclaimed history back | **Loses data.** The scrolled-off lines do not return to scrollback (length stays 152, not 162) — they are destroyed. Trades a visible drift for silent history loss. |
+| Upgrade the engine | Nothing to upgrade to. `0.4.0` is `latest`; `next` is a `0.4.0` pre-release. |
+
+The reflow itself is `ghostty_terminal_resize`, inside the WASM. It is one of
+only 76 exports, it takes `(handle, cols, rows)` and no anchor argument, and
+there is no scroll/anchor export to compensate with. **There is no lever on
+our side of the boundary**, which is why this pass ships a pinned
+reproduction and no fix.
+
+### What ships
+
+`e2e/terminal-reflow-anchor.spec.ts`, with a deliberate split:
+
+- One test that **passes** and pins the diagnosis (viewport stays at the
+  bottom, paint matches the buffer, and the drift equals the scrollback
+  delta). It is what stops the expected failure below being written off as
+  "the viewport scrolled", and it goes red if the mechanism ever changes.
+- Two `test.fail()` cases — one per trigger — asserting the invariant a user
+  cares about: content keeps its row across a width round trip. `test.fail()`
+  rather than a skip, so the assertion actually runs and the suite goes red
+  the day upstream anchors correctly, instead of rotting quietly.
+
+Stable over 10 runs each on Chromium and under WebKit.
+
+### Also checked, not a bug
+
+The fifth inner tab in the recording, truncated with no visible label, is the
+`overflow-x-auto` pill track clipping at its scroll boundary — the behaviour
+its own comment describes. Terminal tabs are titled `Terminal`, `Terminal 2`,
+… in `openInnerTerminalTab` and cannot be created with an empty title. Left
+alone.
+
+### Noted separately, not this bug
+
+One panel toggle sends **13 `resize_task` calls** in 220 ms — the `<aside>`
+animates its width, the `ResizeObserver` refits on every frame, and each fit
+that changes the grid emits a resize. It does not cause the drift (proved
+above: one resize drifts the same), but a real agent TUI repaints on every
+SIGWINCH, so this is thirteen full repaints per toggle. Coalescing it is a
+change to the agent-facing resize path that this harness cannot verify —
+`resize_task` goes to a mock here — so it is recorded as a follow-up rather
+than slipped in beside a bug it does not fix.

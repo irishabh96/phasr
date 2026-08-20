@@ -534,6 +534,17 @@ export class GhosttySurface implements TerminalSurface {
     return line ? lineToText(line).trimEnd() : null;
   }
 
+  readViewport(): { offset: number; scrollback: number } {
+    const term = this.term;
+    if (this.disposed || !term) return { offset: 0, scrollback: 0 };
+    // `getViewportY()` is fractional mid-smooth-scroll; the renderer floors
+    // it before using it as a row offset, so report what the renderer sees.
+    return {
+      offset: Math.max(0, Math.floor(term.getViewportY())),
+      scrollback: term.getScrollbackLength(),
+    };
+  }
+
   /** @param row viewport row (0 = top visible line), not a buffer row. */
   cellRect(col: number, row: number): DOMRect | null {
     if (this.disposed) return null;

@@ -144,6 +144,22 @@ export interface TerminalSurface {
 
   /** @param row 0-based absolute buffer row. `null` when out of range. */
   readLine(row: number): string | null;
+  /**
+   * Where the viewport sits, in lines.
+   *
+   * `offset` is how far the viewport is scrolled BACK from the live
+   * bottom — 0 means pinned to the bottom, which is where a terminal sits
+   * unless the user has scrolled. `scrollback` is how many lines of
+   * history exist right now.
+   *
+   * Exposed because "the content is painted four rows lower than it was"
+   * has two indistinguishable-on-screen causes with opposite fixes: blank
+   * rows really are in the buffer, or the viewport is scrolled off the
+   * bottom. Only these two numbers tell them apart, and BOTH move under a
+   * width reflow — which rewraps lines and therefore changes how many of
+   * them are history.
+   */
+  readViewport(): { offset: number; scrollback: number };
   /** Viewport rect of one cell — the hook e2e needs to click a character. */
   cellRect(col: number, row: number): DOMRect | null;
 
