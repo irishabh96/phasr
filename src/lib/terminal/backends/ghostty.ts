@@ -28,6 +28,7 @@ import {
   WheelAccumulator,
   wheelOutcome,
 } from "@/lib/terminal/backends/ghostty/wheel";
+import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
 import {
   applyChangedOptions,
   applyChangedTheme,
@@ -119,6 +120,15 @@ export function __resetGhosttyEngine(): void {
   enginePromise = null;
 }
 
+/**
+ * How long a trailing, still-extendable codepoint may be held before it is
+ * written anyway. A real PTY read boundary puts the continuation in the very
+ * next chunk (sub-millisecond), so this is only ever reached when the writer
+ * genuinely stopped mid-cluster — at which point painting the base codepoint
+ * is the correct thing to do. See `graphemeTail.ts`.
+ */
+const HELD_TAIL_MS = 50;
+
 const MIN_COLS = 2;
 const MIN_ROWS = 1;
 /** ghostty-web reserves this much width for its own overlay scrollbar. */
@@ -142,6 +152,9 @@ export class GhosttySurface implements TerminalSurface {
     (size: { rows: number; cols: number }) => void
   >();
   private pendingFocus = false;
+  /** Trailing bytes a following chunk could still extend — see `write`. */
+  private heldTail: Uint8Array | null = null;
+  private heldTimer: number | null = null;
   private linkSource: LinkSource | null = null;
   private keymap: ((event: KeyboardEvent) => string | null) | null = null;
   private clipboardWanted = false;
@@ -222,8 +235,10 @@ export class GhosttySurface implements TerminalSurface {
       );
     }
 
-    for (const data of this.pendingWrites) term.write(data);
-    this.pendingWrites.length = 0;
+    // Through `write`, not `term.write`: the queued chunks are the same PTY
+    // chunks the live path gets, and a cluster can straddle two of them.
+    const queued = this.pendingWrites.splice(0, this.pendingWrites.length);
+    for (const data of queued) this.write(data);
     for (const seq of this.pendingInput) term.input(seq, true);
     this.pendingInput.length = 0;
 
@@ -354,7 +369,49 @@ export class GhosttySurface implements TerminalSurface {
       this.pendingWrites.push(data);
       return;
     }
-    this.term.write(data);
+    // Literal strings come from phasr itself (status lines, log replay), not
+    // from a PTY, so they are never a partial cluster.
+    if (typeof data === "string") {
+      this.flushHeldTail();
+      this.term.write(data);
+      return;
+    }
+
+    let bytes = data;
+    if (this.heldTail) {
+      const merged = new Uint8Array(this.heldTail.length + bytes.length);
+      merged.set(this.heldTail);
+      merged.set(bytes, this.heldTail.length);
+      bytes = merged;
+      this.heldTail = null;
+    }
+    this.clearHeldTimer();
+
+    const end = safeWriteEnd(bytes);
+    if (end > 0) this.term.write(bytes.subarray(0, end));
+    if (end < bytes.length) {
+      // `slice` (a copy), not `subarray`: the caller owns `data`'s buffer.
+      this.heldTail = bytes.slice(end);
+      this.heldTimer = window.setTimeout(() => {
+        this.heldTimer = null;
+        this.flushHeldTail();
+      }, HELD_TAIL_MS);
+    }
+  }
+
+  /** Write whatever is being held, now. */
+  private flushHeldTail(): void {
+    this.clearHeldTimer();
+    const tail = this.heldTail;
+    this.heldTail = null;
+    if (tail && tail.length > 0) this.term?.write(tail);
+  }
+
+  private clearHeldTimer(): void {
+    if (this.heldTimer !== null) {
+      window.clearTimeout(this.heldTimer);
+      this.heldTimer = null;
+    }
   }
 
   input(seq: string): void {
@@ -649,6 +706,8 @@ export class GhosttySurface implements TerminalSurface {
     this.resizeCbs.clear();
     this.pendingWrites.length = 0;
     this.pendingInput.length = 0;
+    this.clearHeldTimer();
+    this.heldTail = null;
     try {
       this.term?.dispose();
     } catch {
