@@ -12,6 +12,9 @@ mod orchestrator;
 /// Benchmark harness for docs/PERF-TERMINAL-BENCHMARKS.md. Test-only.
 #[cfg(test)]
 mod perfbench;
+/// Multi-agent load harness. Test-only, and gated on PHASR_LOAD=1.
+#[cfg(test)]
+mod loadtest;
 mod pty;
 mod store;
 mod sync;
