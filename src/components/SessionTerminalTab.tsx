@@ -6,6 +6,7 @@ import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import {
+  canTakeTerminalFocus,
   isSurfaceVisible,
   parkSurface,
   TerminalSurfaceCache,
@@ -340,6 +341,8 @@ export function SessionTerminalTab({
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();
+    // See Terminal.tsx — reveal hands over the keyboard.
+    if (canTakeTerminalFocus()) entry.surface.focus();
   }, [visible, tabId]);
 
   return (
