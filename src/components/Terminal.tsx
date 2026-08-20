@@ -13,6 +13,7 @@ import {
 } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
   TerminalBackendKind,
@@ -205,6 +206,9 @@ export function Terminal({
         }
       };
       try {
+        // Let the chrome around the terminal finish settling before the
+        // agent reads its size — see whenGridSettles.
+        await whenGridSettles(surface);
         await tauri.openTaskTerminal(
           workspaceId,
           channel,

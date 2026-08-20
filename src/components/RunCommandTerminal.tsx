@@ -8,6 +8,7 @@ import { tauri } from "@/lib/tauri";
 import { canTakeTerminalFocus } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
   TerminalBackendKind,
@@ -114,6 +115,7 @@ export function RunCommandTerminal({
       );
       for (const d of disposables.splice(0)) d.dispose();
       try {
+        await whenGridSettles(surface);
         await tauri.startRunCommand(
           runCommandId,
           channel,
