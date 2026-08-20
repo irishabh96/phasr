@@ -1,5 +1,6 @@
 import { GhosttySurface, preloadGhosttyEngine } from "@/lib/terminal/backends/ghostty";
 import { registerSurfaceForTests } from "@/lib/terminal/bridge";
+import { registerSurface } from "@/lib/terminal/registry";
 import { itermSequenceFor } from "@/lib/terminal/keymap";
 import type {
   TerminalSurface,
@@ -44,5 +45,8 @@ export function createTerminalSurface(
   // DEV-only, and here rather than in the components so the terminal is
   // introspectable by e2e without touching a single call site.
   registerSurfaceForTests(surface);
+  // Ships (unlike the bridge): an OS file drop resolves the terminal it
+  // landed on through this.
+  registerSurface(surface);
   return surface;
 }

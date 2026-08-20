@@ -1,3 +1,4 @@
+import { routeDroppedPaths } from "@/lib/terminal/drop";
 import type {
   TerminalBackendKind,
   TerminalSurface,
@@ -37,6 +38,9 @@ export interface TerminalBridge {
    *  while nothing has scrolled off. */
   lineText(id: string, row: number): string | null;
   backend(id: string): TerminalBackendKind | null;
+  /** OS file drops arrive through Tauri, which Playwright cannot emit, so
+   *  a spec exercises the routing directly at a real screen point. */
+  dropPaths(paths: string[], x: number, y: number): void;
 }
 
 declare global {
@@ -62,6 +66,7 @@ function bridge(): TerminalBridge {
     },
     lineText: (id, row) => live.get(id)?.readLine(row) ?? null,
     backend: (id) => live.get(id)?.kind ?? null,
+    dropPaths: (paths, x, y) => routeDroppedPaths(paths, { x, y }),
   };
 }
 
