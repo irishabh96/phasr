@@ -14,10 +14,16 @@ import {
 
 /**
  * Clipboard permissions are a Chromium-only Playwright API — WebKit throws
- * `Unknown permission: clipboard-write` — and WebKit grants clipboard access
- * to the focused page anyway. Guarded so the same spec runs under
+ * `Unknown permission: clipboard-write`. Guarded so the same spec runs under
  * `playwright.webkit.config.ts`, which is the closest proxy we have to the
  * WKWebView phasr actually ships in.
+ *
+ * This used to add "and WebKit grants clipboard access to the focused page
+ * anyway". **That was wrong**, and the first WebKit run disproved it:
+ * `navigator.clipboard.readText()` throws
+ * `NotAllowedError: The request is not allowed by the user agent`. Writing
+ * still works; only reading is refused. So clipboard CONTENT cannot be
+ * asserted under WebKit at all — see `clipboardReadable()`.
  */
 async function grantClipboard(
   context: BrowserContext,
@@ -25,6 +31,16 @@ async function grantClipboard(
 ): Promise<void> {
   if (browserName !== "chromium") return;
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+}
+
+/**
+ * Whether this engine will let the test read the clipboard back. Only
+ * Chromium will. Skipping is the honest outcome: a WebKit run genuinely
+ * cannot observe copy-on-select, so Q2 of ADR-002 stays a manual step on a
+ * real build rather than being silently marked green here.
+ */
+function clipboardReadable(browserName: string): boolean {
+  return browserName === "chromium";
 }
 
 /**
@@ -49,13 +65,44 @@ async function grantClipboard(
 const LINE = "SELECT-THIS-LINE-0123456789 tail";
 const SENTINEL = "PHASR-CLIPBOARD-SENTINEL";
 
-/** blue background run, bright text, then unselected copies of both. */
-const BG_RUN = `\x1b[44m${" ".repeat(70)}\x1b[0m`;
-// Full blocks, not letters: ~100% cell coverage, so the sampled mean is
-// the glyph colour rather than a coverage-weighted blend with antialiased
-// edges, and the prediction below can be exact.
-const TEXT_RUN = `\x1b[97m${"\u2588".repeat(70)}\x1b[0m`;
-const SWATCHES = [BG_RUN, TEXT_RUN, "", BG_RUN, TEXT_RUN, ""].join("\r\n");
+/**
+ * Blue background run, bright text, then unselected copies of both \u2014 sized
+ * to the LIVE grid rather than to a constant.
+ *
+ * This was `" ".repeat(70)`, which is fine in Chromium (77 columns for this
+ * layout) and silently wrong in WebKit (69). A 70-column run wraps at 69,
+ * every subsequent row shifts by one, and the hardcoded control rows 3/4
+ * then sample a wrap remainder and a blank line \u2014 both pure black \u2014 so the
+ * test failed claiming the selection wash was broken when the wash was in
+ * fact pixel-correct. Canvas text metrics differ between the two engines
+ * (that is the whole reason `playwright.webkit.config.ts` exists), so any
+ * fixture measured in columns has to ask the grid how wide it is.
+ */
+function swatches(cols: number): string {
+  const width = runWidth(cols);
+  const bg = `\x1b[44m${" ".repeat(width)}\x1b[0m`;
+  // Full blocks, not letters: ~100% cell coverage, so the sampled mean is
+  // the glyph colour rather than a coverage-weighted blend with antialiased
+  // edges, and the prediction below can be exact.
+  const text = `\x1b[97m${"\u2588".repeat(width)}\x1b[0m`;
+  return [bg, text, "", bg, text, ""].join("\r\n");
+}
+
+/** One column short of the grid, so the run can never wrap. */
+function runWidth(cols: number): number {
+  return cols - 1;
+}
+
+/** Columns in the first live terminal, straight from the surface bridge. */
+async function gridCols(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const bridge = (window as any).__PHASR_TERM__;
+    const id = bridge?.ids()[0];
+    const grid = id && bridge.grid(id);
+    if (!grid) throw new Error("no live terminal surface");
+    return grid.cols as number;
+  });
+}
 
 type Rgb = [number, number, number];
 
@@ -85,6 +132,11 @@ test("what a drag-selection does to the clipboard", async ({
   context,
   browserName,
 }) => {
+  test.skip(
+    !clipboardReadable(browserName),
+    "WebKit refuses navigator.clipboard.readText() (NotAllowedError), so " +
+      "copy-on-select cannot be observed here — ADR-002 Q2 stays manual",
+  );
   await grantClipboard(context, browserName);
   await bootApp(page, makeFixtures());
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
@@ -121,7 +173,8 @@ test("selection is a translucent wash: cell colours survive and glyphs keep thei
   await expectBackend(page);
   await page.waitForTimeout(1200);
 
-  await ptyOut(page, "ws-agent", `${SWATCHES}\r\n`);
+  const cols = await gridCols(page);
+  await ptyOut(page, "ws-agent", `${swatches(cols)}\r\n`);
   await page.waitForTimeout(600);
 
   // The two colours the assertions are computed from, read from the app's
@@ -142,12 +195,16 @@ test("selection is a translucent wash: cell colours survive and glyphs keep thei
 
   // Select rows 0-1 (the blue background run and the bright text run);
   // rows 3-4 are identical and stay unselected as the control.
-  await dragSelect(page, await cellXY(page, 0, 0), await cellXY(page, 68, 1));
+  await dragSelect(
+    page,
+    await cellXY(page, 0, 0),
+    await cellXY(page, runWidth(cols) - 2, 1),
+  );
 
-  const bgSelected = await rowColor(page, 0);
-  const textSelected = await rowColor(page, 1);
-  const bgPlain = await rowColor(page, 3);
-  const textPlain = await rowColor(page, 4);
+  const bgSelected = await rowColor(page, 0, cols);
+  const textSelected = await rowColor(page, 1, cols);
+  const bgPlain = await rowColor(page, 3, cols);
+  const textPlain = await rowColor(page, 4, cols);
 
   const over = (base: Rgb): Rgb =>
     base.map((c, i) => c * (1 - wash.alpha) + wash.rgb[i]! * wash.alpha) as Rgb;
@@ -204,16 +261,17 @@ async function cellXY(page: Page, col: number, row: number) {
  * bridge (never an emulator-specific selector) and read back through the
  * browser's own PNG decoder — the repo has no image library.
  */
-async function rowColor(page: Page, row: number): Promise<Rgb> {
+async function rowColor(page: Page, row: number, cols: number): Promise<Rgb> {
+  const lastCol = Math.min(60, runWidth(cols) - 4);
   const clip = await page.evaluate(
-    ([row]) => {
+    ([row, lastCol]) => {
       const bridge = (window as any).__PHASR_TERM__;
       const id = bridge?.ids()[0];
       if (!id) throw new Error("no live terminal surface");
       // Inset on every side: the wash's edges land on partial pixels, and
       // the glyph run must be sampled where it is dense.
       const a = bridge.cellRect(id, 4, row as number);
-      const b = bridge.cellRect(id, 60, row as number);
+      const b = bridge.cellRect(id, lastCol as number, row as number);
       if (!a || !b) throw new Error("grid too small to sample");
       return {
         x: Math.round(a.x + 1),
@@ -222,7 +280,7 @@ async function rowColor(page: Page, row: number): Promise<Rgb> {
         height: Math.round(a.height - 4),
       };
     },
-    [row] as const,
+    [row, lastCol] as const,
   );
   const png = (await page.screenshot({ clip })).toString("base64");
   return page.evaluate(async (data) => {
@@ -278,7 +336,7 @@ test("double-click selects the whole path, not one fragment of it", async ({
   context,
   browserName,
 }) => {
-  test.skip(browserName !== "chromium", "clipboard read is Chromium-only here");
+  test.skip(!clipboardReadable(browserName), "clipboard read is Chromium-only");
   await grantClipboard(context, browserName);
   await bootApp(page, makeFixtures());
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
@@ -305,7 +363,7 @@ test("triple-click selects the whole line", async ({
   context,
   browserName,
 }) => {
-  test.skip(browserName !== "chromium", "clipboard read is Chromium-only here");
+  test.skip(!clipboardReadable(browserName), "clipboard read is Chromium-only");
   await grantClipboard(context, browserName);
   await bootApp(page, makeFixtures());
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
