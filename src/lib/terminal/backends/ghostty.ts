@@ -28,6 +28,15 @@ import {
   WheelAccumulator,
   wheelOutcome,
 } from "@/lib/terminal/backends/ghostty/wheel";
+import {
+  diagAttach,
+  diagCreate,
+  diagDispose,
+  diagNote,
+  diagWrite,
+  installTerminalDiagnostics,
+  terminalDiagnosticsEnabled,
+} from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
 import {
   applyChangedOptions,
@@ -155,6 +164,8 @@ export class GhosttySurface implements TerminalSurface {
   /** Trailing bytes a following chunk could still extend — see `write`. */
   private heldTail: Uint8Array | null = null;
   private heldTimer: number | null = null;
+  /** See `diagnostics.ts` — OFF unless the user switches it on. */
+  private readonly diag = terminalDiagnosticsEnabled();
   private linkSource: LinkSource | null = null;
   private keymap: ((event: KeyboardEvent) => string | null) | null = null;
   private clipboardWanted = false;
@@ -185,6 +196,10 @@ export class GhosttySurface implements TerminalSurface {
   constructor(settings?: Partial<TerminalSurfaceSettings>) {
     surfaceSeq += 1;
     this.id = `ghostty-${surfaceSeq}`;
+    if (this.diag) {
+      installTerminalDiagnostics();
+      diagCreate(this.id);
+    }
     this.options = buildSurfaceOptions(settings);
     this.themeTarget.theme = this.options.theme;
 
@@ -215,6 +230,14 @@ export class GhosttySurface implements TerminalSurface {
       cols: this.preAttachGrid.cols,
     });
     this.term = term;
+    if (this.diag) {
+      installTerminalDiagnostics();
+      diagAttach(
+        this.id,
+        this.options.theme as unknown as Record<string, string>,
+        { ...this.preAttachGrid },
+      );
+    }
     // ghostty-web builds a canvas + a hidden textarea under the element it
     // is given and measures the font on a detached 2D context, so opening
     // on a still-detached element is safe — the caller re-parents
@@ -309,6 +332,7 @@ export class GhosttySurface implements TerminalSurface {
     }
     if (cols === term.cols && rows === term.rows) return false;
     // `resize` repaints in full and fires `onResize` itself.
+    if (this.diag) diagNote(this.id, `resize ${cols}x${rows}`);
     term.resize(cols, rows);
     return true;
   }
@@ -365,6 +389,7 @@ export class GhosttySurface implements TerminalSurface {
 
   write(data: string | Uint8Array): void {
     if (this.disposed) return;
+    if (this.diag) diagWrite(this.id, data);
     if (!this.term) {
       this.pendingWrites.push(data);
       return;
@@ -708,6 +733,7 @@ export class GhosttySurface implements TerminalSurface {
     this.pendingInput.length = 0;
     this.clearHeldTimer();
     this.heldTail = null;
+    if (this.diag) diagDispose(this.id);
     try {
       this.term?.dispose();
     } catch {
