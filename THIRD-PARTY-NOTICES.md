@@ -1,13 +1,28 @@
 # Third-party notices
 
-phasr bundles the following third-party software. This file exists because
-the app has **no in-app attribution surface today** — the macOS About panel
-is `PredefinedMenuItem::about` with no license list, and there is no
-Settings ▸ About screen. When one is added, it should render this file.
+phasr bundles the following third-party software.
+
+**This file ships inside the application.** `src-tauri/tauri.conf.json`
+lists it under `bundle.resources`, so it lands at
+`Phasr.app/Contents/Resources/_up_/THIRD-PARTY-NOTICES.md` alongside a copy
+of phasr's own `LICENSE`. That is what satisfies the MIT requirement that
+the copyright notice be "included in all copies or substantial portions of
+the Software" — before 0.4.0 the notices existed only in the git
+repository, while the WASM they cover shipped in every DMG.
+
+There is still **no in-app attribution surface** — the macOS About panel is
+`PredefinedMenuItem::about` with no licence list, and there is no
+Settings ▸ About screen. When one is added it should render this file from
+the bundled resource rather than duplicating it.
 
 Only components whose *source or binary* ships inside the app are listed
 here; the full transitive dependency licences are in `pnpm-lock.yaml` and
 `src-tauri/Cargo.lock`.
+
+Deliberately **not** listed: `alacritty_terminal` (Apache-2.0). It is an
+`optional` dependency behind the `vt-alacritty` cargo feature, which is not
+in `default`, so no Apache-2.0 code is compiled into a release build. If
+that feature is ever enabled by default, its notice must be added here.
 
 ---
 
