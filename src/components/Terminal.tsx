@@ -6,6 +6,7 @@ import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import {
+  canTakeTerminalFocus,
   isSurfaceVisible,
   parkSurface,
   TerminalSurfaceCache,
@@ -353,6 +354,9 @@ export function Terminal({
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();
+    // Revealing a terminal hands it the keyboard — otherwise focus stays
+    // on the tab pill that was just clicked and typing goes nowhere.
+    if (canTakeTerminalFocus()) entry.surface.focus();
   }, [visible, workspaceId]);
 
   return (

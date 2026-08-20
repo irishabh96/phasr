@@ -5,6 +5,7 @@ import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
+import { canTakeTerminalFocus } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
 import type {
@@ -180,6 +181,8 @@ export function RunCommandTerminal({
     if (!visible) return;
     surface.fit();
     surface.repaint();
+    // See Terminal.tsx — reveal hands over the keyboard.
+    if (canTakeTerminalFocus()) surface.focus();
   }, [visible]);
 
   return (

@@ -192,3 +192,29 @@ export class TerminalSurfaceCache<T extends SurfaceCacheEntry> {
     return true;
   }
 }
+
+/**
+ * May a terminal take focus when its tab is revealed?
+ *
+ * Switching inner tabs leaves focus on the tab pill — a BUTTON — so the
+ * newly visible terminal never received keystrokes and the only cue was
+ * that typing did nothing. Revealing a terminal therefore focuses it.
+ *
+ * The guard is narrow on purpose: it refuses only when the user is
+ * demonstrably typing somewhere else (a real form field, or a
+ * contenteditable that is not a terminal — the emulator's own container is
+ * contenteditable, so that exclusion matters). Buttons and links are fair
+ * to take from, because clicking a tab pill is exactly how you get here.
+ */
+export function canTakeTerminalFocus(): boolean {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || active === document.body) return true;
+  const tag = active.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return false;
+  if (
+    active.isContentEditable &&
+    !active.closest("[data-testid='terminal-surface']")
+  )
+    return false;
+  return true;
+}
