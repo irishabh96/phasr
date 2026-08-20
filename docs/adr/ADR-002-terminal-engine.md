@@ -38,6 +38,35 @@ rather than answering all five badly.
 
 ### Q1. Does WASM resolution work under `tauri://localhost` in a packaged app?
 
+**MECHANISM ANSWERED 2026-08-20 — YES on WKWebView at `tauri://localhost`.
+End-to-end in the packaged app still needs a human.**
+
+> `scripts/wkwebview-wasm-probe.swift` stands up a real `WKWebView` with a
+> custom `tauri:` URL-scheme handler serving the **real built `dist/`**, and
+> runs the same call `preloadGhosttyEngine()` makes:
+>
+> ```
+> Q1 {"stage":"origin","origin":"tauri://localhost","href":"tauri://localhost/"}
+> Q1 {"stage":"extracted","dataUrlBytes":564089}
+> Q1 {"stage":"fetched","status":200,"wasmBytes":423045}
+> Q1 {"stage":"compiled","exports":77}
+> Q1 {"ok":true,"stage":"ghostty-load","ctor":"q","terminal":"constructed"}
+> ```
+>
+> So WebKit **will** `fetch()` a `data:application/wasm` URL from a
+> custom-scheme document and `WebAssembly.compile` the result, and the real
+> patched `ghostty-web` then loads and constructs a `Terminal`. The
+> "WKWebView might refuse the data: URL" failure mode this ADR predicted did
+> not materialise.
+>
+> **What this still does not settle:** the probe uses its own
+> `WKWebViewConfiguration`, whereas wry builds its own and serves assets
+> through its own scheme handler; and it proves the WASM *loads*, not that a
+> terminal paints and carries a live PTY. The manual steps below remain the
+> gate. See `docs/RELEASE-0.4.0.md` §5.
+
+**Original analysis (still accurate on the shape of the question):**
+
 **OPEN — but the question changed shape, and the new shape is easier.**
 
 The premise was `import.meta.url`-relative resolution. That is **not what
