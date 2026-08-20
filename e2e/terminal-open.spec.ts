@@ -223,15 +223,18 @@ test("a terminal reaches its PTY at the real grid, never the 24x80 fallback", as
   console.log(
     `open_task_terminal ${open[0]!.args.rows}x${open[0]!.args.cols} vs settled grid ${JSON.stringify(agentGrid)}`,
   );
-  // Width is exact. Height is asserted loosely on purpose: the workspace
-  // pane's height settles a row or two after the terminal mounts (which is
-  // what the trailing refits in the components exist for), so the first
-  // measurement can legitimately be a row off the final one. What must
-  // never happen is the 24x80 fallback, which is not a measurement at all.
+  // Exact in BOTH axes. This used to be loose on rows because the workspace
+  // pane settles a row or two after the terminal mounts —
+  // `WorkspaceAgentToolbar` is gated on `workspace.worktreePath`, which is
+  // null until the worktree exists, so the first measurement is one toolbar
+  // row too tall. `whenGridSettles` now holds the spawn until the grid stops
+  // moving, which is the same bug as the 24x80 fallback at a smaller scale:
+  // an agent TUI reads its size ONCE, and a SIGWINCH mid-boot leaves the
+  // welcome frame drawn to a grid that no longer exists.
   expect(open[0]!.args.cols).toBe(agentGrid.cols);
   expect(open[0]!.args.cols).not.toBe(80);
   expect(open[0]!.args.rows).not.toBe(24);
-  expect(Math.abs(open[0]!.args.rows - agentGrid.rows)).toBeLessThanOrEqual(3);
+  expect(open[0]!.args.rows).toBe(agentGrid.rows);
 
   // ...and every ⌘T terminal after it.
   for (let i = 0; i < 3; i++) {

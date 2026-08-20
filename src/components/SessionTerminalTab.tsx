@@ -13,6 +13,7 @@ import {
 } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
   TerminalBackendKind,
@@ -202,6 +203,7 @@ export function SessionTerminalTab({
             : { state: "starting" },
       );
       try {
+        await whenGridSettles(surface);
         const id = await tauri.startSessionTerminal(
           cwd,
           channel,

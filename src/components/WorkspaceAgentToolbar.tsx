@@ -32,6 +32,19 @@ export function WorkspaceAgentToolbar({
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
   const allAgents = agents ?? [];
 
+  // This strip sits directly above the terminal, so appearing late shrinks
+  // the grid by two rows AFTER the PTY has been spawned — and an agent TUI
+  // reads its size exactly once, at startup. Hold the height while the
+  // query is in flight rather than collapsing to nothing and pushing the
+  // terminal around when it lands.
+  if (agents === undefined)
+    return (
+      <div
+        aria-hidden
+        className="h-9 shrink-0 border-t border-(--glass-border-hairline)"
+      />
+    );
+
   if (allAgents.length === 0) return null;
 
   return (
