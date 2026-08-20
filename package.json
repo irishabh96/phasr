@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:templates": "node scripts/check-template-urls.mjs",
-    "gen:dmg-background": "swift scripts/generate-dmg-background.swift src-tauri/icons/dmg-background.png"
+    "gen:dmg-background": "swift scripts/generate-dmg-background.swift src-tauri/icons/dmg-background.png",
+    "test:e2e:webkit": "playwright test --config playwright.webkit.config.ts"
   },
   "dependencies": {
     "@clerk/react": "^6.6.6",

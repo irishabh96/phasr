@@ -1,15 +1,21 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..4552cc707c4dbb3d25202e4425e61bce7a1dc373 100644
+index a4ca427..d22e9f2 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
-@@ -1311,10 +1311,12 @@ const f = {
+@@ -1310,11 +1310,17 @@ const f = {
+   foreground: "#d4d4d4",
    background: "#1e1e1e",
    cursor: "#ffffff",
-   cursorAccent: "#1e1e1e",
+-  cursorAccent: "#1e1e1e",
 -  // Selection colors: solid colors that replace cell bg/fg when selected
 -  // Using Ghostty's approach: selection bg = default fg, selection fg = default bg
 -  selectionBackground: "#d4d4d4",
 -  selectionForeground: "#1e1e1e",
++  // PHASR PATCH: no `cursorAccent` default, for the same reason
++  // `selectionForeground` has none. It is the colour the character UNDER a
++  // block cursor is repainted in; unset means "use the theme background",
++  // i.e. plain inverse video. A hardcoded near-black default is invisible on
++  // any light terminal.
 +  // PHASR PATCH: selection is a TRANSLUCENT WASH over the normally painted
 +  // cell (the conventional model), not inverse video. `selectionForeground` has
 +  // NO default on purpose: renderCellText only overrides the glyph colour
@@ -19,7 +25,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..4552cc707c4dbb3d25202e4425e61bce
    black: "#000000",
    red: "#cd3131",
    green: "#0dbc79",
-@@ -1508,12 +1510,15 @@ class $ {
+@@ -1508,12 +1514,15 @@ class $ {
     */
    renderCellBackground(A, B, g) {
      const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
@@ -39,7 +45,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..4552cc707c4dbb3d25202e4425e61bce
    }
    /**
     * Render a cell's text and decorations (Pass 2 of two-pass rendering)
-@@ -1526,7 +1531,12 @@ class $ {
+@@ -1526,7 +1535,12 @@ class $ {
        return;
      const D = this.isInSelection(B, g);
      let i = "";
@@ -53,7 +59,102 @@ index a4ca427b95288e70c782ce303013cd644893dcec..4552cc707c4dbb3d25202e4425e61bce
        this.ctx.fillStyle = this.theme.selectionForeground;
      else {
        let M = A.fg_r, a = A.fg_g, h = A.fg_b;
-@@ -2633,12 +2643,60 @@ class IA {
+@@ -1563,6 +1577,12 @@ class $ {
+     switch (this.ctx.fillStyle = this.theme.cursor, this.cursorStyle) {
+       case "block":
+         this.ctx.fillRect(g, E, this.metrics.width, this.metrics.height);
++        // PHASR PATCH: repaint the character under the block. Upstream filled
++        // an opaque rectangle over the cell and stopped there, so a block
++        // cursor HID the glyph it was sitting on — you could not see the
++        // character you were typing. iTerm2, Terminal.app and xterm all draw
++        // the cell inverted instead, which is what this does.
++        this.renderCursorGlyph(A, B, g, E);
+         break;
+       case "underline":
+         const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
+@@ -1579,6 +1599,39 @@ class $ {
+         break;
+     }
+   }
++  /**
++   * PHASR PATCH: draw the glyph under a block cursor in `theme.cursorAccent`,
++   * defaulting to the theme background — i.e. inverse video for the one cell
++   * the cursor is on. Bold/italic are honoured so the character does not
++   * change shape as the cursor passes over it.
++   */
++  renderCursorGlyph(A, B, g, E) {
++    const C = this.currentBuffer;
++    if (!C)
++      return;
++    let I = null;
++    try {
++      I = C.getLine(B);
++    } catch {
++      return;
++    }
++    const D = I && I[A];
++    if (!D || !D.codepoint || D.codepoint === 32)
++      return;
++    let i;
++    if (D.grapheme_len > 0 && C.getGraphemeString)
++      try {
++        i = C.getGraphemeString(B, A);
++      } catch {
++        i = String.fromCodePoint(D.codepoint);
++      }
++    else
++      i = String.fromCodePoint(D.codepoint);
++    if (!i)
++      return;
++    let w = "";
++    D.flags & e.ITALIC && (w += "italic "), D.flags & e.BOLD && (w += "bold "), this.ctx.font = `${w}${this.fontSize}px ${this.fontFamily}`, this.ctx.fillStyle = this.theme.cursorAccent || this.theme.background, this.ctx.fillText(i, g, E + this.metrics.baseline);
++  }
+   // ==========================================================================
+   // Cursor Blinking
+   // ==========================================================================
+@@ -1833,8 +1886,14 @@ const L = class Y {
+     for (; I >= E.cols; )
+       I -= E.cols, C++;
+     C = Math.min(C, E.rows - 1);
+-    const D = this.getViewportY();
+-    this.selectionStart = { col: A, absoluteRow: D + B }, this.selectionEnd = { col: I, absoluteRow: D + C }, this.requestRender(), this.selectionChangedEmitter.fire();
++    // PHASR PATCH: an absolute buffer row counts SCROLLBACK first, so the
++    // mapping is `scrollbackLength + row - viewportY` — which is exactly what
++    // `viewportRowToAbsolute` (and `getSelection`, and every mouse handler)
++    // already uses. Upstream used `viewportY + row` here, which agrees only
++    // on a terminal with no scrollback at all: on any real one this public
++    // API selected, highlighted and copied a row from the wrong place in
++    // history.
++    this.selectionStart = { col: A, absoluteRow: this.viewportRowToAbsolute(B) }, this.selectionEnd = { col: I, absoluteRow: this.viewportRowToAbsolute(C) }, this.requestRender(), this.selectionChangedEmitter.fire();
+   }
+   /**
+    * Select entire lines from start to end
+@@ -1843,8 +1902,8 @@ const L = class Y {
+   selectLines(A, B) {
+     const g = this.wasmTerm.getDimensions();
+     A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
+-    const E = this.getViewportY();
+-    this.selectionStart = { col: 0, absoluteRow: E + A }, this.selectionEnd = { col: g.cols - 1, absoluteRow: E + B }, this.requestRender(), this.selectionChangedEmitter.fire();
++    // PHASR PATCH: same off-by-scrollback as `select()` above.
++    this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(A) }, this.selectionEnd = { col: g.cols - 1, absoluteRow: this.viewportRowToAbsolute(B) }, this.requestRender(), this.selectionChangedEmitter.fire();
+   }
+   /**
+    * Get selection position as buffer range
+@@ -1945,7 +2004,12 @@ const L = class Y {
+     }), this.boundMouseUpHandler = (B) => {
+       if (this.isSelecting) {
+         this.isSelecting = !1, this.stopAutoScroll();
+-        const g = this.getSelection();
++        // PHASR PATCH: a plain click leaves selectionStart === selectionEnd,
++        // which `hasSelection()` reports as NO selection — but `getSelection()`
++        // happily returns the single character under the pointer, so every
++        // click in the terminal silently replaced the clipboard with one
++        // letter. Copy only what the terminal itself calls a selection.
++        const g = this.hasSelection() ? this.getSelection() : "";
+         g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
+       }
+     }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
+@@ -2633,12 +2697,60 @@ class IA {
    // ==========================================================================
    // Private Methods
    // ==========================================================================
@@ -115,7 +216,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..4552cc707c4dbb3d25202e4425e61bce
          this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
          const B = this.wasmTerm.getCursor();
          B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire()), this.animationFrameId = requestAnimationFrame(A);
-@@ -2664,7 +2722,7 @@ class IA {
+@@ -2664,7 +2776,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {

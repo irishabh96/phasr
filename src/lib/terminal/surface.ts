@@ -50,6 +50,12 @@ export interface TerminalTheme {
   background: string;
   foreground: string;
   cursor: string;
+  /**
+   * Ink for the character UNDER a block cursor — the cursor cell is drawn
+   * inverse-video, the way every other terminal draws it. Without it the
+   * block is an opaque rectangle and you cannot see what you are typing.
+   */
+  cursorAccent: string;
   selectionBackground: string;
   black: string;
   red: string;
