@@ -154,7 +154,7 @@ index a4ca427..d22e9f2 100644
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2633,12 +2697,60 @@ class IA {
+@@ -2633,12 +2697,80 @@ class IA {
    // ==========================================================================
    // Private Methods
    // ==========================================================================
@@ -189,6 +189,22 @@ index a4ca427..d22e9f2 100644
 +   * mid-frame) must not freeze the display, so painting resumes after
 +   * SYNC_TIMEOUT_MS no matter what. That is what the spec's "timeout"
 +   * language exists for, and matches what other implementations use.
++   *
++   * Blowing the bound RE-ARMS rather than latching: the deadline is cleared
++   * on the frame it is spent, so the window that follows is a fresh one.
++   * Clearing it only when the mode reads OFF was not enough — the Rust side
++   * coalesces PTY reads, so a TUI repainting several times per flush
++   * delivers `?2026l` and the next `?2026h` in ONE write and the loop never
++   * samples the mode off. One long frame then disabled synchronization for
++   * the rest of that terminal's life: the flicker came back and stayed.
++   * Covered by e2e/terminal-sync.spec.ts.
++   *
++   * Known residual: a frame that BEGINS inside an already-armed window
++   * inherits what is left of it rather than starting its own, because the
++   * mode is sampled once per animation frame and an `l`+`h` pair inside a
++   * single write has no observable transition. Worst case that truncates
++   * one frame's deferral; it cannot disable synchronization, and the bound
++   * is unchanged either way: paint at least every 150 ms.
 +   */
 +  isFrameSynchronized() {
 +    let A = !1;
@@ -200,7 +216,11 @@ index a4ca427..d22e9f2 100644
 +    if (!A)
 +      return this.syncFrameDeadline = void 0, !1;
 +    const B = Date.now();
-+    return this.syncFrameDeadline === void 0 ? (this.syncFrameDeadline = B + 150, !0) : B < this.syncFrameDeadline;
++    if (this.syncFrameDeadline === void 0)
++      return this.syncFrameDeadline = B + 150, !0;
++    if (B < this.syncFrameDeadline)
++      return !0;
++    return this.syncFrameDeadline = void 0, !1;
 +  }
    /**
     * Start the render loop

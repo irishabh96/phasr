@@ -99,3 +99,83 @@ test("a synchronized frame is never painted half-applied", async ({ page }) => {
   // 4. The completed frame lands.
   expect(afterSync).toBeGreaterThan(painted * 0.9);
 });
+
+/**
+ * Emit bytes and report, in ms, when the terminal first went dark —
+ * i.e. how long the erase inside them was deferred.
+ *
+ * Measured inside the page, one sample per animation frame.
+ * `page.screenshot()` (what the test above uses) costs more than the whole
+ * 150 ms window, so it cannot resolve this at all.
+ */
+async function msUntilErased(page: Page, bytes: string): Promise<number> {
+  return page.evaluate(async (bytes) => {
+    const host = ([
+      ...document.querySelectorAll("[data-testid='terminal-surface']"),
+    ] as HTMLElement[]).find((h) => getComputedStyle(h).display !== "none")!;
+    const canvas = host.querySelector("canvas") as HTMLCanvasElement;
+    const ctx = canvas.getContext("2d")!;
+    const ink = () => {
+      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      let n = 0;
+      for (let i = 0; i < data.length; i += 4 * 53)
+        if (data[i]! + data[i + 1]! + data[i + 2]! > 90) n++;
+      return n;
+    };
+    const base = ink();
+    const t0 = performance.now();
+    (window as any).__E2E__.pty("ws-agent", {
+      type: "output",
+      chunk: btoa(bytes),
+    });
+    return await new Promise<number>((resolve) => {
+      const tick = () => {
+        const now = performance.now() - t0;
+        if (ink() < base * 0.2) return resolve(now);
+        if (now > 400) return resolve(400);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }, bytes);
+}
+
+test("one frame that blows the 150 ms bound does not disable synchronization", async ({
+  page,
+}) => {
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await page.waitForTimeout(1500);
+  await expect(terminal(page)).toBeVisible();
+  await ptyOut(page, "ws-agent", `\x1b[?1049h\x1b[H${FULL_SCREEN}`);
+  await page.waitForTimeout(500);
+
+  // The regression: the bound used to LATCH. Once a frame overran it, the
+  // deadline stayed in the past forever and every later frame painted
+  // immediately — synchronization silently off for the rest of the
+  // session, i.e. the flicker back for good. It never recovered on its own
+  // because the Rust side coalesces PTY reads: a TUI repainting several
+  // times per flush delivers `\x1b[?2026l` and the next `\x1b[?2026h` in
+  // ONE write, so the render loop never samples the mode as off.
+  //
+  // Phase matters and cannot be controlled: a block that starts near the
+  // end of the current window legitimately inherits only its remainder.
+  // Sweeping the wait across a full window makes at least one attempt land
+  // early in one. With the bound latched, EVERY attempt paints on the next
+  // frame instead, whatever the phase.
+  const deferrals: number[] = [];
+  for (const wait of [420, 450, 480, 510, 540]) {
+    await ptyOut(page, "ws-agent", `${FULL_SCREEN}\x1b[?2026l`);
+    await page.waitForTimeout(300);
+    await ptyOut(page, "ws-agent", "\x1b[?2026h");
+    await page.waitForTimeout(wait);
+    deferrals.push(
+      await msUntilErased(page, "\x1b[?2026l\x1b[?2026h\x1b[2J\x1b[H"),
+    );
+  }
+  console.log(`SYNC2026 re-arm deferrals (ms): ${JSON.stringify(deferrals)}`);
+  expect(Math.max(...deferrals)).toBeGreaterThan(50);
+
+  // …and the bound still holds: nothing is deferred past the window.
+  expect(Math.max(...deferrals)).toBeLessThan(200);
+});
