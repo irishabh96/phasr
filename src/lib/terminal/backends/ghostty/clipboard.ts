@@ -73,6 +73,56 @@ export function selectionMirrorEnabled(): boolean {
   }
 }
 
+/**
+ * Copy-on-select for the gestures phasr owns (`backends/ghostty/selection.ts`).
+ *
+ * ghostty-web copies whatever a DRAG selects from its own `mouseup`
+ * handler, so a double- or triple-click that did not go through it has to
+ * do the same or the two gestures would disagree about whether selecting
+ * copies. Same two rungs as upstream's private `copyToClipboard`: the
+ * async API first, then the hidden textarea + `execCommand`, which is the
+ * only path that works when the async one is unavailable or rejects.
+ */
+export function copySelectionText(
+  text: string,
+  textarea?: HTMLTextAreaElement | undefined,
+): void {
+  if (!text) return;
+  const clipboard = navigator.clipboard as Clipboard | undefined;
+  if (typeof clipboard?.writeText === "function") {
+    void clipboard.writeText(text).catch(() => legacyCopy(text, textarea));
+    return;
+  }
+  legacyCopy(text, textarea);
+}
+
+function legacyCopy(
+  text: string,
+  textarea: HTMLTextAreaElement | undefined,
+): void {
+  const host = textarea ?? document.createElement("textarea");
+  const detached = host !== textarea;
+  const previous = document.activeElement;
+  try {
+    if (detached) {
+      host.style.position = "fixed";
+      host.style.opacity = "0";
+      document.body.appendChild(host);
+    }
+    host.value = text;
+    host.focus();
+    host.select();
+    host.setSelectionRange(0, text.length);
+    document.execCommand("copy");
+  } catch {
+    /* nothing else to try */
+  } finally {
+    if (detached) host.remove();
+    else host.value = "";
+    if (previous instanceof HTMLElement) previous.focus();
+  }
+}
+
 /** Rung 1. */
 export function installGhosttyClipboard(
   element: HTMLElement,

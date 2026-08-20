@@ -4,9 +4,14 @@ import type {
   Terminal as GhosttyTerminal,
 } from "ghostty-web";
 import {
+  copySelectionText,
   installGhosttyClipboard,
   type GhosttyClipboardTerminal,
 } from "@/lib/terminal/backends/ghostty/clipboard";
+import {
+  installGhosttySelection,
+  type GhosttySelectionTerminal,
+} from "@/lib/terminal/backends/ghostty/selection";
 import {
   createGhosttyLinkProvider,
   lineToText,
@@ -141,6 +146,7 @@ export class GhosttySurface implements TerminalSurface {
   private keymap: ((event: KeyboardEvent) => string | null) | null = null;
   private clipboardWanted = false;
   private clipboard: SurfaceDisposable | null = null;
+  private selection: SurfaceDisposable | null = null;
   private active = true;
   private pausedWarned = false;
 
@@ -191,6 +197,7 @@ export class GhosttySurface implements TerminalSurface {
     if (this.linkSource) this.wireLinks(term, this.linkSource);
     if (this.keymap) this.wireKeymap(term, this.keymap);
     this.wireWheel(term);
+    this.wireSelection(term);
     if (this.clipboardWanted && !this.clipboard) {
       this.clipboard = installGhosttyClipboard(
         this.element,
@@ -384,7 +391,15 @@ export class GhosttySurface implements TerminalSurface {
     // `scrollback` is in the options bag but `handleOptionChange` has no
     // case for it — the write is silently ignored, so scrollback is
     // apply-on-next-open. Stated in the settings copy.
-    applyChangedOptions(this.term.options, next);
+    const written = applyChangedOptions(this.term.options, next);
+    // `cursorStyle`/`cursorBlink` DO reach the renderer (unlike `scrollback`
+    // and `theme`), but only as state: `setCursorStyle` just assigns, and
+    // the render loop redraws the cursor's ROW only when the cursor moved
+    // or is blinking. With blink off, switching block → bar left the old
+    // block painted until the next byte of output. One full repaint settles
+    // it. Font changes repaint themselves (`handleFontChange`).
+    if (written.includes("cursorStyle") || written.includes("cursorBlink"))
+      this.repaint();
   }
 
   applyTheme(theme: TerminalTheme): void {
@@ -543,6 +558,23 @@ export class GhosttySurface implements TerminalSurface {
     });
   }
 
+  /**
+   * Double-click = word, triple-click = logical line — phasr's, not
+   * ghostty-web's.
+   *
+   * Not an `installX()` on the surface contract for the same reason the
+   * wheel isn't: it is not optional behaviour a caller chooses, it is what
+   * a terminal does with a mouse. See `backends/ghostty/selection.ts` for
+   * the upstream bug this replaces.
+   */
+  private wireSelection(term: GhosttyTerminal): void {
+    this.selection = installGhosttySelection(
+      this.element,
+      term as unknown as GhosttySelectionTerminal,
+      { copy: (text) => copySelectionText(text, term.textarea) },
+    );
+  }
+
   /** 0-based cell under a pointer event, clamped to the grid. */
   private cellAt(event: { clientX: number; clientY: number }): {
     col: number;
@@ -584,6 +616,8 @@ export class GhosttySurface implements TerminalSurface {
     this.disposed = true;
     this.clipboard?.dispose();
     this.clipboard = null;
+    this.selection?.dispose();
+    this.selection = null;
     this.dataCbs.clear();
     this.resizeCbs.clear();
     this.pendingWrites.length = 0;

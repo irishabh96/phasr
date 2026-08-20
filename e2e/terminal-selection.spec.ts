@@ -1,4 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import {
   bootApp,
   cellPoint,
@@ -6,6 +11,21 @@ import {
   makeFixtures,
   ptyOut,
 } from "./harness";
+
+/**
+ * Clipboard permissions are a Chromium-only Playwright API — WebKit throws
+ * `Unknown permission: clipboard-write` — and WebKit grants clipboard access
+ * to the focused page anyway. Guarded so the same spec runs under
+ * `playwright.webkit.config.ts`, which is the closest proxy we have to the
+ * WKWebView phasr actually ships in.
+ */
+async function grantClipboard(
+  context: BrowserContext,
+  browserName: string,
+): Promise<void> {
+  if (browserName !== "chromium") return;
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+}
 
 /**
  * Selection: what it copies, and what it LOOKS like.
@@ -63,8 +83,9 @@ async function dragSelect(
 test("what a drag-selection does to the clipboard", async ({
   page,
   context,
+  browserName,
 }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await grantClipboard(context, browserName);
   await bootApp(page, makeFixtures());
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
   await expectBackend(page);
@@ -92,8 +113,9 @@ test("what a drag-selection does to the clipboard", async ({
 test("selection is a translucent wash: cell colours survive and glyphs keep theirs", async ({
   page,
   context,
+  browserName,
 }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await grantClipboard(context, browserName);
   await bootApp(page, makeFixtures());
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
   await expectBackend(page);
@@ -226,3 +248,78 @@ async function rowColor(page: Page, row: number): Promise<Rgb> {
     return [r / n, g / n, b / n] as Rgb;
   }, png);
 }
+
+/**
+ * The two gestures the user reported as broken.
+ *
+ * Double-click was implemented upstream but returned null for any cell
+ * that wasn't `[\w-]`, so double-clicking a space, a `:` or a box-drawing
+ * character did nothing at all — indistinguishable from "the gesture is
+ * dead". Triple-click did not exist upstream at any level.
+ *
+ * Asserted through the clipboard because copy-on-select is ghostty-web's
+ * own behaviour, so it is the observable a user actually gets. Chromium
+ * only: reading the clipboard needs a permission grant Playwright does not
+ * expose on WebKit.
+ */
+const WORD_LINE = "run src/lib/terminal/options.ts now";
+
+async function clickTimes(
+  page: Page,
+  point: { x: number; y: number },
+  clickCount: number,
+) {
+  await page.mouse.click(point.x, point.y, { clickCount });
+  await page.waitForTimeout(500);
+}
+
+test("double-click selects the whole path, not one fragment of it", async ({
+  page,
+  context,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "clipboard read is Chromium-only here");
+  await grantClipboard(context, browserName);
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await expectBackend(page);
+  await page.waitForTimeout(1200);
+
+  await ptyOut(page, "ws-agent", `${WORD_LINE}\r\n`);
+  await page.waitForTimeout(500);
+  await page.evaluate((s) => navigator.clipboard.writeText(s), SENTINEL);
+
+  // Land inside "terminal" — the middle segment of the path. Upstream's
+  // `[\w-]` rule would stop at the surrounding slashes and yield exactly
+  // that fragment; iTerm's word set takes the whole path.
+  const col = WORD_LINE.indexOf("terminal") + 2;
+  await clickTimes(page, await cellPoint(page, col, 0, WORD_LINE), 2);
+
+  const got = (await page.evaluate(() => navigator.clipboard.readText())).trim();
+  console.log(`DBLCLICK got=${JSON.stringify(got)}`);
+  expect(got).toBe("src/lib/terminal/options.ts");
+});
+
+test("triple-click selects the whole line", async ({
+  page,
+  context,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "clipboard read is Chromium-only here");
+  await grantClipboard(context, browserName);
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await expectBackend(page);
+  await page.waitForTimeout(1200);
+
+  await ptyOut(page, "ws-agent", `${WORD_LINE}\r\n`);
+  await page.waitForTimeout(500);
+  await page.evaluate((s) => navigator.clipboard.writeText(s), SENTINEL);
+
+  const col = WORD_LINE.indexOf("terminal") + 2;
+  await clickTimes(page, await cellPoint(page, col, 0, WORD_LINE), 3);
+
+  const got = (await page.evaluate(() => navigator.clipboard.readText())).trim();
+  console.log(`TRIPLECLICK got=${JSON.stringify(got)}`);
+  expect(got).toBe(WORD_LINE);
+});

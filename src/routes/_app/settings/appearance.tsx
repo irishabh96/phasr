@@ -5,14 +5,23 @@ import {
   TERMINAL_FONT_SIZE,
   clampTerminalFontSize,
   useAdjustTerminalFontSize,
+  useUpdateUserSettings,
   useUserSettings,
 } from "@/lib/hooks/useUserSettings";
+import { normalizeCursorStyle } from "@/lib/terminal/options";
+import type { TerminalCursorStyle } from "@/lib/terminal/surface";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { Theme } from "@/lib/theme";
 
 const THEMES: Theme[] = ["dark", "light", "system"];
+
+const CURSOR_STYLES: { value: TerminalCursorStyle; label: string }[] = [
+  { value: "block", label: "Block" },
+  { value: "bar", label: "Bar" },
+  { value: "underline", label: "Underline" },
+];
 
 function AppearancePage() {
   const { theme, setTheme } = useUiStore();
@@ -68,6 +77,7 @@ function AppearancePage() {
           Terminal
         </div>
         <TerminalFontSizeRow />
+        <TerminalCursorRow />
       </section>
     </div>
   );
@@ -131,6 +141,96 @@ function TerminalFontSizeRow() {
         </GlassButton>
       </div>
     </div>
+  );
+}
+
+/**
+ * Cursor shape + blink. Both fields already existed on `user_settings` and
+ * already reached the emulator; they simply had no control, so the only way
+ * to change them was a hand-edited sqlite row or a synced value from another
+ * device. Defaults are unchanged (block, blinking) so nobody's terminal
+ * moves under them just because the setting became visible.
+ */
+function TerminalCursorRow() {
+  const { data: settings } = useUserSettings();
+  const { mutate } = useUpdateUserSettings();
+  // null until the query resolves — the controls disable rather than render
+  // a guessed selection that then jumps when the real value arrives.
+  const style = settings ? normalizeCursorStyle(settings.cursorStyle) : null;
+  const blink = settings ? settings.cursorBlink : null;
+
+  return (
+    <div className="glass-panel flex items-center justify-between gap-4 p-4">
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium">Cursor</div>
+        <p className="mt-1 text-[12px] text-(--color-text-muted)">
+          Shape and blink, applied to every terminal immediately.
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <div
+          role="radiogroup"
+          aria-label="Cursor shape"
+          className="flex items-center gap-1"
+        >
+          {CURSOR_STYLES.map((option) => {
+            const active = style === option.value;
+            return (
+              <GlassButton
+                key={option.value}
+                size="sm"
+                variant={active ? "outline" : "ghost"}
+                role="radio"
+                aria-checked={active}
+                disabled={style === null}
+                onClick={() =>
+                  settings && mutate({ ...settings, cursorStyle: option.value })
+                }
+                className={cn(
+                  "text-[12px]",
+                  active && "border-(--color-accent-500)",
+                )}
+              >
+                <CursorGlyph style={option.value} />
+                {option.label}
+              </GlassButton>
+            );
+          })}
+        </div>
+        <GlassButton
+          size="sm"
+          variant={blink ? "outline" : "ghost"}
+          aria-pressed={blink === true}
+          disabled={blink === null}
+          onClick={() =>
+            settings && mutate({ ...settings, cursorBlink: !settings.cursorBlink })
+          }
+          className={cn("text-[12px]", blink && "border-(--color-accent-500)")}
+        >
+          Blink
+        </GlassButton>
+      </div>
+    </div>
+  );
+}
+
+/** Tiny preview of the shape, so the labels aren't the only cue. */
+function CursorGlyph({ style }: { style: TerminalCursorStyle }) {
+  const box =
+    style === "block"
+      ? "h-[11px] w-[6px]"
+      : style === "bar"
+        ? "h-[11px] w-[2px]"
+        : "h-[2px] w-[6px] self-end";
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-flex shrink-0 items-end rounded-[1px] bg-(--color-accent-500)",
+        box,
+      )}
+      style={style === "underline" ? { marginBottom: 2 } : undefined}
+    />
   );
 }
 

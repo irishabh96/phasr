@@ -16,6 +16,11 @@ export function readTerminalTheme(): TerminalTheme {
     background: css("--color-bg-terminal", "#000000"),
     foreground: css("--color-text-primary", "#e6edf3"),
     cursor: css("--color-accent-500", "#f78166"),
+    // The cursor is a coral FILL, so the glyph inside it is ink on coral —
+    // which is exactly what `--color-accent-onfill` is for (8.1:1, and
+    // deliberately dark in both themes). The theme background would be the
+    // textbook inverse-video choice but only clears 2.43:1 on light.
+    cursorAccent: css("--color-accent-onfill", "#010409"),
     // Tokenised (was a literal here) so a theme can override it; the base
     // value is unchanged, and light deliberately does not override it.
     selectionBackground: css("--ansi-selection", "rgba(247, 129, 102, 0.28)"),
