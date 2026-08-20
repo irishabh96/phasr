@@ -350,10 +350,15 @@ function WorkspaceLink({
           </GlassTooltip>
         )}
         {isExpanded && (
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          // `truncate` is `overflow: hidden`, so the line box has to be
+          // taller than the glyphs or descenders are clipped flat —
+          // `leading-none` cut the tails off every g/y/p/j in a branch
+          // name. The line-height supplies the row's internal spacing now,
+          // so the explicit gap is gone.
+          <span className="flex min-w-0 flex-1 flex-col">
             <span
               className={cn(
-                "truncate text-left text-[13px] leading-none",
+                "truncate text-left text-[13px] leading-[1.3]",
                 active
                   ? "text-(--color-text-primary)"
                   : "text-(--color-text-secondary)",
@@ -362,7 +367,7 @@ function WorkspaceLink({
               {ws.name}
             </span>
             {ws.branch && (
-              <code className="truncate text-left text-[10.5px] leading-none text-(--color-text-muted)">
+              <code className="truncate text-left text-[10.5px] leading-[1.45] text-(--color-text-muted)">
                 {ws.branch}
               </code>
             )}
