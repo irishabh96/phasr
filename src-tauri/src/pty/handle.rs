@@ -296,9 +296,7 @@ impl PtyHandle {
     }
 
     pub fn subscribe_with_replay(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
-        let rx = self.tx.subscribe();
-        let replay = self.replay.lock().snapshot();
-        (replay, rx)
+        subscribe_with_replay_locked(&self.tx, &self.replay)
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
@@ -771,8 +769,39 @@ fn emit_output(
     };
     // Recorded for replay even with no subscribers — a send failure just
     // means nobody is attached yet, which is exactly what replay is for.
-    replay.lock().push(event.clone());
+    //
+    // The lock spans BOTH halves and that is the whole point; see
+    // `subscribe_with_replay_locked`.
+    let mut recorded = replay.lock();
+    recorded.push(event.clone());
     let _ = tx.send(event);
+}
+
+/// Everything already produced, plus everything produced from now on —
+/// each chunk **exactly once**.
+///
+/// The two halves have to be atomic against a producer. Subscribing first
+/// and snapshotting afterwards (what this used to do) leaves a window: a
+/// chunk pushed to the replay buffer between the two calls is in the
+/// snapshot AND is then broadcast to the receiver that already exists, so
+/// the terminal writes those bytes twice. Duplicated bytes are not a
+/// cosmetic problem in a VT stream — a TUI's frame is cursor moves and
+/// erases, and replaying part of one on top of the screen it already drew
+/// corrupts the display until the program happens to repaint in full.
+///
+/// Holding the replay mutex across both calls here, and across
+/// push-then-send in `emit_output`, serializes them: a subscriber either
+/// runs entirely before a chunk is pushed (so it is not in the snapshot,
+/// and the receiver — which exists before the send — gets it live) or
+/// entirely after it is sent (so it IS in the snapshot, and the receiver
+/// did not exist when it was sent). Never both.
+fn subscribe_with_replay_locked(
+    tx: &broadcast::Sender<PtyEvent>,
+    replay: &Mutex<ReplayBuffer>,
+) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
+    let recorded = replay.lock();
+    let rx = tx.subscribe();
+    (recorded.snapshot(), rx)
 }
 
 #[derive(Debug)]
@@ -1124,6 +1153,85 @@ mod tests {
             watch_after_typing(&mut rx, "authentication", Duration::from_secs(2)),
             TypeOutcome::Echoed
         );
+    }
+
+    /// A subscriber must see every chunk exactly once — not once in the
+    /// replay snapshot and again on the live receiver.
+    ///
+    /// This is a race, so it is hammered rather than asserted once: a
+    /// producer emits monotonically numbered chunks as fast as it can while
+    /// this thread attaches over and over. Before the lock spanned
+    /// push-then-send and snapshot-then-subscribe, the seam between the
+    /// snapshot's last chunk and the receiver's first repeated a number
+    /// within a few hundred attaches on every machine it was tried on.
+    #[test]
+    fn attaching_mid_stream_never_delivers_a_chunk_twice() {
+        // No long-lived receiver: one that never drains would fill the ring
+        // and make every later attach report Lagged instead of exercising
+        // the seam this test is about.
+        let (tx, initial) = broadcast::channel::<PtyEvent>(4096);
+        drop(initial);
+        let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let producer = {
+            let tx = tx.clone();
+            let replay = replay.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut n: u64 = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    emit_output("t", format!("{n}\n").into_bytes(), &tx, &replay);
+                    n += 1;
+                }
+            })
+        };
+
+        let seq = |event: &PtyEvent| -> Option<u64> {
+            match event {
+                PtyEvent::Output { chunk, .. } => {
+                    String::from_utf8_lossy(chunk).trim().parse().ok()
+                }
+                PtyEvent::Exit { .. } => None,
+            }
+        };
+
+        let mut checked = 0usize;
+        for _ in 0..2_000 {
+            let (snapshot, mut rx) = subscribe_with_replay_locked(&tx, &replay);
+            let Some(last_replayed) = snapshot.last().and_then(seq) else {
+                continue;
+            };
+            // The producer is hot, so the next chunk lands within
+            // microseconds; spin rather than sleep so the attach and the
+            // send stay interleaved.
+            let mut first_live = None;
+            for _ in 0..10_000 {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        first_live = seq(&event);
+                        break;
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => std::hint::spin_loop(),
+                    // Producer outran the ring while this thread was
+                    // descheduled — says nothing about the seam.
+                    Err(_) => break,
+                }
+            }
+            let Some(first_live) = first_live else {
+                continue;
+            };
+            assert_eq!(
+                first_live,
+                last_replayed + 1,
+                "chunk {last_replayed} was delivered in the replay AND live \
+                 (attach #{checked})",
+            );
+            checked += 1;
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        producer.join().unwrap();
+        assert!(checked > 100, "only {checked} attaches landed mid-stream");
     }
 
     #[test]
