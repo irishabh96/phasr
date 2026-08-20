@@ -100,11 +100,15 @@ dark-factory/
 !/docs/design/
 !/docs/adr/
 !/docs/PERFORMANCE-RETENTION-REPORT.md
+!/docs/RELEASE-*.md
 patterns_library/
 # SAFe-template scripts stay ignored, EXCEPT phasr's own project scripts.
 /scripts/*
 !/scripts/generate-dmg-background.swift
 !/scripts/check-template-urls.mjs
+# Referenced by docs/adr/ADR-002 — a tracked ADR must not point at an
+# untracked script.
+!/scripts/wkwebview-wasm-probe.swift
 specs_templates
 CLAUDE.md
 AGENTS.md
