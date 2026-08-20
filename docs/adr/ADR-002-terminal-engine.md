@@ -1277,3 +1277,85 @@ intact — so it is a real render. **It did not reproduce** under either engine
 while replaying the captured stream byte-for-byte at its real inter-chunk
 timings, so its trigger is not in the byte stream alone. Closing it needs the
 instrumented packaged app, not the mocked-IPC harness.
+
+---
+
+## 2026-08-21 (later) — the whole-line decolouring, and three hypotheses killed
+
+Two more recordings, both from the packaged build that **contains** the
+`graphemeTail` fix. So the `☁ → ▲` substitution here is not a grapheme cluster
+split across chunks, and the grapheme fix does not cover this case.
+
+Quantified rather than eyeballed, on the prompt-row band: healthy frames are
+**mean chroma 79.7, 86.9% of ink pixels chromatic**; the bad windows are
+**mean 5.5–6.0, 0.0% chromatic**, and each lasts a **full second**. Two
+separate episodes, on two separate ⌘T opens, in two different workspaces. A
+full second at 16 ms frames is not a race — the terminal is *in* that state.
+
+### Killed: "the shell prints a plain prompt then a styled one"
+
+Captured `zsh -l` in the recording's own worktree
+(`48f9c3e5-…`, `phasr/hello-2`) with phasr's exact environment — `TERM`,
+`COLORTERM`, `TERM_PROGRAM=kitty`, the env filter from `pty/shell.rs` — and
+with the SIGWINCH phasr's settle timers produce. The prompt is emitted
+**exactly once, fully coloured**:
+
+```
+\r\x1b[0m\x1b[27m\x1b[24m\x1b[J\r\n\x1b[1;36m48f9c3e5-…\x1b[0m on \x1b[1;35m…
+```
+
+There is no uncoloured pass. **It is not the user's shell.**
+
+### Killed: "the palette resolves empty, so indexed colours fall back"
+
+This was the leading theory and it is wrong, by measurement. `parseColorToHex`
+in `ghostty-web` understands only `#rgb`, `#rrggbb` and `rgb(r, g, b)`, and
+returns 0 for anything else. Feeding the real ⌘T path a palette of `rgba()`,
+`oklch()`, named colours and CSS Color 4 `rgb(r g b)` gives **76.4% chromatic,
+mean 49.4** — not 0%. A zero palette makes the engine fall back to **its own**
+defaults, so the terminal stays colourful and merely stops matching phasr.
+
+**A broken palette produces DIFFERENT colours, never NO colours.** Nothing in
+the theme path can produce the observed state. (`--ansi-*` are plain hex, and
+`readTerminalTheme` has hex fallbacks, so the palette was never empty anyway —
+measured correct at rest and at each of three ⌘T opens.)
+
+### Killed: "it reproduces on a freshly opened terminal"
+
+Three ⌘T session terminals opened in sequence at runtime, each fed the captured
+boot stream at its real inter-chunk timings, all render **87–88% chromatic,
+mean ~100** — matching the recording's healthy baseline. No bad window, on
+either engine.
+
+Also excluded by reading the code: nothing re-emits VT-rendered text
+(`session_terminal.rs` forwards raw `PtyEvent`s), `rgbToCSS` cannot produce an
+invalid `fillStyle` from pooled JS cells, and `renderCellText` has no
+`theme.foreground` path — a cell renders default white only if the WASM
+resolved it that way.
+
+### What that leaves
+
+The cells carry default attributes although the bytes carried SGR. Every step
+between those two facts has now been excluded outside the packaged app, and the
+one environment that reproduces it is the one with **no instrumentation at
+all**: `bridge.ts` is gated on `import.meta.env.DEV`, so a shipped `.app`
+exposes nothing. Three recordings could only ever be measured in pixels.
+
+`src/lib/terminal/diagnostics.ts` closes that. OFF by default (one
+`localStorage` read per surface):
+
+```js
+localStorage.setItem("phasr.diag.terminal", "1"); location.reload();
+// reproduce, then:
+copy(JSON.stringify(window.__PHASR_TERM_DIAG__.dump(), null, 2));
+```
+
+Per surface it reports creation order (so "the Nth terminal" is answerable),
+create/attach timestamps, the grid the engine was opened at, **the theme the
+WASM palette was built from** and which entries `ghostty-web` cannot parse,
+resize events, and the first 8 KB of PTY output escaped — with
+`headHasSgrColour`, which answers "did the SGR reach this surface" without a
+screen recording. That single field splits the remaining space in two: bytes
+arrived with colour (engine/renderer) or they did not (delivery).
+
+**Q2** (native Edit ▸ Copy) remains the only open spike question.
