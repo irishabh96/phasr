@@ -242,6 +242,7 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   // Seed overrides at boot (e.g. make open_task_terminal reject from the very
   // first mount) via fixtures.overrides — set before any command fires.
   const overrides: Record<string, unknown> = { ...((f as any).overrides ?? {}) };
+  let sessionSeq = 0;
 
   const RESP = (cmd: string, a: any): unknown => {
     switch (cmd) {
@@ -325,7 +326,11 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return { taskId: "task-new", workspace: { ...f.workspaces[0], id: "ws-created", status: "running" } };
       case "open_task_terminal": return { taskId: a?.taskId ?? "ws-agent", startedAt: f.now };
       case "read_task_log": return "$ agent finished\r\nAll done.\r\n";
-      case "start_session_terminal": return a?.sessionId ?? "session-1";
+      // A UNIQUE id per shell, like the real backend. It used to hand every
+      // session terminal the same "session-1", which made "did this
+      // keystroke reach THIS terminal's PTY?" unanswerable — every
+      // terminal's input landed on the same id.
+      case "start_session_terminal": return a?.sessionId ?? `session-${++sessionSeq}`;
       case "attach_session_terminal": return null;
       case "send_input_to_task":
       case "send_session_input":
@@ -390,6 +395,10 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       if (clean && "onEvent" in clean) clean.onEvent = "<Channel>";
       calls.push({ cmd, args: clean });
       const val = cmd in overrides ? overrides[cmd] : RESP(cmd, args);
+      // `start_session_terminal` carries no id IN — the id is what it
+      // returns — so its channel can only be keyed after the fact.
+      if (cmd === "start_session_terminal" && typeof val === "string" && args?.onEvent)
+        channels[val] = args.onEvent;
       if (val && typeof val === "object" && "__reject" in (val as any))
         return Promise.reject((val as any).__reject);
       return Promise.resolve(val === undefined ? null : val);

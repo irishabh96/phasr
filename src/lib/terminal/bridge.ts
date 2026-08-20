@@ -41,6 +41,16 @@ export interface TerminalBridge {
   /** OS file drops arrive through Tauri, which Playwright cannot emit, so
    *  a spec exercises the routing directly at a real screen point. */
   dropPaths(paths: string[], x: number, y: number): void;
+  /**
+   * Force a full redraw — the ORACLE for "what is on screen matches the
+   * buffer". The render loop is incremental (it repaints only the rows the
+   * emulator marked dirty), so a spec cannot tell a correct screen from a
+   * stale one by looking at pixels alone. It can compare the live canvas
+   * with the canvas after this call: a full redraw is by definition the
+   * truth, so any difference is a row the incremental path failed to
+   * repaint. See `e2e/terminal-stale-rows.spec.ts`.
+   */
+  repaint(id: string): void;
 }
 
 declare global {
@@ -67,6 +77,7 @@ function bridge(): TerminalBridge {
     lineText: (id, row) => live.get(id)?.readLine(row) ?? null,
     backend: (id) => live.get(id)?.kind ?? null,
     dropPaths: (paths, x, y) => routeDroppedPaths(paths, { x, y }),
+    repaint: (id) => live.get(id)?.repaint(),
   };
 }
 

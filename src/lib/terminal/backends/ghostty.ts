@@ -150,6 +150,15 @@ export class GhosttySurface implements TerminalSurface {
   private active = true;
   private pausedWarned = false;
 
+  /**
+   * The grid a PTY spawned before the engine attached is given. Measured
+   * by `fit()` from the container and the font (exactly the way
+   * ghostty-web measures it, so the engine agrees and nothing resizes);
+   * 24x80 only until the first fit, i.e. only for a surface whose element
+   * is not in the document yet.
+   */
+  private preAttachGrid = { rows: 24, cols: 80 };
+
   private options: ResolvedSurfaceOptions;
   /**
    * Theme diffing target. Deliberately NOT `term.options`: writing
@@ -183,7 +192,15 @@ export class GhosttySurface implements TerminalSurface {
 
   private attach(engine: GhosttyEngine): void {
     if (this.disposed) return;
-    const term = new engine.Terminal(toGhosttyOptions(this.options, engine.ghostty));
+    // Born at the grid `fit()` already measured, which is the grid the PTY
+    // was spawned at. Opening at ghostty-web's 80x24 default and resizing
+    // afterwards would send the process a SIGWINCH it does not need, in the
+    // middle of a TUI's first paint.
+    const term = new engine.Terminal({
+      ...toGhosttyOptions(this.options, engine.ghostty),
+      rows: this.preAttachGrid.rows,
+      cols: this.preAttachGrid.cols,
+    });
     this.term = term;
     // ghostty-web builds a canvas + a hidden textarea under the element it
     // is given and measures the font on a detached 2D context, so opening
@@ -225,16 +242,11 @@ export class GhosttySurface implements TerminalSurface {
   // -------------------------------------------------------------------
 
   get rows(): number {
-    return this.term?.rows ?? this.options0().rows;
+    return this.term?.rows ?? this.preAttachGrid.rows;
   }
 
   get cols(): number {
-    return this.term?.cols ?? this.options0().cols;
-  }
-
-  /** Pre-engine grid — what a PTY spawned before the engine landed gets. */
-  private options0(): { rows: number; cols: number } {
-    return { rows: 24, cols: 80 };
+    return this.term?.cols ?? this.preAttachGrid.cols;
   }
 
   /**
@@ -242,14 +254,18 @@ export class GhosttySurface implements TerminalSurface {
    * `_isResizing` lockout after every resize and silently drops any fit
    * that lands inside it. phasr fits on a settle timer after a drag, which
    * is exactly the call that would get dropped.
+   *
+   * Works BEFORE the engine has attached, which is the whole point: all
+   * three components fit synchronously and then spawn the PTY at
+   * `surface.rows`/`surface.cols`, and the engine is always one microtask
+   * away at best (`attach()` runs off `preloadGhosttyEngine().then`). A fit
+   * that needed the engine was therefore a guaranteed no-op on the fresh
+   * path, and every PTY in the app was spawned at the 24x80 fallback — see
+   * `preAttachGrid`.
    */
   fit(): boolean {
     if (this.disposed) return false;
-    const term = this.term;
-    if (!term) return false;
-    const renderer = term.renderer;
-    if (!renderer) return false;
-    const metrics = renderer.getMetrics();
+    const metrics = this.term?.renderer?.getMetrics() ?? measureCell(this.options);
     if (!metrics || metrics.width === 0 || metrics.height === 0) return false;
 
     const style = window.getComputedStyle(this.element);
@@ -265,6 +281,17 @@ export class GhosttySurface implements TerminalSurface {
 
     const cols = Math.max(MIN_COLS, Math.floor(width / metrics.width));
     const rows = Math.max(MIN_ROWS, Math.floor(height / metrics.height));
+
+    const term = this.term;
+    if (!term) {
+      // No engine yet: record the measurement so `rows`/`cols` — i.e. the
+      // size the PTY is spawned at — describe the real terminal. `attach()`
+      // opens the engine at this grid, so nothing resizes afterwards.
+      if (cols === this.preAttachGrid.cols && rows === this.preAttachGrid.rows)
+        return false;
+      this.preAttachGrid = { rows, cols };
+      return true;
+    }
     if (cols === term.cols && rows === term.rows) return false;
     // `resize` repaints in full and fires `onResize` itself.
     term.resize(cols, rows);
@@ -658,6 +685,32 @@ export class GhosttySurface implements TerminalSurface {
 function swallowsAppChord(event: KeyboardEvent): boolean {
   if (!event.metaKey) return false;
   return event.code !== "KeyC" && event.code !== "KeyV" && event.code !== "KeyX";
+}
+
+/**
+ * Cell size for a font, without an engine.
+ *
+ * A byte-for-byte port of ghostty-web's own `Renderer.measureFont()`
+ * (`dist/ghostty-web.js`, "Font Metrics Measurement"). It has to be exact,
+ * not merely close: `fit()` uses this before the engine attaches and the
+ * engine's own metrics afterwards, and a disagreement of one pixel would
+ * make the grid change the moment the engine lands — i.e. a spurious
+ * SIGWINCH into a process that has just started drawing.
+ *
+ * Cheap enough to call per fit: one detached 2D context and one
+ * `measureText("M")`, which is what the engine does on every font change.
+ */
+function measureCell(
+  options: ResolvedSurfaceOptions,
+): { width: number; height: number } | null {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return null;
+  ctx.font = `${options.fontSize}px ${options.fontFamily}`;
+  const m = ctx.measureText("M");
+  const width = Math.ceil(m.width);
+  const ascent = m.actualBoundingBoxAscent || options.fontSize * 0.8;
+  const descent = m.actualBoundingBoxDescent || options.fontSize * 0.2;
+  return { width, height: Math.ceil(ascent + descent) + 2 };
 }
 
 /** Neutral options → ghostty-web's option bag. The only mapping here. */
