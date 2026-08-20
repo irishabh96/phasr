@@ -64,7 +64,7 @@ describe("diagnostics recorder", () => {
     diagDispose("s2");
   });
 
-  it("names the theme entries the engine cannot parse", () => {
+  it("names the PALETTE entries the engine cannot parse", () => {
     diagCreate("s3");
     diagAttach(
       "s3",
@@ -75,11 +75,41 @@ describe("diagnostics recorder", () => {
       (r) => r.id === "s3",
     );
     expect(rec.unparseableTheme).toEqual([
-      "magenta=rgba(188,140,255,1)",
       "green=teal",
+      "magenta=rgba(188,140,255,1)",
     ]);
     expect(rec.openedGrid).toEqual({ rows: 38, cols: 92 });
     diagDispose("s3");
+  });
+
+  it("does NOT flag canvas-bound entries — the first field dump's false alarm", () => {
+    // `selectionBackground` never reaches `parseColorToHex`; the renderer
+    // hands it to `ctx.fillStyle`, where 8-digit hex is valid and its alpha
+    // is honoured. Reporting it as unparseable read as a shipped colour bug
+    // and cost a round trip.
+    diagCreate("s4");
+    diagAttach(
+      "s4",
+      { selectionBackground: "#f7816647", cursorAccent: "rgba(1,2,3,0.5)", cyan: "#39c5cf" },
+      { rows: 17, cols: 94 },
+    );
+    const [rec] = (window.__PHASR_TERM_DIAG__!.dump() as any[]).filter(
+      (r) => r.id === "s4",
+    );
+    expect(rec.unparseableTheme).toEqual([]);
+    expect(rec.alphaInWasmTheme).toEqual([]);
+    diagDispose("s4");
+  });
+
+  it("flags alpha on a palette entry, which parseColorToHex accepts silently", () => {
+    diagCreate("s5");
+    diagAttach("s5", { cyan: "#39c5cf47" }, { rows: 17, cols: 94 });
+    const [rec] = (window.__PHASR_TERM_DIAG__!.dump() as any[]).filter(
+      (r) => r.id === "s5",
+    );
+    expect(rec.alphaInWasmTheme).toEqual(["cyan=#39c5cf47"]);
+    expect(rec.unparseableTheme).toEqual(["cyan=#39c5cf47"]);
+    diagDispose("s5");
   });
 
   it("numbers surfaces so 'the Nth terminal opened' is answerable", () => {
