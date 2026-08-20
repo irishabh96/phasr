@@ -13,8 +13,10 @@ gone.**
   "2026-08-20 — hands on, three bugs, and the the previous engine removal" at the end of
   this document, which is the section to read first: it corrects Q4 and
   supersedes the flag-based rollback below.
-- **Still open:** spike questions 1 and 2 (they need a built `.app` and a
-  human).
+- **Q1 CLOSED 2026-08-21** in the field: a packaged `/Applications/Phasr.app`
+  runs live terminals, so the WASM does load, compile and paint under
+  `tauri://localhost` in a real bundle. See the 2026-08-21 section at the end.
+- **Still open:** spike question 2 (it needs a built `.app` and a human).
 
 **Prior status, for the record:** partially accepted 2026-08-19 — ghostty
 behind a flag, default OFF, with the default flip explicitly not decided.
@@ -38,8 +40,8 @@ rather than answering all five badly.
 
 ### Q1. Does WASM resolution work under `tauri://localhost` in a packaged app?
 
-**MECHANISM ANSWERED 2026-08-20 — YES on WKWebView at `tauri://localhost`.
-End-to-end in the packaged app still needs a human.**
+**ANSWERED — YES. Mechanism 2026-08-20 on WKWebView; end-to-end 2026-08-21 in a
+real packaged build running live PTYs. No CSP change was needed.**
 
 > `scripts/wkwebview-wasm-probe.swift` stands up a real `WKWebView` with a
 > custom `tauri:` URL-scheme handler serving the **real built `dist/`**, and
@@ -1171,3 +1173,107 @@ built `.app` and a human. Removing the previous engine does not change either, b
 raise the stakes on Q1: there is no longer a second engine to fall back to if
 the WASM cannot load in a packaged build. `docs/MANUAL-VERIFICATION.md` is the
 checklist.
+
+---
+
+## 2026-08-21 — Q1 answered in the field, and the grapheme-split flicker
+
+### Q1 is CLOSED. The WASM loads in a real packaged build.
+
+The user ran `/Applications/Phasr.app` — a bundled build, installed 2026-08-21
+00:53, whose binary contains `ghostty-web` — with **working terminals carrying
+live PTYs**. That is the end-to-end evidence the probe could not supply: not a
+`WKWebViewConfiguration` we built ourselves, but wry's own scheme handler and
+the app's own CSP, serving the real `dist/`.
+
+So every hop in the chain is now confirmed on real hardware: WebKit fetches the
+inlined `data:application/wasm` URL from a custom-scheme document,
+`WebAssembly.compile` is permitted, the patched `ghostty-web` constructs a
+`Terminal`, and it paints a live shell. **The CSP failure mode this ADR spent
+two sections predicting never materialised** — there is no CSP in
+`tauri.conf.json`, and none was needed.
+
+The release-blocking gate on Q1 is therefore lifted. `docs/RELEASE-0.4.0.md` §5
+and `docs/MANUAL-VERIFICATION.md` should stop treating it as unknown. **Q2**
+(native Edit ▸ Copy) is untouched by this and still needs a human.
+
+### The flicker that survived the four earlier fixes
+
+Reported still-present on a ⌘T session terminal after the 80×24 spawn fix, the
+DEC 2026 latch fix, the replay-duplication fix and the grid-settle fix. A
+24-frame screen recording showed a zsh prompt line alternating between two
+renderings, and one frame with an inverse-video box over its first segment.
+
+**The proposed cause — a frame painted while the parser sits mid-SGR — is
+wrong, and was measured to be wrong.** Splitting a prompt inside
+`\x1b[38;2;57;` … `197;207m` and inside `\x1b[1;36m` produces frames with
+*fewer characters*, each correctly coloured; it never produces a fully-drawn
+line with its colours missing. The parser is a state machine and a half-read
+escape sequence yields **no cell at all**, so there is nothing for a frame to
+paint wrongly. Also ruled out by direct pixel measurement, each on both
+engines: `\x1b[27m`/`22m`/`23m`/`24m`/`29m` (all correct — an earlier reading
+that SGR 27 leaked was a measurement artifact of counting default-foreground
+*text* as an inverse *fill*), multi-parameter SGR, `fit()`/`resize`,
+`repaint()`, and ⌘+/⌘−/⌘0 font changes.
+
+**The real mechanism is a chunk boundary, but through the grapheme cluster,
+not the SGR run.** The prompt carries `☁️` — U+2601 CLOUD **plus U+FE0F
+VARIATION SELECTOR-16**, captured byte-for-byte from `zsh -l` under phasr's own
+environment:
+
+```
+\x1b[1;33m☁️  \x1b[0m\x1b[1;33m(ap-south-1)\x1b[0m
+```
+
+Unlike an escape sequence, the base codepoint **is** a complete, paintable
+cell: U+2601 alone is a one-cell monochrome dingbat drawn in the cell's
+foreground, while U+2601 U+FE0F is a **two-cell colour bitmap that ignores
+`fillStyle` entirely**. They are different glyphs, different widths and
+different colours. The renderer's rAF loop is independent of `write()`, so a
+frame landing between the two chunks paints the dingbat and corrects it a frame
+later. Measured in the recording: the cloud is 135 ink px / 27 chromatic px in
+the good frames and 46 / 0 in the bad ones — exactly the two glyphs, measured
+independently on a canvas.
+
+This is **not** the DEC 2026 bug: synchronized output is a program *asking* to
+be double-buffered, and the fix there was to skip painting. Here nothing asks,
+and there is no incomplete parser state to defer on.
+
+#### Fix: hold the ambiguous tail, do not widen the coalescer
+
+`src/lib/terminal/graphemeTail.ts` + `GhosttySurface.write()`. A chunk's
+trailing bytes are held back **only** when a following chunk could still change
+what they mean: an incomplete UTF-8 sequence, a trailing ZWJ, or a trailing
+codepoint a variation selector is allowed to follow. They are written when the
+rest arrives, or after 50 ms if the writer genuinely stopped mid-cluster.
+
+Widening the Rust coalescer's 32 KiB / 8 ms window would also have worked and
+was rejected: it adds latency to **every** keystroke echo to fix a case that is
+one codepoint wide. Deferring the paint while the parser is mid-sequence — the
+other candidate — does not address this at all, because the parser is *not*
+mid-sequence; the cell is finished and simply not yet final.
+
+The `Emoji=Yes` ranges are deliberately tight. Box drawing (U+2500–U+257F),
+block elements (U+2580–U+259F) and Braille (U+2800–U+28FF) are what a TUI frame
+is *made of*, and holding one of those per chunk would put a frame of latency
+on every repaint. ASCII is never held, so keystroke echo is untouched.
+
+`e2e/terminal-grapheme-split.spec.ts` asserts on composited pixels that **no**
+animation frame ever shows the base codepoint alone, plus two guards: a writer
+that stops mid-cluster still gets its glyph, and box drawing is not delayed.
+Pre-fix it fails on both engines (3–4 frames painted the dingbat); post-fix
+36/36 under Chromium and 36/36 under WebKit.
+
+#### What is still unexplained
+
+In the recording the *whole* prompt line — not just the cloud — reads as
+default foreground in the bad frames, and one frame carries an inverse-video
+box over the leading segment. That box is cells with `INVERSE` and no colour
+(its background measures 225,234,241, and `--color-text-primary` is `#e6edf3`;
+`renderCellBackground` swaps fg into bg for an inverse cell). Block-level
+analysis rules out a video-codec artifact — 0 of 29 macroblocks lost chroma
+while keeping luma, and a codec skips unchanged blocks with their chroma
+intact — so it is a real render. **It did not reproduce** under either engine
+while replaying the captured stream byte-for-byte at its real inter-chunk
+timings, so its trigger is not in the byte stream alone. Closing it needs the
+instrumented packaged app, not the mocked-IPC harness.
