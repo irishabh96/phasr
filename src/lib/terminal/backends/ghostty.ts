@@ -481,6 +481,12 @@ export class GhosttySurface implements TerminalSurface {
    * the way it would have been had the terminal always been this wide,
    * which is strictly more faithful than a rewrap.
    *
+   * A rewrap does still run, on the way past — see `resizeThenReset`,
+   * where the order of two calls is the difference between this working
+   * and the terminal blanking. Its result is discarded unread, so the
+   * paragraph above holds: what the user ends up looking at was built at
+   * the new width and never rewrapped.
+   *
    * What it costs is stated in `replayLog.ts` (scrollback older than the
    * budget) and in `reflow.ts` (a fresh terminal has forgotten every mode,
    * hence the repair).
@@ -505,14 +511,9 @@ export class GhosttySurface implements TerminalSurface {
     } catch {
       /* nothing selected */
     }
-    // Free the old buffer FIRST, so the resize that follows rewraps an
-    // empty grid rather than the user's screen: same end state, none of
-    // the work, and the buggy path never sees live content.
-    term.reset();
-    term.viewportY = 0;
-    // The canvas, the renderer, and exactly one `onResize` — i.e. one
-    // SIGWINCH for the whole gesture instead of one per animation frame.
-    term.resize(target.cols, target.rows);
+    // ORDER IS LOAD-BEARING, AND IT IS NOT THE OBVIOUS ONE — see
+    // `resizeThenReset`.
+    this.resizeThenReset(term, target);
 
     // Straight to the engine: replayed bytes are already in the log, and
     // everything synthetic here must never enter it.
@@ -536,6 +537,72 @@ export class GhosttySurface implements TerminalSurface {
     // history lines — and clamped by `scrollToLine`.
     if (offset > 0) term.scrollToLine(offset);
     this.repaint();
+  }
+
+  /**
+   * Put the terminal on a fresh, empty grid of `target` — **resize first,
+   * reset second, and never the other way round.**
+   *
+   * The obvious order is the other one, and it is what this did until a
+   * user's terminal started blanking on every panel toggle: free the
+   * buffer, then resize the empty grid, so the rewrap has nothing to
+   * spend. It crashes. `ghostty_terminal_write` traps with
+   * `RuntimeError: memory access out of bounds` part-way through the
+   * replay; the rebuild aborts into its fallback and the user keeps
+   * whatever landed before the trap. Measured in a browser against the
+   * real app: SIX of six narrowing toggles failed, each one cutting the
+   * retained history from 692 lines to 435, and with a more colourful
+   * screen the page list came back damaged enough that `getLine` traps
+   * too — so the renderer draws nothing and the terminal is simply empty
+   * until the panel is closed again. That is the recording.
+   *
+   * The bug is ghostty-web 0.4.0's, and it is not about resizing. It is
+   * about page memory allocated for one grid geometry being recycled for
+   * another; a style table then runs off the end of the buffer it was
+   * given. Two shapes of it are reachable from here, both bisected:
+   *
+   *   1. free a terminal that has been written to, then create a NARROWER
+   *      one on the same WASM instance — a handful of SGR colours in the
+   *      next 35 KB is enough to trap. This is what `reset()` before
+   *      `resize()` does, every time a panel opens.
+   *   2. resize a terminal that already holds a lot of styled content,
+   *      then keep writing to it. Either direction, and it needs far more
+   *      style variety — around 100 distinct SGR styles in a screenful.
+   *
+   * Resizing before the reset is the order that walks between them. The
+   * resize lands on the live buffer, which is shape 2 — and then that
+   * buffer is thrown away microseconds later, unread, so nothing is ever
+   * written to the terminal it damaged. The free that follows hands back
+   * pages that are ALREADY the target's width, so shape 1 never holds.
+   * And the grid the replay actually lands in was created at the target
+   * geometry and is never resized at all, which is the only state this
+   * engine is reliably happy in.
+   *
+   * The cost is the rewrap the previous order existed to skip, now run
+   * against live content and immediately discarded: 10-13 ms of a 16-26 ms
+   * rebuild. Nothing about the anchor changes — the rewrapped buffer is
+   * never looked at.
+   *
+   * Not a general cure. Shape 2 is reachable from a PLAIN resize with no
+   * rebuild anywhere near it (`fit()` still resizes for a rows-only
+   * change), so a screen with a few hundred distinct styles in it can
+   * still break this engine. What this ordering removes is the shape
+   * phasr was walking into on every single toggle, at every ordinary
+   * level of colour. Twelve toggles across four fixtures — 7 to 32 styles,
+   * 400 to 1200 lines — now return the scrollback to the same line count
+   * every round trip, with nothing logged.
+   *
+   * Also, therefore, the ONE place a rebuild may call `resize`: it fires
+   * `onResize` exactly once, which is the single `resize_task` a whole
+   * panel toggle is allowed.
+   */
+  private resizeThenReset(
+    term: GhosttyTerminal,
+    target: { cols: number; rows: number },
+  ): void {
+    term.resize(target.cols, target.rows);
+    term.reset();
+    term.viewportY = 0;
   }
 
   /** The DEC private modes a rebuild has to carry over. See `reflow.ts`. */

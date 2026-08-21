@@ -54,6 +54,16 @@ const SCROLLBAR_GUTTER_PX = 40;
 interface Reading {
   cols: number;
   rows: number;
+  /**
+   * Could the emulator's own buffer be read at all?
+   *
+   * False is not a nuance. A grid whose page list has been damaged traps
+   * inside `getLine` — `RuntimeError: memory access out of bounds` — so
+   * "ask the terminal what it holds" is a thing a bug can take away, and
+   * a spec that assumes it cannot dies with a stack trace instead of an
+   * assertion. See `resizeThenReset` in `backends/ghostty.ts`.
+   */
+  readable: boolean;
   /** Lines scrolled back from the live bottom. 0 = pinned to the bottom. */
   offset: number;
   /** Lines of history that exist right now. Moves under a reflow. */
@@ -94,7 +104,13 @@ async function read(page: Page): Promise<Reading> {
       if (!host || !canvas) throw new Error("no visible terminal canvas");
       const id = host.getAttribute("data-terminal-id")!;
       const grid = bridge.grid(id);
-      const vp = bridge.viewport(id);
+      let readable = true;
+      let vp = { offset: 0, scrollback: 0 };
+      try {
+        vp = bridge.viewport(id);
+      } catch {
+        readable = false;
+      }
 
       const ctx = canvas.getContext("2d")!;
       const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -132,12 +148,16 @@ async function read(page: Page): Promise<Reading> {
       // Screen row r is buffer-absolute row `scrollback + r`.
       let bufferTop = -1;
       let topLine: string | null = null;
-      for (let r = 0; r < grid.rows && bufferTop < 0; r++) {
-        const line = bridge.lineText(id, vp.scrollback + r);
-        if (line && line.trim().length > 0) {
-          bufferTop = r;
-          topLine = line.trim();
+      try {
+        for (let r = 0; r < grid.rows && bufferTop < 0; r++) {
+          const line = bridge.lineText(id, vp.scrollback + r);
+          if (line && line.trim().length > 0) {
+            bufferTop = r;
+            topLine = line.trim();
+          }
         }
+      } catch {
+        readable = false;
       }
 
       // Exactly the sum `GhosttySurface.fit()` measures against, read off
@@ -154,6 +174,7 @@ async function read(page: Page): Promise<Reading> {
       return {
         cols: grid.cols,
         rows: grid.rows,
+        readable,
         offset: vp.offset,
         scrollback: vp.scrollback,
         paintedTop,
@@ -198,6 +219,39 @@ async function seedDriftableScreen(page: Page) {
     `\x1b[2J\x1b[HANCHOR\r\n${filler.join("\r\n")}\r\n> `,
   );
   await page.waitForTimeout(500);
+}
+
+/**
+ * A screen shaped like the one in the recording where the terminal went
+ * blank: a real session's worth of `ls --color` output, filling the
+ * viewport with several screens of scrollback behind it.
+ *
+ * Both properties are load-bearing for the crash it exists to catch
+ * (`resizeThenReset` in `backends/ghostty.ts`): the rebuild has to be
+ * given real volume, and the volume has to be STYLED.
+ * `seedDriftableScreen` is a few hundred bytes of plain `#` and rebuilds
+ * through the bug without noticing — which is exactly why the crash
+ * shipped past a spec file that already had eight tests in it.
+ */
+async function seedColouredScreen(page: Page) {
+  const lines: string[] = [];
+  for (let i = 0; i < 400; i++) {
+    // 32 distinct 256-colour foregrounds — `ls --color` on a mixed
+    // directory, roughly. STYLE VARIETY is the axis that matters, and this
+    // sits deliberately in the middle of it: enough that a rebuild traps
+    // without the fix (every narrowing one does), far enough below
+    // ghostty-web's own ceiling that a correct rebuild is untroubled.
+    // Turn it up to ~200 and the engine falls over on a plain resize with
+    // no rebuild involved at all, which is a different bug and not this
+    // spec's to assert.
+    lines.push(
+      `\x1b[38;5;${i % 32}m${String(i).padStart(4, "0")}\x1b[0m ` +
+        "abcdefghij".repeat(8 + (i % 7)) +
+        ` end${i}`,
+    );
+  }
+  await ptyOut(page, "ws-agent", `\x1b[2J\x1b[H${lines.join("\r\n")}\r\n$ `);
+  await page.waitForTimeout(600);
 }
 
 /**
@@ -609,4 +663,202 @@ test("a rebuild carries the modes the program set, after those bytes have aged o
   console.log(
     `[reflow] toggle with a full replay window settled in ${elapsed} ms`,
   );
+});
+
+// ---------------------------------------------------------------------
+// What the toggle LOOKS LIKE while it happens
+// ---------------------------------------------------------------------
+
+/**
+ * Ink density of the terminal canvas: the fraction of sampled pixels that
+ * are not the background.
+ *
+ * A fraction, not a count, because the canvas itself changes size — the
+ * grid is rebuilt narrower and its pixels go with it, so any absolute ink
+ * total drops by the same proportion as the pane and says nothing. Density
+ * is flat across a width change on a screen that is full of text, which is
+ * what makes "the terminal emptied out" separable from "the pane shrank".
+ *
+ * Sampled in a few bands rather than over the whole canvas so it can run
+ * every animation frame without becoming the thing it is measuring.
+ */
+const INK_SAMPLER = `
+(() => {
+  const state = { samples: [], raf: 0 };
+  const sample = () => {
+    const host = [...document.querySelectorAll("[data-testid='terminal-surface']")]
+      .find((el) => el.offsetParent !== null);
+    const canvas = host && host.querySelector("canvas");
+    if (canvas && canvas.width > 0 && canvas.height > 0) {
+      const ctx = canvas.getContext("2d");
+      // Bottom-right, inside the scrollbar gutter and past the end of the
+      // prompt: background on any screen, blank or full.
+      const corner = ctx.getImageData(
+        Math.max(0, canvas.width - 60), canvas.height - 2, 1, 1).data;
+      // BANDS, not scan lines. A terminal row is mostly whitespace at its
+      // top and bottom edge, and a canvas whose height divides evenly by
+      // the sample count puts every single line on a row boundary — which
+      // reads as a blank screen no matter what is on it. A band is taller
+      // than either margin, so it always crosses glyph bodies.
+      const BAND = 12;
+      let ink = 0, total = 0;
+      for (let i = 0; i < 8; i++) {
+        const y = Math.min(
+          canvas.height - BAND,
+          Math.floor((canvas.height * (i + 0.5)) / 8) - BAND / 2,
+        );
+        const band = ctx.getImageData(0, Math.max(0, y), canvas.width, BAND).data;
+        for (let row = 0; row < BAND; row++) {
+          // Skip the right-hand strip: ghostty-web fades its own overlay
+          // scrollbar in there on every resize, which is ink on every row.
+          for (let x = 0; x < canvas.width - 40; x += 2) {
+            const p = (row * canvas.width + x) * 4;
+            if (Math.abs(band[p] - corner[0]) > 12 ||
+                Math.abs(band[p + 1] - corner[1]) > 12 ||
+                Math.abs(band[p + 2] - corner[2]) > 12) ink++;
+            total++;
+          }
+        }
+      }
+      state.samples.push({
+        t: Math.round(performance.now()),
+        density: total > 0 ? ink / total : 0,
+        w: canvas.width,
+        h: canvas.height,
+      });
+    }
+    state.raf = requestAnimationFrame(sample);
+  };
+  state.raf = requestAnimationFrame(sample);
+  window.__PHASR_INK__ = state;
+})()`;
+
+interface InkSample {
+  t: number;
+  density: number;
+  w: number;
+  h: number;
+}
+
+const startSampling = (page: Page) => page.evaluate(INK_SAMPLER);
+const stopSampling = (page: Page): Promise<InkSample[]> =>
+  page.evaluate(() => {
+    const state = (window as any).__PHASR_INK__;
+    cancelAnimationFrame(state.raf);
+    delete (window as any).__PHASR_INK__;
+    return state.samples as InkSample[];
+  });
+
+/**
+ * **The terminal must never empty out, not even for one frame.**
+ *
+ * The rebuild that fixed the anchor drift shipped with a crash inside it.
+ * `ghostty_terminal_write` traps with `memory access out of bounds`
+ * part-way through the replay whenever a grid that has been written to is
+ * freed and a NARROWER one is created after it — which was every panel
+ * toggle that made the terminal smaller. See `resizeThenReset` in
+ * `backends/ghostty.ts` for what the engine is actually doing and why the
+ * order of two calls is the whole of the fix.
+ *
+ * What the trap leaves behind depends on how much of the replay had
+ * landed. At this fixture's level of colour it is the history: 692 lines
+ * of scrollback down to 435, on every narrowing toggle, for ever. Turn
+ * the colour up and it becomes total — the page list comes back damaged
+ * enough that `getLine` traps as well, so the renderer draws nothing and
+ * the user watches their whole screen disappear for as long as the panel
+ * stays open, which is the recording this test comes from.
+ *
+ * Every other test in this file passed through all of it, because they
+ * assert where content ENDS UP once things have settled and their fixture
+ * — small, unstyled, a few hundred bytes — cannot reach the trap at all.
+ * So this one brings a real session's worth of coloured output, looks at
+ * the GLASS every frame from the click to the settle, and counts the
+ * history at the end. The frame-level assertions are the ones that speak
+ * for the user; the two at the bottom are the ones that trip first here.
+ */
+test.describe("what a toggle looks like while it happens", () => {
+  // Bigger than the suite's default on purpose. The trap needs a page
+  // allocated for the wide grid to be recycled into the narrow one, and
+  // the wider the window the less output it takes to get there: 400 lines
+  // at 142->97 columns, against 900 at 122->77. A user's window is wider
+  // still.
+  test.use({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+
+  test("no frame of a panel toggle shows an emptier terminal than the one before it", async ({
+    page,
+  }) => {
+    const { errors } = await bootApp(page);
+    await expectBackend(page);
+    await terminal(page).click();
+    await seedColouredScreen(page);
+    await page.waitForTimeout(700); // past the mount's trailing refits
+
+    const before = await read(page);
+    expect(before.topLine).not.toBeNull();
+
+    await startSampling(page);
+    // Three round trips, not one. Which of the two directions narrows the
+    // terminal depends on the panel's persisted state, and the damage the
+    // crash does is cumulative — one toggle truncates the history, a few
+    // more and the page list is broken badly enough that nothing paints
+    // at all. Six is what the recording shows a user doing in ten
+    // seconds.
+    for (let i = 0; i < 6; i++) await toggleChangesPanel(page);
+    const samples = await stopSampling(page);
+
+    // Guard the guard. Nothing below means anything if the toggle stopped
+    // changing the width or the sampler stopped sampling — and the canvas
+    // width is the right witness for the first, because reading the
+    // terminal's own buffer is a thing the bug can take away.
+    expect(samples.length).toBeGreaterThan(30);
+    const widths = [...new Set(samples.map((s) => s.w))];
+    expect(widths.length, "the toggle resized the canvas").toBeGreaterThan(1);
+    const baseline = samples[0].density;
+    expect(baseline).toBeGreaterThan(0.02);
+
+    const floor = samples.reduce(
+      (worst, s) => (s.density < worst.density ? s : worst),
+      samples[0],
+    );
+    console.log(
+      `[reflow] ${samples.length} frames at ${widths.join("/")}px, density ${baseline.toFixed(3)} -> min ${floor.density.toFixed(3)} @${floor.t - samples[0].t}ms -> ${samples[samples.length - 1].density.toFixed(3)}`,
+    );
+
+    // Half is generous, and it has to be: density is not identical at the
+    // two widths. The narrow grid wraps every line and fills it; the wide
+    // one leaves the tail of each line blank, so it reads about 30%
+    // thinner while showing exactly the same text. What this refuses is
+    // the collapse — with the crash in place the floor is a screen with
+    // nothing on it at all.
+    expect(floor.density).toBeGreaterThan(baseline * 0.5);
+
+    // And, sharper: no single frame may be thinner than the settled screen
+    // AT ITS OWN SIZE. That is the one a wrap-ratio argument cannot
+    // explain, and it is what a rebuild that cleared the canvas and
+    // repainted it in front of the user would look like.
+    for (const w of widths) {
+      const group = samples.filter((s) => s.w === w).map((s) => s.density);
+      if (group.length < 3) continue; // a size the toggle only passed through
+      const settled = [...group].sort((a, b) => a - b)[
+        Math.floor(group.length / 2)
+      ];
+      expect(
+        Math.min(...group),
+        `${w}px frames against their own median`,
+      ).toBeGreaterThan(settled * 0.6);
+    }
+
+    // The rebuild reports its own failure, and a green suite that logs
+    // "grid rebuild failed" every time the user clicks is not green.
+    expect(errors.filter((e) => e.includes("grid rebuild failed"))).toEqual([]);
+
+    // ...and the content is all still there, which is the part the
+    // settled assertions elsewhere in this file already believe.
+    const after = await read(page);
+    expect(after.readable, "the terminal's buffer still reads").toBe(true);
+    expect(after.topLine).toBe(before.topLine);
+    expect(after.scrollback).toBe(before.scrollback);
+    expect(after.cols).toBe(before.cols);
+    expectFillsPane(after);
+  });
 });
