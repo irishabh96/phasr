@@ -127,9 +127,30 @@ export interface TerminalSurface {
 
   /**
    * Re-measure and resize the grid to the container, then redraw.
+   *
+   * The immediate, unconditional path: it reflows. Correct while a
+   * terminal is still being born — the PTY is spawned at whatever this
+   * measures and there is no content to lose — and wrong for anything a
+   * user does afterwards. See `fitAnchored`.
+   *
    * @returns true iff rows/cols actually changed.
    */
   fit(): boolean;
+  /**
+   * Adopt the container's geometry **without moving the content**.
+   *
+   * This is what every resize a user can cause goes through: a panel
+   * toggle, a window drag, a font-size change. A row-only change is
+   * applied immediately; a width change is deferred until the container
+   * stops moving and then applied by REBUILDING the grid at the new width,
+   * because reflowing it walks the content down the screen and never gives
+   * the rows back (ADR-002, "the reflow anchor"). See
+   * `lib/terminal/reflow.ts` for the policy and what a rebuild costs.
+   *
+   * Deliberately returns nothing: "did the grid change" is not knowable at
+   * the moment of the call, which is the whole point.
+   */
+  fitAnchored(): void;
   /**
    * Force a full redraw *without* a resize — the cure for a canvas that
    * was re-parented while parked. More expensive than the redraw `fit()`

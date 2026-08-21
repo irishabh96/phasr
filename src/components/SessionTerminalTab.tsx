@@ -264,7 +264,8 @@ export function SessionTerminalTab({
     const refit = () => {
       // Skip when hidden — see isSurfaceVisible.
       if (!isSurfaceVisible(surface.element)) return;
-      surface.fit();
+      // See Terminal.tsx — a width change is rebuilt, never reflowed.
+      surface.fitAnchored();
     };
     // See Terminal.tsx — one-shot full redraw after a re-parent, never on
     // a resize tick.
@@ -315,7 +316,7 @@ export function SessionTerminalTab({
     if (!entry) return;
     entry.linkContext.editorId = settings?.defaultEditor ?? null;
     entry.surface.applySettings(settings);
-    entry.surface.fit();
+    entry.surface.fitAnchored();
   }, [settings, tabId]);
 
   // See Terminal.tsx — a theme flip has to be pushed into the emulator,
@@ -339,7 +340,7 @@ export function SessionTerminalTab({
     entry.surface.setActive(visible);
     if (!visible) return;
     if (!isSurfaceVisible(entry.surface.element)) return;
-    entry.surface.fit();
+    entry.surface.fitAnchored();
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();

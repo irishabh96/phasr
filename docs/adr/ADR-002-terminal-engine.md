@@ -13,6 +13,11 @@ gone.**
   "2026-08-20 — hands on, three bugs, and the the previous engine removal" at the end of
   this document, which is the section to read first: it corrects Q4 and
   supersedes the flag-based rollback below.
+- **The reflow anchor is FIXED, 2026-08-21 (fifth pass, last section).**
+  phasr no longer reflows a live grid: a width change is deferred until the
+  container settles and then applied by rebuilding the grid and replaying the
+  retained output. Read the fourth pass for the diagnosis and the fifth for
+  what ships.
 - **Q1 CLOSED 2026-08-21** in the field: a packaged `/Applications/Phasr.app`
   runs live terminals, so the WASM does load, compile and paint under
   `tauri://localhost` in a real bundle. See the 2026-08-21 section at the end.
@@ -1449,6 +1454,11 @@ evidence.
 
 ## 2026-08-21 (fourth pass) — the reflow anchor: content marches down the screen on every width change
 
+> **Superseded by the fifth pass at the end of this document, which FIXES
+> this.** The diagnosis below still stands in full; its conclusion — "there is
+> no lever on our side of the boundary" — does not. The lever was to stop
+> reflowing: rebuild the grid at the new width and replay into it.
+
 A second, unrelated defect, reported from the same recording as the ~1s
 decolouring and initially confused with it. It is about **position, not
 colour**, and the reflow work above could not have caught it: "chroma held at
@@ -1538,9 +1548,10 @@ asserts both of these so nobody re-derives it.
 
 The reflow itself is `ghostty_terminal_resize`, inside the WASM. It is one of
 only 76 exports, it takes `(handle, cols, rows)` and no anchor argument, and
-there is no scroll/anchor export to compensate with. **There is no lever on
-our side of the boundary**, which is why this pass ships a pinned
-reproduction and no fix.
+there is no scroll/anchor export to compensate with. There is no lever *inside*
+the resize, which is why this pass ships a pinned reproduction and no fix. (The
+fifth pass stops calling it on live content instead — see the end of this
+document.)
 
 ### What ships
 
@@ -1575,3 +1586,185 @@ SIGWINCH, so this is thirteen full repaints per toggle. Coalescing it is a
 change to the agent-facing resize path that this harness cannot verify —
 `resize_task` goes to a mock here — so it is recorded as a follow-up rather
 than slipped in beside a bug it does not fix.
+
+---
+
+## 2026-08-21 (fifth pass) — the reflow anchor, fixed: phasr stops reflowing
+
+The previous pass shipped a pinned reproduction and no fix, on the grounds that
+`ghostty_terminal_resize` takes no anchor and "there is no lever on our side of
+the boundary". That was true and it was the wrong conclusion. **There is a
+lever: not resizing.**
+
+**Decided by the user, after seeing the drift again in a fresh recording (the
+prompt at y≈126 → y≈242 after ~5 s of toggling): stop reflowing on a width
+change.** Chosen over shipping as-is, over patching ghostty-web's resize path,
+and over the recreate-and-replay-the-whole-surface variant.
+
+### The rule
+
+> **A row change resizes. A width change rebuilds.**
+> And no width change is applied until the container stops moving.
+
+`TerminalSurface` grew one method, `fitAnchored()`, and every resize a *user*
+can cause now goes through it — the `ResizeObserver`, the window `resize`
+listener, the settings effect, the tab-reveal `useLayoutEffect`, in all three
+terminal components. `fit()` survives unchanged for the one caller that must
+stay immediate and has nothing to lose: the pre-PTY measurement (`settle.ts`,
+and the synchronous fit each component does before spawning), where the buffer
+is empty and the number is what the process is spawned at.
+
+The policy is `lib/terminal/reflow.ts` (pure, unit-tested); the mechanism is
+`GhosttySurface.rebuildGrid`.
+
+**A rebuild is three ghostty-web calls and a replay:**
+
+```
+term.reset()                    // frees the wasm terminal, builds a fresh one
+term.viewportY = 0
+term.resize(cols, rows)         // canvas + renderer + ONE onResize
+…replay the retained output…    // ~1 MiB of raw PTY bytes, re-parsed
+…repair the DEC modes…          // what the window no longer carries
+term.scrollToLine(offset)       // same distance from the bottom, clamped
+```
+
+`reset()` before `resize()` is deliberate: it means the buggy rewrap runs
+against an *empty* grid. The reflow is not suppressed, it is made vacuous.
+
+**No app-level signal is used, and none is needed.** `useUiStore` would tell us
+a panel was toggled, but the rule does not care who changed the width — a panel
+toggle, a window drag, a sidebar drag and a font-size step are the same event
+and take the same path. **So genuine window resizes and font-size changes do
+NOT still drift; they route through the rebuild too.** The `ResizeObserver`'s
+inability to tell a toggle from a window resize stops being a problem the
+moment you stop needing to know.
+
+### Why not the alternatives
+
+| candidate | verdict |
+|---|---|
+| Skip `fit()` on a toggle | **Rejected — the trap.** The grid keeps its old width, so a narrowed pane clips the right-hand end of every line, permanently, until some unrelated event resizes it. Worse than the drift. Every test in the spec now asserts `slack` (pane width minus grid width) alongside position for exactly this reason. |
+| Suppress only the COLUMN change, let rows track | Same trap. It *is* the trap: columns are the only axis the pane changes on a panel toggle. Rows-only tracking is what the surface already does — as the cheap path, not as the fix. |
+| Recreate the whole `TerminalSurface` and re-attach through `subscribe_with_replay` | Works, costs far more. A second `open_task_terminal` leaves the first channel's forwarder alive in Rust, so every PTY byte is serialized and sent across IPC twice (and N+1 times after N toggles); the DOM is rebuilt, focus and the GPU context are lost, `surface.id` changes under the drop registry and the DEV bridge, and the replay is capped at the Rust buffer's 128 KB. `reset()` gets the same fresh grid for one WASM call, keeps the element, the canvas, the listeners, the link providers, the keymap, the clipboard, the selection wiring and the id, and replays from a window 8× larger. |
+| Give the alternate screen the cheap path (plain resize) | **Rejected on evidence, and it nearly shipped.** The alternate screen has no history, and six width round trips inside one left the frame byte-identical — which looked conclusive. It is not: the *saved primary screen* is reflowed while it is hidden. With a plain resize its scrollback fell 102 → 82 over six toggles behind a TUI, i.e. the same ratchet, waiting to be revealed by `\x1b[?1049l` minutes later. Both screens are now asserted. |
+
+### What the user loses
+
+Stated plainly, because it is not nothing:
+
+1. **Scrollback older than 1 MiB of retained output, on a width change.** A
+   rebuild reconstructs the terminal from the bytes that built it, and those
+   bytes are bounded. 1 MiB is ~8× the Rust replay buffer the LRU eviction path
+   already spends (`cache.ts`), and at the LRU bound of 8 terminals it is 8 MiB
+   of JS against the ~5.2 MiB of WASM heap each terminal already holds (Q5). On
+   a shell it is thousands of lines; on a TUI redrawing at 60 fps it is
+   seconds — but a TUI in the alternate screen has no scrollback to lose in the
+   first place.
+2. **A repaint.** The agent gets one SIGWINCH per gesture and redraws, which is
+   what it already did — thirteen times per toggle instead of once.
+3. **Scroll position becomes approximate.** The viewport is restored to the same
+   *distance* from the bottom, not to the same line: a different width wraps
+   into a different number of history lines, so there is no same line to return
+   to.
+4. **The selection is cleared.** Its coordinates are absolute buffer rows and
+   they do not survive.
+5. **Up to ~340 ms of transient mis-fit** — the 220 ms animation plus the 120 ms
+   quiet period — during which the grid is the old width. Narrowing clips the
+   right-hand edge exactly where the incoming panel is arriving; widening leaves
+   a strip of the same background colour as the canvas. Both are invisible in
+   practice and both are gone the moment the rebuild lands.
+
+### What it wins, beyond the bug
+
+**13 `resize_task` calls per toggle → 1.** The follow-up recorded at the end of
+the previous pass, collected for free: the grid is touched once, at the end, and
+`onResize` fires from that one resize. Asserted per trigger. A live window drag
+collapses the same way, however long it lasts. And an open/close faster than the
+quiet period is now a total no-op — no rebuild, no SIGWINCH, no replay — because
+the grid never left the width it is being asked for again.
+
+### The two things that had to be handled, and were
+
+**Modes.** A rebuilt grid is a *fresh* terminal and has forgotten every mode the
+running program set. Usually the replay re-establishes them; on any terminal
+that has been open a while it does not, because a program sets its modes once at
+startup and then runs, so they are the first thing to age out of a bounded
+window. Losing them is not cosmetic — bracketed paste stops bracketing, the
+wheel stops reporting (`wheel.ts` reads 1000/1002/1006 straight off the
+terminal), and DECCKM decides whether ↑ is `ESC O A` or `ESC [ A`. So the modes
+in `RETAINED_DEC_MODES` are read off the old grid and re-asserted on the new one
+wherever they disagree. Proved with the window deliberately overflowed: DECCKM
+set, 1.3 MiB of output written over it, toggle, ↑ still arrives as `\x1bOA`.
+
+**The alternate screen.** When `\x1b[?1049h` is still in the window the replay
+reconstructs *both* screens by itself — the TUI's frame and the shell scrollback
+underneath it — which is the best available answer and the common case. When it
+has aged out, what remains is a stream of frames with nothing saying which
+screen they belong to; replayed as-is they would be painted over the user's
+scrollback and the mode repair would then switch to a blank alternate screen on
+top of that. So the surface notes *where in the stream* the screen switched (one
+`isAlternateScreen()` call per coalesced chunk, ~60/s) and re-enters the
+alternate screen ahead of the replay only when that point is no longer retained.
+
+### Cost, measured
+
+`rebuildGrid` timed end to end (reset + resize + replay + repair + repaint),
+through the real app path:
+
+| retained window | Chromium | WebKit |
+|---|---|---|
+| 297 B (fresh terminal) | 11–13 ms | 17–19 ms |
+| 256 KiB | 17–72 ms | 23–106 ms |
+| 1 MiB (full) | 39–44 ms | 34–40 ms |
+
+~40 ms once per gesture, landing after a 220 ms animation, on the engine phasr
+actually ships. The floor is the reset/resize/repaint itself. WASM linear memory
+is flat across rebuilds — `Terminal.dispose`'s `cleanupComponents()` frees the
+old `wasmTerm`, and so does `reset()` — asserted over ten toggles.
+
+### The spec: `test.fail()` deleted, both invariants asserted together
+
+`e2e/terminal-reflow-anchor.spec.ts` grew from 3 tests to 10. **The two
+`test.fail()` cases — one per trigger — are now ordinary assertions.** That
+conversion is the proof the bug is gone; the annotation existed to make the
+suite go red the day it was, and it did.
+
+Every reading now carries `slack` (the pane's width minus the grid's) next to
+`paintedTop`, and `expectFillsPane` asserts it, because "the content did not
+move" is trivially satisfiable by never resizing and that outcome is worse than
+the bug. `settle()` had to be rewritten for the same reason the fix works: the
+grid no longer tracks the animation, so "the grid stopped changing" resolved
+instantly and every reading landed before anything had happened. It now waits
+for the *pane* to stop animating and then for the grid to catch up with it —
+which makes the pane-fit invariant a precondition of every test in the file.
+
+Added: twelve alternating toggles with no drift and no mis-fit at any step; one
+SIGWINCH per toggle, per trigger; a sub-settle open/close costing nothing; WASM
+memory flat over ten rebuilds; the alternate screen and the primary screen under
+it; the aged-out alternate screen; and the aged-out mode repair.
+
+Unit tests: `reflow.test.ts` (the policy, the repair sequence, the ordering that
+puts 1049 first because entering the alternate screen clears it) and
+`replayLog.test.ts` (eviction, the oversized single chunk, and the retention
+marks the alternate-screen tracking depends on).
+
+### Verification run
+
+```
+pnpm typecheck                                    clean
+pnpm build                                        clean
+pnpm test                                         348 passed (34 files)
+pnpm exec playwright test                         131 passed, 5 skipped
+pnpm exec playwright test <reflow> --repeat-each=10   100 passed
+pnpm test:e2e:webkit <reflow> --repeat-each=10        100 passed
+cargo check                                       clean
+cargo test                                        217 passed
+```
+
+`pnpm test:e2e:webkit` in full reports 113 passed / 15 failed. **All 15 fail
+identically on `dbbdd63` with none of this applied** — verified by running
+`forms.spec.ts`, `notes-todo.spec.ts` and `ops.spec.ts` under WebKit in a
+detached worktree at the base commit, on its own port. They are `page.goto:
+Frame load interrupted` navigation races in WebKit (the app redirects `/` to the
+last workspace under the test's own `goto`), they touch no terminal, and the set
+varies run to run. Pre-existing, and not this change's to fix.

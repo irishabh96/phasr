@@ -44,6 +44,14 @@ import {
   buildSurfaceOptions,
   type ResolvedSurfaceOptions,
 } from "@/lib/terminal/options";
+import {
+  ALT_SCREEN_MODE,
+  decModeSequence,
+  modeRepairSequence,
+  planResize,
+  RETAINED_DEC_MODES,
+} from "@/lib/terminal/reflow";
+import { ReplayLog } from "@/lib/terminal/replayLog";
 import type {
   LinkSource,
   SurfaceDisposable,
@@ -140,6 +148,35 @@ const HELD_TAIL_MS = 50;
 
 const MIN_COLS = 2;
 const MIN_ROWS = 1;
+
+/**
+ * How long the container must hold still before a width change is applied.
+ *
+ * Both side panels animate their width over 220 ms and the `ResizeObserver`
+ * fires on every frame of it, so this is what turns a gesture into ONE
+ * event: one grid rebuild and — because the rebuild is where `onResize`
+ * fires — one `resize_task`, in place of the thirteen a single panel toggle
+ * used to send in 220 ms (ADR-002). A live window drag collapses the same
+ * way, however long it lasts.
+ *
+ * Same number as `settle.ts`'s quiet period, for the same reason: it has to
+ * outlast a dropped frame without outlasting the user's patience. Too short
+ * and a stutter mid-animation buys a second rebuild; too long and the grid
+ * visibly lags the pane.
+ */
+const REBUILD_QUIET_MS = 120;
+
+/**
+ * Output retained for a rebuild. See `replayLog.ts` for why a rebuild needs
+ * it and `reflow.ts` for why a width change is a rebuild.
+ *
+ * 1 MiB: eight times the Rust-side replay buffer the LRU eviction path
+ * already leans on (`pty/handle.rs`), because that path costs a user
+ * scrollback once per eviction while this one can cost it on every panel
+ * toggle. At the LRU bound of 8 terminals that is 8 MiB of JS against the
+ * ~5.2 MiB of WASM heap each terminal already holds (ADR-002 Q5).
+ */
+const REPLAY_BUDGET_BYTES = 1024 * 1024;
 /** ghostty-web reserves this much width for its own overlay scrollbar. */
 const SCROLLBAR_WIDTH = 15;
 
@@ -173,6 +210,19 @@ export class GhosttySurface implements TerminalSurface {
   private selection: SurfaceDisposable | null = null;
   private active = true;
   private pausedWarned = false;
+
+  /**
+   * Everything this terminal has been shown, bounded — the material a
+   * width change is rebuilt from rather than reflowed. See `reflow.ts`.
+   */
+  private readonly replay = new ReplayLog(REPLAY_BUDGET_BYTES);
+  /** Pending rebuild, waiting for the container to stop moving. */
+  private rebuildTimer: number | null = null;
+  /**
+   * Where in the retained stream this terminal entered the alternate
+   * screen, or `null` if it is not in it. See `writeToEngine`.
+   */
+  private altEnteredSeq: number | null = null;
 
   /**
    * The grid a PTY spawned before the engine attached is given. Measured
@@ -303,22 +353,9 @@ export class GhosttySurface implements TerminalSurface {
    */
   fit(): boolean {
     if (this.disposed) return false;
-    const metrics = this.term?.renderer?.getMetrics() ?? measureCell(this.options);
-    if (!metrics || metrics.width === 0 || metrics.height === 0) return false;
-
-    const style = window.getComputedStyle(this.element);
-    const px = (v: string) => Number.parseInt(style.getPropertyValue(v)) || 0;
-    const width =
-      this.element.clientWidth -
-      px("padding-left") -
-      px("padding-right") -
-      SCROLLBAR_WIDTH;
-    const height =
-      this.element.clientHeight - px("padding-top") - px("padding-bottom");
-    if (width <= 0 || height <= 0) return false;
-
-    const cols = Math.max(MIN_COLS, Math.floor(width / metrics.width));
-    const rows = Math.max(MIN_ROWS, Math.floor(height / metrics.height));
+    const target = this.measureGrid();
+    if (!target) return false;
+    const { cols, rows } = target;
 
     const term = this.term;
     if (!term) {
@@ -335,6 +372,181 @@ export class GhosttySurface implements TerminalSurface {
     if (this.diag) diagNote(this.id, `resize ${cols}x${rows}`);
     term.resize(cols, rows);
     return true;
+  }
+
+  /** The grid this container currently deserves. `null` when it cannot be
+   *  measured — a parked or zero-sized element, or no font metrics yet. */
+  private measureGrid(): { cols: number; rows: number } | null {
+    const metrics =
+      this.term?.renderer?.getMetrics() ?? measureCell(this.options);
+    if (!metrics || metrics.width === 0 || metrics.height === 0) return null;
+
+    const style = window.getComputedStyle(this.element);
+    const px = (v: string) => Number.parseInt(style.getPropertyValue(v)) || 0;
+    const width =
+      this.element.clientWidth -
+      px("padding-left") -
+      px("padding-right") -
+      SCROLLBAR_WIDTH;
+    const height =
+      this.element.clientHeight - px("padding-top") - px("padding-bottom");
+    if (width <= 0 || height <= 0) return null;
+
+    return {
+      cols: Math.max(MIN_COLS, Math.floor(width / metrics.width)),
+      rows: Math.max(MIN_ROWS, Math.floor(height / metrics.height)),
+    };
+  }
+
+  fitAnchored(): void {
+    if (this.disposed) return;
+    const term = this.term;
+    // Nothing to protect yet: no engine means no buffer, and this
+    // measurement is the one the PTY is spawned at. Deferring it would
+    // reintroduce the 80x24 spawn.
+    if (!term || this.replay.isEmpty) {
+      this.fit();
+      return;
+    }
+    const target = this.measureGrid();
+    if (!target) return;
+
+    switch (planResize({ cols: term.cols, rows: term.rows }, target)) {
+      case "none":
+        // A width change that came back before it settled — an open/close
+        // faster than the debounce costs nothing at all.
+        this.cancelRebuild();
+        return;
+      case "resize":
+        // Rows only. Nothing rewraps, so nothing drifts; and any rebuild
+        // that was pending is moot, because the width it was scheduled for
+        // is the width the grid already has.
+        this.cancelRebuild();
+        this.fit();
+        return;
+      case "rebuild":
+        this.scheduleRebuild();
+    }
+  }
+
+  private scheduleRebuild(): void {
+    this.cancelRebuild();
+    this.rebuildTimer = window.setTimeout(() => {
+      this.rebuildTimer = null;
+      this.applySettledWidth();
+    }, REBUILD_QUIET_MS);
+  }
+
+  private cancelRebuild(): void {
+    if (this.rebuildTimer === null) return;
+    window.clearTimeout(this.rebuildTimer);
+    this.rebuildTimer = null;
+  }
+
+  /** The container stopped moving. Apply what it settled on. */
+  private applySettledWidth(): void {
+    const term = this.term;
+    if (this.disposed || !term) return;
+    const target = this.measureGrid();
+    // Parked, hidden, or mid-layout. The next `fitAnchored()` reschedules;
+    // rebuilding against a 1px park host would collapse the grid to its
+    // minimum and replay the whole log into it for nothing.
+    if (!target) return;
+    if (planResize({ cols: term.cols, rows: term.rows }, target) !== "rebuild") {
+      this.fit();
+      return;
+    }
+    try {
+      this.rebuildGrid(term, target);
+    } catch (err) {
+      // Nothing here can put the freed buffer back, so this is not a
+      // recovery — it is a promise that a terminal is never left the wrong
+      // size for its pane. Taking the reflow (and its drift) beats leaving
+      // every line clipped.
+      console.error("[terminal] grid rebuild failed; falling back to a reflow", err);
+      this.fit();
+    }
+  }
+
+  /**
+   * Adopt a new width by building a fresh grid and replaying the output
+   * that filled the old one — **the fix for ADR-002's reflow anchor**.
+   *
+   * A rebuild is not a reflow. `ghostty_terminal_resize` rewraps a live
+   * page list and, having no anchor to keep, spends the blank rows below
+   * the cursor and hands them back as history above it; the content sinks
+   * a row or two per width round trip and never rises. A grid constructed
+   * at the right width has no blanks to spend and no history to pull down,
+   * so the question never arises — and the replayed stream lands wrapped
+   * the way it would have been had the terminal always been this wide,
+   * which is strictly more faithful than a rewrap.
+   *
+   * What it costs is stated in `replayLog.ts` (scrollback older than the
+   * budget) and in `reflow.ts` (a fresh terminal has forgotten every mode,
+   * hence the repair).
+   */
+  private rebuildGrid(
+    term: GhosttyTerminal,
+    target: { cols: number; rows: number },
+  ): void {
+    // A grapheme continuation still being held is part of the stream and
+    // has to be in the log before the log is replayed.
+    this.flushHeldTail();
+
+    const wanted = this.readModes(term);
+    const offset = Math.max(0, Math.floor(term.getViewportY()));
+    if (this.diag)
+      diagNote(this.id, `rebuild ${target.cols}x${target.rows} (${this.replay.size}B)`);
+
+    // Selection coordinates are absolute buffer rows and mean nothing
+    // across a rebuild.
+    try {
+      term.clearSelection();
+    } catch {
+      /* nothing selected */
+    }
+    // Free the old buffer FIRST, so the resize that follows rewraps an
+    // empty grid rather than the user's screen: same end state, none of
+    // the work, and the buggy path never sees live content.
+    term.reset();
+    term.viewportY = 0;
+    // The canvas, the renderer, and exactly one `onResize` — i.e. one
+    // SIGWINCH for the whole gesture instead of one per animation frame.
+    term.resize(target.cols, target.rows);
+
+    // Straight to the engine: replayed bytes are already in the log, and
+    // everything synthetic here must never enter it.
+    //
+    // The alternate screen has to be entered BEFORE the replay when the
+    // `\x1b[?1049h` that entered it has aged out of the window, because
+    // what is left in there is then a TUI's frames with nothing marking
+    // which screen they belong to — replayed as-is they would be painted
+    // over the user's shell scrollback, and the repair below would switch
+    // to a blank alternate screen on top. When the sequence IS still
+    // retained none of this fires: the replay reconstructs both screens by
+    // itself, which is the better answer and the common one.
+    if (this.altEnteredSeq !== null && !this.replay.hasRetained(this.altEnteredSeq))
+      term.write(decModeSequence(ALT_SCREEN_MODE, true));
+    for (const chunk of this.replay.read()) term.write(chunk);
+    const repair = modeRepairSequence(wanted, this.readModes(term));
+    if (repair) term.write(repair);
+
+    // Put the viewport back the same distance from the bottom. Approximate
+    // by construction — a different width wraps into a different number of
+    // history lines — and clamped by `scrollToLine`.
+    if (offset > 0) term.scrollToLine(offset);
+    this.repaint();
+  }
+
+  /** The DEC private modes a rebuild has to carry over. See `reflow.ts`. */
+  private readModes(term: GhosttyTerminal): Map<number, boolean> {
+    const modes = new Map<number, boolean>();
+    const wasmTerm = term.wasmTerm;
+    if (!wasmTerm) return modes;
+    for (const mode of RETAINED_DEC_MODES) {
+      modes.set(mode, wasmTerm.getMode(mode, false));
+    }
+    return modes;
   }
 
   repaint(): void {
@@ -398,7 +610,7 @@ export class GhosttySurface implements TerminalSurface {
     // from a PTY, so they are never a partial cluster.
     if (typeof data === "string") {
       this.flushHeldTail();
-      this.term.write(data);
+      this.writeToEngine(data);
       return;
     }
 
@@ -413,7 +625,7 @@ export class GhosttySurface implements TerminalSurface {
     this.clearHeldTimer();
 
     const end = safeWriteEnd(bytes);
-    if (end > 0) this.term.write(bytes.subarray(0, end));
+    if (end > 0) this.writeToEngine(bytes.subarray(0, end));
     if (end < bytes.length) {
       // `slice` (a copy), not `subarray`: the caller owns `data`'s buffer.
       this.heldTail = bytes.slice(end);
@@ -429,7 +641,37 @@ export class GhosttySurface implements TerminalSurface {
     this.clearHeldTimer();
     const tail = this.heldTail;
     this.heldTail = null;
-    if (tail && tail.length > 0) this.term?.write(tail);
+    if (tail && tail.length > 0) this.writeToEngine(tail);
+  }
+
+  /**
+   * The ONE place bytes reach the emulator, and therefore the one place
+   * they can be retained.
+   *
+   * What is retained is exactly what was handed to the engine, in order —
+   * a clean partition of the stream with the grapheme-tail splitting
+   * already applied — so replaying it is byte-for-byte what the terminal
+   * was shown. Synthetic bytes (the replay itself, the mode repair) go
+   * direct to `term.write` and are deliberately not recorded.
+   */
+  private writeToEngine(data: string | Uint8Array): void {
+    const term = this.term;
+    // Before the engine lands, `write()` queues into `pendingWrites` and
+    // replays through here on attach — so retaining anything now would
+    // retain it twice.
+    if (!term) return;
+    this.replay.append(data);
+    term.write(data);
+    // Note where the stream switched screens, so a later rebuild can ask
+    // whether the sequence that did it is still inside the window. One
+    // WASM call per coalesced PTY chunk (~60/s on a busy terminal), which
+    // is the cheapest way to know this without a VT parser on this side.
+    if (!term.wasmTerm) return;
+    if (term.wasmTerm.isAlternateScreen()) {
+      this.altEnteredSeq ??= this.replay.lastSeq;
+    } else {
+      this.altEnteredSeq = null;
+    }
   }
 
   private clearHeldTimer(): void {
@@ -742,6 +984,8 @@ export class GhosttySurface implements TerminalSurface {
     this.resizeCbs.clear();
     this.pendingWrites.length = 0;
     this.pendingInput.length = 0;
+    this.cancelRebuild();
+    this.replay.clear();
     this.clearHeldTimer();
     this.heldTail = null;
     if (this.diag) diagDispose(this.id);
