@@ -86,10 +86,11 @@ export function RunCommandTerminal({
 
     // Fit synchronously so startRunCommand receives real rows/cols rather
     // than the 80×24 defaults — see Terminal.tsx for context.
-    const fitNow = () => surface.fit();
-    fitNow();
+    surface.fit();
 
-    const resizeObserver = new ResizeObserver(fitNow);
+    // See Terminal.tsx — every later resize is anchored, so a width change
+    // rebuilds the grid instead of rewrapping it.
+    const resizeObserver = new ResizeObserver(() => surface.fitAnchored());
     resizeObserver.observe(container);
 
     const disposables: SurfaceDisposable[] = [];
@@ -165,7 +166,7 @@ export function RunCommandTerminal({
     const surface = surfaceRef.current;
     if (!surface) return;
     surface.applySettings(settings);
-    surface.fit();
+    surface.fitAnchored();
   }, [settings]);
 
   // See Terminal.tsx — a theme flip has to be pushed into the emulator,
@@ -181,7 +182,7 @@ export function RunCommandTerminal({
     if (!surface) return;
     surface.setActive(visible);
     if (!visible) return;
-    surface.fit();
+    surface.fitAnchored();
     surface.repaint();
     // See Terminal.tsx — reveal hands over the keyboard.
     if (canTakeTerminalFocus()) surface.focus();
