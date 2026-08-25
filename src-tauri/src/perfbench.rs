@@ -1,10 +1,11 @@
-//! Rust-side performance harness for `docs/PERF-TERMINAL-BENCHMARKS.md`.
+//! Rust-side performance harness for the terminal path. Findings are
+//! written up in `docs/adr/ADR-002-terminal-engine.md`.
 //!
 //! Everything here measures the parts of the terminal path that are
-//! **engine-independent**: Phase 3's output coalescer and Phase 4's base64
-//! wire format. Neither involves a terminal emulator, so unlike the
-//! Chromium probes in `e2e/terminal-bench.spec.ts` these numbers transfer
-//! to the shipping WKWebView build unchanged.
+//! **engine-independent**: the output coalescer and the base64 wire
+//! format. Neither involves a terminal emulator, so unlike a browser-side
+//! probe these numbers transfer to the shipping WKWebView build
+//! unchanged.
 //!
 //! Nothing here is a gate. Every test is `#[ignore]`d and every test is a
 //! no-op on a machine with no PTY log corpus, so a fresh checkout and CI

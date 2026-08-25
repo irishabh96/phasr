@@ -10,7 +10,7 @@ gone.**
   into the live path**.
 - **Phases 7 and 8 collapsed into one step, 2026-08-20**, on the user's call
   after hands-on use of a real build rather than on a benchmark. See
-  "2026-08-20 — hands on, three bugs, and the the previous engine removal" at the end of
+  "2026-08-20 — hands on, three bugs, and the previous engine's removal" at the end of
   this document, which is the section to read first: it corrects Q4 and
   supersedes the flag-based rollback below.
 - **The reflow anchor is FIXED, 2026-08-21 (fifth pass, last section).**
@@ -711,7 +711,7 @@ Whole suite, twice. `P` = passed, `F` = failed, `S` = skipped.
 Palette switches the terminal engine and back" opens with
 `expectBackend(page, <previous engine>) // the product default`. Forcing the suite onto
 ghostty contradicts that assertion by construction — the test exists to prove
-the *default* and the rollback, and it passes on its own and inside the the previous engine
+the *default* and the rollback, and it passes on its own and inside the previous engine
 pass. It is the only test in the suite that cannot be parameterized.
 
 Timing is not a differentiator either: across the 101 tests that pass on both,
@@ -983,7 +983,7 @@ config) and was not run.
 
 ---
 
-## 2026-08-20 — hands on, three bugs, and the the previous engine removal
+## 2026-08-20 — hands on, three bugs, and the previous engine's removal
 
 The user ran a real build for the first time and reported five problems. Two
 were fixed before this section (in-app row clicks, sidebar dots). The other
@@ -1123,7 +1123,7 @@ of it, which is what the previous engine's WebGL renderer does too.
 
 Deleted: the previous backend's modules, their tests, the
 three npm dependencies of the previous engine, the
-the previous engine stylesheet import and the the emulator's viewport scrollbar CSS, the
+the previous engine's stylesheet import and its viewport scrollbar CSS, the
 `localStorage["phasr.terminal.backend"]` flag and `VITE_TERMINAL_BACKEND`, the
 factory's branch, both Command Palette engine-switch entries, the backend
 parameterization across e2e (including the `expectBackend(page, <previous engine>)` "the
@@ -1133,8 +1133,9 @@ numbers were invalid anyway (see the Q4 withdrawal above).
 
 `TerminalSurface` **stays**, along with the single-member
 `TerminalBackendKind` and `data-terminal-kind`. It is what made this swap safe
-and what makes the next one a diff. `grep -rn the previous engine src/ e2e/ package.json`
-now returns only comments that explain why something is the way it is.
+and what makes the next one a diff. Grepping `src/`, `e2e/` and `package.json`
+for the previous engine's name now returns only comments that explain why
+something is the way it is.
 
 Renamed with the engine: the dispose helpers are now `disposeMainTerminal` / `disposeSessionTerminal`.
 
