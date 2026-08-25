@@ -289,6 +289,14 @@ export class GhosttySurface implements TerminalSurface {
   /** Pending rebuild, waiting for the container to stop moving. */
   private rebuildTimer: number | null = null;
   /**
+   * A settings change (scrollback) needs the next settled rebuild even if
+   * the geometry did not move — the engine only reads `scrollback` at
+   * terminal construction (`buildWasmConfig`), so applying it live IS a
+   * rebuild. Cleared only when one lands, so a failed attempt's retry
+   * still knows why it was asked for.
+   */
+  private pendingConfigRebuild = false;
+  /**
    * A rebuild that could not be applied, waiting for one retry.
    *
    * Never a silent fall-back to a plain resize: that is the reflow whose
@@ -529,12 +537,16 @@ export class GhosttySurface implements TerminalSurface {
     // rebuilding against a 1px park host would collapse the grid to its
     // minimum and re-emit the whole buffer into it for nothing.
     if (!target) return;
-    if (planResize({ cols: term.cols, rows: term.rows }, target) !== "rebuild") {
+    if (
+      planResize({ cols: term.cols, rows: term.rows }, target) !== "rebuild" &&
+      !this.pendingConfigRebuild
+    ) {
       this.fit();
       return;
     }
     try {
       this.rebuildGrid(term, target);
+      this.pendingConfigRebuild = false;
       this.cancelRebuildRetry();
     } catch (err) {
       this.rebuildFailed(err);
@@ -861,7 +873,18 @@ export class GhosttySurface implements TerminalSurface {
     const cols = term.cols;
 
     const total = wasm.getScrollbackLength();
-    const first = Math.max(0, total - MAX_HISTORY_ROWS);
+    // The engine ignores `scrollbackLimit` entirely — measured: a grid
+    // built with limit 60 retained 262 carried rows, and 11,500 written
+    // lines were capped at 1,058 by an internal byte budget regardless of
+    // the configured 5,000. So the user's setting is enforced HERE, the
+    // one place phasr controls: history carried across a rebuild is
+    // truncated to it. Between rebuilds the engine's own ~1,100-row budget
+    // is the effective ceiling (upstream).
+    const keep = Math.min(
+      MAX_HISTORY_ROWS,
+      Math.max(0, Math.floor(this.options.scrollback)),
+    );
+    const first = Math.max(0, total - keep);
     const history: SnapshotRow[] = [];
     // `wrapped` is LEADING — a row continues the one above — and
     // ghostty-web 0.4.0 cannot say for history rows (`IBuffer.getLine`
@@ -1250,10 +1273,23 @@ export class GhosttySurface implements TerminalSurface {
     // Same diffing discipline the previous backend needed, for a different
     // mechanism: a `fontSize` write runs `handleFontChange()` (canvas
     // resize + full re-render) and `fontFamily` re-runs `measureFont()`.
-    // `scrollback` is in the options bag but `handleOptionChange` has no
-    // case for it — the write is silently ignored, so scrollback is
-    // apply-on-next-open. Stated in the settings copy.
     const written = applyChangedOptions(this.term.options, next);
+    // `scrollback` is in the options bag but the engine only reads it at
+    // terminal construction (`buildWasmConfig`) — `handleOptionChange` has
+    // no case for it. A rebuild constructs a fresh terminal through that
+    // config, so a changed limit is applied by scheduling one: same-width,
+    // settle-debounced, transaction-protected. This restores the live
+    // behaviour the previous engine had.
+    // Gated on `written`: at boot the resolved settings replace the
+    // construction defaults (10000 → the user's value) before any output
+    // exists, and an empty terminal has nothing to truncate — while every
+    // later rebuild reads the CURRENT setting at snapshot time regardless.
+    // Only a live change to a terminal that already holds content needs a
+    // rebuild of its own.
+    if (written.includes("scrollback") && this.written) {
+      this.pendingConfigRebuild = true;
+      this.scheduleRebuild();
+    }
     // `cursorStyle`/`cursorBlink` DO reach the renderer (unlike `scrollback`
     // and `theme`), but only as state: `setCursorStyle` just assigns, and
     // the render loop redraws the cursor's ROW only when the cursor moved
