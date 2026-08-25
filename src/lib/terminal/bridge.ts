@@ -55,7 +55,8 @@ export interface TerminalBridge {
    * stale one by looking at pixels alone. It can compare the live canvas
    * with the canvas after this call: a full redraw is by definition the
    * truth, so any difference is a row the incremental path failed to
-   * repaint. See `e2e/terminal-stale-rows.spec.ts`.
+   * repaint. See `e2e/terminal-open.spec.ts`, which drives this oracle and
+   * checks the oracle itself with a positive control.
    */
   repaint(id: string): void;
 }
