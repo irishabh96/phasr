@@ -1347,13 +1347,15 @@ one environment that reproduces it is the one with **no instrumentation at
 all**: `bridge.ts` is gated on `import.meta.env.DEV`, so a shipped `.app`
 exposes nothing. Three recordings could only ever be measured in pixels.
 
-`src/lib/terminal/diagnostics.ts` closes that. OFF by default (one
-`localStorage` read per surface):
+`src/lib/terminal/diagnostics.ts` closes that. The byte recorder is OFF by
+default (one `localStorage` read per surface); the focus probe added on
+2026-08-26 is always on, and `dump()` returns both:
 
 ```js
 localStorage.setItem("phasr.diag.terminal", "1"); location.reload();
 // reproduce, then:
 copy(JSON.stringify(window.__PHASR_TERM_DIAG__.dump(), null, 2));
+// -> { surfaces: [...], focus: [...] }   focus needs no flag and no reload
 ```
 
 Per surface it reports creation order (so "the Nth terminal" is answerable),
@@ -1785,3 +1787,116 @@ hidden textarea (harmless — key events bubble to the container — but
 worth knowing before ever enabling it by default). Remaining delta to the
 shipped app: wry's `WKWebViewConfiguration`, covered by the 2-minute
 check in `docs/MANUAL-VERIFICATION.md`.
+
+## 2026-08-26 — "focus gets removed after a while" was the render loop dying
+
+### The report, and what it actually was
+
+> "sometimes focus of terminal or input get removes even after clicking
+> multiple times and this happens when i havent used it for a while"
+
+Focus was the one thing that was fine. Measured, in the harness, after
+swallowing exactly one `requestAnimationFrame` callback:
+
+```
+paints in 600ms, healthy                    5852
+paints in 800ms after one dropped frame        0
+paints in 800ms after three clicks              0
+paints after visibilitychange / window focus    0
+document.activeElement                     inside the terminal
+document.hasFocus()                        true
+keystrokes typed -> PTY   send_input_to_task:f,r,o,z,e,n  (all six)
+```
+
+The terminal had focus, took every keystroke and delivered every one to the
+process. It just never painted again. What the user can see of that is a
+terminal that ignores clicks, which reads as lost focus and is not.
+
+### Why one missed frame is permanent
+
+`write()` schedules nothing. The display is `startRenderLoop`'s
+`requestAnimationFrame` chain, and the chain re-queues itself **from inside
+its own callback, as the last statement**. So a callback that does not run
+to that statement ends the display for the life of the terminal. Two ways
+in, both of which happen to a machine left alone — which is the whole
+"haven't used it for a while" signature:
+
+1. **the callback is never delivered.** A web view suspended by sleep,
+   window occlusion or App Nap can drop a queued frame instead of deferring
+   it. The handle stays live and the callback is simply gone.
+2. **the callback throws.** One canvas op failing after a GPU process
+   restart, or a grid freed under the renderer. Measured: a single
+   synthetic `fillText` failure froze the terminal permanently.
+
+And the recovery that existed could not fire. `resume()` was
+`this.isPaused && (…)` — it refused to restart a loop that had never been
+paused, and a chain ended by either mechanism above leaves `isPaused`
+false. The only escape was a tab switch away and back, because
+`parkSurface` → `setActive(false)` → `pause()` was the sole way that flag
+could be set, after which `resume()` would work. Nothing a user does to a
+terminal that looks broken involves parking it.
+
+### The fix, in three layers
+
+**The patch** (`patches/ghostty-web@0.4.0.patch`) makes the loop
+survivable and its state honest: the body is wrapped so one bad frame is
+one bad frame; `animationFrameId` is cleared on frame ENTRY so it means "a
+frame is queued" rather than "a frame was queued once"; `startRenderLoop`
+is idempotent (re-entry used to fork a second chain that `pause()` could
+not cancel, since it remembers one id); `resume()` restarts whenever
+nothing is queued; and `getRenderStats()` exposes a frame counter, because
+a stalled loop otherwise leaves no trace anywhere.
+
+**The backend** gains `renderTick()` / `kickRendering()` on the neutral
+`TerminalSurface` contract — "is this one painting" and "start it again" —
+plus a check on the write path: output arriving into a surface whose loop
+has not run for a second restarts it, so an agent working while nobody is
+watching heals its own terminal. `getRenderStats().frameErrors` is
+reported through `reportP0Error`, because before the loop had a `catch` a
+render failure escaped through `requestAnimationFrame` and Sentry's
+`browserApiErrors` integration caught it for free; keeping the terminal
+alive by making its failures invisible would have been the worse bug.
+
+**The watchdog** (`src/lib/terminal/liveness.ts`) samples the counter,
+waits 200 ms on a **timer** (never a frame — a check built out of the thing
+being measured cannot fire in the case it exists for) and restarts the loop
+if it did not move. It runs on window focus, on visibility returning, and
+on a click inside a terminal — the user's own report that something is
+wrong. A healthy terminal costs nothing; a parked one reports `null` and is
+left paused, which `e2e/terminal-liveness.spec.ts` asserts per surface.
+
+### The focus probe
+
+`window.__PHASR_TERM_DIAG__.dump()` now returns `{ surfaces, focus }` and
+the `focus` half is **always on** — no flag, no reload. Every mousedown
+records what was clicked, what `elementFromPoint` says is on top there,
+`activeElement` before and after, `document.hasFocus()`,
+`getComputedStyle(document.body).pointerEvents`, and the surface's frame
+counter on both sides. That separates the three failures that all present
+as "clicking does nothing" and have nothing in common:
+
+| what is broken | the tell |
+| --- | --- |
+| the click never arrived | `hit` is an overlay, or `bodyPointerEvents: "none"` |
+| focus did not follow | `activeAfterInTerminal: false` |
+| the renderer is frozen | `frames === framesAfter`, `hasFocus: true` |
+
+The last row is this bug, and it is the one no screenshot and no amount of
+asking the user to try things could have distinguished.
+
+### What is still unproven
+
+**Which of the two mechanisms hits in the field.** Both are demonstrated in
+the harness; neither can be provoked on a real machine on demand, because
+the trigger is a suspension. A throw would have reached Sentry before this
+change (via the rAF wrapper), so **Sentry is the place to look** for a real
+occurrence — a `requestAnimationFrame` mechanism error out of
+`ghostty-web`. Its absence would point at the dropped-frame mechanism
+instead. Either way the recovery is the same, which is why the fix is aimed
+at the class rather than at whichever one it turns out to be.
+
+**A native firstResponder wedge** (the NSWindow handing the keyboard to
+nothing after a suspension) was neither confirmed nor excluded — nothing in
+this investigation needed it as an explanation. If it happens, the probe
+records it as `hasFocus: false` with a correct `activeElement`, which is a
+signature nothing else produces.
