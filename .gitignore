@@ -101,6 +101,7 @@ dark-factory/
 !/docs/adr/
 !/docs/PERFORMANCE-RETENTION-REPORT.md
 !/docs/RELEASE-*.md
+!/docs/MANUAL-VERIFICATION.md
 patterns_library/
 # SAFe-template scripts stay ignored, EXCEPT phasr's own project scripts.
 /scripts/*
