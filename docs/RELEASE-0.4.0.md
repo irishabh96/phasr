@@ -373,13 +373,26 @@ sounds:
   on canvas. Rung 2 (`phasr.terminal.clipboardMirror`, already implemented)
   exists precisely to hand WebKit a genuine DOM selection.
 
-### Closing Q2
+### Closing Q2 — the harness verdict is in: rung 1 suffices
 
-The Swift harness is being extended to answer the two load-bearing questions
-mechanically (`validateUserInterfaceItem(copy:)` with a collapsed selection in
-a contenteditable; whether `sendAction(copy:)` dispatches a DOM `copy` event;
-both again with the rung-2 mirror active). Its verdict decides the default
-for `phasr.terminal.clipboardMirror`.
+`scripts/wkwebview-q2-probe.swift` replicates ghostty-web's exact focus shape
+(contenteditable container, hidden textarea, phasr's rung-1 capture
+listeners) and drives `copy:`/`paste:` down a real window's responder chain:
+
+```
+Q2 rung1: validateCopy=true  queryCommandEnabled(copy)=false
+          copy event FIRED, pasteboard ← "RUNG1-CANVAS-SELECTION"
+          paste event FIRED once, payload delivered
+Q2 rung2: identical, with queryCommandEnabled(copy)=true
+```
+
+WebKit dispatches the `copy` action's DOM event even with a collapsed
+selection — `queryCommandEnabled` is not the dispatch gate — so rung 1's
+listener answers it and the canvas selection lands on the pasteboard.
+**`phasr.terminal.clipboardMirror` stays off by default**; it remains the
+documented escape hatch if a wry-configured webview ever behaves
+differently. The 2-minute in-app check below is confirmation, no longer an
+open question.
 
 **The 2-minute human confirmation** (isolates ⌘C from copy-on-select, which
 rewrites the clipboard at mouseup and would otherwise mask a dead ⌘C):

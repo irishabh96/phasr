@@ -110,6 +110,7 @@ patterns_library/
 # Referenced by docs/adr/ADR-002 — a tracked ADR must not point at an
 # untracked script.
 !/scripts/wkwebview-wasm-probe.swift
+!/scripts/wkwebview-q2-probe.swift
 specs_templates
 CLAUDE.md
 AGENTS.md
