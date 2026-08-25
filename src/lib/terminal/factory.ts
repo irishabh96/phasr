@@ -1,5 +1,7 @@
 import { GhosttySurface, preloadGhosttyEngine } from "@/lib/terminal/backends/ghostty";
 import { registerSurfaceForTests } from "@/lib/terminal/bridge";
+import { installTerminalDiagnostics } from "@/lib/terminal/diagnostics";
+import { installTerminalLivenessWatch } from "@/lib/terminal/liveness";
 import { registerSurface } from "@/lib/terminal/registry";
 import { itermSequenceFor } from "@/lib/terminal/keymap";
 import type {
@@ -48,5 +50,15 @@ export function createTerminalSurface(
   // Ships (unlike the bridge): an OS file drop resolves the terminal it
   // landed on through this.
   registerSurface(surface);
+  // Both ship, and both are installed once for the whole app. Here rather
+  // than in a component or in `main.tsx` for the same reason as the two
+  // registries above: a terminal that exists is a terminal that is
+  // watched, with nothing to remember at any call site.
+  //
+  // The diagnostics global carries the always-on focus probe, so it is
+  // installed unconditionally — the byte-level recorder inside it still
+  // needs its localStorage flag.
+  installTerminalDiagnostics();
+  installTerminalLivenessWatch();
   return surface;
 }
