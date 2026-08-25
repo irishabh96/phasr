@@ -242,11 +242,13 @@ function RepoBlock({
           )}
         </div>
       </RepositorySidebarMenu>
-      {workspaceExpanded && (
+      {/* The collapsed rail lists repositories only — per-workspace initials
+          read as noise at 28px, and the full names survive on the repo
+          tooltip. Workspaces come back with the full-width rows. */}
+      {isExpanded && workspaceExpanded && (
         <RepoWorkspaces
           repoId={repo.id}
           activeWorkspaceId={activeWorkspaceId}
-          isExpanded={isExpanded}
         />
       )}
     </div>
@@ -256,11 +258,9 @@ function RepoBlock({
 function RepoWorkspaces({
   repoId,
   activeWorkspaceId,
-  isExpanded,
 }: {
   repoId: string;
   activeWorkspaceId: string | null;
-  isExpanded: boolean;
 }) {
   const workspaces = useWorkspaces(repoId);
   const visibleWorkspaces = [...(workspaces.data ?? [])]
@@ -274,46 +274,27 @@ function RepoWorkspaces({
   if (!visibleWorkspaces.length) return null;
 
   return (
-    <div
-      className={cn(
-        "mt-1.5 flex flex-col gap-0.5",
-        isExpanded
-          ? "ml-3.5 border-l border-(--glass-border-hairline) pl-2"
-          : "items-center",
-      )}
-    >
+    <div className="mt-1.5 ml-3.5 flex flex-col gap-0.5 border-l border-(--glass-border-hairline) pl-2">
       {visibleWorkspaces.map((ws) => (
         <WorkspaceLink
           key={ws.id}
           ws={ws}
           repoId={repoId}
           active={ws.id === activeWorkspaceId}
-          isExpanded={isExpanded}
         />
       ))}
     </div>
   );
 }
 
-/**
- * First character of a workspace name for the collapsed rail. Array.from
- * so an emoji or other astral-plane first character isn't split into half
- * a surrogate pair.
- */
-function workspaceInitial(name: string): string {
-  return Array.from(name.trim())[0] ?? "?";
-}
-
 function WorkspaceLink({
   ws,
   repoId,
   active,
-  isExpanded,
 }: {
   ws: Workspace;
   repoId: string;
   active: boolean;
-  isExpanded: boolean;
 }) {
   return (
     <WorkspaceSidebarMenu workspace={ws}>
@@ -321,58 +302,35 @@ function WorkspaceLink({
         to="/repositories/$repositoryId/workspaces/$workspaceId"
         params={{ repositoryId: repoId, workspaceId: ws.id }}
         className={cn(
-          "flex items-center rounded-[8px]",
-          isExpanded
-            ? "min-h-[36px] w-full px-2 py-1"
-            : "h-7 w-7 justify-center",
+          "flex min-h-[36px] w-full items-center rounded-[8px] px-2 py-1",
           "transition-colors duration-150",
           "hover:bg-(--color-bg-elevated)",
           "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
           active && "bg-(--color-bg-selected)",
         )}
       >
-        {!isExpanded && (
-          // Collapsed rail: the row has no room for the name, so a single
-          // initial keeps the workspaces distinguishable at a glance. The
-          // tooltip still carries the full name on hover.
-          <GlassTooltip content={ws.name} side="right">
-            <span
-              className={cn(
-                "flex h-4 w-4 shrink-0 items-center justify-center",
-                "text-[11px] font-medium uppercase leading-none",
-                active
-                  ? "text-(--color-text-primary)"
-                  : "text-(--color-text-secondary)",
-              )}
-            >
-              {workspaceInitial(ws.name)}
-            </span>
-          </GlassTooltip>
-        )}
-        {isExpanded && (
-          // `truncate` is `overflow: hidden`, so the line box has to be
-          // taller than the glyphs or descenders are clipped flat —
-          // `leading-none` cut the tails off every g/y/p/j in a branch
-          // name. The line-height supplies the row's internal spacing now,
-          // so the explicit gap is gone.
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span
-              className={cn(
-                "truncate text-left text-[13px] leading-[1.3]",
-                active
-                  ? "text-(--color-text-primary)"
-                  : "text-(--color-text-secondary)",
-              )}
-            >
-              {ws.name}
-            </span>
-            {ws.branch && (
-              <code className="truncate text-left text-[10.5px] leading-[1.45] text-(--color-text-muted)">
-                {ws.branch}
-              </code>
+        {/* `truncate` is `overflow: hidden`, so the line box has to be
+            taller than the glyphs or descenders are clipped flat —
+            `leading-none` cut the tails off every g/y/p/j in a branch
+            name. The line-height supplies the row's internal spacing now,
+            so the explicit gap is gone. */}
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span
+            className={cn(
+              "truncate text-left text-[13px] leading-[1.3]",
+              active
+                ? "text-(--color-text-primary)"
+                : "text-(--color-text-secondary)",
             )}
+          >
+            {ws.name}
           </span>
-        )}
+          {ws.branch && (
+            <code className="truncate text-left text-[10.5px] leading-[1.45] text-(--color-text-muted)">
+              {ws.branch}
+            </code>
+          )}
+        </span>
       </Link>
     </WorkspaceSidebarMenu>
   );
