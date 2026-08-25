@@ -104,17 +104,26 @@ mod tests {
 
         let mut rx = handle.subscribe();
         let mut combined = String::new();
+        let mut exited = false;
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        // `Exit` must NOT stop the read loop: the exit-wait thread and the
+        // output pipeline race, and on a loaded machine the child's death is
+        // observed before its final bytes clear reader → coalescer →
+        // broadcast (the 8 ms coalescing window alone guarantees a gap).
+        // Keep draining until the needle lands or the deadline rules.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
+            if exited && combined.contains("hello-phasr") {
+                break;
+            }
             if std::time::Instant::now() > deadline {
-                panic!("timed out; output so far: {combined:?}");
+                panic!("timed out (exited: {exited}); output so far: {combined:?}");
             }
             match rx.try_recv() {
                 Ok(super::super::PtyEvent::Output { chunk, .. }) => {
                     combined.push_str(&String::from_utf8_lossy(&chunk))
                 }
-                Ok(super::super::PtyEvent::Exit { .. }) => break,
+                Ok(super::super::PtyEvent::Exit { .. }) => exited = true,
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -161,7 +170,10 @@ mod tests {
                 Ok(super::super::PtyEvent::Output { chunk, .. }) => {
                     combined.push_str(&String::from_utf8_lossy(&chunk))
                 }
-                Ok(super::super::PtyEvent::Exit { .. }) => break,
+                // Same exit-vs-final-output race as the test above: the
+                // child dying does not mean its last bytes have been
+                // broadcast yet. Keep draining; the deadline decides.
+                Ok(super::super::PtyEvent::Exit { .. }) => {}
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
