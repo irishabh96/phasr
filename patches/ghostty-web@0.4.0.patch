@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427..d22e9f2 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d4fce78df 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -154,7 +154,7 @@ index a4ca427..d22e9f2 100644
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2633,12 +2697,80 @@ class IA {
+@@ -2633,18 +2697,162 @@ class IA {
    // ==========================================================================
    // Private Methods
    // ==========================================================================
@@ -170,10 +170,51 @@ index a4ca427..d22e9f2 100644
 +    this.isPaused || (this.isPaused = !0, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0));
 +  }
 +  /**
-+   * Resume the render loop and repaint in full.
++   * Resume the render loop.
++   *
++   * PHASR PATCH: no longer conditional on `isPaused`. Upstream (and the
++   * first version of this patch) early-returned unless the terminal had
++   * been paused, which made every other way the frame chain can end
++   * PERMANENT: the loop re-queues itself only from inside its own
++   * callback, so a callback that never runs — dropped by the browser after
++   * a suspension, or ended by a throw — leaves `isPaused` false with
++   * nothing queued, and `resume()` then did nothing, for ever. Measured:
++   * one swallowed `requestAnimationFrame` callback froze the terminal for
++   * the rest of its life while it stayed focused and still fed the PTY
++   * every keystroke.
++   *
++   * `startRenderLoop()` is idempotent, so resuming a healthy terminal is
++   * still free.
 +   */
 +  resume() {
-+    this.isPaused && (this.isPaused = !1, !this.isDisposed && this.isOpen && this.startRenderLoop());
++    this.isDisposed || !this.isOpen || (this.isPaused = !1, this.startRenderLoop());
++  }
++  /**
++   * PHASR PATCH: render-loop liveness, for a host that has to answer "is
++   * this terminal painting?" without guessing.
++   *
++   * `ticks` counts frames the loop actually ran (synchronized frames
++   * included — they are the loop working, not the loop stopped), so only
++   * its MOVEMENT is meaningful. `queued` says a frame is scheduled, which
++   * is necessary and not sufficient: a suspended web view keeps a frame
++   * queued and never delivers it, and that is exactly the failure this
++   * exists to detect.
++   *
++   * `frameErrors`/`lastFrameError` are how a render failure still gets
++   * reported now that the loop survives one. See the catch in
++   * `startRenderLoop`.
++   */
++  getRenderStats() {
++    return {
++      ticks: this.renderTicks ?? 0,
++      lastFrameAt: this.lastFrameAt ?? 0,
++      queued: this.animationFrameId !== void 0,
++      paused: !!this.isPaused,
++      open: !!this.isOpen,
++      disposed: !!this.isDisposed,
++      frameErrors: this.frameErrors ?? 0,
++      lastFrameError: this.lastFrameError
++    };
 +  }
 +  /**
 +   * PHASR PATCH: DEC mode 2026 (synchronized output).
@@ -224,19 +265,64 @@ index a4ca427..d22e9f2 100644
 +  }
    /**
     * Start the render loop
++   *
++   * PHASR PATCH: three changes, all of them about the loop being the ONLY
++   * thing that ever paints. `write()` does not schedule a frame; it relies
++   * on this chain running forever. So every way the chain can end is a
++   * terminal that goes permanently blind while still accepting input.
++   *
++   *  1. `animationFrameId` is cleared on frame ENTRY, so it means "a frame
++   *     is queued" rather than "a frame was queued at some point". That is
++   *     what makes it safe for this function to be idempotent, and what
++   *     lets `getRenderStats()` tell the truth.
++   *  2. Idempotent: re-entry used to fork a second self-perpetuating chain
++   *     that `pause()` could not cancel, because it only remembers one id.
++   *  3. The body is wrapped. One throw — a canvas op failing after the GPU
++   *     process restarts, a grid freed underneath the renderer — used to
++   *     end the loop for good, since the re-queue is the last statement
++   *     and never ran. Measured: a single synthetic failure inside
++   *     `fillText` froze the terminal permanently, and no click, focus or
++   *     visibility change brought it back.
     */
    startRenderLoop() {
++    if (this.isDisposed || !this.isOpen || this.isPaused || this.animationFrameId !== void 0)
++      return;
      const A = () => {
 -      if (!this.isDisposed && this.isOpen) {
-+      if (!this.isDisposed && this.isOpen && !this.isPaused) {
-+        if (this.isFrameSynchronized()) {
-+          this.animationFrameId = requestAnimationFrame(A);
-+          return;
+-        this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
+-        const B = this.wasmTerm.getCursor();
+-        B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire()), this.animationFrameId = requestAnimationFrame(A);
++      this.animationFrameId = void 0;
++      if (this.isDisposed || !this.isOpen || this.isPaused)
++        return;
++      this.renderTicks = (this.renderTicks ?? 0) + 1, this.lastFrameAt = performance.now();
++      try {
++        if (!this.isFrameSynchronized()) {
++          this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
++          const B = this.wasmTerm.getCursor();
++          B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire());
 +        }
-         this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
-         const B = this.wasmTerm.getCursor();
-         B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire()), this.animationFrameId = requestAnimationFrame(A);
-@@ -2664,7 +2776,7 @@ class IA {
++      } catch (B) {
++        // Kept, not swallowed. The host reads these off `getRenderStats()`
++        // and reports them: Sentry's browserApiErrors integration wraps
++        // requestAnimationFrame, so before this catch existed a render
++        // failure reached Sentry on its own — and a fix that keeps the
++        // terminal alive by making its errors invisible is a worse bug
++        // than the one it fixes.
++        this.frameErrors = (this.frameErrors ?? 0) + 1, this.lastFrameError = B;
++        // Rate-limited: a renderer that fails every frame must not turn a
++        // blank terminal into a hung one by way of the console.
++        const g = this.lastFrameErrorLoggedAt ?? 0;
++        this.lastFrameAt - g > 2e3 && (this.lastFrameErrorLoggedAt = this.lastFrameAt, console.error("[ghostty-web] render frame failed; the loop continues", B));
+       }
++      this.animationFrameId = requestAnimationFrame(A);
+     };
+-    A();
++    this.animationFrameId = requestAnimationFrame(A);
+   }
+   /**
+    * Get a line from native WASM scrollback buffer
+@@ -2664,7 +2872,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -246,7 +332,7 @@ index a4ca427..d22e9f2 100644
    /**
     * Assert terminal is open (throw if not)
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..bfb9006fda7bd17e73f7b17f9eb5679a6951c95e 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..4d88f86c1f4b2ae2dde690864c325a307c87499f 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -903,7 +903,9 @@ export declare interface ITheme {
@@ -259,16 +345,21 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..bfb9006fda7bd17e73f7b17f9eb5679a
      selectionForeground?: string;
      black?: string;
      red?: string;
-@@ -1497,6 +1499,8 @@ export declare class Terminal implements ITerminalCore {
+@@ -1497,6 +1499,13 @@ export declare class Terminal implements ITerminalCore {
      private isOpen;
      private isDisposed;
      private animationFrameId?;
 +    private isPaused?;
 +    private syncFrameDeadline?;
++    private renderTicks?;
++    private lastFrameAt?;
++    private lastFrameErrorLoggedAt?;
++    private frameErrors?;
++    private lastFrameError?;
      private addons;
      private customKeyEventHandler?;
      private currentTitle;
-@@ -1686,6 +1690,19 @@ export declare class Terminal implements ITerminalCore {
+@@ -1686,6 +1695,36 @@ export declare class Terminal implements ITerminalCore {
       * Dispose terminal and clean up resources
       */
      dispose(): void;
@@ -285,6 +376,23 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..bfb9006fda7bd17e73f7b17f9eb5679a
 +     * 150 ms timeout). The render loop skips painting while it is.
 +     */
 +    isFrameSynchronized(): boolean;
++    /**
++     * Render-loop liveness. Only the MOVEMENT of `ticks` is meaningful;
++     * `queued` is necessary but not sufficient (a suspended web view keeps
++     * a frame queued and never delivers it).
++     */
++    getRenderStats(): {
++        ticks: number;
++        lastFrameAt: number;
++        queued: boolean;
++        paused: boolean;
++        open: boolean;
++        disposed: boolean;
++        /** Frames whose render threw. The loop survives them; the host
++         *  reports them. */
++        frameErrors: number;
++        lastFrameError: unknown;
++    };
      /**
       * Start the render loop
       */
