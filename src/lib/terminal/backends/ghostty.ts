@@ -500,13 +500,13 @@ export class GhosttySurface implements TerminalSurface {
       case "none":
         // A width change that came back before it settled — an open/close
         // faster than the debounce costs nothing at all.
-        this.cancelRebuild();
+        this.cancelWidthRebuild();
         return;
       case "resize":
         // Rows only. Nothing rewraps, so nothing drifts; and any rebuild
         // that was pending is moot, because the width it was scheduled for
         // is the width the grid already has.
-        this.cancelRebuild();
+        this.cancelWidthRebuild();
         this.fit();
         return;
       case "rebuild":
@@ -526,6 +526,29 @@ export class GhosttySurface implements TerminalSurface {
     if (this.rebuildTimer === null) return;
     window.clearTimeout(this.rebuildTimer);
     this.rebuildTimer = null;
+  }
+
+  /**
+   * Drop a rebuild that only existed to adopt a WIDTH — but never one that
+   * `applySettings` scheduled to adopt a changed config (`scrollback`).
+   *
+   * The two arrive on the same timer, and only the width one is made moot
+   * by the grid already fitting. A config rebuild is not about width at
+   * all, and nothing re-arms it: cancelling it here left
+   * `pendingConfigRebuild` stuck true and the new limit never applied.
+   *
+   * That is the common case, not a corner: the scrollback control changes
+   * scrollback and nothing else, so the settings write is followed by a
+   * `fitAnchored()` that plans `none` (or `resize`, if a font change moved
+   * the rows) and swallowed the rebuild. It only ever appeared to work
+   * because a font-size change that also moved the COLUMN count re-armed
+   * the timer through the `rebuild` branch — which is exactly what the
+   * Chromium spec did, and why the same spec failed under WebKit, where
+   * the same font step happened not to change the column count.
+   */
+  private cancelWidthRebuild(): void {
+    if (this.pendingConfigRebuild) return;
+    this.cancelRebuild();
   }
 
   /** The container stopped moving. Apply what it settled on. */
