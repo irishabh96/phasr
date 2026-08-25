@@ -1769,3 +1769,19 @@ detached worktree at the base commit, on its own port. They are `page.goto:
 Frame load interrupted` navigation races in WebKit (the app redirects `/` to the
 last workspace under the test's own `goto`), they touch no terminal, and the set
 varies run to run. Pre-existing, and not this change's to fix.
+
+## 2026-08-25 — Q2 answered at the dispatch level
+
+`scripts/wkwebview-q2-probe.swift`: a real WKWebView in a key window,
+ghostty-web's exact focus shape, phasr's rung-1 listeners, `copy:`/`paste:`
+sent down the responder chain. With a **collapsed** DOM selection —
+`queryCommandEnabled("copy")` false, the state the canvas terminal is
+always in — the DOM `copy` event still fires, rung 1's `setData` lands on
+the pasteboard, and `paste:` delivers exactly once. The mirror (rung 2)
+also works but is unnecessary; it stays off by default as the escape
+hatch. Two findings worth keeping: WebKit's action dispatch is not gated
+by `queryCommandEnabled`, and the mirror's `select()` moves focus to the
+hidden textarea (harmless — key events bubble to the container — but
+worth knowing before ever enabling it by default). Remaining delta to the
+shipped app: wry's `WKWebViewConfiguration`, covered by the 2-minute
+check in `docs/MANUAL-VERIFICATION.md`.
