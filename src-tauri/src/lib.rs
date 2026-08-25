@@ -9,7 +9,8 @@ mod git;
 mod launcher;
 mod localfs;
 mod orchestrator;
-/// Benchmark harness for docs/PERF-TERMINAL-BENCHMARKS.md. Test-only.
+/// Terminal-path benchmark harness; see docs/adr/ADR-002-terminal-engine.md.
+/// Test-only.
 #[cfg(test)]
 mod perfbench;
 /// Multi-agent load harness. Test-only, and gated on PHASR_LOAD=1.

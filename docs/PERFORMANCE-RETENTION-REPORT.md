@@ -24,7 +24,7 @@ Every finding below is tagged with **Impact × Effort** so quick wins are separa
 
 ## Executive summary
 
-phasr's architecture is fundamentally sound — WAL SQLite with a pool, an fs-watcher instead of status polling, per-PTY blocking threads, route-level code splitting that already works, the previous engine writes that batch on rAF, and Zustand selectors used correctly. The problems are concentrated in a few places that happen to line up exactly with the app's heaviest real-world moment: **an AI agent actively rewriting a large worktree.**
+phasr's architecture is fundamentally sound — WAL SQLite with a pool, an fs-watcher instead of status polling, per-PTY blocking threads, route-level code splitting that already works, terminal writes that batch on rAF, and Zustand selectors used correctly. The problems are concentrated in a few places that happen to line up exactly with the app's heaviest real-world moment: **an AI agent actively rewriting a large worktree.**
 
 The single highest-leverage cluster is the **Changes/diff pipeline (GIT-B2 and its neighbors).** When the Changes panel is open, phasr fetches the *full raw diff of every changed file* over IPC — even for collapsed cards — parses each on the React main thread, highlights up to ~40 eagerly, and then **re-does all of it on every filesystem tick** while the agent writes. Because `useGitStatus` is mounted three times for the same workspace, that storm is amplified 3×; because git shell-outs run **blocking on the Tokio runtime with no `spawn_blocking`**, a burst of them can stall the whole IPC layer (including terminal input); and because the fs-watcher is **recursive and gitignore-unaware**, an agent running `npm install`, a build, or a test loop fires the whole cascade continuously off `node_modules/`/`target/`/build output. Each `git_diff` is itself **two** subprocesses per file, so a 60-file change is ~120 blocking git spawns. This is an O(changed-files) cost repeated at multiple Hz during the exact workload phasr exists to serve.
 
@@ -155,13 +155,13 @@ This is the biggest lever and the most-confirmed. Four defects compound in the s
 - **Fix:** Add `build: { target: 'es2022', sourcemap: true, chunkSizeWarningLimit: 1000, rollupOptions: { output: { manualChunks: … } } }`.
 - **Impact × Effort: Med × S.**
 
-> Route/the previous engine chunking is **already handled** by `TanStackRouterVite({ autoCodeSplitting: true })` — the previous engine sits in the workspace-route chunk, not first paint, and no devtools leak into prod. No action.
+> Route/terminal chunking is **already handled** by `TanStackRouterVite({ autoCodeSplitting: true })` — the terminal sits in the workspace-route chunk, not first paint, and no devtools leak into prod. No action.
 
 ---
 
 ## D. Terminal & long-session stability
 
-The terminal hot path is well built: the previous engine buffers `term.write` and flushes on rAF, PTY input routes straight to `sendInputToTask` with **no React state per keystroke**, and each PTY runs on a dedicated blocking thread with a 128 KB replay buffer. Two long-session risks remain.
+The terminal hot path is well built: the emulator buffers `term.write` and flushes on rAF, PTY input routes straight to `sendInputToTask` with **no React state per keystroke**, and each PTY runs on a dedicated blocking thread with a 128 KB replay buffer. Two long-session risks remain.
 
 ### D1. Unbounded terminal + GPU context accumulation across workspace switches
 
@@ -175,10 +175,10 @@ The terminal hot path is well built: the previous engine buffers `term.write` an
 - **Impact × Effort: Med-High × M.**
 
 ### D3. PTY output is one IPC/Channel message per 4 KB read, and lag silently drops chunks
-- **Problem:** The PTY pump reads 4096-byte chunks and emits one `PtyEvent::Output` per read, each relayed straight to the Tauri `Channel` — a chatty agent or `cat bigfile` floods small IPC messages with no coalescing. The broadcast channel is bounded at 2048 and `RecvError::Lagged` is treated as `continue` (skipped), so a burst while a consumer is briefly behind leaves **gaps in the terminal** (corrupted the previous engine state); the replay buffer is only 128 KB.
+- **Problem:** The PTY pump reads 4096-byte chunks and emits one `PtyEvent::Output` per read, each relayed straight to the Tauri `Channel` — a chatty agent or `cat bigfile` floods small IPC messages with no coalescing. The broadcast channel is bounded at 2048 and `RecvError::Lagged` is treated as `continue` (skipped), so a burst while a consumer is briefly behind leaves **gaps in the terminal** (corrupted emulator state); the replay buffer is only 128 KB.
 - **Where:** `src-tauri/src/pty/handle.rs:13` (128 KB replay), `:178` (2048 cap), `:323,344-368` (per-4 KB emit); `commands/orchestrator.rs:104-127` (forwarder), `:122` + `orchestrator/service.rs:489` (Lagged → continue).
 - **Impact (Med):** IPC overhead under heavy output, and rare but real terminal corruption on lag.
-- **Fix:** Coalesce output on a short timer (flush accumulated bytes every ~8–16 ms or at 16–32 KB) — this also smooths the previous engine rendering; on `Lagged`, backfill from the on-disk `<task>.log` (the pump always writes it) or surface an "output truncated" marker.
+- **Fix:** Coalesce output on a short timer (flush accumulated bytes every ~8–16 ms or at 16–32 KB) — this also smooths terminal rendering; on `Lagged`, backfill from the on-disk `<task>.log` (the pump always writes it) or surface an "output truncated" marker.
 - **Impact × Effort: Med × S.**
 
 ### D2. `refit` is not debounced
@@ -352,8 +352,8 @@ Confirm the hotspots with real numbers before/after each change:
 ## What's already good (don't touch)
 
 - **fs-watcher instead of status polling** — the *mechanism* is right (debounced 300 ms, per-workspace, stopped on navigate-away). It just needs scoping + coalescing (A8) and single-mounting (A4) to stop amplifying the diff storm; keep the fs-watcher approach, fix its blast radius.
-- **Route-level code splitting** via TanStack Router `autoCodeSplitting` — works; the previous engine and heavy routes are off first paint. No action.
-- **Terminal hot path** — the previous engine rAF-batched writes, PTY input with no per-keystroke React state, dedicated blocking thread per PTY, listeners/observers cleaned up on unmount. (Caveats: the WebGL context accumulation in D1 and the output-coalescing/lag-drop in D3 are the two things to fix; the write path itself is fine.)
+- **Route-level code splitting** via TanStack Router `autoCodeSplitting` — works; the terminal and heavy routes are off first paint. No action.
+- **Terminal hot path** — rAF-batched emulator writes, PTY input with no per-keystroke React state, dedicated blocking thread per PTY, listeners/observers cleaned up on unmount. (Caveats: the WebGL context accumulation in D1 and the output-coalescing/lag-drop in D3 are the two things to fix; the write path itself is fine.)
 - **Zustand discipline** — one store but consumers use field selectors returning primitives/stable slices; not a re-render source.
 - **React Query config** — `staleTime: 30s`, `refetchOnWindowFocus: false`, immutable data cached `Infinity`, stable structured query keys.
 - **SQLite** — WAL, `synchronous=NORMAL`, foreign keys, pooled, migrations at init (add `busy_timeout`, E3).
