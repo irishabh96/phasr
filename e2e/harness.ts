@@ -412,10 +412,6 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
  * terminal that fails to construct leaves the mount empty rather than
  * throwing, and every terminal spec below is meaningless if that happens.
  */
-export interface BootOptions {
-  /** Reserved for the next engine swap; nothing reads it today. */
-  backend?: never;
-}
 
 export async function bootApp(page: Page, fixtures = makeFixtures()) {
   const errors: string[] = [];
