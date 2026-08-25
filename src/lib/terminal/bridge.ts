@@ -59,6 +59,18 @@ export interface TerminalBridge {
    * checks the oracle itself with a positive control.
    */
   repaint(id: string): void;
+  /**
+   * The render loop's frame counter, or `null` when this surface is not
+   * supposed to be painting (parked, still loading). Mirrors
+   * `TerminalSurface.renderTick`.
+   *
+   * Counting `fillText` calls — the only other way a spec can see paints —
+   * cannot tell WHICH terminal painted, so it cannot express "the parked
+   * one stayed quiet while the visible one did not". That distinction is
+   * the whole contract of `setActive`, and the watchdog in `liveness.ts`
+   * must not quietly break it by resuming terminals the app paused.
+   */
+  renderTick(id: string): number | null;
 }
 
 declare global {
@@ -87,6 +99,7 @@ function bridge(): TerminalBridge {
     backend: (id) => live.get(id)?.kind ?? null,
     dropPaths: (paths, x, y) => routeDroppedPaths(paths, { x, y }),
     repaint: (id) => live.get(id)?.repaint(),
+    renderTick: (id) => live.get(id)?.renderTick() ?? null,
   };
 }
 
