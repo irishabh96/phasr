@@ -1,0 +1,747 @@
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:/private/tmp/claude-501/-Users-rishabh-code-phasr/6929b4de-ecf1-47a1-920c-7f4e7b56027f/scratchpad]1;..7f/scratchpad]7;file://Rishabhs-MacBook-Pro.local/private/tmp/claude-501/-Users-rishabh-code-phasr/6929b4de-ecf1-47a1-920c-7f4e7b56027f/scratchpad\[0m[27m[24m[J
+[1;36m-Users-rishabh-code-phasr/6929b4de-ecf1-47a1-920c-7f4e7b56027f/scratchpad[0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mvia [1;33m🐍 [0m[1;33m[0m[1;33mv3.14.6[0m[1;33m [0mvia [1;38;5;202m🐦 [0m[1;38;5;202mv6.3.3[0m[1;38;5;202m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004heexport GIT_PAGER=cat PAGER=cat LESS=[36D[33me[33mx[33mp[33mo[33mr[33mt[39m[30C[?1l>[?2004l
+]2;export GIT_PAGER=cat PAGER=cat LESS= ]1;export[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:/private/tmp/claude-501/-Users-rishabh-code-phasr/6929b4de-ecf1-47a1-920c-7f4e7b56027f/scratchpad]1;..7f/scratchpad]7;file://Rishabhs-MacBook-Pro.local/private/tmp/claude-501/-Users-rishabh-code-phasr/6929b4de-ecf1-47a1-920c-7f4e7b56027f/scratchpad\[0m[27m[24m[J
+[1;36m-Users-rishabh-code-phasr/6929b4de-ecf1-47a1-920c-7f4e7b56027f/scratchpad[0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mvia [1;33m🐍 [0m[1;33m[0m[1;33mv3.14.6[0m[1;33m [0mvia [1;38;5;202m🐦 [0m[1;38;5;202mv6.3.3[0m[1;38;5;202m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hccd /Users/rishabh/code/phasr[28D[32mc[32md[39m [4m/[4mU[4ms[4me[4mr[4ms[4m/[4mr[4mi[4ms[4mh[4ma[4mb[4mh[4m/[4mc[4mo[4md[4me[4m/[4mp[4mh[4ma[4ms[4mr[24m[?1l>[?2004l
+]2;cd /Users/rishabh/code/phasr]1;cd[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hlls -G -la src/lib/terminal[26D[32ml[32ms[39m[8C[4ms[4mr[4mc[4m/[4ml[4mi[4mb[4m/[4mt[4me[4mr[4mm[4mi[4mn[4ma[4ml[24m[?1l>[?2004l
+]2;ls -G -G -la src/lib/terminal]1;lstotal 368
+drwxr-xr-x@ 32 rishabh  staff  1024 Aug 25 11:23 [1m[36m.[39;49m[0m
+drwxr-xr-x@ 42 rishabh  staff  1344 Aug 15 02:26 [1m[36m..[39;49m[0m
+drwxr-xr-x@  4 rishabh  staff   128 Aug 21 22:32 [1m[36mbackends[39;49m[0m
+-rw-r--r--@  1 rishabh  staff  4350 Aug 21 03:06 bridge.ts
+-rw-r--r--@  1 rishabh  staff  5538 Aug 20 01:26 cache.test.ts
+-rw-r--r--@  1 rishabh  staff  7938 Aug 20 20:16 cache.ts
+-rw-r--r--@  1 rishabh  staff  4449 Aug 21 02:36 diagnostics.test.ts
+-rw-r--r--@  1 rishabh  staff  7629 Aug 21 02:34 diagnostics.ts
+-rw-r--r--@  1 rishabh  staff  2070 Aug 20 22:20 drop.ts
+-rw-r--r--@  1 rishabh  staff  2261 Aug 20 22:19 factory.ts
+-rw-r--r--@  1 rishabh  staff  1351 Aug 15 01:09 fontSize.test.ts
+-rw-r--r--@  1 rishabh  staff  1068 Aug 20 01:32 fontSize.ts
+-rw-r--r--@  1 rishabh  staff  2602 Aug 21 01:45 graphemeTail.test.ts
+-rw-r--r--@  1 rishabh  staff  4605 Aug 21 01:45 graphemeTail.ts
+-rw-r--r--@  1 rishabh  staff  4639 Aug 20 01:33 keymap.test.ts
+-rw-r--r--@  1 rishabh  staff  4107 Aug 20 01:33 keymap.ts
+-rw-r--r--@  1 rishabh  staff  4485 Aug  6 02:39 links.test.ts
+-rw-r--r--@  1 rishabh  staff  6534 Aug 20 02:00 links.ts
+-rw-r--r--@  1 rishabh  staff  6294 Aug 15 01:09 options.test.ts
+-rw-r--r--@  1 rishabh  staff  5334 Aug 20 02:00 options.ts
+-rw-r--r--@  1 rishabh  staff  3394 Aug 21 21:43 reflow.test.ts
+-rw-r--r--@  1 rishabh  staff  4428 Aug 21 21:40 reflow.ts
+-rw-r--r--@  1 rishabh  staff  1644 Aug 20 22:19 registry.ts
+-rw-r--r--@  1 rishabh  staff  3575 Aug 21 21:43 replayLog.test.ts
+-rw-r--r--@  1 rishabh  staff  4524 Aug 21 21:40 replayLog.ts
+-rw-r--r--@  1 rishabh  staff  4882 Aug 20 14:04 selection.test.ts
+-rw-r--r--@  1 rishabh  staff  4000 Aug 20 14:01 selection.ts
+-rw-r--r--@  1 rishabh  staff  2483 Aug 21 00:09 settle.ts
+-rw-r--r--@  1 rishabh  staff  7164 Aug 21 21:31 surface.ts
+-rw-r--r--@  1 rishabh  staff  2103 Aug 20 02:00 theme.test.ts
+-rw-r--r--@  1 rishabh  staff  2166 Aug 20 14:00 theme.ts
+-rw-r--r--@  1 rishabh  staff  5072 Aug 21 02:35 themeTokens.test.ts
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit log --oneline -40[21D[32mg[32mi[32mt[39m[18C[?1l>[?2004l
+]2;git log --oneline -40]1;git[33m74bd9a3[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mphasr/ghostty-terminal-engine[m[33m)[m fix(terminal): stop the rebuild crashing the grid it just built
+[33m2bbf69b[m fix(terminal): stop reflowing the grid, rebuild it at the new width
+[33mdbbdd63[m test(terminal): pin where a reflow leaves the content, not just its colour
+[33m5001651[m fix(terminal): guard the theme tokens the WASM palette is built from
+[33m626f934[m feat(terminal): field diagnostics for a misrender in a packaged build
+[33m33cb99d[m fix(bundle): drop the DMG licence agreement, keep the notices
+[33ma4b09dd[m fix(terminal): never paint a grapheme cluster half-applied
+[33m99b2ebc[m fix(terminal): spawn the PTY at the settled grid, not the pre-layout one
+[33me0da9b6[m fix(pty): stop delivering a chunk in the replay AND live
+[33mb310f8c[m fix(terminal): one long frame no longer disables synchronized output
+[33m36434f8[m fix(terminal): spawn every PTY at the real grid, not 80x24
+[33m698c095[m docs(release): 0.4.0 plan, and answer ADR-002 Q1's mechanism on WKWebView
+[33m888852a[m test(e2e): make the selection spec engine-agnostic, and stop lying about WebKit
+[33me43b550[m fix(bundle): ship the third-party licence notices inside the app
+[33maf5070c[m test(store): prove every shipped 0.3.x database opens under this build
+[33m1b726e4[m fix(terminal): drop a file on a terminal and get its path
+[33m56e4a75[m test(load): multi-agent load harness, ramped against real agents
+[33m6ea5411[m fix(sidebar): stop clipping descenders in workspace name and branch
+[33m52de98e[m fix(terminal): give the revealed terminal the keyboard on a tab switch
+[33m4e93fd9[m feat(terminal): cursor settings, and word/line click selection
+[33me1eec6f[m feat(terminal): replace the terminal engine with ghostty-web
+[33m3218ef1[m refactor(sidebar): remove workspace status dots
+[33m917a43c[m[33m ([m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mphasr/what-are-you[m[33m, [m[1;32mphasr/hello-testing[m[33m, [m[1;32mphasr/hello-2[m[33m, [m[1;32mphasr/hello[m[33m, [m[1;32mmaster[m[33m)[m Merge pull request #31 from irishabh96/phasr/0.3.5-plus-base-branch
+[33m592328b[m Merge pull request #32 from irishabh96/phasr/font-size
+[33m4b7fa37[m[33m ([m[1;31morigin/phasr/font-size[m[33m, [m[1;32mphasr/font-size[m[33m)[m feat(terminal): ⌘+ / ⌘− / ⌘0 resize every terminal
+[33m4b0ebb9[m[33m ([m[1;31morigin/phasr/0.3.5-plus-base-branch[m[33m, [m[1;32mphasr/0.3.5-plus-base-branch[m[33m)[m fix(perf): stop Session Replay measuring every icon
+[33m82695bb[m fix(store): carry migration 0014 so 0.3.5 can open a 0.3.7 database
+[33m4932256[m chore: ignore a repo-local pnpm store
+[33mcc7943c[m[33m ([m[1;33mtag: [m[1;33mv0.3.7[m[33m, [m[1;31morigin/phasr/fix-version-0-3-6[m[33m)[m chore(release): bump version to 0.3.7
+[33m6120b79[m chore(release): bump version to 0.3.7-beta.1
+[33m7f2c485[m perf(terminal): scrolling stops wiping the glyph atlas, and glides
+[33m6be3723[m fix(sync): recovery becomes coherent — hardware machine id, revive-on-readd, tombstone guards, daily backups
+[33m7f21af6[m perf(ui): the running-dot ripple moves to the compositor
+[33ma7585eb[m[33m ([m[1;33mtag: [m[1;33mv0.3.6[m[33m, [m[1;32mphasr/log-printing-bug[m[33m, [m[1;32mphasr/log-issues[m[33m)[m fix(store): the .sqlite file is now actually a database
+[33mb1d63cc[m chore(release): bump version to 0.3.6
+[33m837fe65[m[33m ([m[1;32mphasr/new-task-modal-fix[m[33m)[m fix(ui): one dismissable-layer, one Escape
+[33m83bba42[m feat(tasks): base branch becomes a combobox
+[33me50310c[m[33m ([m[1;33mtag: [m[1;33mv0.3.5[m[33m, [m[1;32mphasr/convert-notes-to-todo[m[33m)[m redesign(notes): one door to the composer
+[33m6b1a2b6[m chore: untrack aidb dev-tooling artifacts (.ai/, *.seg)
+[33md3c5a8b[m chore(release): bump version to 0.3.5
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit status[10D[32mg[32mi[32mt[39m[7C[?1l>[?2004l
+]2;git status]1;gitOn branch phasr/ghostty-terminal-engine
+nothing to commit, working tree clean
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hpprintf 'a line with no trailing newline'[40D[32mp[32mr[32mi[32mn[32mt[32mf[39m [33m'[33ma[33m [33ml[33mi[33mn[33me[33m [33mw[33mi[33mt[33mh[33m [33mn[33mo[33m [33mt[33mr[33ma[33mi[33ml[33mi[33mn[33mg[33m [33mn[33me[33mw[33ml[33mi[33mn[33me[33m'[39m[?1l>[?2004l
+]2;printf 'a line with no trailing newline']1;printfa line with no trailing newline[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hlls -G src src-tauri e2e docs[28D[32ml[32ms[39m[4C[4ms[4mr[4mc[24m [4ms[4mr[4mc[4m-[4mt[4ma[4mu[4mr[4mi[24m [4me[4m2[4me[24m [4md[4mo[4mc[4ms[24m[?1l>[?2004l
+]2;ls -G -G src src-tauri e2e docs]1;lsdocs:
+[1m[36madr[39;49m[0m                                   MANUAL-VERIFICATION.md                REORGANIZATION-SUMMARY.md
+[1m[36magent-outputs[39;49m[0m                         [1m[36monboarding[39;49m[0m                            REPOSITORY-REORGANIZATION-PLAN.md
+[1m[36marchive[39;49m[0m                               [1m[36mpatterns[39;49m[0m                              [1m[36mscreenshots[39;49m[0m
+[1m[36mci-cd[39;49m[0m                                 PERFORMANCE-RETENTION-REPORT.md       [1m[36msecurity[39;49m[0m
+[1m[36mdatabase[39;49m[0m                              [1m[36mrelease[39;49m[0m                               [1m[36msop[39;49m[0m
+[1m[36mdesign[39;49m[0m                                RELEASE-0.4.0.md                      [1m[36mteam[39;49m[0m
+[1m[36mguides[39;49m[0m                                [1m[36mreleases[39;49m[0m                              [1m[36mtemplates[39;49m[0m
+HARNESS_MANIFEST_SCHEMA.md            REORGANIZATION-EXECUTION-SUMMARY.md   [1m[36mwhitepapers[39;49m[0m
+HARNESS_SYNC_GUIDE.md                 REORGANIZATION-PLAN-UPDATE-SUMMARY.md [1m[36mworkflow[39;49m[0m
+
+e2e:
+app.smoke.spec.ts               perf-probe.spec.ts              terminal-open.spec.ts
+base-branch.spec.ts             scroll-probe.spec.ts            terminal-phase0.spec.ts
+design.spec.ts                  terminal-drop.spec.ts           terminal-reflow-anchor.spec.ts
+forms.spec.ts                   terminal-focus.spec.ts          terminal-selection.spec.ts
+harness.ts                      terminal-grapheme-split.spec.ts terminal-sync.spec.ts
+notes-todo.spec.ts              terminal-keymap.spec.ts         terminal-theme.spec.ts
+notes.spec.ts                   terminal-links.spec.ts          terminal-wheel.spec.ts
+ops.spec.ts                     terminal-lru.spec.ts
+
+src:
+[1m[36mcomponents[39;49m[0m       [1m[36mlib[39;49m[0m              [1m[36mroutes[39;49m[0m           [1m[36mtest[39;49m[0m
+index.css        main.tsx         routeTree.gen.ts vite-env.d.ts
+
+src-tauri:
+[1m[36mbinaries[39;49m[0m        [1m[36mcapabilities[39;49m[0m    Cargo.toml      [1m[36micons[39;49m[0m           [1m[36msrc[39;49m[0m             tauri.conf.json
+build.rs        Cargo.lock      [1m[36mgen[39;49m[0m             [1m[36mmigrations[39;49m[0m      [1m[36mtarget[39;49m[0m          [1m[36mtests[39;49m[0m
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit diff --stat HEAD~5[22D[32mg[32mi[32mt[39m[19C[?1l>[?2004l
+]2;git diff --stat HEAD~5]1;git docs/adr/ADR-002-terminal-engine.md   | 491 [32m++++++++++++++++++++++++++++++++++++++++++[m
+ e2e/terminal-reflow-anchor.spec.ts    | 864 [32m++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++[m
+ src/components/RunCommandTerminal.tsx |  11 [32m+[m[31m-[m
+ src/components/SessionTerminalTab.tsx |   7 [32m+[m[31m-[m
+ src/components/Terminal.tsx           |  14 [32m+[m[31m-[m
+ src/lib/terminal/backends/ghostty.ts  | 386 [32m+++++++++++++++++++++++++++++++[m[31m--[m
+ src/lib/terminal/bridge.ts            |   8 [32m+[m
+ src/lib/terminal/diagnostics.test.ts  | 133 [32m++++++++++++[m
+ src/lib/terminal/diagnostics.ts       | 214 [32m+++++++++++++++++++[m
+ src/lib/terminal/reflow.test.ts       |  97 [32m+++++++++[m
+ src/lib/terminal/reflow.ts            | 115 [32m++++++++++[m
+ src/lib/terminal/replayLog.test.ts    | 105 [32m+++++++++[m
+ src/lib/terminal/replayLog.ts         | 118 [32m++++++++++[m
+ src/lib/terminal/surface.ts           |  37 [32m++++[m
+ src/lib/terminal/themeTokens.test.ts  | 112 [32m++++++++++[m
+ 15 files changed, 2682 insertions(+), 30 deletions(-)
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hcclear[32mc[32ml[32me[32ma[32mr[39m[?1l>[?2004l
+]2;clear]1;clear[3J[H[2J[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004heecho "after the clear"[22D[32me[32mc[32mh[32mo[39m [33m"[33ma[33mf[33mt[33me[33mr[33m [33mt[33mh[33me[33m [33mc[33ml[33me[33ma[33mr[33m"[39m[?1l>[?2004l
+]2;echo "after the clear"]1;echoafter the clear
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit log --graph --oneline --decorate -30[40D[32mg[32mi[32mt[39m[37C[?1l>[?2004l
+]2;git log --graph --oneline --decorate -30]1;git* [33m74bd9a3[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mphasr/ghostty-terminal-engine[m[33m)[m fix(terminal): stop the rebuild crashing the grid it just built
+* [33m2bbf69b[m fix(terminal): stop reflowing the grid, rebuild it at the new width
+* [33mdbbdd63[m test(terminal): pin where a reflow leaves the content, not just its colour
+* [33m5001651[m fix(terminal): guard the theme tokens the WASM palette is built from
+* [33m626f934[m feat(terminal): field diagnostics for a misrender in a packaged build
+* [33m33cb99d[m fix(bundle): drop the DMG licence agreement, keep the notices
+* [33ma4b09dd[m fix(terminal): never paint a grapheme cluster half-applied
+* [33m99b2ebc[m fix(terminal): spawn the PTY at the settled grid, not the pre-layout one
+* [33me0da9b6[m fix(pty): stop delivering a chunk in the replay AND live
+* [33mb310f8c[m fix(terminal): one long frame no longer disables synchronized output
+* [33m36434f8[m fix(terminal): spawn every PTY at the real grid, not 80x24
+* [33m698c095[m docs(release): 0.4.0 plan, and answer ADR-002 Q1's mechanism on WKWebView
+* [33m888852a[m test(e2e): make the selection spec engine-agnostic, and stop lying about WebKit
+* [33me43b550[m fix(bundle): ship the third-party licence notices inside the app
+* [33maf5070c[m test(store): prove every shipped 0.3.x database opens under this build
+* [33m1b726e4[m fix(terminal): drop a file on a terminal and get its path
+* [33m56e4a75[m test(load): multi-agent load harness, ramped against real agents
+* [33m6ea5411[m fix(sidebar): stop clipping descenders in workspace name and branch
+* [33m52de98e[m fix(terminal): give the revealed terminal the keyboard on a tab switch
+* [33m4e93fd9[m feat(terminal): cursor settings, and word/line click selection
+* [33me1eec6f[m feat(terminal): replace the terminal engine with ghostty-web
+* [33m3218ef1[m refactor(sidebar): remove workspace status dots
+*   [33m917a43c[m[33m ([m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mphasr/what-are-you[m[33m, [m[1;32mphasr/hello-testing[m[33m, [m[1;32mphasr/hello-2[m[33m, [m[1;32mphasr/hello[m[33m, [m[1;32mmaster[m[33m)[m Merge pull request #31 from irishabh96/phasr/0.3.5-plus-base-branch
+[32m|[m[33m\[m  
+[32m|[m * [33m4b0ebb9[m[33m ([m[1;31morigin/phasr/0.3.5-plus-base-branch[m[33m, [m[1;32mphasr/0.3.5-plus-base-branch[m[33m)[m fix(perf): stop Session Replay measuring every icon
+[32m|[m * [33m82695bb[m fix(store): carry migration 0014 so 0.3.5 can open a 0.3.7 database
+[32m|[m * [33m4932256[m chore: ignore a repo-local pnpm store
+* [33m|[m   [33m592328b[m Merge pull request #32 from irishabh96/phasr/font-size
+[34m|[m[35m\[m [33m\[m  
+[34m|[m * [33m|[m [33m4b7fa37[m[33m ([m[1;31morigin/phasr/font-size[m[33m, [m[1;32mphasr/font-size[m[33m)[m feat(terminal): ⌘+ / ⌘− / ⌘0 resize every terminal
+[34m|[m[34m/[m [33m/[m  
+* [33m|[m [33mcc7943c[m[33m ([m[1;33mtag: [m[1;33mv0.3.7[m[33m, [m[1;31morigin/phasr/fix-version-0-3-6[m[33m)[m chore(release): bump version to 0.3.7
+* [33m|[m [33m6120b79[m chore(release): bump version to 0.3.7-beta.1
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hvvim -c 'normal G' -c 'redraw' -c 'sleep 400m' -c 'q' src/lib/terminal/reflow.ts[79D[32mv[32mi[32mm[39m[4C[33m'[33mn[33mo[33mr[33mm[33ma[33ml[33m [33mG[33m'[39m[4C[33m'[33mr[33me[33md[33mr[33ma[33mw[33m'[39m[4C[33m'[33ms[33ml[33me[33me[33mp[33m [33m4[33m0[33m0[33mm[33m'[39m[4C[33m'[33mq[33m'[39m [4ms[4mr[4mc[4m/[4ml[4mi[4mb[4m/[4mt[4me[4mr[4mm[4mi[4mn[4ma[4ml[4m/[4mr[4me[4mf[4ml[4mo[4mw[4m.[4mt[4ms[24m[?1l>[?2004l
+]2;vim -c 'normal G' -c 'redraw' -c 'sleep 400m' -c 'q' ]1;vim[?1049h[>4;2m[?1h=[?2004h[?1004h[1;40r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[40;1H"src/lib/terminal/reflow.ts" 115L, 4428B[1;3HALT_SCREEN_MODE, // alternate screen buffer (+ save/restore cursor)
+  1, // DECCKM —[2;18Happlication cursor keys
+  7, // DECAWM —[3;18Hautowrap
+  9, // X10 mouse reporting
+  12, // att610 —[5;19Hcursor blink
+  25, // DECTCEM —[6;20Hcursor visibility
+  1000, // mouse: button events
+  1002, // mouse: button + drag
+  1003, // mouse: any motion
+  1004, // focus in/out reporting
+  1005, // UTF-8 mouse encoding
+  1006, // SGR mouse encoding
+  1015, // urxvt mouse encoding
+  1016, // SGR pixel mouse encoding
+  2004, // bracketed paste
+];
+
+export function decModeSequence(mode: number, on: boolean): string {
+  return `\x1b[?${mode}${on ? "h" : "l"}`;
+}
+
+/**
+ * The sequence that moves a freshly rebuilt grid from `actual` to
+ * `wanted`, in `RETAINED_DEC_MODES` order. Empty when they already agree,
+ * which is what the common case should produce.
+ */
+export function modeRepairSequence(
+  wanted: ReadonlyMap<number, boolean>,
+  actual: ReadonlyMap<number, boolean>,
+): string {
+  let out = "";
+  for (const mode of RETAINED_DEC_MODES) {
+    if (!wanted.has(mode)) continue;
+    const want = wanted.get(mode)!;
+    if (actual.get(mode) === want) continue;
+    out += decModeSequence(mode, want);
+  }
+  return out;
+}[?25h
+[?2004l[>4;m[23;2t[23;1t[40;1H[K[40;1H[?1004l[?2004l[?1l>[?1049l[>4;m[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit log -p -3 -- src/lib/terminal/reflow.ts[43D[32mg[32mi[32mt[39m[14C[4ms[4mr[4mc[4m/[4ml[4mi[4mb[4m/[4mt[4me[4mr[4mm[4mi[4mn[4ma[4ml[4m/[4mr[4me[4mf[4ml[4mo[4mw[4m.[4mt[4ms[24m[?1l>[?2004l
+]2;git log -p -3 -- src/lib/terminal/reflow.ts]1;git[33mcommit 2bbf69b4059726bfe22818b8b1a08c48303ecd38[m
+Author: Rishabh Bhatia <irishabh96@gmail.com>
+Date:   Fri Aug 21 22:00:23 2026 +0530
+
+    fix(terminal): stop reflowing the grid, rebuild it at the new width
+    
+    A panel toggle changed the terminal's width, and every width round trip
+    converted trailing blank rows below the cursor into leading history rows
+    above it. The content marched down the screen a row or two per toggle and
+    never came back up. `ghostty_terminal_resize` takes no anchor and there is
+    nothing inside it to reach for — so phasr stops calling it on live content.
+    
+    A row change resizes. A width change waits for the container to stop
+    moving and then rebuilds: `reset()` frees the buffer, `resize()` sizes the
+    canvas at the new grid, and the retained output is replayed into it. The
+    rewrap still runs — against an empty grid, where it has nothing to spend.
+    Every user-caused resize goes through the new `fitAnchored()`: panel
+    toggles, window drags, font-size steps. `fit()` stays for the pre-PTY
+    measurement, which must be immediate and has no buffer to lose.
+    
+    Naively skipping the resize was the trap it looks like: the grid keeps its
+    old width and clips every line at the right-hand edge of a pane it no
+    longer fits. So each test asserts the pane fit alongside the position, and
+    `settle()` had to be rewritten — the grid no longer tracks the animation,
+    so "the grid stopped changing" resolved before anything had happened.
+    
+    Both `test.fail()` cases are ordinary assertions now, which is the proof.
+    
+    Also collected, for free: one `resize_task` per gesture instead of the
+    thirteen a 220 ms panel animation used to send, and an open/close faster
+    than the settle costs nothing at all.
+    
+    Two things a fresh grid forgets had to be carried over. DEC modes are read
+    off the old grid and re-asserted where they disagree — a program sets them
+    once at startup, so they are the first thing to age out of a bounded
+    window, and losing them stops bracketed paste bracketing and turns ↑ into
+    the wrong sequence. And the alternate screen is re-entered ahead of the
+    replay when the `?1049h` that entered it is no longer retained, so a TUI's
+    frames are never painted over the user's scrollback.
+    
+    The cost is scrollback older than the 1 MiB retained window, an
+    approximate scroll position, a cleared selection, and ~40 ms once per
+    gesture. Measured, with the alternatives and the evidence, in ADR-002.
+    
+    Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+[1mdiff --git a/src/lib/terminal/reflow.ts b/src/lib/terminal/reflow.ts[m
+[1mnew file mode 100644[m
+[1mindex 0000000..e9802de[m
+[1m--- /dev/null[m
+[1m+++ b/src/lib/terminal/reflow.ts[m
+[36m@@ -0,0 +1,115 @@[m
+[32m+[m[32m/**[m
+[32m+[m[32m * What a terminal does when its container changes size — the policy half[m
+[32m+[m[32m * of the fix for ADR-002's "reflow anchor", kept pure so it can be argued[m
+[32m+[m[32m * with in a unit test instead of in a browser.[m
+[32m+[m[32m *[m
+[32m+[m[32m * The defect: ghostty-web's `ghostty_terminal_resize` takes `(handle,[m
+[32m+[m[32m * cols, rows)` and no anchor, and every width round trip permanently[m
+[32m+[m[32m * converts trailing blank rows below the cursor into leading history rows[m
+[32m+[m[32m * above it. Content marches down the screen a row or two per panel toggle[m
+[32m+[m[32m * and never comes back up.[m
+[32m+[m[32m *[m
+[32m+[m[32m * The policy: **never rewrap live content.** A row-only change is safe and[m
+[32m+[m[32m * is applied immediately; a column change is applied by rebuilding the[m
+[32m+[m[32m * grid at the new width and replaying the retained output into it, so the[m
+[32m+[m[32m * buggy path is never entered with anything in the buffer.[m
+[32m+[m[32m */[m
+[32m+[m
+[32m+[m[32mexport interface Grid {[m
+[32m+[m[32m  cols: number;[m
+[32m+[m[32m  rows: number;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport type ResizePlan =[m
+[32m+[m[32m  /** The grid already matches the container. */[m
+[32m+[m[32m  | "none"[m
+[32m+[m[32m  /**[m
+[32m+[m[32m   * Rows changed, columns did not — nothing rewraps, so nothing can drift.[m
+[32m+[m[32m   * Measured in ADR-002: a rows-only round trip leaves `scrollback`[m
+[32m+[m[32m   * untouched. Applied immediately, which keeps a tab reveal and a[m
+[32m+[m[32m   * vertical-only window resize as snappy as they were.[m
+[32m+[m[32m   */[m
+[32m+[m[32m  | "resize"[m
+[32m+[m[32m  /**[m
+[32m+[m[32m   * The width changed. Rewrapping is the trigger, so the grid is thrown[m
+[32m+[m[32m   * away and rebuilt at the new width instead.[m
+[32m+[m[32m   */[m
+[32m+[m[32m  | "rebuild";[m
+[32m+[m
+[32m+[m[32mexport function planResize(current: Grid, target: Grid): ResizePlan {[m
+[32m+[m[32m  if (target.cols === current.cols) {[m
+[32m+[m[32m    return target.rows === current.rows ? "none" : "resize";[m
+[32m+[m[32m  }[m
+[32m+[m[32m  return "rebuild";[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/** DECSET 1049 — the alternate screen buffer. Named because the rebuild[m
+[32m+[m[32m *  path has to reason about it on its own, not merely repair it: a replay[m
+[32m+[m[32m *  that no longer contains the sequence which entered it has to be told[m
+[32m+[m[32m *  which screen it belongs to. */[m
+[32m+[m[32mexport const ALT_SCREEN_MODE = 1049;[m
+[32m+[m
+[32m+[m[32m/**[m
+[32m+[m[32m * DEC private modes that must survive a rebuild.[m
+[32m+[m[32m *[m
+[32m+[m[32m * A rebuilt grid is a *fresh* terminal: it has forgotten every mode the[m
+[32m+[m[32m * running program switched on. Most of them are re-established by the[m
+[32m+[m[32m * replay — the bytes that set them are in the retained stream — but only[m
+[32m+[m[32m * while those bytes are still inside the budget. A TUI sets its modes once[m
+[32m+[m[32m * at startup and then runs for hours, so on any long-lived terminal they[m
+[32m+[m[32m * are the FIRST thing to fall out of the window, and losing them is not[m
+[32m+[m[32m * cosmetic: bracketed paste stops bracketing, the wheel stops reporting,[m
+[32m+[m[32m * arrow keys start sending the wrong sequence, and the alternate screen[m
+[32m+[m[32m * silently becomes the primary one.[m
+[32m+[m[32m *[m
+[32m+[m[32m * So the modes are read off the old grid and re-asserted on the new one[m
+[32m+[m[32m * whenever they disagree, which makes the replay's own mode bytes a[m
+[32m+[m[32m * bonus rather than a requirement.[m
+[32m+[m[32m *[m
+[32m+[m[32m * 1049 leads the list because entering the alternate screen CLEARS it: any[m
+[32m+[m[32m * repair that followed a screen switch would be applied to a screen the[m
+[32m+[m[32m * user is not looking at. When the replay has already put the terminal in[m
+[32m+[m[32m * the right screen — the common case, and the one that reconstructs the[m
+[32m+[m[32m * primary screen's scrollback underneath as well — 1049 matches and[m
+[32m+[m[32m * nothing is emitted.[m
+[32m+[m[32m */[m
+[32m+[m[32mexport const RETAINED_DEC_MODES: readonly number[] = [[m
+[32m+[m[32m  ALT_SCREEN_MODE, // alternate screen buffer (+ save/restore cursor)[m
+[32m+[m[32m  1, // DECCKM — application cursor keys[m
+[32m+[m[32m  7, // DECAWM — autowrap[m
+[32m+[m[32m  9, // X10 mouse reporting[m
+[32m+[m[32m  12, // att610 — cursor blink[m
+[32m+[m[32m  25, // DECTCEM — cursor visibility[m
+[32m+[m[32m  1000, // mouse: button events[m
+[32m+[m[32m  1002, // mouse: button + drag[m
+[32m+[m[32m  1003, // mouse: any motion[m
+[32m+[m[32m  1004, // focus in/out reporting[m
+[32m+[m[32m  1005, // UTF-8 mouse encoding[m
+[32m+[m[32m  1006, // SGR mouse encoding[m
+[32m+[m[32m  1015, // urxvt mouse encoding[m
+[32m+[m[32m  1016, // SGR pixel mouse encoding[m
+[32m+[m[32m  2004, // bracketed paste[m
+[32m+[m[32m];[m
+[32m+[m
+[32m+[m[32mexport function decModeSequence(mode: number, on: boolean): string {[m
+[32m+[m[32m  return `\x1b[?${mode}${on ? "h" : "l"}`;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/**[m
+[32m+[m[32m * The sequence that moves a freshly rebuilt grid from `actual` to[m
+[32m+[m[32m * `wanted`, in `RETAINED_DEC_MODES` order. Empty when they already agree,[m
+[32m+[m[32m * which is what the common case should produce.[m
+[32m+[m[32m */[m
+[32m+[m[32mexport function modeRepairSequence([m
+[32m+[m[32m  wanted: ReadonlyMap<number, boolean>,[m
+[32m+[m[32m  actual: ReadonlyMap<number, boolean>,[m
+[32m+[m[32m): string {[m
+[32m+[m[32m  let out = "";[m
+[32m+[m[32m  for (const mode of RETAINED_DEC_MODES) {[m
+[32m+[m[32m    if (!wanted.has(mode)) continue;[m
+[32m+[m[32m    const want = wanted.get(mode)!;[m
+[32m+[m[32m    if (actual.get(mode) === want) continue;[m
+[32m+[m[32m    out += decModeSequence(mode, want);[m
+[32m+[m[32m  }[m
+[32m+[m[32m  return out;[m
+[32m+[m[32m}[m
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hlls -G -la node_modules[22D[32ml[32ms[39m[8C[4mn[4mo[4md[4me[4m_[4mm[4mo[4md[4mu[4ml[4me[4ms[24m[?1l>[?2004l
+]2;ls -G -G -la node_modules]1;lstotal 56
+drwxr-xr-x@  36 rishabh  staff   1152 Aug 20 23:39 [1m[36m.[39;49m[0m
+drwxr-xr-x@  52 rishabh  staff   1664 Aug 21 23:21 [1m[36m..[39;49m[0m
+drwxr-xr-x@  10 rishabh  staff    320 Aug 20 23:39 [1m[36m.bin[39;49m[0m
+-rw-r--r--@   1 rishabh  staff  26948 Aug 20 23:39 .modules.yaml
+drwxr-xr-x@ 503 rishabh  staff  16096 Aug 20 23:39 [1m[36m.pnpm[39;49m[0m
+drwxr-xr-x@   4 rishabh  staff    128 Aug 21 21:49 [1m[36m.vite[39;49m[0m
+drwxr-xr-x@   2 rishabh  staff     64 Aug 21 23:32 [1m[36m.vite-temp[39;49m[0m
+drwxr-xr-x@   3 rishabh  staff     96 May 19 03:22 [1m[36m@clerk[39;49m[0m
+drwxr-xr-x@   3 rishabh  staff     96 Jul 12 15:41 [1m[36m@playwright[39;49m[0m
+drwxr-xr-x@   7 rishabh  staff    224 Aug 11 22:36 [1m[36m@radix-ui[39;49m[0m
+drwxr-xr-x@   3 rishabh  staff     96 May 23 20:11 [1m[36m@sentry[39;49m[0m
+drwxr-xr-x@   6 rishabh  staff    192 Jul 12 22:04 [1m[36m@shikijs[39;49m[0m
+drwxr-xr-x@   3 rishabh  staff     96 May 19 11:54 [1m[36m@supabase[39;49m[0m
+drwxr-xr-x@   3 rishabh  staff     96 May 19 03:12 [1m[36m@tailwindcss[39;49m[0m
+drwxr-xr-x@   7 rishabh  staff    224 May 19 03:12 [1m[36m@tanstack[39;49m[0m
+drwxr-xr-x@   7 rishabh  staff    224 Jul 12 22:54 [1m[36m@tauri-apps[39;49m[0m
+drwxr-xr-x@   5 rishabh  staff    160 May 19 03:12 [1m[36m@testing-library[39;49m[0m
+drwxr-xr-x@   6 rishabh  staff    192 May 19 14:12 [1m[36m@types[39;49m[0m
+drwxr-xr-x@   3 rishabh  staff     96 May 19 03:12 [1m[36m@vitejs[39;49m[0m
+lrwxr-xr-x@   1 rishabh  staff     74 May 19 03:12 [35mclass-variance-authority[39;49m[0m -> .pnpm/class-variance-authority@0.7.1/node_modules/class-variance-authority
+lrwxr-xr-x@   1 rishabh  staff     34 May 19 03:12 [35mclsx[39;49m[0m -> .pnpm/clsx@2.1.1/node_modules/clsx
+lrwxr-xr-x@   1 rishabh  staff    109 May 19 15:36 [35mcmdk[39;49m[0m -> .pnpm/cmdk@1.1.1_@types+react-dom@19.2.3_@types+react@19.2.14_react-dom@19.2.6_react@19.2.6/node_modules/cmdk
+lrwxr-xr-x@   1 rishabh  staff     86 Aug 20 23:39 [35mghostty-web[39;49m[0m -> .pnpm/ghostty-web@0.4.0_patch_hash=hijlmntcg4pkmtostdyw7wj45i/node_modules/ghostty-web
+lrwxr-xr-x@   1 rishabh  staff     37 May 19 03:12 [35mjsdom[39;49m[0m -> .pnpm/jsdom@25.0.1/node_modules/jsdom
+lrwxr-xr-x@   1 rishabh  staff     65 May 19 03:12 [35mlucide-react[39;49m[0m -> .pnpm/lucide-react@0.451.0_react@19.2.6/node_modules/lucide-react
+lrwxr-xr-x@   1 rishabh  staff     42 Aug 20 23:39 [35mprettier[39;49m[0m -> .pnpm/prettier@3.8.3/node_modules/prettier
+lrwxr-xr-x@   1 rishabh  staff     37 May 19 03:12 [35mreact[39;49m[0m -> .pnpm/react@19.2.6/node_modules/react
+lrwxr-xr-x@   1 rishabh  staff     58 May 19 03:12 [35mreact-dom[39;49m[0m -> .pnpm/react-dom@19.2.6_react@19.2.6/node_modules/react-dom
+lrwxr-xr-x@   1 rishabh  staff     36 May 21 03:09 [35mshiki[39;49m[0m -> .pnpm/shiki@4.1.0/node_modules/shiki
+lrwxr-xr-x@   1 rishabh  staff     54 May 19 03:12 [35mtailwind-merge[39;49m[0m -> .pnpm/tailwind-merge@2.6.1/node_modules/tailwind-merge
+lrwxr-xr-x@   1 rishabh  staff     48 May 19 03:12 [35mtailwindcss[39;49m[0m -> .pnpm/tailwindcss@4.3.0/node_modules/tailwindcss
+lrwxr-xr-x@   1 rishabh  staff     46 May 19 03:12 [35mtypescript[39;49m[0m -> .pnpm/typescript@5.8.3/node_modules/typescript
+lrwxr-xr-x@   1 rishabh  staff     35 May 19 14:12 [35muuid[39;49m[0m -> .pnpm/uuid@14.0.0/node_modules/uuid
+lrwxr-xr-x@   1 rishabh  staff     53 May 19 03:14 [35mvite[39;49m[0m -> .pnpm/vite@7.3.3_@types+node@25.9.0/node_modules/vite
+lrwxr-xr-x@   1 rishabh  staff     70 May 19 03:14 [35mvitest[39;49m[0m -> .pnpm/vitest@2.1.9_@types+node@25.9.0_jsdom@25.0.1/node_modules/vitest
+lrwxr-xr-x@   1 rishabh  staff     75 May 19 03:12 [35mzustand[39;49m[0m -> .pnpm/zustand@5.0.13_@types+react@19.2.14_react@19.2.6/node_modules/zustand
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit log --oneline -80 --all[27D[32mg[32mi[32mt[39m[24C[?1l>[?2004l
+]2;git log --oneline -80 --all]1;git[33m74bd9a3[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mphasr/ghostty-terminal-engine[m[33m)[m fix(terminal): stop the rebuild crashing the grid it just built
+[33m2bbf69b[m fix(terminal): stop reflowing the grid, rebuild it at the new width
+[33mdbbdd63[m test(terminal): pin where a reflow leaves the content, not just its colour
+[33m5001651[m fix(terminal): guard the theme tokens the WASM palette is built from
+[33m626f934[m feat(terminal): field diagnostics for a misrender in a packaged build
+[33m33cb99d[m fix(bundle): drop the DMG licence agreement, keep the notices
+[33ma4b09dd[m fix(terminal): never paint a grapheme cluster half-applied
+[33m99b2ebc[m fix(terminal): spawn the PTY at the settled grid, not the pre-layout one
+[33me0da9b6[m fix(pty): stop delivering a chunk in the replay AND live
+[33mb310f8c[m fix(terminal): one long frame no longer disables synchronized output
+[33m36434f8[m fix(terminal): spawn every PTY at the real grid, not 80x24
+[33m698c095[m docs(release): 0.4.0 plan, and answer ADR-002 Q1's mechanism on WKWebView
+[33m888852a[m test(e2e): make the selection spec engine-agnostic, and stop lying about WebKit
+[33me43b550[m fix(bundle): ship the third-party licence notices inside the app
+[33maf5070c[m test(store): prove every shipped 0.3.x database opens under this build
+[33m1b726e4[m fix(terminal): drop a file on a terminal and get its path
+[33m56e4a75[m test(load): multi-agent load harness, ramped against real agents
+[33m6ea5411[m fix(sidebar): stop clipping descenders in workspace name and branch
+[33m52de98e[m fix(terminal): give the revealed terminal the keyboard on a tab switch
+[33m4e93fd9[m feat(terminal): cursor settings, and word/line click selection
+[33me1eec6f[m feat(terminal): replace the terminal engine with ghostty-web
+[33m3218ef1[m refactor(sidebar): remove workspace status dots
+[33m917a43c[m[33m ([m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mphasr/what-are-you[m[33m, [m[1;32mphasr/hello-testing[m[33m, [m[1;32mphasr/hello-2[m[33m, [m[1;32mphasr/hello[m[33m, [m[1;32mmaster[m[33m)[m Merge pull request #31 from irishabh96/phasr/0.3.5-plus-base-branch
+[33m592328b[m Merge pull request #32 from irishabh96/phasr/font-size
+[33m4b7fa37[m[33m ([m[1;31morigin/phasr/font-size[m[33m, [m[1;32mphasr/font-size[m[33m)[m feat(terminal): ⌘+ / ⌘− / ⌘0 resize every terminal
+[33m4b0ebb9[m[33m ([m[1;31morigin/phasr/0.3.5-plus-base-branch[m[33m, [m[1;32mphasr/0.3.5-plus-base-branch[m[33m)[m fix(perf): stop Session Replay measuring every icon
+[33m82695bb[m fix(store): carry migration 0014 so 0.3.5 can open a 0.3.7 database
+[33m512f47d[m[33m ([m[1;32mphasr/gitignore-pnpm-store[m[33m)[m chore: ignore a repo-local pnpm store
+[33m4932256[m chore: ignore a repo-local pnpm store
+[33ma780ef5[m[33m ([m[1;32mphasr/scroll-lag[m[33m)[m fix: ignore a repo-local pnpm store
+[33m40021af[m perf(terminal): sub-row scrolling on by default
+[33m351dcca[m perf(terminal): scrolling tracks the finger between rows
+[33mcc7943c[m[33m ([m[1;33mtag: [m[1;33mv0.3.7[m[33m, [m[1;31morigin/phasr/fix-version-0-3-6[m[33m)[m chore(release): bump version to 0.3.7
+[33m6120b79[m chore(release): bump version to 0.3.7-beta.1
+[33m7f2c485[m perf(terminal): scrolling stops wiping the glyph atlas, and glides
+[33m6be3723[m fix(sync): recovery becomes coherent — hardware machine id, revive-on-readd, tombstone guards, daily backups
+[33m7f21af6[m perf(ui): the running-dot ripple moves to the compositor
+[33ma7585eb[m[33m ([m[1;33mtag: [m[1;33mv0.3.6[m[33m, [m[1;32mphasr/log-printing-bug[m[33m, [m[1;32mphasr/log-issues[m[33m)[m fix(store): the .sqlite file is now actually a database
+[33mb1d63cc[m chore(release): bump version to 0.3.6
+[33m837fe65[m[33m ([m[1;32mphasr/new-task-modal-fix[m[33m)[m fix(ui): one dismissable-layer, one Escape
+[33m83bba42[m feat(tasks): base branch becomes a combobox
+[33me50310c[m[33m ([m[1;33mtag: [m[1;33mv0.3.5[m[33m, [m[1;32mphasr/convert-notes-to-todo[m[33m)[m redesign(notes): one door to the composer
+[33m6b1a2b6[m chore: untrack aidb dev-tooling artifacts (.ai/, *.seg)
+[33md3c5a8b[m chore(release): bump version to 0.3.5
+[33mf25ddfd[m fix(notes): editor field becomes the row, and long notes stop hiding
+[33m675740f[m fix(notes): the editor is sized to its content
+[33mfcfd338[m fix(notes): nine blocking defects from a full-panel sweep
+[33mb6ea763[m fix(notes): a done row rendered its timestamp twice
+[33m891df19[m fix(notes): a ticked note actually moves — settle is a debounce, not a wait for the pointer to leave
+[33mf87b6a2[m fix(notes): editor breathes, and delete is findable again
+[33mf6a5297[m redesign(notes): 30px rows — a todo list, not a log viewer
+[33m1874914[m feat(notes): the checkbox — notes are todos you can tick
+[33m16c916c[m feat(notes): set_note_done command + doneAt across the IPC contract
+[33me190815[m feat(notes): notes survive repository removal, and gain a done state
+[33m8bf9cb1[m[33m ([m[1;33mtag: [m[1;33mv0.3.4[m[33m, [m[1;31morigin/dev[m[33m)[m Merge feat/keymap-and-repo-notes for v0.3.4 (iTerm-parity keymap + repository notes)
+[33m36dfd59[m v0.3.4
+[33me544141[m fix(links): handle OSC 8 hyperlinks — the ones agents actually print
+[33md68e24b[m fix(links): detect URLs in our own link provider instead of the web-links addon
+[33m83236d5[m fix(orchestrator): stop reporting your own delete as an agent failure
+[33m7e96233[m fix(notes): repair two regressions from the last pass, and finish the meta line
+[33mbaffd5c[m fix(notes): composer breathing room, icon-only origin, a stamp on every note, and the entry icon toggles
+[33m0f8dadc[m docs: DDR-005 supersedes DDR-004 — reading surface, summoned capture
+[33md4a354c[m redesign(notes): reading surface with summoned capture — and five real bugs the first pass shipped
+[33m8e43316[m docs: DDR-004 (notes design) + manual-verification checklist for keys, links, and notes
+[33ma57e430[m feat(notes): Notes rail — panel, entry points, ⌘⇧N, and a composer that stops moving the list
+[33m30eb434[m feat(notes): repository-notes backend — migration, NoteRepo, 4 commands, soft-delete on both repo-delete paths
+[33m6b267f3[m feat(links): ⌘-click opens URLs and file paths — terminals get link detection for the first time
+[33m939958c[m fix(input): implement ⌘⌫/⌘←/⌘→ (+⇧ selection) for every field — the webview never runs macOS's native editing actions
+[33m735975a[m fix(forms): wire ⌘↵ submit into NewTaskForm — the registry entry existed, the form never used it
+[33meea899e[m feat(terminal): iTerm-parity keymap — ⌘⌫/⌘←/⌘→/⌥-word/⇧↵ finally reach the PTY
+[33m9c0549b[m fix(css): layer the field reset so utilities win — GlassInput/GlassTextarea render as designed
+[33m97e66e0[m[33m ([m[1;32mfeat/task-board[m[33m)[m fix(pty): deliver the prompt past Claude's workspace-trust dialog
+[33m2291f70[m fix(planner): the agent-list failure offers Retry in review, not just idle
+[33m732786c[m refactor(planner): drop the !important workarounds the layered reset retired
+[33ma189f2b[m feat(planner): the ticket agent reads as a control, and Set-all ends the chore
+[33m5eda24c[m feat(planner): a workflow Agent field, and honest agent-list states
+[33m8d4634a[m feat(ui): GlassSelect density variant — the value overlay can no longer drift
+[33m1ad4612[m fix(css): layer the input/textarea/select reset — fields finally render as designed
+[33m38817ca[m[33m ([m[1;31morigin/feat/task-board[m[33m)[m test(e2e): the first REAL loop drive — and the total Ship failure it caught
+[33m9ea1924[m feat(autopilot): Stage B — QAS auto-approve, behind a default-ON human gate
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hlless src/lib/terminal/reflow.ts[31D[32ml[32me[32ms[32ms[39m [4ms[4mr[4mc[4m/[4ml[4mi[4mb[4m/[4mt[4me[4mr[4mm[4mi[4mn[4ma[4ml[4m/[4mr[4me[4mf[4ml[4mo[4mw[4m.[4mt[4ms[24m[?1l>[?2004l
+]2;less src/lib/terminal/reflow.ts]1;less[?1049h[40;1H[?1h=/**
+ * What a terminal does when its container changes size — the policy half
+ * of the fix for ADR-002's "reflow anchor", kept pure so it can be argued
+ * with in a unit test instead of in a browser.
+ *
+ * The defect: ghostty-web's `ghostty_terminal_resize` takes `(handle,
+ * cols, rows)` and no anchor, and every width round trip permanently
+ * converts trailing blank rows below the cursor into leading history rows
+ * above it. Content marches down the screen a row or two per panel toggle
+ * and never comes back up.
+ *
+ * The policy: **never rewrap live content.** A row-only change is safe and
+ * is applied immediately; a column change is applied by rebuilding the
+ * grid at the new width and replaying the retained output into it, so the
+ * buggy path is never entered with anything in the buffer.
+ */
+
+export interface Grid {
+  cols: number;
+  rows: number;
+}
+
+export type ResizePlan =
+  /** The grid already matches the container. */
+  | "none"
+  /**
+   * Rows changed, columns did not — nothing rewraps, so nothing can drift.
+   * Measured in ADR-002: a rows-only round trip leaves `scrollback`
+   * untouched. Applied immediately, which keeps a tab reveal and a
+   * vertical-only window resize as snappy as they were.
+   */
+  | "resize"
+  /**
+   * The width changed. Rewrapping is the trigger, so the grid is thrown
+   * away and rebuilt at the new width instead.
+   */
+  | "rebuild";
+
+export function planResize(current: Grid, target: Grid): ResizePlan {
+[7msrc/lib/terminal/reflow.ts[27m[K[K  if (target.cols === current.cols) {
+    return target.rows === current.rows ? "none" : "resize";
+  }
+  return "rebuild";
+}
+
+/** DECSET 1049 — the alternate screen buffer. Named because the rebuild
+ *  path has to reason about it on its own, not merely repair it: a replay
+ *  that no longer contains the sequence which entered it has to be told
+ *  which screen it belongs to. */
+export const ALT_SCREEN_MODE = 1049;
+
+/**
+ * DEC private modes that must survive a rebuild.
+ *
+ * A rebuilt grid is a *fresh* terminal: it has forgotten every mode the
+ * running program switched on. Most of them are re-established by the
+ * replay — the bytes that set them are in the retained stream — but only
+ * while those bytes are still inside the budget. A TUI sets its modes once
+ * at startup and then runs for hours, so on any long-lived terminal they
+ * are the FIRST thing to fall out of the window, and losing them is not
+ * cosmetic: bracketed paste stops bracketing, the wheel stops reporting,
+ * arrow keys start sending the wrong sequence, and the alternate screen
+ * silently becomes the primary one.
+ *
+ * So the modes are read off the old grid and re-asserted on the new one
+ * whenever they disagree, which makes the replay's own mode bytes a
+ * bonus rather than a requirement.
+ *
+ * 1049 leads the list because entering the alternate screen CLEARS it: any
+ * repair that followed a screen switch would be applied to a screen the
+ * user is not looking at. When the replay has already put the terminal in
+ * the right screen — the common case, and the one that reconstructs the
+ * primary screen's scrollback underneath as well — 1049 matches and
+ * nothing is emitted.
+ */
+export const RETAINED_DEC_MODES: readonly number[] = [
+  ALT_SCREEN_MODE, // alternate screen buffer (+ save/restore cursor)
+  1, // DECCKM — application cursor keys
+:[K[K  7, // DECAWM — autowrap
+  9, // X10 mouse reporting
+  12, // att610 — cursor blink
+  25, // DECTCEM — cursor visibility
+  1000, // mouse: button events
+  1002, // mouse: button + drag
+  1003, // mouse: any motion
+  1004, // focus in/out reporting
+  1005, // UTF-8 mouse encoding
+  1006, // SGR mouse encoding
+  1015, // urxvt mouse encoding
+  1016, // SGR pixel mouse encoding
+  2004, // bracketed paste
+];
+
+export function decModeSequence(mode: number, on: boolean): string {
+  return `\x1b[?${mode}${on ? "h" : "l"}`;
+}
+
+/**
+ * The sequence that moves a freshly rebuilt grid from `actual` to
+ * `wanted`, in `RETAINED_DEC_MODES` order. Empty when they already agree,
+ * which is what the common case should produce.
+ */
+export function modeRepairSequence(
+  wanted: ReadonlyMap<number, boolean>,
+  actual: ReadonlyMap<number, boolean>,
+): string {
+  let out = "";
+  for (const mode of RETAINED_DEC_MODES) {
+    if (!wanted.has(mode)) continue;
+    const want = wanted.get(mode)!;
+    if (actual.get(mode) === want) continue;
+    out += decModeSequence(mode, want);
+  }
+  return out;
+}
+[7m(END)[27m[K[K[?1l>[?1049l[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0mtook [1;33m3s[0m 
+[1;32m❯[0m [K[?1h=[?2004hpprintf 'partial'[16D[32mp[32mr[32mi[32mn[32mt[32mf[39m [33m'[33mp[33ma[33mr[33mt[33mi[33ma[33ml[33m'[39m[?1l>[?2004l
+]2;printf 'partial']1;printfpartial[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit status --short[18D[32mg[32mi[32mt[39m[15C[?1l>[?2004l
+]2;git status --short]1;git[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hlls -G -la src/components[24D[32ml[32ms[39m[8C[4ms[4mr[4mc[4m/[4mc[4mo[4mm[4mp[4mo[4mn[4me[4mn[4mt[4ms[24m[?1l>[?2004l
+]2;ls -G -G -la src/components]1;lstotal 944
+drwxr-xr-x@ 55 rishabh  staff   1760 Aug 15 02:06 [1m[36m.[39;49m[0m
+drwxr-xr-x@ 10 rishabh  staff    320 Aug 21 02:35 [1m[36m..[39;49m[0m
+-rw-r--r--@  1 rishabh  staff   3767 Aug  2 20:41 AddRepositoryPickerModal.tsx
+-rw-r--r--@  1 rishabh  staff  15832 Aug 20 20:25 AppSidebar.tsx
+-rw-r--r--@  1 rishabh  staff   5634 Jul 16 21:27 AppToaster.tsx
+-rw-r--r--@  1 rishabh  staff   6583 May 25 13:46 AuthCallbackHandler.tsx
+-rw-r--r--@  1 rishabh  staff    661 May 20 23:11 BackgroundOrb.tsx
+-rw-r--r--@  1 rishabh  staff   2684 Aug  2 20:41 BranchChip.tsx
+-rw-r--r--@  1 rishabh  staff  23703 Aug  2 20:41 ChangesPanel.tsx
+-rw-r--r--@  1 rishabh  staff  13011 Aug 20 01:26 CommandPalette.tsx
+-rw-r--r--@  1 rishabh  staff   4987 Aug  6 02:39 CommitCard.tsx
+-rw-r--r--@  1 rishabh  staff  14670 Aug 11 22:35 CreateFirstWorkspacePane.tsx
+-rw-r--r--@  1 rishabh  staff   5035 May 25 13:46 DesktopSignIn.test.tsx
+-rw-r--r--@  1 rishabh  staff  14578 Aug  2 20:41 DesktopSignIn.tsx
+drwxr-xr-x@ 10 rishabh  staff    320 Aug  2 20:41 [1m[36mdiff[39;49m[0m
+-rw-r--r--@  1 rishabh  staff   3503 May 25 13:46 FilePreviewTab.tsx
+-rw-r--r--@  1 rishabh  staff   3439 Jul 16 21:27 GitInitConfirmModal.tsx
+-rw-r--r--@  1 rishabh  staff   4182 Aug  2 20:41 HistoryPanel.tsx
+-rw-r--r--@  1 rishabh  staff  11193 Aug  2 20:41 MergeToMainDialog.tsx
+-rw-r--r--@  1 rishabh  staff  16963 Aug  2 20:41 NewProjectPane.tsx
+-rw-r--r--@  1 rishabh  staff  10195 Aug 11 22:35 NewTaskForm.test.tsx
+-rw-r--r--@  1 rishabh  staff   8631 Aug 11 22:35 NewTaskForm.tsx
+-rw-r--r--@  1 rishabh  staff   3824 Aug 11 22:35 NewTaskModal.tsx
+-rw-r--r--@  1 rishabh  staff   6628 Aug  9 03:41 NoteComposer.tsx
+-rw-r--r--@  1 rishabh  staff  11228 Aug  9 03:41 NoteRow.test.tsx
+-rw-r--r--@  1 rishabh  staff  22898 Aug  9 03:41 NoteRow.tsx
+-rw-r--r--@  1 rishabh  staff   1171 Aug  6 02:39 NotesEntryButton.tsx
+-rw-r--r--@  1 rishabh  staff  15258 Aug  9 21:08 NotesPanel.tsx
+-rw-r--r--@  1 rishabh  staff   4742 Aug  2 20:41 OpenInMenu.tsx
+-rw-r--r--@  1 rishabh  staff   2024 May 25 13:46 PinnedRunCommandsToolbar.tsx
+-rw-r--r--@  1 rishabh  staff   3333 Aug  2 20:41 RenameWorkspaceModal.tsx
+-rw-r--r--@  1 rishabh  staff   4420 Aug  2 20:41 RepoFileSearchModal.tsx
+-rw-r--r--@  1 rishabh  staff   5165 Aug  9 21:08 RepoHomeShell.tsx
+-rw-r--r--@  1 rishabh  staff   5219 Aug 20 01:32 RepoInnerTabBar.tsx
+-rw-r--r--@  1 rishabh  staff   7361 Aug  6 02:39 RepositorySidebarMenu.tsx
+-rw-r--r--@  1 rishabh  staff   2030 Aug 20 01:32 RepoTabContent.tsx
+-rw-r--r--@  1 rishabh  staff   3461 Aug  2 20:41 RunCommandPicker.tsx
+-rw-r--r--@  1 rishabh  staff   4683 May 22 22:55 RunCommandsPane.tsx
+-rw-r--r--@  1 rishabh  staff  11107 Aug  2 20:41 RunCommandsSection.tsx
+-rw-r--r--@  1 rishabh  staff   7588 Aug 21 21:33 RunCommandTerminal.tsx
+-rw-r--r--@  1 rishabh  staff  13504 Aug 21 21:33 SessionTerminalTab.tsx
+-rw-r--r--@  1 rishabh  staff   7152 Aug  2 20:41 SyncButton.tsx
+-rw-r--r--@  1 rishabh  staff    822 May 25 13:46 TaskStatusPill.test.tsx
+-rw-r--r--@  1 rishabh  staff   1617 May 25 13:46 TaskStatusPill.tsx
+-rw-r--r--@  1 rishabh  staff  15503 Aug 21 21:33 Terminal.tsx
+-rw-r--r--@  1 rishabh  staff   5989 Jul 16 21:27 TerminalStatus.tsx
+-rw-r--r--@  1 rishabh  staff    825 May 20 23:11 ThemeToggle.tsx
+-rw-r--r--@  1 rishabh  staff   5918 Aug  2 20:41 TitleBar.tsx
+drwxr-xr-x@ 16 rishabh  staff    512 Aug 13 21:29 [1m[36mui[39;49m[0m
+-rw-r--r--@  1 rishabh  staff   9284 Aug  2 20:41 WorkspaceActionsMenu.tsx
+-rw-r--r--@  1 rishabh  staff   4182 Aug 21 00:09 WorkspaceAgentToolbar.tsx
+-rw-r--r--@  1 rishabh  staff   7012 Aug 20 01:32 WorkspaceInnerTabBar.tsx
+-rw-r--r--@  1 rishabh  staff   3124 Aug  9 21:08 WorkspaceRightSidebar.tsx
+-rw-r--r--@  1 rishabh  staff   9020 Aug 20 01:32 WorkspaceSidebarMenu.tsx
+-rw-r--r--@  1 rishabh  staff   4013 Aug  6 02:39 WorkspaceTabContent.tsx
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hggit diff --stat HEAD~12[23D[32mg[32mi[32mt[39m[20C[?1l>[?2004l
+]2;git diff --stat HEAD~12]1;git .gitignore                               |   4 [32m+[m
+ docs/RELEASE-0.4.0.md                    | 520 [32m+++++++++++++++++++++++++++++++++++++++++++[m
+ docs/adr/ADR-002-terminal-engine.md      | 630 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++[m[31m-[m
+ e2e/harness.ts                           |  11 [32m+[m[31m-[m
+ e2e/terminal-grapheme-split.spec.ts      | 168 [32m++++++++++++++[m
+ e2e/terminal-open.spec.ts                | 415 [32m++++++++++++++++++++++++++++++++++[m
+ e2e/terminal-reflow-anchor.spec.ts       | 864 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++[m
+ e2e/terminal-sync.spec.ts                |  80 [32m+++++++[m
+ patches/ghostty-web@0.4.0.patch          |  24 [32m+[m[31m-[m
+ pnpm-lock.yaml                           |   6 [32m+[m[31m-[m
+ scripts/wkwebview-wasm-probe.swift       | 148 [32m++++++++++++[m
+ src-tauri/src/pty/handle.rs              | 116 [32m+++++++++[m[31m-[m
+ src-tauri/tauri.conf.json                |   1 [31m-[m
+ src/components/RunCommandTerminal.tsx    |  13 [32m+[m[31m-[m
+ src/components/SessionTerminalTab.tsx    |   9 [32m+[m[31m-[m
+ src/components/Terminal.tsx              |  18 [32m+[m[31m-[m
+ src/components/WorkspaceAgentToolbar.tsx |  13 [32m++[m
+ src/lib/terminal/backends/ghostty.ts     | 506 [32m+++++++++++++++++++++++++++++++++++++++[m[31m--[m
+ src/lib/terminal/bridge.ts               |  19 [32m++[m
+ src/lib/terminal/diagnostics.test.ts     | 133 [32m+++++++++++[m
+ src/lib/terminal/diagnostics.ts          | 214 [32m++++++++++++++++++[m
+ src/lib/terminal/graphemeTail.test.ts    |  79 [32m+++++++[m
+ src/lib/terminal/graphemeTail.ts         | 109 [32m+++++++++[m
+ src/lib/terminal/reflow.test.ts          |  97 [32m++++++++[m
+ src/lib/terminal/reflow.ts               | 115 [32m++++++++++[m
+ src/lib/terminal/replayLog.test.ts       | 105 [32m+++++++++[m
+ src/lib/terminal/replayLog.ts            | 118 [32m++++++++++[m
+ src/lib/terminal/settle.ts               |  55 [32m+++++[m
+ src/lib/terminal/surface.ts              |  37 [32m+++[m
+ src/lib/terminal/themeTokens.test.ts     | 112 [32m++++++++++[m
+ 30 files changed, 4692 insertions(+), 47 deletions(-)
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004hcclear[32mc[32ml[32me[32ma[32mr[39m[?1l>[?2004l
+]2;clear]1;clear[3J[H[2J[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004h[?1l>[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                        ]2;rishabh@Rishabhs-MacBook-Pro:~/code/phasr]1;~/code/phasr]7;file://Rishabhs-MacBook-Pro.local/Users/rishabh/code/phasr\[0m[27m[24m[J
+[1;36mphasr[0m on [1;35m [0m[1;35mphasr/ghostty-terminal-engine[0m [1;31m[[0m[1;31m$[0m[1;31m][0m via [1;32m [0m[1;32mv24.18.1[0m[1;32m [0mon [1;33m☁️  [0m[1;33m([0m[1;33map-south-1[0m[1;33m) [0m
+[1;32m❯[0m [K[?1h=[?2004h

@@ -51,7 +51,15 @@ import {
   planResize,
   RETAINED_DEC_MODES,
 } from "@/lib/terminal/reflow";
-import { ReplayLog } from "@/lib/terminal/replayLog";
+import {
+  looksWrapped,
+  planPrimary,
+  restoreCursorSequence,
+  serializeAlternate,
+  type GridSnapshot,
+  type SnapshotCell,
+  type SnapshotRow,
+} from "@/lib/terminal/serialize";
 import type {
   LinkSource,
   SurfaceDisposable,
@@ -167,16 +175,81 @@ const MIN_ROWS = 1;
 const REBUILD_QUIET_MS = 120;
 
 /**
- * Output retained for a rebuild. See `replayLog.ts` for why a rebuild needs
- * it and `reflow.ts` for why a width change is a rebuild.
+ * History rows a rebuild carries over.
  *
- * 1 MiB: eight times the Rust-side replay buffer the LRU eviction path
- * already leans on (`pty/handle.rs`), because that path costs a user
- * scrollback once per eviction while this one can cost it on every panel
- * toggle. At the LRU bound of 8 terminals that is 8 MiB of JS against the
- * ~5.2 MiB of WASM heap each terminal already holds (ADR-002 Q5).
+ * A rebuild reads the old grid cell by cell (`serialize.ts`), so unlike the
+ * byte ring this replaced there is no *correctness* reason to bound it —
+ * only time. Measured on the aged-session fixture, reading and re-emitting
+ * costs ~15 µs a row, so 8000 is ~120 ms in the worst case a user can
+ * reach: a terminal sitting at ghostty's 10,000-line scrollback limit,
+ * every line full. A shell that has scrolled less than that — i.e. almost
+ * every shell — is never truncated at all, which is strictly more history
+ * than the 1 MiB byte ring kept.
  */
-const REPLAY_BUDGET_BYTES = 1024 * 1024;
+const MAX_HISTORY_ROWS = 8000;
+
+/**
+ * Attempts a single rebuild gets at constructing a writable grid.
+ *
+ * A create can land on pages the engine recycled from an earlier free, and
+ * writing styled or grapheme-bearing content into those traps
+ * (`memory access out of bounds`) — the aged-session probe pins it. The
+ * identical content into virgin memory succeeds. Each failed attempt PARKS
+ * the damaged grid (see `quarantinedGrids`), which keeps the poisoned
+ * region occupied, so the next create is forced onto fresh memory. Two
+ * attempts settle it in practice; three is margin.
+ */
+const MAX_REBUILD_ATTEMPTS = 3;
+
+/**
+ * Grids that trapped mid-write, held forever so their pages are never
+ * recycled into a future create. Deliberately a leak: each entry is one
+ * poisoned allocator region discovered at runtime, kept out of circulation
+ * for the life of the page. Freeing one hands the same poison to the next
+ * `createTerminal`, which is how a rebuild that "retried" used to trap
+ * twice in a row deterministically.
+ */
+const quarantinedGrids: { free(): void }[] = [];
+
+/**
+ * The 16-byte cell struct `ghostty-web` hands back from its row accessors,
+ * named locally so the reader does not import the engine for a shape.
+ */
+interface GhosttyCellLike {
+  codepoint: number;
+  fg_r: number;
+  fg_g: number;
+  fg_b: number;
+  bg_r: number;
+  bg_g: number;
+  bg_b: number;
+  flags: number;
+  width: number;
+  grapheme_len: number;
+}
+
+/**
+ * The private half of ghostty-web's `Terminal` a grid swap has to touch.
+ * `createTerminal` and `buildWasmConfig` are the calls `open()` itself
+ * makes; reaching them from outside is what lets a rebuild construct the
+ * replacement grid BEFORE freeing the one it replaces.
+ */
+interface GhosttyPrivateGrid {
+  wasmTerm: { free(): void };
+  ghostty: {
+    createTerminal(cols: number, rows: number, cfg: unknown): unknown;
+  };
+  buildWasmConfig(): unknown;
+  renderer?: { clear?(): void };
+}
+
+/** What `swapGrid` hands back so a failed rebuild can restore the world. */
+interface GridSwap {
+  stale: { free(): void };
+  oldCols: number;
+  oldRows: number;
+}
+
 /** ghostty-web reserves this much width for its own overlay scrollbar. */
 const SCROLLBAR_WIDTH = 15;
 
@@ -211,18 +284,22 @@ export class GhosttySurface implements TerminalSurface {
   private active = true;
   private pausedWarned = false;
 
-  /**
-   * Everything this terminal has been shown, bounded — the material a
-   * width change is rebuilt from rather than reflowed. See `reflow.ts`.
-   */
-  private readonly replay = new ReplayLog(REPLAY_BUDGET_BYTES);
+  /** Has this terminal been shown anything? See `fitAnchored`. */
+  private written = false;
   /** Pending rebuild, waiting for the container to stop moving. */
   private rebuildTimer: number | null = null;
   /**
-   * Where in the retained stream this terminal entered the alternate
-   * screen, or `null` if it is not in it. See `writeToEngine`.
+   * A rebuild that could not be applied, waiting for one retry.
+   *
+   * Never a silent fall-back to a plain resize: that is the reflow whose
+   * anchor bug started all of this, and shipping it behind a `catch` is how
+   * a fixed terminal regresses without anyone noticing. See
+   * `applySettledWidth`.
    */
-  private altEnteredSeq: number | null = null;
+  private rebuildRetry: number | null = null;
+  private rebuildRetried = false;
+  /** Where the cursor was inside the alternate screen's frame. */
+  private altCursor = { x: 0, y: 0 };
 
   /**
    * The grid a PTY spawned before the engine attached is given. Measured
@@ -404,7 +481,7 @@ export class GhosttySurface implements TerminalSurface {
     // Nothing to protect yet: no engine means no buffer, and this
     // measurement is the one the PTY is spawned at. Deferring it would
     // reintroduce the 80x24 spawn.
-    if (!term || this.replay.isEmpty) {
+    if (!term || !this.written) {
       this.fit();
       return;
     }
@@ -450,7 +527,7 @@ export class GhosttySurface implements TerminalSurface {
     const target = this.measureGrid();
     // Parked, hidden, or mid-layout. The next `fitAnchored()` reschedules;
     // rebuilding against a 1px park host would collapse the grid to its
-    // minimum and replay the whole log into it for nothing.
+    // minimum and re-emit the whole buffer into it for nothing.
     if (!target) return;
     if (planResize({ cols: term.cols, rows: term.rows }, target) !== "rebuild") {
       this.fit();
@@ -458,51 +535,99 @@ export class GhosttySurface implements TerminalSurface {
     }
     try {
       this.rebuildGrid(term, target);
+      this.cancelRebuildRetry();
     } catch (err) {
-      // Nothing here can put the freed buffer back, so this is not a
-      // recovery — it is a promise that a terminal is never left the wrong
-      // size for its pane. Taking the reflow (and its drift) beats leaving
-      // every line clipped.
-      console.error("[terminal] grid rebuild failed; falling back to a reflow", err);
-      this.fit();
+      this.rebuildFailed(err);
     }
   }
 
   /**
-   * Adopt a new width by building a fresh grid and replaying the output
-   * that filled the old one — **the fix for ADR-002's reflow anchor**.
+   * A rebuild threw. **Do not resize.**
    *
-   * A rebuild is not a reflow. `ghostty_terminal_resize` rewraps a live
+   * The obvious recovery — fall back to `fit()`, so the grid at least
+   * matches its pane — is the bug this whole mechanism exists to avoid:
+   * `ghostty_terminal_resize` on live content is the reflow whose lost
+   * anchor marches the user's content down the screen (ADR-002, fourth
+   * pass). Reaching for it inside a `catch` means the terminal silently
+   * goes back to the broken behaviour on exactly the sessions where the
+   * rebuild is hardest — the old, busy, colourful ones — and nothing in the
+   * UI says so. It shipped that way, and it is why "fixed" had to be fixed
+   * again.
+   *
+   * So the grid keeps the width it has. The visible cost is honest and
+   * bounded: after a narrowing, the right-hand end of long lines is clipped
+   * by the pane until the retry lands; after a widening, a strip of
+   * background. One retry, a settle later, in case the failure was
+   * transient — and a loud log either way, because a terminal that cannot
+   * rebuild is a bug report, not a state to live in quietly.
+   */
+  private rebuildFailed(err: unknown): void {
+    console.error(
+      "[terminal] grid rebuild failed; the grid keeps its old width and will retry once",
+      err,
+    );
+    if (this.diag) diagNote(this.id, `rebuild FAILED: ${String(err)}`);
+    if (this.rebuildRetried) {
+      // Already retried once and failed again. Stop: retrying a rebuild
+      // against a damaged page list forever would burn the frame budget and
+      // never succeed.
+      console.error("[terminal] grid rebuild failed twice; giving up on this width");
+      if (this.diag) diagNote(this.id, "rebuild gave up");
+      return;
+    }
+    this.rebuildRetried = true;
+    this.rebuildRetry = window.setTimeout(() => {
+      this.rebuildRetry = null;
+      this.scheduleRebuild();
+    }, REBUILD_QUIET_MS * 4);
+  }
+
+  /** A rebuild landed, so the next failure gets its retry back. */
+  private cancelRebuildRetry(): void {
+    this.rebuildRetried = false;
+    if (this.rebuildRetry === null) return;
+    window.clearTimeout(this.rebuildRetry);
+    this.rebuildRetry = null;
+  }
+
+  /**
+   * Adopt a new width by building a fresh grid and re-emitting the CELLS of
+   * the old one — **the fix for ADR-002's reflow anchor, and for the four
+   * rounds of it.**
+   *
+   * Two things are load-bearing and they are separate:
+   *
+   * **A rebuild, not a reflow.** `ghostty_terminal_resize` rewraps a live
    * page list and, having no anchor to keep, spends the blank rows below
-   * the cursor and hands them back as history above it; the content sinks
-   * a row or two per width round trip and never rises. A grid constructed
-   * at the right width has no blanks to spend and no history to pull down,
-   * so the question never arises — and the replayed stream lands wrapped
-   * the way it would have been had the terminal always been this wide,
-   * which is strictly more faithful than a rewrap.
+   * the cursor and hands them back as history above it; the content sinks a
+   * row or two per width round trip and never rises. A grid constructed at
+   * the right width has no blanks to spend and no history to pull down, so
+   * the question never arises.
    *
-   * A rewrap does still run, on the way past — see `resizeThenReset`,
-   * where the order of two calls is the difference between this working
-   * and the terminal blanking. Its result is discarded unread, so the
-   * paragraph above holds: what the user ends up looking at was built at
-   * the new width and never rewrapped.
+   * **From cells, not from bytes.** This used to re-feed the raw PTY bytes
+   * out of a 1 MiB ring, and that is wrong however carefully it is done: a
+   * byte stream is only true at the width it was written for. `serialize.ts`
+   * has the measurement — zsh's `PROMPT_EOL_MARK` alone leaves a stranded
+   * reverse-video `%` and eats a row *per prompt* when its
+   * `COLUMNS-1`-spaces erase is replayed narrower, which is exactly what
+   * the user kept recording. Reading the grid instead means what comes back
+   * is what was on the screen, at any width, from a terminal of any age.
    *
-   * What it costs is stated in `replayLog.ts` (scrollback older than the
-   * budget) and in `reflow.ts` (a fresh terminal has forgotten every mode,
-   * hence the repair).
+   * No rewrap runs at all, not even a discarded one: the replacement grid
+   * is BORN at the target geometry (`swapGrid`), so `ghostty_terminal_resize`
+   * — the defect all six passes of ADR-002 orbit — is never entered.
    */
   private rebuildGrid(
     term: GhosttyTerminal,
     target: { cols: number; rows: number },
   ): void {
-    // A grapheme continuation still being held is part of the stream and
-    // has to be in the log before the log is replayed.
+    // A grapheme continuation still being held is part of the stream, and
+    // the grid has to have seen it before the grid is read.
     this.flushHeldTail();
+    const startedAt = import.meta.env.DEV ? performance.now() : 0;
 
     const wanted = this.readModes(term);
     const offset = Math.max(0, Math.floor(term.getViewportY()));
-    if (this.diag)
-      diagNote(this.id, `rebuild ${target.cols}x${target.rows} (${this.replay.size}B)`);
 
     // Selection coordinates are absolute buffer rows and mean nothing
     // across a rebuild.
@@ -511,32 +636,285 @@ export class GhosttySurface implements TerminalSurface {
     } catch {
       /* nothing selected */
     }
-    // ORDER IS LOAD-BEARING, AND IT IS NOT THE OBVIOUS ONE — see
-    // `resizeThenReset`.
-    this.resizeThenReset(term, target);
 
-    // Straight to the engine: replayed bytes are already in the log, and
-    // everything synthetic here must never enter it.
-    //
-    // The alternate screen has to be entered BEFORE the replay when the
-    // `\x1b[?1049h` that entered it has aged out of the window, because
-    // what is left in there is then a TUI's frames with nothing marking
-    // which screen they belong to — replayed as-is they would be painted
-    // over the user's shell scrollback, and the repair below would switch
-    // to a blank alternate screen on top. When the sequence IS still
-    // retained none of this fires: the replay reconstructs both screens by
-    // itself, which is the better answer and the common one.
-    if (this.altEnteredSeq !== null && !this.replay.hasRetained(this.altEnteredSeq))
-      term.write(decModeSequence(ALT_SCREEN_MODE, true));
-    for (const chunk of this.replay.read()) term.write(chunk);
-    const repair = modeRepairSequence(wanted, this.readModes(term));
-    if (repair) term.write(repair);
+    // READ EVERYTHING FIRST. Past this point the old grid is gone, and a
+    // throw before it is a rebuild that never started — `applySettledWidth`
+    // leaves the terminal exactly as it was.
+    const alternate = this.snapshotAlternate(term);
+    // Leaving the alternate screen restores the primary underneath it,
+    // which is the only way to read the shell's scrollback while a TUI is
+    // running. Safe to do to a grid that is about to be freed.
+    if (alternate) term.write(decModeSequence(ALT_SCREEN_MODE, false));
+    const primary = this.snapshotPrimary(term);
+    const plan = planPrimary(primary);
+    if (this.diag)
+      diagNote(
+        this.id,
+        `rebuild ${target.cols}x${target.rows} (${primary.history.length}h+${primary.screen.length}s${alternate ? "+alt" : ""})`,
+      );
 
-    // Put the viewport back the same distance from the bottom. Approximate
-    // by construction — a different width wraps into a different number of
-    // history lines — and clamped by `scrollToLine`.
-    if (offset > 0) term.scrollToLine(offset);
+
+    // The transaction, with attempts: build the replacement, write into
+    // it, and only then retire the old grid. A trap parks the damaged
+    // replacement (its pages are allocator poison — see
+    // `quarantinedGrids`) and tries again on memory that parked grid now
+    // blocks; the old grid is untouched until `finishSwap`, so every
+    // failure path still has the user's terminal, intact, at its old
+    // width.
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= MAX_REBUILD_ATTEMPTS; attempt++) {
+      const swap = this.swapGrid(term, target);
+      try {
+        // Straight to the engine. Nothing synthetic is ever retained, because
+        // nothing is retained at all any more.
+        let mark: { x: number; y: number; scrollback: number } | null = null;
+        for (let i = 0; i < plan.segments.length; i++) {
+          const segment = plan.segments[i];
+          // 512-byte chunks — the write shape every probe run validated. One
+          // oversized write into a fresh grid has never been exercised, and
+          // this path has earned its paranoia.
+          if (segment)
+            for (let o = 0; o < segment.length; o += 512)
+              term.write(segment.slice(o, o + 512));
+          // The emulator has just wrapped everything above the cursor at the
+          // NEW width, so asking it where the cursor ended up is the one
+          // measurement guaranteed to agree with the grid. Computing the row
+          // here instead would mean re-deriving its wrap arithmetic, which is
+          // the mistake this whole file is a reaction to.
+          if (i === plan.cursorAfter) mark = this.readCursor(term);
+        }
+        if (mark) {
+          const now = this.readCursor(term);
+          const scrolled = now.scrollback - mark.scrollback;
+          term.write(
+            restoreCursorSequence(Math.max(0, now.y - (mark.y - scrolled)), mark.x),
+          );
+        }
+
+        // The re-emitted stream carries no mode bytes at all, so every mode the
+        // program set is restored here rather than "usually by the replay".
+        // 1049 leads `RETAINED_DEC_MODES`, so this is also what re-enters the
+        // alternate screen — and entering it clears it, which is why the frame
+        // goes in afterwards.
+        // Land the viewport BEFORE the mode repair can re-enter the
+        // alternate screen: `?1049h` snapshots the primary viewport to
+        // restore when the program exits, and a snapshot taken mid-history
+        // hands the user a scrolled primary the moment the TUI quits.
+        // (`Terminal.reset()` used to land this as a side effect; a grid
+        // swap has to do it deliberately.)
+        term.scrollToBottom();
+        if (offset > 0) term.scrollToLine(offset);
+
+        const repair = modeRepairSequence(wanted, this.readModes(term));
+        if (repair) term.write(repair);
+        if (alternate) {
+          term.write(serializeAlternate(alternate, target.cols));
+          // The frame is a rectangle and was written as one, so the cursor's
+          // row is a plain count back from the last row drawn.
+          term.write(
+            restoreCursorSequence(
+              Math.max(0, alternate.length - 1 - this.altCursor.y),
+              Math.min(this.altCursor.x, Math.max(0, target.cols - 1)),
+            ),
+          );
+        }
+        this.finishSwap(swap);
+        lastErr = null;
+      } catch (err) {
+        lastErr = err;
+        this.parkDamagedGrid(term, swap);
+        console.warn(
+          `[terminal] rebuild attempt ${attempt}/${MAX_REBUILD_ATTEMPTS} trapped; damaged grid quarantined (${quarantinedGrids.length} total)`,
+        );
+        if (this.diag)
+          diagNote(this.id, `rebuild attempt ${attempt} trapped: ${String(err)}`);
+        continue;
+      }
+      break;
+    }
+    if (lastErr) {
+      // The snapshot took the OLD grid out of the alternate screen to read
+      // the primary under it. Going back in hands the TUI a blank frame,
+      // which it repaints on its next output — better than leaving the
+      // shell's scrollback where a full-screen program was.
+      if (alternate) term.write(decModeSequence(ALT_SCREEN_MODE, true));
+      throw lastErr;
+    }
+
     this.repaint();
+    // DEV-only, and gated the same way as `bridge.ts`: a rebuild lands
+    // inside a user's gesture, so how long it takes is a number a spec has
+    // to be able to assert rather than a number this file gets to claim.
+    if (import.meta.env.DEV)
+      performance.measure("phasr:terminal-rebuild", { start: startedAt });
+  }
+
+  /** Cursor position, plus the history depth it is relative to. */
+  private readCursor(term: GhosttyTerminal): {
+    x: number;
+    y: number;
+    scrollback: number;
+  } {
+    const wasm = term.wasmTerm;
+    if (!wasm) return { x: 0, y: 0, scrollback: 0 };
+    const cursor = wasm.getCursor();
+    return {
+      x: cursor.x,
+      y: cursor.y,
+      scrollback: wasm.getScrollbackLength(),
+    };
+  }
+
+  /**
+   * One engine cell → one `SnapshotCell`.
+   *
+   * `bg` of pure black is the engine's own encoding of "default background"
+   * — its renderer skips the fill entirely for `(0,0,0)` — so it maps back
+   * to `null` and is emitted as SGR 49, not as an explicit black. `fg` gets
+   * the same treatment against the palette's default foreground, so
+   * ordinary text stays ordinary text and follows a later theme change.
+   *
+   * `wide` is the previous cell's business: the right-hand half of a
+   * double-width character is a cell of its own that must occupy a column
+   * and emit nothing. Deriving it from the character before it is exact,
+   * where reading the spacer's own `width`/`codepoint` would depend on how
+   * the engine encodes an untouched cell.
+   */
+  private toSnapshotCell(
+    cell: GhosttyCellLike,
+    afterWide: boolean,
+    defaultFg: { r: number; g: number; b: number },
+  ): SnapshotCell {
+    const fg = { r: cell.fg_r, g: cell.fg_g, b: cell.fg_b };
+    const bg = { r: cell.bg_r, g: cell.bg_g, b: cell.bg_b };
+    return {
+      text: afterWide ? "" : String.fromCodePoint(cell.codepoint || 32),
+      fg:
+        fg.r === defaultFg.r && fg.g === defaultFg.g && fg.b === defaultFg.b
+          ? null
+          : fg,
+      bg: bg.r === 0 && bg.g === 0 && bg.b === 0 ? null : bg,
+      flags: cell.flags,
+    };
+  }
+
+  private rowFromCells(
+    cells: readonly GhosttyCellLike[],
+    graphemeAt: ((col: number) => string) | null,
+    defaultFg: { r: number; g: number; b: number },
+    wrapped: boolean,
+  ): SnapshotRow {
+    const out: SnapshotCell[] = [];
+    let afterWide = false;
+    for (let c = 0; c < cells.length; c++) {
+      const cell = cells[c]!;
+      const snapshot = this.toSnapshotCell(cell, afterWide, defaultFg);
+      // Combining marks, emoji ZWJ sequences, anything the engine folded
+      // into one cell: the codepoint alone would drop everything after the
+      // base character.
+      if (!afterWide && cell.grapheme_len > 0 && graphemeAt) {
+        const cluster = graphemeAt(c);
+        if (cluster) snapshot.text = cluster;
+      }
+      out.push(snapshot);
+      afterWide = !afterWide && cell.width === 2;
+    }
+    return { cells: out, wrapped };
+  }
+
+  /** The alternate screen's frame, or `null` if the terminal is not on it. */
+  private snapshotAlternate(term: GhosttyTerminal): SnapshotRow[] | null {
+    const wasm = term.wasmTerm;
+    if (!wasm || !wasm.isAlternateScreen()) return null;
+    const defaultFg = wasm.getColors().foreground;
+    const cursor = wasm.getCursor();
+    this.altCursor = { x: cursor.x, y: cursor.y };
+    const rows: SnapshotRow[] = [];
+    for (let r = 0; r < term.rows; r++) {
+      const cells = wasm.getLine(r);
+      if (!cells) break;
+      rows.push(
+        this.rowFromCells(
+          cells,
+          (c) => wasm.getGraphemeString(r, c),
+          defaultFg,
+          // A frame is a rectangle: no row of it continues into the next.
+          false,
+        ),
+      );
+    }
+    return rows;
+  }
+
+  /**
+   * The primary screen and its history.
+   *
+   * Independent of where the user has scrolled to: `viewportY` is a
+   * JS-side offset the RENDERER composes with, and the WASM terminal is
+   * always at the live bottom — `getLine(r)` is active-screen row `r` and
+   * `getScrollbackLine(i)` is history line `i`, whatever the scrollbar says.
+   */
+  private snapshotPrimary(term: GhosttyTerminal): GridSnapshot {
+    const wasm = term.wasmTerm;
+    if (!wasm) return { history: [], screen: [], cursor: { x: 0, y: 0 } };
+    const defaultFg = wasm.getColors().foreground;
+    const cols = term.cols;
+
+    const total = wasm.getScrollbackLength();
+    const first = Math.max(0, total - MAX_HISTORY_ROWS);
+    const history: SnapshotRow[] = [];
+    // `wrapped` is LEADING — a row continues the one above — and
+    // ghostty-web 0.4.0 cannot say for history rows (`IBuffer.getLine`
+    // hardcodes `isWrapped: false`; the WASM exports no scrollback wrap
+    // flag either — checked, all 14 `ghostty_terminal_*` exports), so it
+    // is inferred: this row is a continuation when the PREVIOUS row was
+    // written out to its last column. The false positive — a line exactly
+    // the terminal's width, followed by an independent line — is
+    // irreducible at this engine version; both directions of guessing and
+    // the no-guess alternative were measured, and this one loses least
+    // (see the two `test.fail` cases in terminal-reflow-anchor.spec.ts).
+    let prevFull = false;
+    for (let i = first; i < total; i++) {
+      const cells = wasm.getScrollbackLine(i);
+      if (!cells) continue;
+      const row = this.rowFromCells(
+        cells,
+        (c) => wasm.getScrollbackGraphemeString(i, c),
+        defaultFg,
+        false,
+      );
+      history.push({ ...row, wrapped: i > first && prevFull });
+      prevFull = looksWrapped(row, cols);
+    }
+
+    const screen: SnapshotRow[] = [];
+    for (let r = 0; r < term.rows; r++) {
+      const cells = wasm.getLine(r);
+      if (!cells) break;
+      screen.push(
+        this.rowFromCells(
+          cells,
+          (c) => wasm.getGraphemeString(r, c),
+          defaultFg,
+          // The active screen DOES carry real wrap flags — LEADING
+          // semantics (this row continues the one above), whatever the
+          // engine's JSDoc says. Row 0 has nothing to continue; a screen-
+          // top continuation of a history row is treated as a start, which
+          // the history heuristic compensates for from its side.
+          r > 0 && wasm.isRowWrapped(r),
+        ),
+      );
+    }
+
+    const cursor = wasm.getCursor();
+    return {
+      history,
+      screen,
+      cursor: {
+        x: Math.max(0, cursor.x),
+        y: Math.max(0, Math.min(cursor.y, Math.max(0, screen.length - 1))),
+      },
+    };
   }
 
   /**
@@ -596,13 +974,88 @@ export class GhosttySurface implements TerminalSurface {
    * `onResize` exactly once, which is the single `resize_task` a whole
    * panel toggle is allowed.
    */
-  private resizeThenReset(
+
+  /**
+   * Build the replacement grid BEFORE freeing the old one, and never call
+   * `ghostty_terminal_resize` at all.
+   *
+   * The aged-session probe pinned the third shape of the engine's
+   * page-memory defect: a grid created on just-recycled pages traps
+   * (`memory access out of bounds`) part-way through having styled and
+   * grapheme-bearing content written into it — the very content a rebuild
+   * re-emits. The identical bytes into a live, never-recycled grid are
+   * harmless. So the replacement is created while the old grid still owns
+   * its pages, forcing the allocator to hand it fresh memory; the old grid
+   * is freed only after the replacement holds everything.
+   *
+   * This also makes the rebuild a transaction. Every read happens before
+   * the swap; every write lands in the new grid; the old grid is not
+   * touched between the two. A trap mid-write leaves the OLD grid intact,
+   * so `rollbackGrid` can put it back — which is what killed the 22-second
+   * retry that used to snapshot a damaged page list, and the history it
+   * used to lose doing so.
+   */
+  private swapGrid(
     term: GhosttyTerminal,
     target: { cols: number; rows: number },
-  ): void {
+  ): GridSwap {
+    const t = term as unknown as GhosttyPrivateGrid;
+    const swap: GridSwap = {
+      stale: t.wasmTerm,
+      oldCols: term.cols,
+      oldRows: term.rows,
+    };
+    t.wasmTerm = t.ghostty.createTerminal(
+      target.cols,
+      target.rows,
+      t.buildWasmConfig(),
+    ) as GhosttyPrivateGrid["wasmTerm"];
+    t.renderer?.clear?.();
+    // The engine half of resize() finds wasmTerm already at the target and
+    // early-returns; what still runs is the canvas, the renderer metrics
+    // and the single onResize the PTY resize rides on.
     term.resize(target.cols, target.rows);
-    term.reset();
     term.viewportY = 0;
+    return swap;
+  }
+
+  /**
+   * A write into the replacement grid trapped. The old grid was never
+   * touched, so put it back — and PARK the damaged grid rather than free
+   * it: its pages are the poison, and freeing them re-arms the next
+   * create. See `quarantinedGrids`.
+   */
+  private parkDamagedGrid(term: GhosttyTerminal, swap: GridSwap): void {
+    const t = term as unknown as GhosttyPrivateGrid;
+    quarantinedGrids.push(t.wasmTerm);
+    t.wasmTerm = swap.stale;
+    t.renderer?.clear?.();
+    term.resize(swap.oldCols, swap.oldRows);
+    term.viewportY = 0;
+  }
+
+  /**
+   * The replacement holds everything; retire the old grid. Its scrollback
+   * is erased first (`ED 3` — plain VT, no engine entry point), so the
+   * engine walks its pages back page by page before the bulk free — the
+   * free of a written grid is what seeds the recycled-page poison, and an
+   * emptied grid has far less to seed with.
+   */
+  private finishSwap(swap: GridSwap): void {
+    const stale = swap.stale as {
+      free(): void;
+      write?(data: string): void;
+    };
+    try {
+      stale.write?.("\x1b[?1049l\x1b[0m\x1b[2J\x1b[3J\x1b[H");
+    } catch {
+      /* about to be freed regardless */
+    }
+    try {
+      stale.free();
+    } catch {
+      /* a leak, not a correctness problem */
+    }
   }
 
   /** The DEC private modes a rebuild has to carry over. See `reflow.ts`. */
@@ -712,33 +1165,24 @@ export class GhosttySurface implements TerminalSurface {
   }
 
   /**
-   * The ONE place bytes reach the emulator, and therefore the one place
-   * they can be retained.
+   * The ONE place PTY bytes reach the emulator.
    *
-   * What is retained is exactly what was handed to the engine, in order —
-   * a clean partition of the stream with the grapheme-tail splitting
-   * already applied — so replaying it is byte-for-byte what the terminal
-   * was shown. Synthetic bytes (the replay itself, the mode repair) go
-   * direct to `term.write` and are deliberately not recorded.
+   * It used to also retain them, in a 1 MiB ring, so a width change could
+   * re-feed them into a fresh grid. It does not any more, and the deletion
+   * is the fix rather than a tidy-up: bytes are only true at the width they
+   * were written for, so re-feeding a four-day-old stream into a narrower
+   * grid resurrects erased characters and moves the content down the screen
+   * (`serialize.ts` has the measurement). A rebuild reads the CELLS now, so
+   * there is nothing to keep — and 1 MiB per terminal, 8 MiB at the LRU
+   * bound, stops being held for it.
    */
   private writeToEngine(data: string | Uint8Array): void {
     const term = this.term;
     // Before the engine lands, `write()` queues into `pendingWrites` and
-    // replays through here on attach — so retaining anything now would
-    // retain it twice.
+    // replays through here on attach.
     if (!term) return;
-    this.replay.append(data);
+    this.written = true;
     term.write(data);
-    // Note where the stream switched screens, so a later rebuild can ask
-    // whether the sequence that did it is still inside the window. One
-    // WASM call per coalesced PTY chunk (~60/s on a busy terminal), which
-    // is the cheapest way to know this without a VT parser on this side.
-    if (!term.wasmTerm) return;
-    if (term.wasmTerm.isAlternateScreen()) {
-      this.altEnteredSeq ??= this.replay.lastSeq;
-    } else {
-      this.altEnteredSeq = null;
-    }
   }
 
   private clearHeldTimer(): void {
@@ -1052,7 +1496,7 @@ export class GhosttySurface implements TerminalSurface {
     this.pendingWrites.length = 0;
     this.pendingInput.length = 0;
     this.cancelRebuild();
-    this.replay.clear();
+    this.cancelRebuildRetry();
     this.clearHeldTimer();
     this.heldTail = null;
     if (this.diag) diagDispose(this.id);
