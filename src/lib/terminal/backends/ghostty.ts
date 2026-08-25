@@ -28,6 +28,7 @@ import {
   WheelAccumulator,
   wheelOutcome,
 } from "@/lib/terminal/backends/ghostty/wheel";
+import { reportP0Error } from "@/lib/sentry";
 import {
   diagAttach,
   diagCreate,
@@ -253,6 +254,18 @@ interface GridSwap {
 /** ghostty-web reserves this much width for its own overlay scrollbar. */
 const SCROLLBAR_WIDTH = 15;
 
+/**
+ * How long the render loop may go without running before a surface that is
+ * supposed to be painting is declared stalled.
+ *
+ * A second, not a frame or two: the point is to be unambiguous. A busy
+ * main thread, a long WASM write, a garbage collection — all of those skip
+ * frames, and none of them skip a whole second while the page is visible
+ * and the terminal is on screen. Below that, this would be a repaint
+ * heuristic instead of a fault detector.
+ */
+const STALL_MS = 1000;
+
 let surfaceSeq = 0;
 
 export class GhosttySurface implements TerminalSurface {
@@ -283,6 +296,10 @@ export class GhosttySurface implements TerminalSurface {
   private selection: SurfaceDisposable | null = null;
   private active = true;
   private pausedWarned = false;
+  /** Throttles the write-path restart. See `healIfStalled`. */
+  private lastKickAt = 0;
+  /** Frame failures already reported. See `reportFrameErrors`. */
+  private reportedFrameErrors = 0;
 
   /** Has this terminal been shown anything? See `fitAnchored`. */
   private written = false;
@@ -1142,9 +1159,15 @@ export class GhosttySurface implements TerminalSurface {
     this.active = active;
     if (this.disposed) return;
     const term = this.term;
+    // No engine yet is not a missing patch — it is the ordinary state of a
+    // surface whose chunk has not resolved, and `attach()` re-applies the
+    // flag. Warning here spent the one-shot `pausedWarned` on a non-event,
+    // so a genuinely unpatched build then went quiet for the rest of the
+    // session.
+    if (!term) return;
     // Runtime-guarded even though the patched `.d.ts` declares both: an
     // unapplied patch must degrade to "hot but correct", not to a crash.
-    if (typeof term?.pause !== "function" || typeof term.resume !== "function") {
+    if (typeof term.pause !== "function" || typeof term.resume !== "function") {
       if (!this.pausedWarned) {
         this.pausedWarned = true;
         console.warn(
@@ -1161,6 +1184,104 @@ export class GhosttySurface implements TerminalSurface {
     }
   }
 
+  /**
+   * A render that threw used to reach Sentry on its own: the loop had no
+   * `catch`, so the exception escaped through `requestAnimationFrame`,
+   * which Sentry's `browserApiErrors` integration wraps. Wrapping the loop
+   * body — which is what stops one bad frame ending the terminal — closes
+   * that path, so the report has to be made deliberately or the fix would
+   * have bought a live terminal with a blind one.
+   *
+   * Once per surface: a renderer that fails every frame is one fault, not
+   * sixty a second, and the count says how bad it got.
+   */
+  private reportFrameErrors(count: number, error: unknown): void {
+    if (count <= this.reportedFrameErrors) return;
+    const first = this.reportedFrameErrors === 0;
+    this.reportedFrameErrors = count;
+    if (this.diag) diagNote(this.id, `render frame threw (${count} total)`);
+    if (!first) return;
+    reportP0Error(
+      `[terminal] ${this.id}: a render frame threw; the loop survived it`,
+      error,
+      { area: "terminal", operation: "render-frame", surfaceId: this.id },
+    );
+  }
+
+  /**
+   * Frames the loop has run, or `null` when this surface is not supposed
+   * to be painting. See `TerminalSurface.renderTick` and
+   * `lib/terminal/liveness.ts`.
+   *
+   * `getRenderStats` comes from the patch, so it is feature-tested like
+   * `pause`/`resume`: an unpatched engine reports "not measurable" rather
+   * than crashing the watchdog, and the watchdog then leaves it alone.
+   */
+  renderTick(): number | null {
+    if (this.disposed || !this.active) return null;
+    const stats = this.term?.getRenderStats?.();
+    if (!stats || stats.paused || !stats.open || stats.disposed) return null;
+    return stats.ticks;
+  }
+
+  kickRendering(): void {
+    if (this.disposed || !this.active) return;
+    const term = this.term;
+    if (typeof term?.resume !== "function") return;
+    this.lastKickAt = performance.now();
+    try {
+      // pause() first, for two reasons: it cancels a frame that is queued
+      // but will never be delivered (the suspended-web-view case, where
+      // the id is live and the callback is gone), and it makes the restart
+      // hold even against the pre-fix `resume()` semantics, which
+      // early-returned unless the terminal had been paused.
+      term.pause?.();
+      term.resume();
+    } catch (err) {
+      console.error(`[terminal] ${this.id}: could not restart the render loop`, err);
+      return;
+    }
+    // The loop paints on its NEXT frame; this is what puts the current
+    // buffer on screen now, and the only thing that helps at all if
+    // animation frames have stopped app-wide.
+    this.repaint();
+    if (this.diag) diagNote(this.id, "render loop restarted");
+  }
+
+  /**
+   * New output has arrived. If the loop has demonstrably not run for a
+   * second while this surface was supposed to be painting, it is not
+   * going to run again on its own — restart it, or the bytes just written
+   * are invisible for the rest of the terminal's life.
+   *
+   * This is the arm of the watchdog that needs no user and no event: an
+   * agent working while nobody is looking heals its own terminal. It costs
+   * one property read and one subtraction per PTY chunk, and reaches
+   * `kickRendering` only when something is actually wrong.
+   */
+  private healIfStalled(): void {
+    if (!this.active || this.disposed) return;
+    const stats = this.term?.getRenderStats?.();
+    if (!stats) return;
+    this.reportFrameErrors(stats.frameErrors, stats.lastFrameError);
+    if (stats.paused || !stats.open || stats.disposed) return;
+    // Never rendered at all yet: the first frame is still on its way.
+    if (!stats.lastFrameAt) return;
+    const now = performance.now();
+    if (now - stats.lastFrameAt < STALL_MS) return;
+    // A hidden page stops delivering frames legitimately, and a burst of
+    // output would otherwise kick once per chunk for as long as it stays
+    // hidden. The watchdog's `visible` trigger covers the way back.
+    if (typeof document !== "undefined" && document.visibilityState !== "visible")
+      return;
+    if (now - this.lastKickAt < STALL_MS) return;
+    console.warn(
+      `[terminal] ${this.id}: no frame in ${Math.round(now - stats.lastFrameAt)}ms ` +
+        "while output was arriving — restarting the render loop",
+    );
+    this.kickRendering();
+  }
+
   // -------------------------------------------------------------------
   // I/O
   // -------------------------------------------------------------------
@@ -1172,6 +1293,9 @@ export class GhosttySurface implements TerminalSurface {
       this.pendingWrites.push(data);
       return;
     }
+    // Output arriving into a terminal whose loop stopped is the one signal
+    // that needs no user present. See `healIfStalled`.
+    this.healIfStalled();
     // Literal strings come from phasr itself (status lines, log replay), not
     // from a PTY, so they are never a partial cluster.
     if (typeof data === "string") {

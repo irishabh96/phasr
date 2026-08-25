@@ -160,6 +160,25 @@ export interface TerminalSurface {
   repaint(): void;
   /** Pause/resume rendering while parked. No-op on backends that idle. */
   setActive(active: boolean): void;
+  /**
+   * Frames the renderer has actually run — or `null` when this surface is
+   * not meant to be painting right now (parked, no engine yet, disposed),
+   * or the backend has no free-running loop to measure.
+   *
+   * Monotonic and otherwise meaningless: only its MOVEMENT is a signal.
+   * It exists because "this terminal is dead" and "this terminal is fine
+   * and has nothing new to show" look identical on screen, and the fix for
+   * one is nothing while the fix for the other is a restart. See
+   * `lib/terminal/liveness.ts`.
+   */
+  renderTick(): number | null;
+  /**
+   * Force the render loop back up and repaint in full.
+   *
+   * Idempotent and cheap enough to fire on a healthy surface: one loop
+   * restart and one full redraw. The recovery half of `renderTick`.
+   */
+  kickRendering(): void;
 
   applySettings(settings: Partial<TerminalSurfaceSettings> | undefined): void;
   applyTheme(theme: TerminalTheme): void;

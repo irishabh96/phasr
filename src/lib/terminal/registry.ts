@@ -22,10 +22,25 @@ export function registerSurface(surface: TerminalSurface): void {
   };
 }
 
-function surfaceForNode(node: Element | null): TerminalSurface | null {
+/**
+ * The surface owning a DOM node, if any. Exported because the focus probe
+ * and the render-loop watchdog both start from "the user clicked THIS" and
+ * have to get from a node to a terminal without knowing the emulator's
+ * markup. See `liveness.ts`.
+ */
+export function surfaceForNode(node: Element | null): TerminalSurface | null {
   const host = node?.closest?.("[data-testid='terminal-surface']") ?? null;
   const id = host?.getAttribute("data-terminal-id");
   return id ? (live.get(id) ?? null) : null;
+}
+
+/**
+ * Every live surface. The watchdog checks all of them when the window
+ * comes back — a terminal whose loop died while the app was away has no
+ * other way to be noticed, since it produces no event of its own.
+ */
+export function liveSurfaces(): TerminalSurface[] {
+  return [...live.values()];
 }
 
 /**
