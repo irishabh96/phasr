@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootApp, expectBackend, makeFixtures, ptyOut } from "./harness";
+import { bootApp, expectBackend, makeFixtures, ptyOut, terminal } from "./harness";
 
 /**
  * Switching inner tabs must hand the keyboard to the terminal you switched
@@ -97,4 +97,83 @@ test("revealing a terminal does not steal focus from a text field", async ({
   expect(await page.evaluate(() => document.activeElement?.tagName ?? null)).toBe(
     "INPUT",
   );
+});
+
+/**
+ * The field report that produced `terminal-liveness.spec.ts` said "focus of
+ * terminal or input gets removed even after clicking multiple times", and
+ * focus turned out to be the one thing that was fine — the renderer had
+ * stopped and the terminal was answering every keystroke into a canvas
+ * nobody was updating. The two tests below are that lesson written into
+ * the focus spec: from here on, "has the keyboard" is only half a claim,
+ * and neither half is allowed to pass alone.
+ */
+const renderTick = (p: Page, id: string) =>
+  p.evaluate((i) => (window as any).__PHASR_TERM__?.renderTick(i) ?? null, id);
+
+test("a revealed terminal takes the keyboard AND starts painting again", async ({
+  page,
+}) => {
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await expectBackend(page);
+  await page.waitForTimeout(1500);
+  await ptyOut(page, "ws-agent", "agent\r\n");
+
+  const agentTerm = await focusedTerminalId(page);
+  expect(agentTerm).not.toBeNull();
+
+  // Park it behind a session terminal, then come back to it.
+  await page.keyboard.press("Meta+t");
+  await page.waitForTimeout(1500);
+  expect(await renderTick(page, agentTerm!)).toBeNull(); // paused while parked
+  await page.getByRole("tab").first().click();
+  await page.waitForTimeout(1200);
+
+  // Half one: the keyboard. Asserted on the PTY, as above — focus is only
+  // interesting if the bytes arrive.
+  await clearCalls(page);
+  await page.keyboard.type("k");
+  await page.waitForTimeout(400);
+  expect((await sentTo(page)).join("")).toContain("send_input_to_task:k");
+
+  // Half two: it is actually painting. A terminal that has the keyboard
+  // and a dead render loop is the exact failure this spec used to miss.
+  const tick = await renderTick(page, agentTerm!);
+  expect(tick).not.toBeNull();
+  await page.waitForTimeout(400);
+  expect(await renderTick(page, agentTerm!)).toBeGreaterThan(tick!);
+});
+
+test("an explicit click on a terminal always wins, even from a text field", async ({
+  page,
+}) => {
+  // `canTakeTerminalFocus()` deliberately refuses to take focus from a form
+  // field, and it is only ever consulted on a REVEAL. A click is the user
+  // saying otherwise, and no guard may stand in front of it — a terminal
+  // that will not accept a click is indistinguishable from a broken app.
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await expectBackend(page);
+  await page.waitForTimeout(1500);
+
+  await page.keyboard.press("Meta+k");
+  await page.waitForTimeout(600);
+  const palette = page.locator("input").first();
+  test.skip(
+    !(await palette.isVisible().catch(() => false)),
+    "no palette input in this build",
+  );
+  await palette.click();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe(
+    "INPUT",
+  );
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  const box = (await terminal(page).boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(400);
+  expect(await focusedTerminalId(page)).not.toBeNull();
 });
