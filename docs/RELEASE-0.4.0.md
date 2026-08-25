@@ -133,7 +133,7 @@ before a window ever appears**. There is no in-app recovery from that state.
 | 2 | `user_settings` (`cursorStyle` / `cursorBlink`) | **SAFE** | Both columns date from migration `0001`, `NOT NULL DEFAULT`. The new UI can only write `block` / `bar` / `underline`, which is exactly the set 0.3.x's own `normalizeCursorStyle` already accepts. |
 | 3 | Cloud sync | **SAFE** | `src-tauri/src/sync/mod.rs` is untouched by this branch. No new field enters the payload. |
 | 4 | App-data layout | **SAFE** | No new files or directories. |
-| 5 | `localStorage` | **SAFE** | Two additive keys, both read inside `try`/`catch` with total fallbacks. |
+| 5 | `localStorage` | **SAFE** | Three additive keys, both read inside `try`/`catch` with total fallbacks. |
 | 6 | IPC / PTY wire format | **SAFE** | Base64 is a `serialize_with` on the IPC event only. Nothing persists it. |
 | 7 | Third-party attribution | **FIXED** | Notices now ship inside the `.app`. |
 
@@ -203,7 +203,7 @@ its test corpus and writes none; its engine is behind the non-default
 
 ### 5. `localStorage` — SAFE
 
-Shipped 0.3.x only ever wrote `phasr.diff.viewMode` and `phasr.machine`.
+Shipped 0.3.x wrote 11 `phasr.*` keys, all of which keep their names and meanings.
 
 **`phasr.terminal.backend` never shipped.** It was introduced and removed
 inside this branch, so there is no stale key on any user's machine to ignore.
@@ -268,9 +268,9 @@ Everything below was observed on this machine, on `phasr/ghostty-terminal-engine
 |---|---|
 | `pnpm typecheck` | **pass** |
 | `pnpm build` | **pass** |
-| `pnpm test` (vitest) | **263 passed** |
-| `pnpm exec playwright test` (Chromium) | **118 passed, 5 skipped, 1 failed** — the failure is the pre-existing `base-branch.spec.ts` flake |
-| `pnpm test:e2e:webkit`, terminal specs, `--workers=1` | **28 passed, 3 skipped, 0 failed** |
+| `pnpm test` (vitest) | **338 passed** |
+| `pnpm exec playwright test` (Chromium) | **135 passed, 5 skipped, 1 failed** — the failure is the pre-existing `base-branch.spec.ts` flake |
+| `pnpm test:e2e:webkit`, terminal specs, `--workers=1` | **18 passed, 0 unexpected failures (re-run 2026-08-25 at 5b29dc2, incl. terminal-scrollback and terminal-open)** |
 | `pnpm test:e2e:webkit`, full suite | 97 passed, 16 failed — **all failures pre-existing and non-terminal**, see below |
 | `cargo check` | **pass** |
 | `cargo test` | **216 passed, 0 failed** (213 + 3 new compat tests) |
