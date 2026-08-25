@@ -46,6 +46,33 @@ pub struct RunningTaskInfo {
     pub started_at: DateTime<Utc>,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskActivity {
+    pub task_id: String,
+    /// Wall-clock epoch ms of the task terminal's most recent output
+    /// (spawn time until the first byte). Compared against `Date.now()`.
+    pub last_output_at: i64,
+}
+
+/// Last-output timestamps for every task with a live PTY. A task missing
+/// from the list has no running terminal process at all.
+#[tauri::command]
+pub async fn list_task_activity(
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<TaskActivity>, OrchestratorError> {
+    session.require()?;
+    Ok(orchestrator
+        .task_activity()
+        .into_iter()
+        .map(|(task_id, last_output_at)| TaskActivity {
+            task_id,
+            last_output_at,
+        })
+        .collect())
+}
+
 #[tauri::command]
 pub async fn start_task(
     input: StartTaskInput,

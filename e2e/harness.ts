@@ -228,6 +228,10 @@ export function makeFixtures() {
     branchStatus,
     commits,
     sampleDiff,
+    // Live-PTY activity snapshot: the running fixture workspace produced
+    // output "just now", so its sidebar dot shows by default. Override
+    // `list_task_activity` with a stale timestamp to test the timeout.
+    taskActivity: [{ taskId: "ws-agent", lastOutputAt: Date.now() }],
   };
 }
 
@@ -254,6 +258,7 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "list_repositories": return f.repositories;
       case "get_repository": return f.repositories.find((r) => r.id === a?.id) ?? null;
       case "list_workspaces": return f.workspaces.filter((w) => w.repositoryId === a?.repositoryId);
+      case "list_task_activity": return f.taskActivity;
       case "get_workspace": {
         const w = f.workspaces.find((x) => x.id === a?.id);
         return w ?? { __reject: "not found" };

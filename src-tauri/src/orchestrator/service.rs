@@ -129,6 +129,12 @@ impl TaskOrchestrator {
         self.status_tx.subscribe()
     }
 
+    /// `(task_id, last-output wall-clock ms)` for every task with a live
+    /// PTY. Tasks whose PTY has exited are absent, not zero.
+    pub fn task_activity(&self) -> Vec<(String, i64)> {
+        self.runtime.activity()
+    }
+
     /// Create a task row, build its worktree, spawn the PTY, and
     /// transition `pending → running`. Returns the row id once the
     /// runtime has accepted the spawn.

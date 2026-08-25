@@ -110,6 +110,19 @@ pub struct PtyHandle {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
+    /// Wall-clock ms of the most recent PTY output, stamped by the
+    /// coalescer thread. Initialised to spawn time so a freshly started
+    /// task counts as active before its first byte arrives.
+    last_output_at: Arc<std::sync::atomic::AtomicI64>,
+}
+
+/// Wall-clock epoch milliseconds. The frontend compares this against
+/// `Date.now()`, so it must be wall time, not a monotonic instant.
+fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl PtyHandle {
@@ -209,6 +222,7 @@ impl PtyHandle {
             killer: Mutex::new(killer),
             tx: tx.clone(),
             replay: Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES))),
+            last_output_at: Arc::new(std::sync::atomic::AtomicI64::new(epoch_ms())),
         });
 
         // Schedule the agent command + optional prompt as keystrokes
@@ -257,6 +271,7 @@ impl PtyHandle {
         let task_id_for_coalesce = task_id.clone();
         let tx_for_coalesce = tx.clone();
         let replay_for_coalesce = handle.replay.clone();
+        let last_output_for_coalesce = handle.last_output_at.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-out-{task_id_for_coalesce}"))
             .spawn(move || {
@@ -266,6 +281,7 @@ impl PtyHandle {
                     log_file,
                     tx_for_coalesce,
                     replay_for_coalesce,
+                    last_output_for_coalesce,
                 )
             })
             .map_err(PtyError::from)?;
@@ -289,6 +305,13 @@ impl PtyHandle {
             .map_err(PtyError::from)?;
 
         Ok(handle)
+    }
+
+    /// Wall-clock ms of the most recent PTY output (spawn time until the
+    /// first byte arrives). Drives the sidebar's activity dot.
+    pub fn last_output_ms(&self) -> i64 {
+        self.last_output_at
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PtyEvent> {
@@ -695,6 +718,7 @@ fn coalesce_pty_output<W: Write>(
     mut log: W,
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
+    last_output_at: Arc<std::sync::atomic::AtomicI64>,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -711,6 +735,10 @@ fn coalesce_pty_output<W: Write>(
 
         match received {
             Ok(bytes) => {
+                // Stamped at receipt, not at flush — "the terminal produced
+                // bytes" is the fact the activity dot reports, independent
+                // of how those bytes are framed for delivery.
+                last_output_at.store(epoch_ms(), std::sync::atomic::Ordering::Relaxed);
                 // The log is the raw byte stream, written before any framing
                 // decision — `read_task_log` and the B1 replay corpus both
                 // depend on it being exactly what the PTY produced.
@@ -1002,7 +1030,8 @@ mod tests {
         drop(bytes_tx);
 
         let mut sink: Vec<u8> = Vec::new();
-        coalesce_pty_output("t".into(), bytes_rx, &mut sink, tx, replay);
+        let last_output = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        coalesce_pty_output("t".into(), bytes_rx, &mut sink, tx, replay, last_output);
 
         let mut chunks = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -1011,6 +1040,34 @@ mod tests {
             }
         }
         (chunks, sink)
+    }
+
+    #[test]
+    fn coalescer_stamps_activity_on_every_received_chunk() {
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx, _rx) = broadcast::channel::<PtyEvent>(16);
+        let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
+        let last_output = Arc::new(std::sync::atomic::AtomicI64::new(0));
+
+        bytes_tx.send(b"hello".to_vec()).unwrap();
+        drop(bytes_tx);
+
+        let before = epoch_ms();
+        let mut sink: Vec<u8> = Vec::new();
+        coalesce_pty_output(
+            "t".into(),
+            bytes_rx,
+            &mut sink,
+            tx,
+            replay,
+            last_output.clone(),
+        );
+
+        let stamped = last_output.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            stamped >= before,
+            "activity stamp {stamped} should be at or after {before}"
+        );
     }
 
     #[test]

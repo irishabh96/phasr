@@ -56,6 +56,16 @@ impl TaskRuntime {
         self.running.lock().get(task_id).cloned()
     }
 
+    /// Snapshot of `(task_id, last-output wall-clock ms)` for every live
+    /// PTY. Tasks with no live PTY are simply absent.
+    pub fn activity(&self) -> Vec<(String, i64)> {
+        self.running
+            .lock()
+            .iter()
+            .map(|(id, handle)| (id.clone(), handle.last_output_ms()))
+            .collect()
+    }
+
     /// Forget a task after it has exited. Doesn't kill — call `kill` on
     /// the handle first if needed.
     pub fn drop_task(&self, task_id: &str) {
