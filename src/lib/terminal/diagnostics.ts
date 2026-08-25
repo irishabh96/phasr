@@ -16,6 +16,13 @@
  *
  *   localStorage.setItem("phasr.diag.terminal", "1"); location.reload();
  *   copy(JSON.stringify(window.__PHASR_TERM_DIAG__.dump(), null, 2));
+ *
+ * **The focus probe below is the exception: it is ALWAYS on.** A field
+ * report of "clicking does nothing" is unreproducible by construction, and
+ * a diagnostic that first has to be switched on and then waited for is a
+ * diagnostic that arrives one occurrence too late. It costs a ring of
+ * twenty records, written on mousedown, and nothing at all otherwise — so
+ * `dump()` answers the question from a cold paste, with no setup.
  */
 
 const FLAG = "phasr.diag.terminal";
@@ -189,21 +196,139 @@ function escape(s: string): string {
     .replace(/\n/g, "\\n");
 }
 
+// ---------------------------------------------------------------------------
+// Focus probe — always on
+// ---------------------------------------------------------------------------
+
+/** Clicks kept. Twenty is a couple of frustrated bursts, not a log. */
+const MAX_FOCUS_RECORDS = 20;
+
+/**
+ * One click, and everything needed to tell the three ways it can fail
+ * apart. They present identically — "I click and nothing happens" — and
+ * their fixes have nothing in common, so the first job of a field report
+ * is to say WHICH:
+ *
+ *   - the click never reached the terminal — `hit` is some overlay, or
+ *     `bodyPointerEvents` is "none" (a dismissable layer that did not
+ *     clean up leaves the whole app click-dead);
+ *   - the click landed but focus did not follow — `activeAfter` is not
+ *     inside a terminal;
+ *   - focus is fine and the RENDERER is dead — `activeAfter` is the
+ *     terminal, `hasFocus` is true, and `frames` did not move. This is the
+ *     one the field report of 2026-08-26 turned out to be, and the only
+ *     one where the terminal is simultaneously "not responding" and
+ *     delivering every keystroke to the process.
+ */
+export interface FocusProbeRecord {
+  at: number;
+  /** Tag + testid/class of what was actually clicked. */
+  target: string;
+  /** What `elementFromPoint` says is on top there — an intercepting
+   *  overlay shows up here and nowhere else. */
+  hit: string;
+  surfaceId: string | null;
+  activeBefore: string;
+  /** Sampled after the deadline, once every handler and the emulator's own
+   *  deferred `focus()` have run. */
+  activeAfter: string;
+  activeAfterInTerminal: boolean;
+  /** False when the OS gave the keyboard to another window entirely. */
+  hasFocus: boolean;
+  /** "none" here means nothing in the app is clickable. */
+  bodyPointerEvents: string;
+  /** Frame counter at click time; `null` when the surface is parked. */
+  frames: number | null;
+  /** Same counter after the deadline. Equal to `frames` = frozen. */
+  framesAfter: number | null;
+}
+
+const focusRecords: FocusProbeRecord[] = [];
+
+/** How long the probe waits before its second sample. */
+const FOCUS_SETTLE_MS = 150;
+
+function describe(el: Element | null | undefined): string {
+  if (!el) return "none";
+  const e = el as HTMLElement;
+  const testid = e.getAttribute?.("data-testid");
+  const cls =
+    typeof e.className === "string" && e.className
+      ? `.${e.className.trim().split(/\s+/).slice(0, 2).join(".")}`
+      : "";
+  return `${e.tagName}${testid ? `[${testid}]` : ""}${cls}`;
+}
+
+/**
+ * Record a mousedown. Called for EVERY mousedown, not only the ones inside
+ * a terminal: half of "focus gets removed" reports are about a plain text
+ * field, and a ring that only watched terminals could not tell the two
+ * readings apart.
+ */
+export function diagFocus(
+  event: MouseEvent,
+  surface: { id: string; renderTick(): number | null } | null,
+): void {
+  if (typeof document === "undefined") return;
+  let hit = "n/a";
+  try {
+    hit = describe(document.elementFromPoint(event.clientX, event.clientY));
+  } catch {
+    /* a point outside the viewport */
+  }
+  const record: FocusProbeRecord = {
+    at: Math.round(performance.now()),
+    target: describe(event.target as Element | null),
+    hit,
+    surfaceId: surface?.id ?? null,
+    activeBefore: describe(document.activeElement),
+    activeAfter: "pending",
+    activeAfterInTerminal: false,
+    hasFocus: document.hasFocus(),
+    bodyPointerEvents: getComputedStyle(document.body).pointerEvents,
+    frames: surface?.renderTick() ?? null,
+    framesAfter: null,
+  };
+  focusRecords.push(record);
+  if (focusRecords.length > MAX_FOCUS_RECORDS) focusRecords.shift();
+
+  window.setTimeout(() => {
+    const active = document.activeElement;
+    record.activeAfter = describe(active);
+    record.activeAfterInTerminal = !!(
+      active as HTMLElement | null
+    )?.closest?.("[data-testid='terminal-surface']");
+    record.framesAfter = surface?.renderTick() ?? null;
+  }, FOCUS_SETTLE_MS);
+}
+
+/** Test seam. */
+export function __resetFocusProbe(): void {
+  focusRecords.length = 0;
+}
+
 export interface TerminalDiagnostics {
   dump(): unknown;
+  /** The click ring on its own, for a quick look in the console. */
+  focus(): FocusProbeRecord[];
 }
 
 export function installTerminalDiagnostics(): void {
   if (typeof window === "undefined") return;
   window.__PHASR_TERM_DIAG__ = {
-    dump: () =>
-      [...records.values()].map((r) => ({
+    // An object rather than the bare array it used to be: the focus ring
+    // is worthless if the one command people know does not include it.
+    dump: () => ({
+      surfaces: [...records.values()].map((r) => ({
         ...r,
         head: escape(r.head),
         // The whole point: "did the bytes carry colour" answered without a
         // screen recording.
         headHasSgrColour: /\x1b\[[0-9;]*(3[0-7]|9[0-7]|38;|48;)/.test(r.head),
       })),
+      focus: [...focusRecords],
+    }),
+    focus: () => [...focusRecords],
   };
 }
 
