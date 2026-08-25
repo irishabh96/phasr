@@ -1,6 +1,6 @@
 # Release 0.4.0 — the Ghostty terminal engine
 
-**Status: NOT RELEASED. Blocked on one manual gate (§5) and one decision (§7).**
+**Status: NOT RELEASED. Q1 is CLOSED (§5); remaining: the Q2 clipboard check (§5) and one decision (§7).**
 
 This document plans the release. It does not perform it. Follow
 [`RELEASING.md`](../RELEASING.md) for the mechanics — this file only supplies
@@ -335,105 +335,83 @@ specs are, and they are green.
 
 ---
 
-## 5. The release-blocking gate: ADR-002 Q1
+## 5. The gate, updated: Q1 is CLOSED — Q2 is what remains
 
 **Q1 — will WKWebView fetch and compile the `data:application/wasm` URL under
-`tauri://localhost` in a packaged build?**
+`tauri://localhost` in a packaged build? — CLOSED, twice over.**
 
-This matters because there is no fallback. The previous engine is deleted, and
-no `.wasm` file is emitted into `dist/` or the bundle — verified again on this
-build — so ghostty-web's `./ghostty-vt.wasm` and `/ghostty-vt.wasm` fallbacks
-resolve to nothing. If the `data:` URL fails, **the app has no terminal at
-all.**
-
-### What was established automatically
-
-1. **The bundle is as expected.** `find` over `Phasr.app` returns no `.wasm`.
-   `dist/assets/ghostty-web-*.js` contains exactly one
-   `data:application/wasm;base64,…` URL and two dead fallback strings.
-2. **There is no CSP to violate.** `tauri.conf.json` has
-   `"security": { "csp": null }`, `index.html` carries no CSP meta tag, and
-   Tauri does not inject one in release.
-3. **The mechanism works on WKWebView at the right origin.**
-   `scripts/wkwebview-wasm-probe.swift` (new) stands up a real `WKWebView`
-   with a custom `tauri:` URL-scheme handler serving the **real built
-   `dist/`**, and runs the same call `preloadGhosttyEngine()` makes:
+1. **The probe.** `scripts/wkwebview-wasm-probe.swift` stands up a real
+   `WKWebView` with a `tauri:` scheme handler serving the real built `dist/`:
 
    ```
    Q1 {"stage":"origin","origin":"tauri://localhost","href":"tauri://localhost/"}
-   Q1 {"stage":"extracted","dataUrlBytes":564089}
    Q1 {"stage":"fetched","status":200,"wasmBytes":423045}
    Q1 {"stage":"compiled","exports":77}
    Q1 {"ok":true,"stage":"ghostty-load","ctor":"q","terminal":"constructed"}
    ```
 
-   From a `tauri://localhost` document, WebKit **fetched** the inlined
-   423 KB WASM and **compiled** it (77 exports), then the real patched
-   `ghostty-web` module loaded and constructed a `Terminal`.
+2. **The field.** From 2026-08-21 the user ran the packaged
+   `/Applications/Phasr.app` — a bundle with no `.wasm` file and no fallback —
+   for days of real work: terminals painted, agents ran, and the in-app
+   diagnostics captured live PTY streams (ADR-002, seventh pass). That is the
+   Q1 mechanism *and* the previously-open "base64 wire format meets a real
+   emulator in one process" item, both exercised in production use. The probe's
+   own caveat (its `WKWebViewConfiguration` is not wry's) is thereby retired:
+   wry's configuration demonstrably serves the module.
 
-**This is the strongest evidence obtainable without a human**, and it moves Q1
-from "unknown" to "the mechanism is verified on the shipping engine at the
-shipping origin".
+**What remains open is ADR-002 Q2** — whether **Edit ▸ Copy** reaches a
+terminal whose selection lives on a canvas. Narrow, and narrower than it
+sounds:
 
-### What it does NOT prove — read this before shipping
+- **Paste is field-evidenced.** ghostty-web's paste listener sits on the
+  focused contenteditable container; the user pasted into a packaged-app
+  terminal on 2026-08-21.
+- **Copy's data path already works without ⌘C**: copy-on-select writes the
+  clipboard at mouseup. The realistic failure is cosmetic-plus-confusing —
+  Edit ▸ Copy greyed and ⌘C a no-op — because WebKit's `canCopy()` consults
+  the DOM selection, which is collapsed while the real selection is painted
+  on canvas. Rung 2 (`phasr.terminal.clipboardMirror`, already implemented)
+  exists precisely to hand WebKit a genuine DOM selection.
 
-- The probe uses **its own `WKWebViewConfiguration`**. Tauri/wry construct
-  theirs differently and serve assets through their own scheme handler with
-  their own headers. A MIME-type or header difference could still break the
-  ES-module import.
-- It proves the **WASM loads**, not that a terminal **paints, sizes, and
-  carries a live PTY** in the packaged app.
-- Nothing here exercises real IPC. ADR-002 already flags the specific gap:
-  Phase 4's base64 `serialize_with` and the frontend's `decodePtyChunk` are
-  each covered, but **the two halves have never met in one process.** Only a
-  running Tauri build serializes a real PTY's bytes and hands them to a real
-  emulator.
+### Closing Q2
 
-### Manual gate — the user must do this
+The Swift harness is being extended to answer the two load-bearing questions
+mechanically (`validateUserInterfaceItem(copy:)` with a collapsed selection in
+a contenteditable; whether `sendAction(copy:)` dispatches a DOM `copy` event;
+both again with the rung-2 mirror active). Its verdict decides the default
+for `phasr.terminal.clipboardMirror`.
 
-Automation cannot reach it: every route that constructs a terminal is behind
-sign-in, and no agent here can drive a GUI or hold your credentials.
+**The 2-minute human confirmation** (isolates ⌘C from copy-on-select, which
+rewrites the clipboard at mouseup and would otherwise mask a dead ⌘C):
 
-```sh
-pnpm tauri build
-open src-tauri/target/release/bundle/macos/Phasr.app
-```
-
-Run the built `.app`, **not** `pnpm tauri dev` — dev serves
-`http://localhost:1420`, a different origin with different rules, which is the
-whole reason Q1 is open. Installing to `/Applications` from the DMG is the most
-faithful test.
-
-Because builds are unsigned, first launch needs Gatekeeper bypass —
-right-click ▸ Open, or `xattr -dr com.apple.quarantine /Applications/Phasr.app`
-(see `README.md`).
-
-- [ ] **The app launches** and reaches the sign-in screen (no abort — this also
-      exercises §3's migration path against your real database).
-- [ ] **Sign in** and open a workspace with a running agent.
-- [ ] **A terminal paints.** If it stays blank, open the webview inspector and
-      look for `[terminal] ghostty engine failed to load`. **That is the Q1
-      failure**; the fallback is step 6 of ADR-002 Q1 (copy
-      `node_modules/ghostty-web/ghostty-vt.wasm` into `public/` and pass its URL
-      to `Ghostty.load()`).
-- [ ] **Type into the agent terminal** and see the characters arrive — this is
-      the base64 wire format meeting a real emulator for the first time.
-- [ ] **⌘T** opens a session terminal; type in it; it goes to *that* terminal.
-- [ ] **Resize the window** — the grid reflows and the agent's output rewraps.
-- [ ] **ADR-002 Q2 — copy.** Drag-select terminal output, then **Edit ▸ Copy**,
-      then paste elsewhere. If nothing lands, run
-      `localStorage.setItem("phasr.terminal.clipboardMirror","1")` in the
-      inspector, reload, and retry. **Record which rung was needed.**
+- [ ] Drag-select text in a terminal of the installed `.app`.
+- [ ] In another app, copy some *different* text.
+- [ ] **⌘Tab back to Phasr — do not click** (a click clears the selection).
+- [ ] Is **Edit ▸ Copy enabled**? Press **⌘C**.
+- [ ] Paste in Notes: the terminal text means ⌘C works (Q2 closed, rung 1);
+      the other text means ⌘C is a no-op → set
+      `localStorage.setItem("phasr.terminal.clipboardMirror","1")`, reload,
+      repeat — record that rung 2 was needed.
 - [ ] **Edit ▸ Paste** into a terminal pastes exactly once, not twice.
-- [ ] **⌘K** still opens the Command Palette with a terminal focused.
-- [ ] **Cursor settings** — Settings ▸ Appearance ▸ Terminal: switch shape and
-      toggle blink, and confirm every open terminal updates immediately.
-- [ ] **Drop a file** onto a session terminal — its path is typed into *that*
-      terminal.
-- [ ] **⌘-click a URL** in terminal output opens the browser; a plain click
-      does not.
+
+### Full release smoke pass (unchanged)
+
+Run the built `.app`, **not** `pnpm tauri dev`; unsigned builds need
+Gatekeeper bypass (right-click ▸ Open, see `README.md`).
+
+- [ ] The app launches, reaches sign-in (exercises §3's migration path).
+- [ ] Sign in, open a workspace with a running agent; the terminal paints.
+- [ ] Type into the agent terminal; ⌘T opens a session terminal and keys go to
+      *that* terminal.
+- [ ] Resize the window; toggle the Changes panel and the sidebar — content
+      keeps its row (ADR-002 pass 7).
+- [ ] ⌘K still opens the palette with a terminal focused.
+- [ ] Cursor settings: shape + blink update every open terminal immediately.
+- [ ] Drop a file onto a session terminal — its path lands in *that* terminal.
+- [ ] ⌘-click a URL opens the browser; plain click does not.
 - [ ] Cross-check the keymap and link rows in
-      [`docs/MANUAL-VERIFICATION.md`](MANUAL-VERIFICATION.md).
+      [`docs/MANUAL-VERIFICATION.md`](MANUAL-VERIFICATION.md) — tracked as of
+      this branch, so PR review sees it.
 
 ---
 
@@ -498,7 +476,7 @@ database is the part at risk.
 
 | # | Item | Blocking? |
 |---|---|---|
-| 1 | Manual gate §5 — Q1, Q2, and the base64-meets-real-emulator path | **YES** |
+| 1 | §5 — Q2 clipboard check (Q1 and the base64 path are CLOSED, field-evidenced) | **YES** |
 | 2 | Decide whether copy-on-select is acceptable as a silent default | Judgement call |
 | 3 | In-app attribution surface (About ▸ licences) | No — notices ship (§3.7) |
 | 4 | ghostty idle CPU: ~5% of a core per *visible* terminal, from an always-on rAF loop | No — measured, documented, has no fix short of upstream |
