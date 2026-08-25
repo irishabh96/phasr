@@ -19,6 +19,7 @@ import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
+import { StatusDot } from "@/components/ui/StatusDot";
 import type { Workspace, Repository } from "@/lib/types";
 
 export function AppSidebar() {
@@ -309,6 +310,12 @@ function WorkspaceLink({
           active && "bg-(--color-bg-selected)",
         )}
       >
+        {/* Activity dot: only a running workspace gets one — a resting
+            workspace shows nothing rather than the old grey/green/red.
+            The slot renders for every row so the names stay aligned. */}
+        <span className="mr-2 flex h-4 w-4 shrink-0 items-center justify-center">
+          {ws.status === "running" && <StatusDot status="running" />}
+        </span>
         {/* `truncate` is `overflow: hidden`, so the line box has to be
             taller than the glyphs or descenders are clipped flat —
             `leading-none` cut the tails off every g/y/p/j in a branch

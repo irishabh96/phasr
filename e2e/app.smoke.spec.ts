@@ -24,3 +24,25 @@ test("boots the authenticated shell to a workspace", async ({ page }) => {
   const real = errors.filter((e) => !BENIGN.test(e));
   expect(real, real.join("\n---\n")).toHaveLength(0);
 });
+
+test("sidebar activity dot marks the running workspace, and only it", async ({ page }) => {
+  await bootApp(page);
+  const sidebar = page.getByRole("complementary", { name: "Sidebar" });
+  await expect(
+    sidebar.getByText("add-feature", { exact: true }),
+  ).toBeVisible({ timeout: 20000 });
+
+  // Exactly one dot in the tree, and it lives in the running row.
+  await expect(sidebar.locator('[aria-label="running"]')).toHaveCount(1);
+  await expect(
+    sidebar
+      .getByRole("link")
+      .filter({ hasText: "add-feature" })
+      .locator('[aria-label="running"]'),
+  ).toBeVisible();
+
+  // Resting workspaces get no dot at all — not a grey/green one.
+  for (const status of ["completed", "stopped", "failed", "pending"]) {
+    await expect(sidebar.locator(`[aria-label="${status}"]`)).toHaveCount(0);
+  }
+});
