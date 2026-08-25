@@ -25,6 +25,7 @@ import type {
   RunCommand,
   RunningTaskInfo,
   StartedTask,
+  TaskActivity,
   UserSettings,
   Workspace,
   WorkspaceDeleteCheck,
@@ -322,6 +323,7 @@ export const tauri = {
   resizeTask: (taskId: string, rows: number, cols: number) =>
     invoke<void>("resize_task", { taskId, rows, cols }),
   interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
+  listTaskActivity: () => invoke<TaskActivity[]>("list_task_activity"),
 };
 
 export { Channel };

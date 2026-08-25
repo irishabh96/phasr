@@ -162,6 +162,7 @@ pub fn run() {
             commands::orchestrator::start_task,
             commands::orchestrator::stop_task,
             commands::orchestrator::open_task_terminal,
+            commands::orchestrator::list_task_activity,
             commands::orchestrator::send_input_to_task,
             commands::orchestrator::read_task_log,
             commands::orchestrator::resize_task,

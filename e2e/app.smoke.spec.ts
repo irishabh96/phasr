@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { bootApp, callNames } from "./harness";
+import { bootApp, callNames, makeFixtures } from "./harness";
 
 // Boot artifacts from running without the native shell (or Clerk's network
 // calls, which we don't exercise) — not app bugs.
@@ -45,4 +45,21 @@ test("sidebar activity dot marks the running workspace, and only it", async ({ p
   for (const status of ["completed", "stopped", "failed", "pending"]) {
     await expect(sidebar.locator(`[aria-label="${status}"]`)).toHaveCount(0);
   }
+});
+
+test("sidebar activity dot goes out after prolonged terminal silence", async ({ page }) => {
+  const f = makeFixtures();
+  // Still `running`, but its terminal has been silent past the 10-minute
+  // activity timeout — the dot must not show.
+  (f as { overrides?: Record<string, unknown> }).overrides = {
+    list_task_activity: [
+      { taskId: "ws-agent", lastOutputAt: Date.now() - 11 * 60_000 },
+    ],
+  };
+  await bootApp(page, f);
+  const sidebar = page.getByRole("complementary", { name: "Sidebar" });
+  await expect(
+    sidebar.getByText("add-feature", { exact: true }),
+  ).toBeVisible({ timeout: 20000 });
+  await expect(sidebar.locator('[aria-label="running"]')).toHaveCount(0);
 });

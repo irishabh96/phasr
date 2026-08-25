@@ -95,6 +95,13 @@ export interface RunningTaskInfo {
   startedAt: string;
 }
 
+/** One task's most recent terminal output, from `list_task_activity`. */
+export interface TaskActivity {
+  taskId: string;
+  /** Wall-clock epoch ms; spawn time until the first byte arrives. */
+  lastOutputAt: number;
+}
+
 /**
  * Payload broadcast on `phasr://task-status` whenever the orchestrator
  * transitions a task between lifecycle states.

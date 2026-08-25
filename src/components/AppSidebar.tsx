@@ -15,6 +15,7 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { WorkspaceSidebarMenu } from "@/components/WorkspaceSidebarMenu";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
 import { useRepositories } from "@/lib/hooks/useRepositories";
+import { useRecentlyActiveTasks } from "@/lib/hooks/useTaskActivity";
 import { useWorkspaces } from "@/lib/hooks/useWorkspaces";
 import { SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -271,6 +272,11 @@ function RepoWorkspaces({
         return a.workspaceKind === "local" ? -1 : 1;
       return a.createdAt.localeCompare(b.createdAt);
     });
+  // null until the first activity snapshot lands — fail open (dot shown)
+  // rather than blinking every dot off for a frame at boot.
+  const activeTasks = useRecentlyActiveTasks(
+    visibleWorkspaces.some((ws) => ws.status === "running"),
+  );
 
   if (!visibleWorkspaces.length) return null;
 
@@ -282,6 +288,10 @@ function RepoWorkspaces({
           ws={ws}
           repoId={repoId}
           active={ws.id === activeWorkspaceId}
+          showActivityDot={
+            ws.status === "running" &&
+            (activeTasks === null || activeTasks.has(ws.id))
+          }
         />
       ))}
     </div>
@@ -292,10 +302,12 @@ function WorkspaceLink({
   ws,
   repoId,
   active,
+  showActivityDot,
 }: {
   ws: Workspace;
   repoId: string;
   active: boolean;
+  showActivityDot: boolean;
 }) {
   return (
     <WorkspaceSidebarMenu workspace={ws}>
@@ -310,11 +322,12 @@ function WorkspaceLink({
           active && "bg-(--color-bg-selected)",
         )}
       >
-        {/* Activity dot: only a running workspace gets one — a resting
-            workspace shows nothing rather than the old grey/green/red.
-            The slot renders for every row so the names stay aligned. */}
+        {/* Activity dot: only a running workspace whose terminal produced
+            output recently gets one — a resting or long-idle workspace
+            shows nothing rather than the old grey/green/red. The slot
+            renders for every row so the names stay aligned. */}
         <span className="mr-2 flex h-4 w-4 shrink-0 items-center justify-center">
-          {ws.status === "running" && <StatusDot status="running" />}
+          {showActivityDot && <StatusDot status="running" />}
         </span>
         {/* `truncate` is `overflow: hidden`, so the line box has to be
             taller than the glyphs or descenders are clipped flat —
