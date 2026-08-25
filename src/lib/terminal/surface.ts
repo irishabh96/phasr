@@ -27,12 +27,13 @@ export type TerminalBackendKind = "ghostty";
 /**
  * The slice of user settings a terminal actually renders from.
  *
- * `terminalScrollback` is **apply-on-next-terminal** on the ghostty
- * backend: the value is in ghostty-web's options bag but its
- * `handleOptionChange` has no `case "scrollback"`, so a post-`open()`
- * write is silently ignored (no warning, unlike `theme`). There is no
- * Settings control for it today; when one is added its copy has to say
- * "applies to terminals opened from now on".
+ * `terminalScrollback` applies LIVE, via a same-width grid rebuild:
+ * ghostty-web's `handleOptionChange` has no `case "scrollback"` (a
+ * post-`open()` write is silently ignored, no warning, unlike `theme`),
+ * but the engine reads the limit at terminal construction — so a changed
+ * value schedules the settle-debounced rebuild, which constructs a fresh
+ * grid through the current options and carries the buffer over. Parity
+ * with the previous engine, which honoured the option directly.
  */
 export type TerminalSurfaceSettings = Pick<
   UserSettings,
