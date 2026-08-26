@@ -1,6 +1,6 @@
 [package]
 name = "phasr"
-version = "0.4.0"
+version = "0.4.1"
 description = "Phasr — run multiple coding agents in parallel, each in an isolated git worktree."
 authors = ["Rishabh Bhatia <irishabh96@gmail.com>"]
 edition = "2021"
