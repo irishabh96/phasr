@@ -79,11 +79,18 @@ const MOD_CTRL = 16;
  * without a canvas, a wasm instance or a DOM event.
  */
 export function wheelOutcome(ctx: WheelContext): WheelOutcome {
+  // Shift bypasses mouse reporting — the xterm/iTerm escape hatch, and the
+  // only way to read the shell's scrollback while a mouse-aware program
+  // (Claude Code, vim `set mouse=a`) owns the wheel. Only off the
+  // alternate screen: the alt screen has no scrollback to bypass TO, so a
+  // shifted wheel there falls through to the arrow-key branch below.
+  const reporting = ctx.mouseTracking && !ctx.shift;
+
   // A sub-line delta (trackpads emit many tiny ones) is consumed by the
   // accumulator and produces nothing at all. Sending an event per pixel
   // would flood the PTY; sending an arrow per pixel is the bug above.
   if (ctx.lines === 0) {
-    return ctx.alternateScreen || ctx.mouseTracking
+    return ctx.alternateScreen || reporting
       ? { kind: "swallow" }
       : { kind: "scrollback" };
   }
@@ -92,7 +99,7 @@ export function wheelOutcome(ctx: WheelContext): WheelOutcome {
   // screen. This is the conventional `requestedEvents.wheel` branch, and it is
   // what makes wheel-scrolling work inside Claude Code, vim `set mouse=a`,
   // htop and every other mouse-aware TUI.
-  if (ctx.mouseTracking) return { kind: "send", seq: mouseSequence(ctx) };
+  if (reporting) return { kind: "send", seq: mouseSequence(ctx) };
 
   // Alt screen, no mouse tracking: there is no scrollback to show (the
   // alternate screen has none by definition), so the only useful thing a

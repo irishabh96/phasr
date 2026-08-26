@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  mouseSequence,
   WheelAccumulator,
   wheelOutcome,
   type WheelContext,
@@ -106,18 +107,58 @@ describe("wheelOutcome", () => {
         ctx({
           mouseTracking: true,
           sgrMouse: true,
-          shift: true,
+          alt: true,
           ctrl: true,
           lines: -1,
         }),
       ),
-    ).toEqual({ kind: "send", seq: "\x1b[<84;1;1M" });
+    ).toEqual({ kind: "send", seq: "\x1b[<88;1;1M" });
+    // Shift never reaches a wheel report through wheelOutcome (it bypasses
+    // reporting entirely — below), but the encoding stays correct for any
+    // caller that builds a sequence directly.
+    expect(mouseSequence(ctx({ sgrMouse: true, shift: true, lines: -1 }))).toBe(
+      "\x1b[<68;1;1M",
+    );
   });
 
   it("mouse events win over scrollback on the normal screen too", () => {
     expect(
       wheelOutcome(ctx({ mouseTracking: true, sgrMouse: true, lines: 1 })),
     ).toEqual({ kind: "send", seq: "\x1b[<65;1;1M" });
+  });
+
+  /**
+   * The xterm/iTerm escape hatch: holding shift bypasses mouse reporting,
+   * which is the only way to read the shell's scrollback while a
+   * mouse-aware program (Claude Code with its transcript, vim with
+   * `set mouse=a`) owns the wheel.
+   */
+  it("shift bypasses mouse reporting to the local scrollback", () => {
+    expect(
+      wheelOutcome(
+        ctx({ mouseTracking: true, sgrMouse: true, shift: true, lines: -2 }),
+      ),
+    ).toEqual({ kind: "scrollback" });
+    // Sub-line shifted deltas belong to the scrollback path too, so
+    // ghostty's own smooth scrolling gets them.
+    expect(
+      wheelOutcome(
+        ctx({ mouseTracking: true, sgrMouse: true, shift: true, lines: 0 }),
+      ),
+    ).toEqual({ kind: "scrollback" });
+    // The alt screen has no scrollback to bypass TO — a shifted wheel
+    // falls back to the same one-arrow-per-event as no mouse tracking.
+    expect(
+      wheelOutcome(
+        ctx({
+          alternateScreen: true,
+          mouseTracking: true,
+          sgrMouse: true,
+          shift: true,
+          lines: -1,
+        }),
+      ),
+    ).toEqual({ kind: "send", seq: "\x1b[A" });
   });
 
   it("emits nothing at all for a sub-line delta", () => {
