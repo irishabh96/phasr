@@ -3,6 +3,9 @@ import {
   applyChangedOptions,
   applyChangedTheme,
   buildSurfaceOptions,
+  scrollbackBytes,
+  UNLIMITED_SCROLLBACK,
+  UNLIMITED_SCROLLBACK_BYTES,
   type MutableSurfaceOptions,
   type MutableThemeTarget,
   type ResolvedSurfaceOptions,
@@ -30,7 +33,9 @@ function spyTarget(options: ResolvedSurfaceOptions) {
     fontSize: options.fontSize,
     cursorStyle: options.cursorStyle,
     cursorBlink: options.cursorBlink,
-    scrollback: options.scrollback,
+    // A real terminal's bag holds the BYTE budget (toGhosttyOptions
+    // converts at construction); the resolved options hold lines.
+    scrollback: scrollbackBytes(options.scrollback),
     theme: options.theme,
   };
   const target = {} as MutableSurfaceOptions & MutableThemeTarget;
@@ -171,18 +176,66 @@ describe("buildSurfaceOptions", () => {
     expect(buildSurfaceOptions(undefined).cursorStyle).toBe("block");
   });
 
-  it("falls back to the default scrollback for a non-positive value", () => {
+  it("keeps a finite scrollback setting, in lines", () => {
     expect(buildSurfaceOptions({ terminalScrollback: 200 }).scrollback).toBe(
       200,
     );
-    expect(buildSurfaceOptions({ terminalScrollback: 0 }).scrollback).toBe(
-      10000,
+  });
+
+  it("treats unset, non-positive and garbage scrollback as unlimited", () => {
+    expect(buildSurfaceOptions(undefined).scrollback).toBe(
+      UNLIMITED_SCROLLBACK,
     );
-    expect(buildSurfaceOptions(undefined).scrollback).toBe(10000);
+    expect(buildSurfaceOptions({ terminalScrollback: 0 }).scrollback).toBe(
+      UNLIMITED_SCROLLBACK,
+    );
+    expect(buildSurfaceOptions({ terminalScrollback: -5 }).scrollback).toBe(
+      UNLIMITED_SCROLLBACK,
+    );
+    expect(
+      buildSurfaceOptions({ terminalScrollback: Number.NaN }).scrollback,
+    ).toBe(UNLIMITED_SCROLLBACK);
+  });
+
+  it("reinterprets the never-user-chosen legacy default as unlimited", () => {
+    // Every 0.x database stores terminal_scrollback = 10000 — the
+    // migration default, which no UI has ever offered to change. Honouring
+    // it as a cap would silently keep every existing install limited.
+    expect(buildSurfaceOptions({ terminalScrollback: 10000 }).scrollback).toBe(
+      UNLIMITED_SCROLLBACK,
+    );
+    // The neighbour is a real choice and stays one.
+    expect(buildSurfaceOptions({ terminalScrollback: 10001 }).scrollback).toBe(
+      10001,
+    );
   });
 
   it("defaults the cursor to blinking", () => {
     expect(buildSurfaceOptions(undefined).cursorBlink).toBe(true);
     expect(buildSurfaceOptions({ cursorBlink: false }).cursorBlink).toBe(false);
+  });
+});
+
+// The engine's `scrollback` option is a budget in BYTES (ghostty's
+// `max_scrollback`), not lines — feeding it the line count is the bug that
+// capped every terminal at ~1,100 rows of history. This mapping is the
+// only place the conversion lives.
+describe("scrollbackBytes", () => {
+  it("maps unlimited to the 1 GiB budget", () => {
+    expect(scrollbackBytes(UNLIMITED_SCROLLBACK)).toBe(
+      UNLIMITED_SCROLLBACK_BYTES,
+    );
+  });
+
+  it("budgets 4 KiB per requested line", () => {
+    // Worst case measured against the real WASM: a full 200-column styled
+    // row costs ~4.2 KiB, a plain 80-column row ~800 B — so 4 KiB/row
+    // guarantees at least the asked lines and usually retains far more.
+    expect(scrollbackBytes(200)).toBe(200 * 4096);
+    expect(scrollbackBytes(25000)).toBe(25000 * 4096);
+  });
+
+  it("never exceeds the unlimited budget", () => {
+    expect(scrollbackBytes(10_000_000)).toBe(UNLIMITED_SCROLLBACK_BYTES);
   });
 });

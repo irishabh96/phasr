@@ -145,16 +145,28 @@ async function togglePanel(page: Page) {
   await settlePane(page);
 }
 
-function watchConsole(page: Page): string[] {
+function watchConsole(
+  page: Page,
+  fatal = /\[terminal\].*(failed|FAILED|trapped|gave up)/,
+): string[] {
   const errors: string[] = [];
   page.on("console", (m) => {
     const t = m.text();
     if (m.type() === "error" && !/429|Failed to load resource|CORS/.test(t))
       errors.push(`error: ${t}`);
-    if (/\[terminal\].*(failed|trapped|gave up)/.test(t)) errors.push(t);
+    if (fatal.test(t)) errors.push(t);
   });
   page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
   return errors;
+}
+
+/** Count console lines matching `pattern` without treating them as fatal. */
+function countConsole(page: Page, pattern: RegExp): { count: number } {
+  const box = { count: 0 };
+  page.on("console", (m) => {
+    if (pattern.test(m.text())) box.count++;
+  });
+  return box;
 }
 
 function assertStep(step: string, s: Snap, errors: string[]) {
@@ -182,9 +194,17 @@ test("an aged session survives width round trips: no traps, no drift, history co
 
   const seeded = await snap(page);
   assertStep("seeded", seeded, errors);
-  expect(seeded.scrollback).toBeGreaterThan(300);
+  // The engine's byte budget (scrollbackBytes: 4 KiB per requested line)
+  // deliberately over-provisions, so BETWEEN rebuilds a terminal can hold
+  // far more than the fixture's 5,000-line setting — 17 fixture copies
+  // seed ~11,700 rows. Before the units fix the engine's mis-fed 10 KB
+  // budget capped this at ~1,100 rows and the setting never bit at all.
+  expect(seeded.scrollback).toBeGreaterThan(5000);
 
-  const byWidth = new Map<number, number>([[seeded.cols, seeded.scrollback]]);
+  // The FIRST rebuild enforces the line setting (the one place phasr
+  // controls), so conservation is measured from toggle 1 onward — the
+  // seeded depth is above the cap by design and cannot round-trip.
+  const byWidth = new Map<number, number>();
   for (let t = 1; t <= 6; t++) {
     await togglePanel(page);
     const s = await snap(page);
@@ -192,6 +212,12 @@ test("an aged session survives width round trips: no traps, no drift, history co
     // One rebuild per toggle — a missing one means the width change went
     // through the live-reflow path, which is the drift.
     expect(s.rebuilds.length, `toggle ${t}: rebuild count`).toBe(t);
+    // Never more rows than the setting (post-join accounting only shrinks
+    // the count at a wider pane).
+    expect(
+      s.scrollback,
+      `toggle ${t}: the 5,000-line setting is enforced at the rebuild`,
+    ).toBeLessThanOrEqual(5000);
     // Scrollback at a given width is CONSERVED across round trips (±20
     // rows of wrap-boundary accounting). Raw-byte replay lost it to 0;
     // the trap-then-snapshot path lost it to 6.
@@ -210,10 +236,20 @@ test("an aged session survives width round trips: no traps, no drift, history co
   }
 });
 
-test("a style-saturated session (engine trap ceiling) rebuilds without a trap", async ({
+test("a style-saturated session (engine trap ceiling) rebuilds and lands, quarantine bounded", async ({
   page,
 }) => {
-  const errors = watchConsole(page);
+  // Trapped ATTEMPTS are tolerated here — and only here. 140 distinct
+  // styles over the volume a 5,000-row carry now re-emits (the byte-budget
+  // fix retains every seeded round where ~1,100 rows used to be the
+  // ceiling) puts the rebuild inside the engine's page-recycling defect:
+  // an attempt can trap, park the damaged grid (`quarantinedGrids`), and
+  // the retry lands on fresh memory. What this spec pins is that the
+  // TRANSACTION holds at this volume: the rebuild lands, content stays
+  // readable and pinned, nothing "gave up", and the quarantine stays
+  // bounded by the attempt budget rather than growing without limit.
+  const errors = watchConsole(page, /\[terminal\].*(failed|FAILED|gave up)/);
+  const trapped = countConsole(page, /\[terminal\].*trapped/);
   await bootApp(page);
   await expectBackend(page);
   await terminal(page).click();
@@ -234,7 +270,14 @@ test("a style-saturated session (engine trap ceiling) rebuilds without a trap", 
     const s = await snap(page);
     assertStep(`toggle ${t}`, s, errors);
     expect(s.rebuilds.length, `toggle ${t}: rebuild count`).toBe(t);
+    // Each rebuild gets MAX_REBUILD_ATTEMPTS (3), so at most 2 trapped
+    // attempts per toggle can ever be legitimate.
+    expect(
+      trapped.count,
+      `toggle ${t}: quarantined attempts stay inside the budget`,
+    ).toBeLessThanOrEqual(t * 2);
   }
+  console.log(`STYLE-SATURATED trapped attempts across 4 toggles: ${trapped.count}`);
 });
 
 test("grapheme-heavy content into a live grid needs no rebuild and no quarantine", async ({

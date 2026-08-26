@@ -17,9 +17,11 @@ import {
  * terminal through `buildWasmConfig()` — the one place the limit is read —
  * and carries the buffer over, truncated to the new limit.
  *
- * The engine ignores its own `scrollbackLimit` config (measured: limit 60,
- * 262 rows retained; 11,500 lines written, 1,058 kept by an internal byte
- * budget) — so the enforcement asserted here is phasr's, at snapshot time.
+ * The engine's `scrollbackLimit` is a budget in BYTES with page-granular
+ * eviction (`scrollbackBytes` feeds it correctly now), so a 60-LINE
+ * setting cannot be delegated to it — 60 lines' worth of bytes floors to
+ * the allocator's minimum pages, ~1,100 rows. The line limit asserted
+ * here is phasr's own enforcement, at snapshot time during the rebuild.
  *
  * Driven through the REAL settings pipeline: the ⌘+ font-size chord fires
  * `update_user_settings`, whose mocked response is overridden to also carry
