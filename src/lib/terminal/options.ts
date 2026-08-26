@@ -7,7 +7,47 @@ import type {
 import { readTerminalTheme } from "@/lib/terminal/theme";
 
 const DEFAULT_MONO_FONT = "ui-monospace, Menlo, monospace";
-const DEFAULT_SCROLLBACK = 10000;
+
+/**
+ * Sentinel for "no line limit". The default: an agent's logs are the
+ * product, and a terminal that silently discards them is the defect the
+ * scrollback saga kept rediscovering. The engine still gets a bounded BYTE
+ * budget (`UNLIMITED_SCROLLBACK_BYTES`), because the WASM heap is one
+ * 4 GiB space shared by every terminal in the app — "unlimited" means
+ * "bounded by memory, not by a line count".
+ */
+export const UNLIMITED_SCROLLBACK = 0;
+
+/**
+ * Every 0.x database carries `terminal_scrollback = 10000` — the
+ * migration's DEFAULT, which no UI has ever offered to change (verified:
+ * nothing under routes/ or components/ writes the column). So a stored
+ * 10000 is the absence of a choice, not a choice, and it is reinterpreted
+ * as unlimited rather than honoured as a cap. A user who deliberately
+ * wants exactly 10,000 lines can store 10001.
+ */
+const LEGACY_DEFAULT_SCROLLBACK_LINES = 10000;
+
+/**
+ * The byte budget handed to the engine for "unlimited": 1 GiB. ghostty's
+ * `max_scrollback` is byte-denominated (see `scrollbackBytes`), and one
+ * GiB is ~250k full-width styled rows or ~1.3M plain 80-column rows —
+ * past what anyone scrolls, while leaving headroom in the shared wasm32
+ * heap for the other seven cached terminals. Not u32-max on purpose:
+ * wasm32's usize IS u32, and a budget near 4.29e9 invites overflow in the
+ * core's own `max_size + page` arithmetic.
+ */
+export const UNLIMITED_SCROLLBACK_BYTES = 1_073_741_824;
+
+/**
+ * Bytes budgeted per requested line when the user sets a finite limit.
+ * Measured against the real engine (scratchpad probe, 2026-08-26): a full
+ * 200-column styled row costs ~4.2 KiB of wasm heap, a plain 80-column
+ * row ~800 B. 4 KiB/row guarantees "at least this many lines" in the
+ * worst case and simply retains more in the common one — the finite LINE
+ * limit itself is enforced by the host at rebuild time (`snapshotPrimary`).
+ */
+const SCROLLBACK_BYTES_PER_ROW = 4096;
 
 /**
  * Discrete whole-line scrolling reads as "janky" on a macOS trackpad no
@@ -45,9 +85,41 @@ export function buildSurfaceOptions(
     cursorStyle: normalizeCursorStyle(settings?.cursorStyle),
     convertEol: true,
     smoothScrollDuration: SMOOTH_SCROLL_DURATION_MS,
-    scrollback: positiveNumber(settings?.terminalScrollback, DEFAULT_SCROLLBACK),
+    scrollback: scrollbackLines(settings?.terminalScrollback),
     theme: readTerminalTheme(),
   };
+}
+
+/**
+ * The user's scrollback setting in LINES; `UNLIMITED_SCROLLBACK` (0) for
+ * unset, non-positive, garbage, or the never-user-chosen legacy default.
+ */
+function scrollbackLines(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+    return UNLIMITED_SCROLLBACK;
+  if (value === LEGACY_DEFAULT_SCROLLBACK_LINES) return UNLIMITED_SCROLLBACK;
+  return Math.floor(value);
+}
+
+/**
+ * LINES → the engine's byte budget.
+ *
+ * ghostty-web's `scrollback` option goes verbatim into
+ * `GhosttyTerminalConfig.scrollbackLimit`, and the WASM core forwards THAT
+ * to ghostty's `max_scrollback` — which is a budget in BYTES with
+ * page-granular eviction. Feeding it a line count is the bug that capped
+ * every phasr terminal at ~1,100 rows of history: 10,000 "lines" became a
+ * 10 KB budget, floored up to the allocator's minimum pages. Measured
+ * against the real WASM (scratchpad probe, 2026-08-26): limits 60, 5,000
+ * and 10,000 all retain the same 1,129 rows of a 20,000-row write; 10 MB
+ * retains 9,375; 200 MB retains all of it.
+ */
+export function scrollbackBytes(lines: number): number {
+  if (lines <= UNLIMITED_SCROLLBACK) return UNLIMITED_SCROLLBACK_BYTES;
+  return Math.min(
+    UNLIMITED_SCROLLBACK_BYTES,
+    Math.ceil(lines) * SCROLLBACK_BYTES_PER_ROW,
+  );
 }
 
 /**
@@ -105,8 +177,12 @@ export function applyChangedOptions(
     target.cursorBlink = next.cursorBlink;
     written.push("cursorBlink");
   }
-  if (target.scrollback !== next.scrollback) {
-    target.scrollback = next.scrollback;
+  // The engine bag holds BYTES (see scrollbackBytes); phasr's resolved
+  // options hold lines. Convert before diffing, or every remount would
+  // read lines-vs-bytes as a change and schedule a spurious rebuild.
+  const scrollback = scrollbackBytes(next.scrollback);
+  if (target.scrollback !== scrollback) {
+    target.scrollback = scrollback;
     written.push("scrollback");
   }
   return written;
@@ -138,12 +214,6 @@ export function terminalFontFamily(font: string | undefined): string {
 function cssMonoFallback(): string {
   const computed = getComputedStyle(document.documentElement);
   return computed.getPropertyValue("--font-mono").trim() || DEFAULT_MONO_FONT;
-}
-
-function positiveNumber(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : fallback;
 }
 
 export function normalizeCursorStyle(

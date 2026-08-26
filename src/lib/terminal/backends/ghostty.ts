@@ -43,6 +43,7 @@ import {
   applyChangedOptions,
   applyChangedTheme,
   buildSurfaceOptions,
+  scrollbackBytes,
   type ResolvedSurfaceOptions,
 } from "@/lib/terminal/options";
 import {
@@ -181,13 +182,20 @@ const REBUILD_QUIET_MS = 120;
  * A rebuild reads the old grid cell by cell (`serialize.ts`), so unlike the
  * byte ring this replaced there is no *correctness* reason to bound it —
  * only time. Measured on the aged-session fixture, reading and re-emitting
- * costs ~15 µs a row, so 8000 is ~120 ms in the worst case a user can
- * reach: a terminal sitting at ghostty's 10,000-line scrollback limit,
- * every line full. A shell that has scrolled less than that — i.e. almost
- * every shell — is never truncated at all, which is strictly more history
- * than the 1 MiB byte ring kept.
+ * costs ~15 µs a row, so 25,000 is ~375 ms in the worst case — paid only
+ * when a terminal that deep gets a WIDTH change, i.e. a panel toggle or a
+ * window resize, never during ordinary output.
+ *
+ * This is the one remaining line bound in an otherwise unlimited-scrollback
+ * app, and it is a TIME bound, not a memory one: the engine happily holds
+ * hundreds of thousands of rows (`scrollbackBytes`), but re-emitting them
+ * synchronously through a fresh grid at ~15 µs each would read as a hang —
+ * the exact failure class the 0.4.x scroll work exists to remove. A
+ * rebuild that truncates says so in the console. Chunking the re-emit
+ * across frames (buffering live writes through the `pendingWrites`
+ * mechanism) is the known follow-up that removes this bound too.
  */
-const MAX_HISTORY_ROWS = 8000;
+const MAX_HISTORY_ROWS = 25000;
 
 /**
  * Attempts a single rebuild gets at constructing a writable grid.
@@ -209,6 +217,14 @@ const MAX_REBUILD_ATTEMPTS = 3;
  * for the life of the page. Freeing one hands the same poison to the next
  * `createTerminal`, which is how a rebuild that "retried" used to trap
  * twice in a row deterministically.
+ *
+ * Unlimited scrollback raised the stakes without changing the design: a
+ * deep, style-heavy carry re-emits more styled content through a fresh
+ * grid, so a single width change can now spend both retry attempts and
+ * park two grids where the old ~1,100-row ceiling rarely parked any
+ * (e2e/terminal-aged.spec.ts, the style-saturated case, measures 6 across
+ * four toggles). Still bounded per user gesture, still recovered — but a
+ * reason the upstream page-recycling report matters more now.
  */
 const quarantinedGrids: { free(): void }[] = [];
 
@@ -913,18 +929,25 @@ export class GhosttySurface implements TerminalSurface {
     const cols = term.cols;
 
     const total = wasm.getScrollbackLength();
-    // The engine ignores `scrollbackLimit` entirely — measured: a grid
-    // built with limit 60 retained 262 carried rows, and 11,500 written
-    // lines were capped at 1,058 by an internal byte budget regardless of
-    // the configured 5,000. So the user's setting is enforced HERE, the
-    // one place phasr controls: history carried across a rebuild is
-    // truncated to it. Between rebuilds the engine's own ~1,100-row budget
-    // is the effective ceiling (upstream).
-    const keep = Math.min(
-      MAX_HISTORY_ROWS,
-      Math.max(0, Math.floor(this.options.scrollback)),
-    );
+    // The engine's `scrollbackLimit` is a budget in BYTES (it forwards to
+    // ghostty's byte-denominated `max_scrollback`), which `scrollbackBytes`
+    // now feeds correctly — the old "the engine ignores the setting"
+    // reading here was this codebase measuring line counts against a byte
+    // field: 60 and 5,000 bytes both floor to the allocator's minimum
+    // pages, ~1,100 full rows. A finite LINE limit is still enforced at
+    // the one place phasr controls, the rebuild; `UNLIMITED_SCROLLBACK`
+    // (0) means only the rebuild's own time bound applies.
+    const limit =
+      this.options.scrollback > 0
+        ? Math.floor(this.options.scrollback)
+        : Number.POSITIVE_INFINITY;
+    const keep = Math.min(MAX_HISTORY_ROWS, limit);
     const first = Math.max(0, total - keep);
+    if (first > 0)
+      console.info(
+        `[terminal] rebuild carrying the last ${total - first} of ${total} history rows ` +
+          `(bounded by ${keep === MAX_HISTORY_ROWS ? "the rebuild time budget" : "the scrollback setting"})`,
+      );
     const history: SnapshotRow[] = [];
     // `wrapped` is LEADING — a row continues the one above — and
     // ghostty-web 0.4.0 cannot say for history rows (`IBuffer.getLine`
@@ -1762,7 +1785,11 @@ export function toGhosttyOptions(
     // for the few places that write literal strings.
     convertEol: options.convertEol,
     smoothScrollDuration: options.smoothScrollDuration,
-    scrollback: options.scrollback,
+    // BYTES, not lines: ghostty-web passes this verbatim into the WASM
+    // config's `scrollbackLimit`, which is ghostty's byte-denominated
+    // `max_scrollback`. Handing it the line count is the bug that capped
+    // every terminal at ~1,100 rows of history. See `scrollbackBytes`.
+    scrollback: scrollbackBytes(options.scrollback),
     theme: options.theme,
     // No `lineHeight`: ghostty-web derives the cell box from the font
     // metrics and has no such option. phasr uses 1.0, which is what its

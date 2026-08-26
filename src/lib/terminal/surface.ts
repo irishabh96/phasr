@@ -34,6 +34,10 @@ export type TerminalBackendKind = "ghostty";
  * value schedules the settle-debounced rebuild, which constructs a fresh
  * grid through the current options and carries the buffer over. Parity
  * with the previous engine, which honoured the option directly.
+ *
+ * Its VALUE is in lines, with 0 / unset / the legacy stored default of
+ * 10000 all meaning "unlimited" — see `options.ts` (`scrollbackLines`,
+ * `scrollbackBytes`) for how that becomes the engine's byte budget.
  */
 export type TerminalSurfaceSettings = Pick<
   UserSettings,
