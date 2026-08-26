@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d4fce78df 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75a7a11fd3 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -25,7 +25,67 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    black: "#000000",
    red: "#cd3131",
    green: "#0dbc79",
-@@ -1508,12 +1514,15 @@ class $ {
+@@ -1334,7 +1340,7 @@ const f = {
+ };
+ class $ {
+   constructor(A, B = {}) {
+-    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
++    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
+     const g = A.getContext("2d", { alpha: !0 });
+     if (!g)
+       throw new Error("Failed to get 2D rendering context");
+@@ -1398,9 +1404,28 @@ class $ {
+     var U;
+     this.currentBuffer = A;
+     const I = A.getCursor(), D = A.getDimensions(), i = E ? E.getScrollbackLength() : 0;
+-    (U = A.needsFullRedraw) != null && U.call(A) && (B = !0), (this.canvas.width !== D.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== D.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(D.cols, D.rows), B = !0), g !== this.lastViewportY && (B = !0, this.lastViewportY = g);
++    (U = A.needsFullRedraw) != null && U.call(A) && (B = !0), (this.canvas.width !== D.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== D.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(D.cols, D.rows), B = !0);
++    // PHASR PATCH: "did the viewport move?" must be asked about CONTENT, not
++    // about the number. `viewportY` counts lines above the live bottom, so
++    // when a write pushes lines into scrollback while the user is scrolled
++    // up, the host grows `viewportY` in step (Terminal.anchorViewportAfterWrite)
++    // and the visible window shows the exact same rows — nothing moved.
++    // Upstream forced a full repaint on any `viewportY` change, which made
++    // "scrolled up while output streams" a full-canvas repaint per PTY
++    // chunk. The stable identity of the window is its top ABSOLUTE row
++    // (scrollback length minus the offset): repaint in full when that
++    // changes, i.e. when the user actually scrolled. At the bottom the
++    // upstream check is kept verbatim.
++    const vF = Math.floor(g), vT = vF > 0 ? i - vF : -1;
++    (vF > 0 ? vT !== this.lastTopAbsRow : g !== this.lastViewportY) && (B = !0), this.lastViewportY = g, this.lastTopAbsRow = vT;
+     const s = I.x !== this.lastCursorPosition.x || I.y !== this.lastCursorPosition.y;
+-    if (s || this.cursorBlink) {
++    // PHASR PATCH: the cursor-row quick paint below draws ACTIVE-SCREEN row
++    // I.y at CANVAS row I.y — coordinates that only agree at the bottom.
++    // While scrolled it painted live content over whatever scrollback row
++    // happened to sit there; upstream masked the misdraw by repainting
++    // every row every frame while scrolled, which is exactly the cost the
++    // change above removes. No cursor is drawn while scrolled anyway.
++    if ((s || this.cursorBlink) && vF === 0) {
+       if (!B && !A.isRowDirty(I.y)) {
+         const t = A.getLine(I.y);
+         t && this.renderLine(t, I.y, D.cols);
+@@ -1458,8 +1483,18 @@ class $ {
+       this.previousHoveredLinkRange = this.hoveredLinkRange;
+     }
+     const G = /* @__PURE__ */ new Set();
++    // PHASR PATCH: upstream treated `viewportY > 0` as "every row is dirty,
++    // every frame" — merely BEING scrolled up was a permanent full-canvas
++    // repaint at the frame rate, with the free-running render loop as the
++    // metronome. While scrolled, canvas rows above `vF` show scrollback
++    // (immutable — only a real scroll, which forces `B` above, changes what
++    // they display) and rows from `vF` down show the tail of the live
++    // screen, which keeps honouring the engine's own dirty flags at its
++    // shifted position. `k`/`M` are viewport-row sets either way
++    // (normalizeSelection clamps to the viewport; the hover loop builds
++    // canvas rows), so they pass through unchanged.
+     for (let t = 0; t < D.rows; t++)
+-      (g > 0 ? !0 : B || A.isRowDirty(t) || k.has(t) || M.has(t)) && (G.add(t), t > 0 && G.add(t - 1), t < D.rows - 1 && G.add(t + 1));
++      ((vF > 0 ? B || t >= vF && A.isRowDirty(t - vF) : B || A.isRowDirty(t)) || k.has(t) || M.has(t)) && (G.add(t), t > 0 && G.add(t - 1), t < D.rows - 1 && G.add(t + 1));
+     for (let t = 0; t < D.rows; t++) {
+       if (!G.has(t))
+         continue;
+@@ -1508,12 +1543,15 @@ class $ {
     */
    renderCellBackground(A, B, g) {
      const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
@@ -45,7 +105,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    }
    /**
     * Render a cell's text and decorations (Pass 2 of two-pass rendering)
-@@ -1526,7 +1535,12 @@ class $ {
+@@ -1526,7 +1564,12 @@ class $ {
        return;
      const D = this.isInSelection(B, g);
      let i = "";
@@ -59,7 +119,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
        this.ctx.fillStyle = this.theme.selectionForeground;
      else {
        let M = A.fg_r, a = A.fg_g, h = A.fg_b;
-@@ -1563,6 +1577,12 @@ class $ {
+@@ -1563,6 +1606,12 @@ class $ {
      switch (this.ctx.fillStyle = this.theme.cursor, this.cursorStyle) {
        case "block":
          this.ctx.fillRect(g, E, this.metrics.width, this.metrics.height);
@@ -72,7 +132,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
          break;
        case "underline":
          const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
-@@ -1579,6 +1599,39 @@ class $ {
+@@ -1579,6 +1628,39 @@ class $ {
          break;
      }
    }
@@ -112,7 +172,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    // ==========================================================================
    // Cursor Blinking
    // ==========================================================================
-@@ -1833,8 +1886,14 @@ const L = class Y {
+@@ -1833,8 +1915,14 @@ const L = class Y {
      for (; I >= E.cols; )
        I -= E.cols, C++;
      C = Math.min(C, E.rows - 1);
@@ -129,7 +189,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    }
    /**
     * Select entire lines from start to end
-@@ -1843,8 +1902,8 @@ const L = class Y {
+@@ -1843,8 +1931,8 @@ const L = class Y {
    selectLines(A, B) {
      const g = this.wasmTerm.getDimensions();
      A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
@@ -140,7 +200,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    }
    /**
     * Get selection position as buffer range
-@@ -1945,7 +2004,12 @@ const L = class Y {
+@@ -1945,7 +2033,12 @@ const L = class Y {
      }), this.boundMouseUpHandler = (B) => {
        if (this.isSelecting) {
          this.isSelecting = !1, this.stopAutoScroll();
@@ -154,7 +214,135 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2633,18 +2697,162 @@ class IA {
+@@ -2345,7 +2438,14 @@ class IA {
+         this.ghostty,
+         A,
+         (E) => {
+-          this.options.disableStdin || this.dataEmitter.fire(E);
++          // PHASR PATCH: typing (or pasting) returns the view to the live
++          // bottom. This is the conventional companion to the write path NOT
++          // snapping any more (see anchorViewportAfterWrite): output never
++          // moves the viewport, the user's own keystrokes do. Deliberately
++          // HERE and not in Terminal.input() — the host forwards
++          // wheel-generated mouse reports through input(), and those must
++          // not yank a scrolled viewport.
++          this.options.disableStdin || (this.viewportY !== 0 && this.scrollToBottom(), this.dataEmitter.fire(E));
+         },
+         () => {
+           this.bellEmitter.fire();
+@@ -2387,7 +2487,50 @@ class IA {
+    */
+   writeInternal(A, B) {
+     var g;
+-    this.wasmTerm.write(A), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.viewportY !== 0 && this.scrollToBottom(), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), B && requestAnimationFrame(B);
++    // PHASR PATCH: sample the scrollback depth before the parse so a
++    // scrolled viewport can be re-anchored after it — see
++    // anchorViewportAfterWrite. Costs nothing at the bottom, which is the
++    // overwhelmingly common case.
++    const E = this.viewportY > 0 ? this.getScrollbackLength() : -1;
++    this.wasmTerm.write(A), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.anchorViewportAfterWrite(E), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), B && requestAnimationFrame(B);
++  }
++  /**
++   * PHASR PATCH: output must never move the user's scroll position.
++   *
++   * Upstream ended every write with `viewportY !== 0 && scrollToBottom()`.
++   * Under a streaming process that made scrollback unreadable — the Rust
++   * side flushes PTY output every 32 KiB or 8 ms, so any position the user
++   * scrolled to snapped back to the bottom within a frame. Worse, the snap
++   * moved `viewportY` while a wheel-started smooth scroll kept its stale
++   * `targetViewportY`, and the two then fought — the write snaps to 0, the
++   * next `animateScroll` frame jumps ~97% of the way back — every frame,
++   * for as long as output kept arriving. Each bounce forced a full-canvas
++   * repaint, and the saturated main thread read as "the terminal hangs
++   * when I scroll".
++   *
++   * What every mainstream emulator does instead, and this does now:
++   * while the user is scrolled up, GROW the offset by however many lines
++   * the write pushed into scrollback, so the content on screen stays put
++   * (`viewportY` counts lines above the live bottom). An in-flight smooth
++   * scroll gets the same correction, so a glide lands on the content the
++   * user aimed at, not where it used to be. Returning to the bottom is the
++   * user's own gesture now: a keypress (see the InputHandler data callback
++   * in open()), scrollToBottom, or scrolling back down.
++   *
++   * At a full scrollback the oldest rows are evicted as new ones arrive,
++   * the measured growth undercounts, and the anchored view drifts — the
++   * same behaviour as any terminal sitting at its scrollback limit. phasr
++   * ships an effectively unlimited byte budget, so that edge is reachable
++   * only with a deliberately small one.
++   *
++   * @param A scrollback length sampled before the write; -1 = was at the
++   *          bottom, nothing to anchor.
++   */
++  anchorViewportAfterWrite(A) {
++    if (A < 0 || this.viewportY === 0)
++      return;
++    const B = this.getScrollbackLength(), g = B - A;
++    g > 0 && (this.viewportY = Math.min(this.viewportY + g, B), this.targetViewportY = Math.min(this.targetViewportY + g, B), this.scrollAnimationStartY !== void 0 && (this.scrollAnimationStartY += g));
+   }
+   /**
+    * Write data with newline
+@@ -2564,6 +2707,20 @@ class IA {
+   // ==========================================================================
+   // Phase 2: Scrolling Methods
+   // ==========================================================================
++  /**
++   * PHASR PATCH: end any in-flight smooth scroll.
++   *
++   * Every direct viewport setter below moves `viewportY` immediately;
++   * leaving the animation armed meant `animateScroll` kept converging on
++   * the STALE `targetViewportY` on the next frame and undid the set. The
++   * visible case was the write path's bottom snap (now removed) fighting a
++   * wheel glide every frame while output streamed; cancelling here keeps
++   * the invariant for the setters that remain, so no caller can re-open
++   * that fight. Each setter re-syncs `targetViewportY` to where it landed.
++   */
++  cancelScrollAnimation() {
++    this.scrollAnimationFrame !== void 0 && (cancelAnimationFrame(this.scrollAnimationFrame), this.scrollAnimationFrame = void 0), this.scrollAnimationStartTime = void 0, this.scrollAnimationStartY = void 0;
++  }
+   /**
+    * Scroll viewport by a number of lines
+    * @param amount Number of lines to scroll (positive = down, negative = up)
+@@ -2571,8 +2728,9 @@ class IA {
+   scrollLines(A) {
+     if (!this.wasmTerm)
+       throw new Error("Terminal not open");
++    this.cancelScrollAnimation();
+     const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, this.viewportY - A));
+-    E !== this.viewportY && (this.viewportY = E, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar());
++    E !== this.viewportY && (this.viewportY = E, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar()), this.targetViewportY = this.viewportY;
+   }
+   /**
+    * Scroll viewport by a number of pages
+@@ -2585,22 +2743,24 @@ class IA {
+    * Scroll viewport to the top of the scrollback buffer
+    */
+   scrollToTop() {
++    this.cancelScrollAnimation();
+     const A = this.getScrollbackLength();
+-    A > 0 && this.viewportY !== A && (this.viewportY = A, this.scrollEmitter.fire(this.viewportY), this.showScrollbar());
++    A > 0 && this.viewportY !== A && (this.viewportY = A, this.scrollEmitter.fire(this.viewportY), this.showScrollbar()), this.targetViewportY = this.viewportY;
+   }
+   /**
+    * Scroll viewport to the bottom (current output)
+    */
+   scrollToBottom() {
+-    this.viewportY !== 0 && (this.viewportY = 0, this.scrollEmitter.fire(this.viewportY), this.getScrollbackLength() > 0 && this.showScrollbar());
++    this.cancelScrollAnimation(), this.viewportY !== 0 && (this.viewportY = 0, this.scrollEmitter.fire(this.viewportY), this.getScrollbackLength() > 0 && this.showScrollbar()), this.targetViewportY = 0;
+   }
+   /**
+    * Scroll viewport to a specific line in the buffer
+    * @param line Line number (0 = top of scrollback, scrollbackLength = bottom)
+    */
+   scrollToLine(A) {
++    this.cancelScrollAnimation();
+     const B = this.getScrollbackLength(), g = Math.max(0, Math.min(B, A));
+-    g !== this.viewportY && (this.viewportY = g, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar());
++    g !== this.viewportY && (this.viewportY = g, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar()), this.targetViewportY = this.viewportY;
+   }
+   /**
+    * Smoothly scroll to a target viewport position
+@@ -2633,18 +2793,166 @@ class IA {
    // ==========================================================================
    // Private Methods
    // ==========================================================================
@@ -167,7 +355,11 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
 +   * paused; only painting stops.
 +   */
 +  pause() {
-+    this.isPaused || (this.isPaused = !0, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0));
++    // PHASR PATCH (amended): a parked terminal must not keep ANY frame
++    // chain alive — the smooth-scroll animation is its own
++    // requestAnimationFrame chain, separate from the render loop, and
++    // survived parking before this line.
++    this.isPaused || (this.isPaused = !0, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0), this.cancelScrollAnimation(), this.targetViewportY = this.viewportY);
 +  }
 +  /**
 +   * Resume the render loop.
@@ -322,7 +514,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +2872,7 @@ class IA {
+@@ -2664,7 +2972,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -332,10 +524,39 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f19b1004e333644bcf4d31539af6b62d
    /**
     * Assert terminal is open (throw if not)
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..4d88f86c1f4b2ae2dde690864c325a307c87499f 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654153127c0 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -903,7 +903,9 @@ export declare interface ITheme {
+@@ -417,6 +417,14 @@ export declare class GhosttyTerminal {
+  * All color values use 0xRRGGBB format. A value of 0 means "use default".
+  */
+ declare interface GhosttyTerminalConfig {
++    /**
++     * PHASR PATCH (doc only): this is a budget in BYTES, not lines — the
++     * WASM core forwards it to ghostty's `max_scrollback`, which is
++     * byte-denominated with page-granular eviction. Small values are
++     * floored to the allocator's minimum pages (~1,100 full rows), which
++     * is why 60 and 5,000 behave identically. Measured: 10 MB retains
++     * ~9,400 of 20,000 eighty-column rows; 200 MB retains all of them.
++     */
+     scrollbackLimit?: number;
+     fgColor?: number;
+     bgColor?: number;
+@@ -888,6 +896,13 @@ export declare interface ITerminalOptions {
+     cursorBlink?: boolean;
+     cursorStyle?: 'block' | 'underline' | 'bar';
+     theme?: ITheme;
++    /**
++     * PHASR PATCH (doc only): passed straight through to
++     * `GhosttyTerminalConfig.scrollbackLimit` by buildWasmConfig(), so it
++     * is a budget in BYTES, not lines — see that field. Feeding a line
++     * count here is the bug that capped every phasr terminal at ~1,100
++     * rows of history.
++     */
+     scrollback?: number;
+     fontSize?: number;
+     fontFamily?: string;
+@@ -903,7 +918,9 @@ export declare interface ITheme {
      background?: string;
      cursor?: string;
      cursorAccent?: string;
@@ -345,7 +566,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..4d88f86c1f4b2ae2dde690864c325a30
      selectionForeground?: string;
      black?: string;
      red?: string;
-@@ -1497,6 +1499,13 @@ export declare class Terminal implements ITerminalCore {
+@@ -1497,6 +1514,13 @@ export declare class Terminal implements ITerminalCore {
      private isOpen;
      private isDisposed;
      private animationFrameId?;
@@ -359,7 +580,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..4d88f86c1f4b2ae2dde690864c325a30
      private addons;
      private customKeyEventHandler?;
      private currentTitle;
-@@ -1686,6 +1695,36 @@ export declare class Terminal implements ITerminalCore {
+@@ -1686,6 +1710,36 @@ export declare class Terminal implements ITerminalCore {
       * Dispose terminal and clean up resources
       */
      dispose(): void;
