@@ -100,17 +100,28 @@ export function installGhosttySelection(
     // Left button only, and only the 2nd click onwards: a plain click is
     // ghostty-web's own drag-select anchor and must reach it untouched.
     if (event.button !== 0 || event.detail < 2) return;
-    const cell = cellAt(term, event);
-    if (!cell) return;
 
-    // preventDefault: `Terminal.open()` sets contenteditable="true" on this
-    // element, so a double-click here is also a DOM word-selection (and the
-    // start of a text drag) in WebKit. stopPropagation: ghostty-web's own
-    // canvas mousedown would clear the selection this handler is about to
-    // make, and leave `isSelecting` set so the following mouseup copies.
+    // preventDefault BEFORE the cell lookup, not after: `Terminal.open()`
+    // sets contenteditable="true" on this element, so a double-click here
+    // is also a DOM word-selection (and the start of a text drag) in
+    // WebKit — including a double-click that lands OFF the grid (the
+    // padding, the scrollbar reserve strip, the leftover strip below the
+    // last row when the pane height is not a cell multiple; the scrollbar
+    // thumb itself never reaches us — ghostty stopImmediatePropagation()s
+    // it first). Guarding only the on-grid case let WebKit run its native
+    // contenteditable editing machinery on a div whose content is a
+    // canvas, and the focus/selection state it left behind ate every
+    // keystroke until the surface was remounted — the field report was "a
+    // double-click sometimes hangs the terminal". stopPropagation:
+    // ghostty-web's own canvas mousedown would clear the selection this
+    // handler is about to make, and leave `isSelecting` set so the
+    // following mouseup copies.
     event.preventDefault();
     event.stopPropagation();
     term.focus();
+
+    const cell = cellAt(term, event);
+    if (!cell) return;
 
     const selected =
       event.detail === 2 ? selectWord(term, cell) : selectLogicalLine(term, cell);
@@ -120,8 +131,13 @@ export function installGhosttySelection(
   };
 
   // Ours already ran on the 2nd mousedown; upstream's dblclick would
-  // recompute the word from the wrong row and overwrite it.
-  const swallowDblClick = (event: MouseEvent) => event.stopPropagation();
+  // recompute the word from the wrong row and overwrite it. preventDefault
+  // too: the dblclick DEFAULT is WebKit's own word selection on the
+  // contenteditable host, which stopPropagation alone does not suppress.
+  const swallowDblClick = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
 
   element.addEventListener("mousedown", onMouseDown, { capture: true });
   element.addEventListener("dblclick", swallowDblClick, { capture: true });
