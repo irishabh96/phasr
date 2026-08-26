@@ -138,6 +138,24 @@ function RepoBlock({
   const toggleWorkspaceExpanded = useUiStore(
     (s) => s.toggleRepoWorkspaceExpanded,
   );
+  // Same query key as RepoWorkspaces below — React Query dedupes, so this
+  // costs no extra fetch.
+  const workspaces = useWorkspaces(repo.id);
+  const hasWorkspaces = (workspaces.data ?? []).some(
+    (ws) => ws.status !== "archived",
+  );
+  // A repo with workspaces treats its whole row as the tree toggle; an
+  // empty repo still navigates to its entry page (where a workspace is
+  // created). The collapsed rail has no tree to toggle, so it always
+  // navigates.
+  const rowToggles = isExpanded && hasWorkspaces;
+  const activateRow = () => {
+    if (rowToggles) {
+      toggleWorkspaceExpanded(repo.id);
+    } else {
+      void navigateToRepoEntry(repo.id);
+    }
+  };
   // Spread-index so emoji / non-BMP first characters aren't split into a
   // lone surrogate half.
   const initial = ([...repo.name][0] ?? "").toUpperCase();
@@ -151,11 +169,12 @@ function RepoBlock({
           tabIndex={0}
           aria-label={repo.name}
           aria-current={isActive ? "page" : undefined}
-          onClick={() => void navigateToRepoEntry(repo.id)}
+          aria-expanded={rowToggles ? workspaceExpanded : undefined}
+          onClick={activateRow}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              void navigateToRepoEntry(repo.id);
+              activateRow();
             }
           }}
           className={cn(

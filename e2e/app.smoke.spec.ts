@@ -47,6 +47,29 @@ test("sidebar activity dot marks the running workspace, and only it", async ({ p
   }
 });
 
+test("repo row toggles its tree when it has workspaces, navigates when empty", async ({ page }) => {
+  await bootApp(page);
+  const sidebar = page.getByRole("complementary", { name: "Sidebar" });
+  const phasrRow = sidebar.getByRole("button", { name: "phasr", exact: true });
+  const workspace = sidebar.getByText("add-feature", { exact: true });
+
+  await expect(workspace).toBeVisible({ timeout: 20000 });
+
+  // With workspaces, the whole row is the tree toggle.
+  await phasrRow.click();
+  await expect(workspace).toBeHidden();
+  await expect(phasrRow).toHaveAttribute("aria-expanded", "false");
+  await phasrRow.click();
+  await expect(workspace).toBeVisible();
+  await expect(phasrRow).toHaveAttribute("aria-expanded", "true");
+
+  // Without workspaces, the row still navigates to the repo entry.
+  await sidebar
+    .getByRole("button", { name: "sidecar", exact: true })
+    .click();
+  await expect(page).toHaveURL(/repositories\/repo-2/);
+});
+
 test("sidebar activity dot goes out after prolonged terminal silence", async ({ page }) => {
   const f = makeFixtures();
   // Still `running`, but its terminal has been silent past the 10-minute
