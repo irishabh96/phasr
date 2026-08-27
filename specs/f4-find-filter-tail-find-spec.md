@@ -30,10 +30,16 @@ call: `getScrollbackLine(offset)` (`node_modules/ghostty-web/dist/index.d.ts:359
 
 ## Acceptance criteria
 
-1. **Time-sliced resumable search.** One bounded slice per tick with a **~0.1 s budget**,
-   carrying a cursor between ticks. A search over the largest reachable scrollback never
-   produces a frame longer than the P2 budget (frame p95 < 16.7 ms is not violated by a
-   search in progress).
+1. **Time-sliced resumable search.** One bounded slice per tick, carrying a cursor between
+   ticks, so that a search over the largest reachable scrollback never produces a frame longer
+   than the P2 budget (frame p95 < 16.7 ms is not violated by a search in progress).
+   **Correction (architect, 2026-08-27): the slice budget is ~4 ms per tick, not 0.1 s.** The
+   drafted "~0.1 s budget" is iTerm2's number for work on a *background queue*; every
+   `getScrollbackLine` call here runs on the main thread (it is a WASM call, and there is no
+   worker path to the engine), so a 0.1 s slice **is** a 100 ms frame and contradicts this
+   criterion's own second sentence. ~4 ms leaves the rest of the frame for paint and input.
+   The consequence — a full pass is several seconds on a deep buffer — is real, expected, and
+   exactly why criteria 2 (streaming results + progress) and 4 (tail-find) exist.
 2. **Progress is visible.** A progress indicator shows how much of the buffer has been
    searched; results stream in as they are found rather than appearing all at once at the end.
 3. **Cancellable and restartable.** Typing another character cancels the in-flight pass and
@@ -54,7 +60,10 @@ call: `getScrollbackLine(offset)` (`node_modules/ghostty-web/dist/index.d.ts:359
 9. **Results are stable across a resize.** A rows-only resize keeps results; a width change
    triggers a grid rebuild (`ResizePlan = "rebuild"`, `src/lib/terminal/reflow.ts:23`) after
    which results are either re-located or **visibly invalidated** — never left pointing at
-   wrong rows. (Same constraint F2 faces; see that spec's reflow section.)
+   wrong rows. **Architect (Q1): this reuses F2's re-anchoring mechanism** — the rebuild
+   reports each anchored line's new absolute row from the replay (`specs/f2-command-marks-osc133-spec.md`,
+   "#PATH_DECISION — Q1"). F4 does not implement a second scheme. If F4 lands before F2's
+   anchor module exists, results are **visibly invalidated** on a width change until it does.
 10. **No dropped-byte or perf regression.** The 0.4.2 targets still hold with a search
     running: idle cost, echo latency, and the flood target are unaffected while a search is
     in progress or a tail-find is armed.
@@ -85,23 +94,30 @@ scrollback; the log stays a diagnostic artifact.
 Note also that perf Phase 3 adds log rotation, which caps its history — a further reason not
 to build a user-facing feature on it.
 
-## #PLAN_UNCERTAINTY — cost of `getScrollbackLine` per line
+## #PATH_DECISION — Q5: the number comes from P0, and it gates which mitigation is allowed
 
-The 0.1 s slice budget is a *time* budget, so it self-tunes to whatever the per-line cost
-turns out to be — but the resulting **lines-per-tick** number determines whether a full pass
-over a large buffer takes 2 seconds or 2 minutes, and therefore whether tail-find is a nice
-optimisation or the only thing that makes the feature usable.
+**Decision (2026-08-27, System Architect): P0 measures `getScrollbackLine` throughput (its
+criterion 6a) and records it in the P0 baseline table. F4 may not start until that row is
+filled, and the measured number selects the mitigation — nobody argues this at implementation
+time.**
 
-Measure before designing the UI's progress affordance: fetch N scrollback lines through
-`getScrollbackLine` and record lines/second under both Chromium and WebKit (P0's apparatus).
-If the rate is poor, the mitigations to consider, in order: (a) a batched
-`getScrollbackRange`-style addition to the ghostty-web patch — but note that is engine-patch
-work this track was scoped to avoid; (b) an incrementally-maintained host-side text index
-built as output arrives, trading memory for search speed; (c) capping search depth with an
-explicit "searched the last N lines" affordance.
+Pre-authorised, by the fetch+graphemes figure measured **on WebKit**:
 
-**An architect should see the measured number before (a) is authorized**, because it converts
-F4 from independent work into patch work with S1-style sequencing constraints.
+| Measured | Mitigation authorised |
+|---|---|
+| **≥ 50 000 lines/s** (≤ 20 µs/line) | None needed. Slice + tail-find as specced; progress affordance is a courtesy. |
+| **10 000 – 50 000 lines/s** | **(c)** capped depth with an explicit "searched the last N lines" affordance, plus a prominent progress indicator. Tail-find becomes load-bearing, not an optimisation. |
+| **< 10 000 lines/s** | **(b)** an incrementally-maintained host-side text index, built as output arrives (memory for speed). Costed in the F4 PR before any UI work. |
+| Any rate | **(a) — a batched `getScrollbackRange` engine patch — is NOT authorised by this decision.** It converts F4 from independent host work into ghostty-web patch work with S1-style sequencing against P1/P2's hunks, and this program has one engine-patch queue. If (b) and (c) both prove inadequate, F4 stops and asks for a spike, on the S1 template. |
+
+Rationale for the ladder: the rebuild path already measures ~15 µs per row for read **plus
+re-emit** (`src/lib/terminal/backends/ghostty.ts:198`), so a fetch-only cost materially above
+that would be surprising; the bands are set around it with an order of magnitude of room.
+
+*(Original uncertainty, for the record: the slice budget is a time budget and self-tunes, but
+the resulting lines-per-tick decides whether a full pass takes 2 seconds or 2 minutes, and
+therefore whether tail-find is a nice optimisation or the only thing that makes the feature
+usable.)*
 
 ## Implementation notes — verified entry points
 

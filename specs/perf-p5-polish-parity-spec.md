@@ -18,22 +18,35 @@ regress the way the idle-CPU gap did between 0.3.x and 0.4.0.
 
 ## Acceptance criteria
 
-1. **Resize storm collapsed.** One panel toggle currently sends **13 `resize_task` calls in
-   220 ms** — the `<aside>` animates its width, the `ResizeObserver` refits every frame, and
-   each fit that changes the grid emits a resize (ADR-002:1584). A real agent TUI repaints on
-   every SIGWINCH, so that is thirteen full repaints per toggle. Collapse it with the same
-   settle machinery the existing grid-rebuild debounce uses (`src/lib/terminal/settle.ts`,
-   `QUIET_MS = 120`). Target: **one** `resize_task` per settled toggle.
+1. **Resize storm collapsed — the half that is left.** ADR-002:1584 recorded 13 `resize_task`
+   calls in 220 ms for one panel toggle. **Correction (architect, 2026-08-27): the *width*
+   half already shipped in 0.4.x.** `fitAnchored()` routes a width change through
+   `scheduleRebuild()` on a `REBUILD_QUIET_MS = 120` timer
+   (`src/lib/terminal/backends/ghostty.ts:177,545,550`), and the code comment says so: "this
+   is what turns a gesture into ONE event … in place of the thirteen a single panel toggle
+   used to send in 220 ms". A panel toggle animates *width*, so that specific case is done.
+
+   What remains is the **rows-only** path: `planResize` returns `"resize"` and
+   `fitAnchored()` calls `this.fit()` **immediately** (`ghostty.ts:538–544`), so a vertical
+   panel animation or a window drag still emits one `resize_task` per `ResizeObserver` frame.
+   Collapse that path with the same settle machinery (`src/lib/terminal/settle.ts`,
+   `QUIET_MS = 120`), keeping the deliberate property that a rows-only change is cheap and
+   never rebuilds. **Measure before changing anything** — record the current per-gesture call
+   count for both a horizontal and a vertical gesture in the P0 table, then assert **one**
+   `resize_task` per settled gesture of either kind.
 2. **`[profile.release]` added to `src-tauri/Cargo.toml`** — it is currently **absent**
    (verified). Set `lto = "thin"` and `codegen-units = 1`. Free win; record the binary-size
    and build-time deltas in the PR.
-3. **CI perf gates.** The self-comparison numbers promoted from diagnostics into asserted
-   thresholds, run in CI:
-   - `PHASR_BENCH` throughput ≥ threshold
-   - **lagged/dropped events == 0** (`PHASR_LOAD`, every ramp step including `bulk`)
-   - idle script time ≤ threshold
-   - scroll frame p95 ≤ threshold
-   Each threshold is set from the P0 baseline table with explicit headroom, and the headroom
+3. **CI perf gates**, per the Q4 decision below — three tiers, not four thresholds:
+   - **Tier 1 (counts / invariants, in CI):** zero unrecovered bytes at every `PHASR_LOAD`
+     ramp step including `bulk`; no `Lagged(_) => continue` outside tests; idle
+     `getRenderStats().ticks` < 5·N over N seconds (and ~30/s under flood); exactly one
+     `resize_task` per settled gesture.
+   - **Tier 2 (the one timing gate, in CI):** `PHASR_BENCH` throughput as a **ratio** against
+     an in-job calibration workload, with an order-of-magnitude band.
+   - **Tier 3 (not in CI):** idle script time and scroll frame p95 stay local/WebKit probes
+     with recorded numbers — a Linux-Chromium threshold cannot speak for WKWebView.
+   Every threshold is set from the P0 baseline table with explicit headroom, and the headroom
    is written down next to the number so a future failure is diagnosable.
 4. **A gate that cannot run in CI is not silently skipped.** Any metric that needs a packaged
    build or Activity Monitor stays a `docs/MANUAL-VERIFICATION.md` checklist item and is
@@ -54,11 +67,11 @@ regress the way the idle-CPU gap did between 0.3.x and 0.4.0.
    | Flood | `cat` of a 100 MB file keeps the whole UI interactive |
    | Cadence (A1) | flood → ~30 fps via `getRenderStats()`; typing at idle paints within 1 frame |
 
-## #PLAN_UNCERTAINTY — CI thresholds on shared runners
+## ~~#PLAN_UNCERTAINTY~~ — SETTLED (Q4, below) — CI thresholds on shared runners
 
 Perf assertions on shared CI runners are the classic source of flaky gates, and this repo has
 already been bitten twice by test races (recorded in the 0.4.0 release notes). Two mitigations
-to choose between, and an architect should pick before the gates land:
+to choose between:
 
 - **(a) Ratio gates**: assert against a checked-in reference measured on the same run
   (e.g. idle script time as a fraction of a busy-loop calibration), which cancels runner
@@ -66,11 +79,67 @@ to choose between, and an architect should pick before the gates land:
 - **(b) Generous absolute thresholds** with a wide band, catching only order-of-magnitude
   regressions.
 
-Recommendation: **(b) for the CI gate, (a) for the local probe**, because the failure this is
-defending against (a rAF chain going free-running again, a `Lagged => continue` creeping
-back) is order-of-magnitude, not marginal. Note also the known e2e port-collision trap: a
-Playwright run that reuses a dev server on 1420 from another worktree measures the wrong
-code — the CI gate must start its own server on an isolated port.
+Note also the known e2e port-collision trap: a Playwright run that reuses a dev server on 1420
+from another worktree measures the wrong code — the CI gate must start its own server on an
+isolated port.
+
+## #PATH_DECISION — Q4: count invariants in CI, ratio the one timing gate, keep paint numbers out
+
+**Decision (2026-08-27, System Architect):** three tiers, decided from what this repo's CI can
+actually see.
+
+The facts that decide it (`.github/workflows/ci.yml`, read 2026-08-27):
+
+- CI has **three jobs — `web`, `rust`, `vt` — all `runs-on: ubuntu-latest`**, and **no
+  Playwright job at all**. Promoting an idle-script or scroll-frame threshold means
+  *introducing* browser perf testing to CI, on Linux.
+- A GitHub Linux runner's headless Chromium **has no GPU**. That is precisely the condition
+  under which ADR-002 withdrew its own Q4 table (`ADR-002:243–262`). A paint threshold measured
+  there would gate on a software rasterizer that no user runs.
+- The only macOS/WKWebView runner in this repo is `release.yml`, and the headline metrics
+  (Activity Monitor CPU %, echo feel) need a packaged build and a human either way.
+
+**Tier 1 — invariant / counting gates. These go into CI, unconditionally, and they are the
+gates that matter.** They are runner-independent because they assert *counts and shapes*, not
+times, and they catch exactly the regressions this phase fears:
+
+- **Zero unrecovered bytes** at every `PHASR_LOAD` ramp step including `bulk` (P3 criterion 3)
+  — a count, in the `rust` job.
+- **`grep` invariant**: no `Lagged(_) => continue` outside test code (P3's own review
+  invariant), as a shell step.
+- **Idle tick count**: `getRenderStats().ticks` over N seconds of idle must be **< 5·N**, not
+  "≤ X ms of script". A rAF chain going free-running again is a 60× move in a *counter*
+  (~60/s vs ~1/s), so this gate has enormous headroom and zero timing sensitivity — it cannot
+  flake on a slow runner, and it is the P1 regression the whole tier exists for. Same for the
+  flood cadence (~30/s).
+- **One `resize_task` per settled toggle** (criterion 1) — a call count, already provable in
+  the mocked harness.
+
+**Tier 2 — the one unavoidable timing gate: `PHASR_BENCH` throughput. Ratio, not absolute.**
+Measure a fixed calibration workload in the same job and assert throughput as a fraction of
+it, with an order-of-magnitude band. Runs in the existing `rust` job; no new infrastructure.
+
+**Tier 3 — paint numbers (idle script time, scroll frame p95) are NOT promoted to CI
+thresholds.** They stay `test.skip`-by-default probes, run locally and under
+`pnpm test:e2e:webkit`, with their numbers recorded in P0's baseline table and in the PR. A
+Linux-Chromium threshold for a WKWebView metric is a gate that fails for the wrong reasons and
+passes for the wrong reasons; criterion 4 already forbids faking a CI gate for a metric CI
+cannot see, and this is that case.
+
+**Where this differs from the recommendation put to the architect** ("ratio/self-comparison,
+before/after on the same runner in one job"): the *before/after in one job* form is rejected —
+it doubles CI time by building and measuring the merge-base, and for the browser probes it
+would still be A/B-ing a GPU-less renderer. The recommendation's principle (never trust an
+absolute number from a shared runner) is adopted in full; it is satisfied more cheaply by
+turning most gates into counts, and by an in-job calibration ratio for the one that resists.
+
+**Rejected — (b), generous absolute thresholds for the paint metrics:** an absolute band wide
+enough not to flake on a Linux runner is wide enough to miss the regression, and it would
+launder a Chromium number into a guarantee about WKWebView.
+
+If a Playwright job is added to CI for other reasons, it may run the probes for their *counting*
+assertions (tier 1) only. Any new CI job must start its own dev server on an isolated port
+(`E2E_PORT`), never `reuseExistingServer` on 1420.
 
 ## Implementation notes — verified entry points
 

@@ -91,24 +91,45 @@ criterion 9 by construction.
 **Decision: this feature is a new *trigger* feeding the existing delivery path.** No new
 notification transport, no new activated-event shape.
 
-## #PLAN_UNCERTAINTY — where the quiet timer lives
+## #PATH_DECISION — Q7: the quiet *timer* is Rust-side; the arm/fire *state machine* is not
 
-Two options:
+**Decision (2026-08-27, System Architect): (a) — the quiet timer lives in Rust, off
+`last_output_at`. The one-shot/baseline/debounce state machine stays in the frontend, and owns
+the decision to fire.**
 
-- **(a) Rust-side**, off `last_output_at` (already stamped per read by the coalescer,
-  `src-tauri/src/pty/handle.rs:740`). Survives the frontend being unmounted or the terminal
-  being LRU-evicted — which matters, because the user armed it precisely to go look at
-  something else.
-- **(b) Frontend-side**, off the surface's write callbacks. Simpler, no new IPC, but dies when
-  the surface is evicted (`src/lib/terminal/cache.ts`) or the route unmounts.
+Verified: `last_output_at` is an `AtomicI64` **on `PtyHandle`** (`src-tauri/src/pty/handle.rs`,
+constructed at `:225`), stamped by the coalescer at *receipt* — before any framing or delivery
+decision (`:740`, "Stamped at receipt, not at flush"). It is therefore independent of every
+mechanism P4 touches: LRU eviction destroys a JS surface, and P4 criterion 7 tears down the
+Rust *forwarder*, but neither touches the handle. A frontend timer built on surface write
+callbacks dies with the surface — and the feature's entire premise is "arm it and go look at
+something else", i.e. the exact moment the LRU parks or evicts that surface.
 
-Recommendation: **(a)**, because the primary use case is "arm it and navigate away". An
-architect should confirm — (b) is meaningfully cheaper to build and may be acceptable for a
-first slice if arming is scoped to the visible session only.
+**The split, and why it is not all-Rust:** F3 has three triggers, and two of them (F1 status
+transitions, F2 marks) are observed frontend-side. One-shot-ness (criterion 2), the arm-time
+baseline (criterion 3), the 50 ms debounce (criterion 4) and the no-double-notify composition
+with `useCompletionNotifications` (criterion 9) all require **one owner**; splitting the state
+machine across the IPC boundary re-creates the double-fire bug by construction. So Rust emits
+a *signal* — "task X has produced no bytes since the arm baseline for N ms" — and the frontend
+reducer decides. Both halves stay unit-testable against a fake clock, which is what criteria
+2–6 and 10 assert.
 
-Note that perf Phase 4 may tear down the Rust forwarder for evicted terminals; a
-frontend-side timer would then be doubly wrong. `last_output_at` is on the handle, not the
-forwarder, so (a) is unaffected.
+Implementation notes that follow from it:
+
+- Arm/disarm is a Tauri command keyed by the **PTY handle key**, not the task id alone: the
+  same mechanism must serve session terminals and run-command terminals
+  (`commands/session_terminal.rs`, `commands/run_commands.rs`), which have handles but are not
+  tasks. `list_task_activity` (`commands/orchestrator.rs:61`) covers tasks only and its 60 s
+  poll is far too coarse for a 2 s + 1 quiet window — **do not** build the trigger on it.
+- The armed watcher is one small tokio task per armed session, with the quiet window as its
+  tick; it stops on fire, on disarm, and on `PtyEvent::Exit` (criterion 10).
+- Session end must disarm in *both* halves; assert the Rust half separately.
+
+**Rejected — (b) frontend-side timer:** dies with the surface (`src/lib/terminal/cache.ts`),
+which is precisely when the user needs it. Not acceptable even as a first slice, because
+"armed only while you are looking at it" inverts the user story.
+**Rejected — the whole state machine in Rust:** the F1/F2 triggers are frontend-observed, so
+this would put the one-shot rule in the process that cannot see two of its three inputs.
 
 ## Implementation notes — verified entry points
 

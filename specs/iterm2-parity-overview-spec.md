@@ -75,6 +75,10 @@ iTerm2, which optimises for one foreground shell.
 5. Every track lands behind its own automated coverage **plus** an entry appended to
    `docs/MANUAL-VERIFICATION.md`, because the mocked-IPC e2e harness (`e2e/harness.ts`)
    cannot validate hook transport, the OSC patch, real PTY bytes, or WKWebView paint cost.
+6. **The "Serialization constraints" table below is binding too** (architect, 2026-08-27).
+   These rules order *tracks*; that table orders the specs that collide on a **file** — the
+   engine patch, `handle.rs`, the five forwarders, `terminal_env`, `selection.ts`, `keymap.ts`
+   and `e2e/harness.ts`. Read both before starting anything in parallel.
 
 ## Parity targets — acceptance criteria for the whole program
 
@@ -135,7 +139,65 @@ The one place we deliberately *do* adopt the escape-sequence transport is F2, be
 133 is an interoperability standard every shell integration already emits — there we want
 the wire format, not just the model.
 
-## #PLAN_UNCERTAINTY — cross-branch dependency for F1's fallback
+## Architect validation — 2026-08-27 (Q1–Q7 settled)
+
+Reviewed against the code, `docs/adr/ADR-002-terminal-engine.md`, and
+`.github/workflows/ci.yml`. **The program is architecturally sound and internally consistent
+once the seven escalated questions are settled and four corrections are folded in.** Every
+decision is written into the owning spec's `#PATH_DECISION` section; this table is the index.
+
+| Q | Question | Decision | Where |
+|---|---|---|---|
+| **Q1** | F2 marks across a width-change rebuild | **Re-anchor from the replay using the emulator's own cursor report** (option 2′: anchors as serializer *metadata*, `readCursor()` at each anchor boundary — the trick `rebuildGrid` already uses for the cursor). No S1 dependency. Content-hash re-locate and OSC-in-the-serialized-stream both rejected. | `f2-command-marks-osc133-spec.md` |
+| **Q2** | F1's fallback pipeline / `feat/task-board` | **Build against this branch's `lastOutputAt` behind one adapter. Never merge `feat/task-board`** — it forks from v0.3.1 and *deletes* the whole 0.4.x terminal layer (368 files, `xterm.ts` still present). Port the three liveness files forward later if wanted. Plus: clear hook state on `PtyEvent::Exit`, and carry an unguessable **token** in the PTY env rather than the task id. | `f1-agent-status-hooks-spec.md`, `iterm2-spike-s2-claude-hook-channel-spec.md` |
+| **Q3** | P3 lag recovery mechanism | **Log backfill for the three PTY-byte forwarders; state-resync for the two *status* broadcasts** (`orchestrator.rs:209` and `service.rs:612` carry `TaskStatusEvent`, not bytes — "uniform backfill at all five" is not implementable); carry-reset at the two internal scanners. `REPLAY_BUFFER_BYTES` unchanged here. Plus the corollary on what the bounded channel actually bounds. | `perf-p3-backpressure-zero-drop-spec.md` |
+| **Q4** | P5 CI perf gates | **Counting/invariant gates in CI (tier 1); one ratio'd timing gate (`PHASR_BENCH`, tier 2); paint numbers stay out of CI (tier 3).** CI is three Linux jobs with no Playwright job and no GPU — a paint threshold there gates on a software rasterizer. | `perf-p5-polish-parity-spec.md` |
+| **Q5** | F4 `getScrollbackLine` throughput | **P0 measures it now** (new criterion 6a, in the e2e probe under Chromium *and* WebKit, fetch-only and fetch+graphemes). **F4 gets a hard gate**: a measured band selects mitigation (c) or (b); the engine-patch mitigation (a) is **not** pre-authorised and needs its own spike. | `perf-p0-measurement-baseline-spec.md`, `f4-find-filter-tail-find-spec.md` |
+| **Q6** | P1's definition of "hidden" | **Window-occluded / app-backgrounded** (`document.visibilityState` + Tauri focus events — both already used in this codebase). "Parked" stays `pause()`'s stronger, separate state. Plus: a hidden page's rAF does not fire, so resumption is event-driven, and the watchdog must keep treating hidden ≠ stalled. | `perf-p1-frame-scheduling-spec.md` |
+| **Q7** | F3 quiet timer location | **Rust-side timer off `last_output_at`** (an atomic on `PtyHandle`, stamped at receipt — survives LRU eviction and P4's forwarder teardown), **frontend-side state machine** (one owner for one-shot/baseline/debounce, since two of the three triggers are frontend-observed). | `f3-notify-quiet-finish-spec.md` |
+
+### Corrections folded in beyond the seven questions
+
+| Found | Correction |
+|---|---|
+| P3 listed five `Lagged` sites as one class | Two of them (`commands/orchestrator.rs:209`, `orchestrator/service.rs:612`) are **task-status** broadcasts with no byte log to backfill. Split by stream class. |
+| P3's "the child blocks in `write()`" | A tokio broadcast send never blocks, so a slow frontend exerts no backpressure at all; the bounded channel bounds *memory* and disk-stall, and **backfill carries the zero-drop guarantee**. Criterion 3 restated as zero *unrecovered* bytes. |
+| P5 criterion 1 (13 `resize_task` per toggle) | The **width** half already shipped (`REBUILD_QUIET_MS = 120`, `backends/ghostty.ts:177,545`). What remains is the **rows-only** path, which still fits immediately (`ghostty.ts:538–544`). Measure before "fixing" what shipped — the same class of error the BSA caught in P2. |
+| F4 criterion 1 ("~0.1 s slice budget") | Self-contradictory with "no frame longer than 16.7 ms": every `getScrollbackLine` is a main-thread WASM call. Budget corrected to **~4 ms per tick**. |
+| F1's socket placement | The listener is a **new top-level module**, not a `commands/` module — `commands/mod.rs` scopes that directory to thin IPC wrappers. |
+
+## Serialization constraints (binding — which specs must not be implemented concurrently)
+
+Derived by intersecting the file sets each spec touches. These are *merge-order* constraints;
+they sit on top of the sequencing rules above, and they are the reason those rules are not
+merely a nice-to-have ordering.
+
+| Contended surface | Specs | Constraint |
+|---|---|---|
+| `patches/ghostty-web@0.4.0.patch` + `node_modules/ghostty-web/dist/ghostty-web.js` | **P1, P2**, and F2's patch if S1 = PATCH; F4's mitigation (a) if it were ever authorised | **One engine-patch author at a time, full stop.** The patch is a single 619-line file regenerated by pnpm; two branches editing it produce a conflict no rebase resolves cleanly. P1 → P2 → (F2 patch). P1 and P2 additionally both edit `write()` (`dist:2495`) — P1 to schedule a frame, P2 to remove the BEL scan — so P2 rebases onto P1's regenerated patch, never the reverse. |
+| `src-tauri/src/pty/handle.rs` | **P3, P4**, F3 (reads `last_output_at`), S2/F1 (the `terminal_env` call site at :172) | P3 and P4 rewrite the *same* functions (coalescer loop, `flush_output`, `emit_output`, replay push) — **strictly sequential, P3 first**; P4's `bytes::Bytes` refactor is written on top of P3's log-offset field, not beside it. F3 and F1 touch disjoint lines and may run in parallel with neither, provided they rebase. |
+| The five forwarders (`commands/orchestrator.rs`, `session_terminal.rs`, `run_commands.rs`, `orchestrator/service.rs`) | **P3, P4** | Same match arms: P3 replaces `Lagged => continue` with recovery, P4 turns the same senders into raw-payload senders. **Sequential, P3 first.** |
+| `src-tauri/src/pty/shell.rs` `terminal_env` + call site `handle.rs:172` | **F1, F2** (and S2's decision) | **F1 lands the signature change** (`terminal_env(shell, session)`) and the env test at `shell.rs:233`; **F2 extends that shape** with `ZDOTDIR`/`--rcfile`. Never concurrent — two independent re-shapings of one function signature plus one shared unit test. |
+| `src/lib/terminal/serialize.ts` + `backends/ghostty.ts` rebuild path | **F2** (Q1 re-anchoring), **F4** (criterion 9) | F2 owns the anchor module; **F4 consumes it and must not implement a second scheme.** If F4 ships first, its results are visibly invalidated on width change until F2 lands. |
+| `src/lib/terminal/selection.ts` | **F4** (highlight spans over `runAtColumn`/`classifyChar`), **F5** (scoring layer in front of `runAtColumn`) | Sequential, **F4 then F5** (the shipped order). F5's scorer must stay additive — `runAtColumn` remains the fallback — so F4's span code keeps working unchanged. |
+| `src/lib/terminal/keymap.ts` + `keymap.test.ts` | **F2** (⌘↑/⌘↓), **F4** (⌘F) | Not concurrent. Both go through the two-layer keymap trap; a second author adding a chord while the first is mid-change is how that trap was walked into three times. |
+| `e2e/harness.ts` | **P4** (payload shape), F1, F3, F4 (mocked commands) | **P4's payload-shape change lands before any Track F e2e is written.** A Track F spec written against the base64 harness has to be rewritten after P4, and its green run before P4 proves nothing about after. |
+| `src/lib/types.ts` + `src/lib/tauri.ts` + `e2e/harness.ts` ("3+1") | F1, F3, F4 | Mechanical conflicts only. Serialise per-PR if two are in flight; each new command touches all four files. |
+| `src-tauri/src/lib.rs` (`generate_handler!` + `.manage`) | F1, F3, F4 | Mechanical. Same note. |
+| `docs/MANUAL-VERIFICATION.md` | **every spec in the program** | Append a dated section at the **end** of the file, never edit in place. Everything here adds an entry, and this is the file most likely to conflict on every single PR. |
+| `specs/perf-p0-measurement-baseline-spec.md` Baseline table | P0–P5, F4 (Q5 row) | Rows are appended/filled, never reordered. Each PR fills only its own rows. |
+
+**Concurrency that IS safe, stated so it is not over-serialised:** P1 (patch) ‖ P3 (Rust) —
+disjoint, and the sequencing rules already say either may land alone. F1 groundwork ‖ Track P —
+as the program map says, provided F1 does not touch the engine patch or the PTY pipeline
+(with the `terminal_env` seam being the one line where it does; land that when no Track P PR
+is mid-review on `handle.rs`). F5 ‖ everything except F4.
+
+## ~~#PLAN_UNCERTAINTY~~ — SETTLED (Q2) — cross-branch dependency for F1's fallback
+
+> **Settled 2026-08-27: (a).** Build against this branch's `lastOutputAt`; `feat/task-board`
+> is never merged into this program. Full decision and evidence in
+> `specs/f1-agent-status-hooks-spec.md`. The context below stands as written.
 
 The "honest status" liveness pipeline (Working/Idle/Wedged/Done/Failed via TUI markers and a
 CPU sensor) is **not on `master`** and therefore not on this branch. It lives on
@@ -152,7 +214,13 @@ to drive the sidebar activity dot in `src/components/AppSidebar.tsx`.
 baseline. F1's spec is written against (a) with the integration seam isolated so (b) is a
 localized change.
 
-## #PLAN_UNCERTAINTY — F2's reflow problem is harder than the plan assumed
+## ~~#PLAN_UNCERTAINTY~~ — SETTLED (Q1) — F2's reflow problem is harder than the plan assumed
+
+> **Settled 2026-08-27: option 2′** — the rebuild re-anchors marks from its own replay, asking
+> the emulator where each anchored line landed (`readCursor()` at anchor boundaries), with the
+> anchors carried as serializer metadata rather than as bytes. No S1 dependency; exact by
+> construction; bounded by the rebuild's existing 25 000-row carry. Full decision in
+> `specs/f2-command-marks-osc133-spec.md`. The diagnosis below stands as written.
 
 The plan says marks should be remapped "through the same offsets `reflow.ts` computes".
 **`reflow.ts` computes no offsets.** `planResize` (`src/lib/terminal/reflow.ts:39`) returns

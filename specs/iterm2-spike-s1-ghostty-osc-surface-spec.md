@@ -68,6 +68,15 @@ PTY reads (the scanner needs a carry buffer, exactly like the grapheme tail in
 only option, F2's acceptance criteria for mark-row precision under flood must be relaxed and
 the architect must sign that off explicitly.
 
+**Narrowed by the Q1 decision (architect, 2026-08-27).** F2's reflow behaviour no longer
+depends on this spike's outcome: marks are re-anchored across a width change from the rebuild
+*replay*, using the emulator's own cursor report, with no parse hook involved
+(`specs/f2-command-marks-osc133-spec.md`, "#PATH_DECISION — Q1"). So S1 now decides **only**
+mark-row precision at parse time under flood — a smaller blast radius than the spec was
+written with. It also means the probe does **not** need to answer "does the hook fire during a
+rebuild replay, across a 512-byte chunk split?" — that question is out of scope now, and if it
+comes up, the answer does not gate F2.
+
 A third option exists and should be costed only if both above fail: emit marks from the
 shell into a *side channel* (a `printf` to a phasr-owned fd or the F1 unix socket) instead
 of into the PTY stream, trading interoperability for reliability.

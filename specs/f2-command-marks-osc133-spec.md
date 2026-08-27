@@ -88,7 +88,7 @@ quote) as a new command.
 
 **Decision: emit and parse `aid=` and `k=` in v1.**
 
-## #PLAN_UNCERTAINTY — reflow: the plan's premise is wrong, and this is the hard problem
+## ~~#PLAN_UNCERTAINTY~~ — SETTLED (Q1, below) — reflow: the plan's premise is wrong, and this is the hard problem
 
 The plan assumed "resize remaps rows … remap marks through the same offsets `reflow.ts`
 computes". **`reflow.ts` computes no offsets.** Verified against
@@ -118,7 +118,7 @@ see — it names OSC 8 hyperlink targets as lost, because ghostty-web 0.4.0's
 `getHyperlinkUri` returns `null`. **OSC 133 marks are in the same category**: unless the mark
 store survives the rebuild independently, a width change destroys the whole mark history.
 
-Options, in preference order — **an architect must choose before implementation**:
+Options, in preference order, as originally drafted:
 
 1. **Anchor marks to content, re-locate after rebuild.** Store, per mark, a hash of its
    prompt line (plus the `aid=`), and re-locate by scanning the rebuilt buffer. Exact for
@@ -133,11 +133,83 @@ Options, in preference order — **an architect must choose before implementatio
    honest, but loses the history a user resized *while reading*. Poor fit for the primary use
    case.
 
-Option 2 is the most attractive if S1 returned PATCH; option 1 is the safe default.
-`e2e/terminal-reflow-anchor.spec.ts` and `src/lib/terminal/reflow.test.ts` are the existing
-guards and the natural home for the assertion in criterion 8.
+**Settled below.** `e2e/terminal-reflow-anchor.spec.ts` and `src/lib/terminal/reflow.test.ts`
+are the existing guards and the natural home for the assertion in criterion 8.
+
+## #PATH_DECISION — Q1, reflow: re-anchor from the replay, using the emulator's own report
+
+**Decision (2026-08-27, System Architect): option 2′ — the rebuild re-anchors marks as
+serializer *metadata*, by asking the emulator where each anchored line landed. Not by
+injecting OSC into the serialized stream, and not by content hashing.**
+
+Mechanism, all of it host-side and all of it reusing machinery that already ships:
+
+1. `snapshotPrimary` (`src/lib/terminal/backends/ghostty.ts:925`) already walks history by
+   **absolute scrollback index** (`for (let i = first; i < total; i++)`, `getScrollbackLine(i)`),
+   so every `SnapshotRow` can carry its old absolute row `abs` at zero cost. Note it also
+   `continue`s on a null row, so the index must be carried per row, never re-derived from
+   `history.length`.
+2. `planPrimary` (`src/lib/terminal/serialize.ts:313`) gains a second input — the set of rows
+   that are anchored — and **splits `segments` at those line boundaries**, returning
+   `anchorsAfter: ReadonlyMap<number, MarkAnchorId[]>` alongside the existing
+   `segments`/`cursorAfter`. The emitted bytes are byte-for-byte what they are today.
+3. `rebuildGrid` (`ghostty.ts:688`) already does exactly this measurement once, for the
+   cursor: `if (i === plan.cursorAfter) mark = this.readCursor(term)`, with the comment
+   "asking it where the cursor ended up is the one measurement guaranteed to agree with the
+   grid". The rebuild loop performs the same `readCursor()` at every anchor boundary and
+   records `absoluteRow = scrollbackLength + cursor.y` — **the identical definition S1 uses at
+   parse time**, so live marks and re-anchored marks live in one coordinate space.
+
+Why this and not the three drafted options:
+
+- **Exact by construction.** The emulator reports where it landed; nothing re-derives wrap
+  arithmetic. `serialize.ts` warns against exactly that ("Working the row out ourselves would
+  mean re-deriving how many rows each line wraps into — the same class of width arithmetic
+  that caused the bug this file exists to fix"), which also rejects a fourth alternative
+  (compute `ceil(width/cols)` per line) outright.
+- **No S1 dependency.** Option 2 required the parse hook to fire *during the rebuild replay*,
+  and to survive the replay's 512-byte chunking (`term.write(segment.slice(o, o + 512))`,
+  `ghostty.ts:745`) splitting a sequence mid-OSC. Option 2′ needs neither, so **F2's reflow
+  behaviour is identical whether S1 returns PATCH or FALLBACK** — one fewer coupling between
+  a spike outcome and a feature's ceiling.
+- **The serializer's contract is untouched.** No new bytes, no wire extension; the anchors are
+  metadata beside the plan, which is what "carry absolute-row anchors as serializer metadata"
+  means.
+- **Rejected — option 1 (content hash).** Agent output is full of repeated identical lines
+  (spinners, `✓ done`, repeated prompts); a hash cannot disambiguate them, and the failure mode
+  is a mark on the *wrong* command, which criterion 8 explicitly rates worse than no mark.
+  Also O(scrollback) per width change.
+- **Rejected — option 3 (invalidate).** Kept only as the fallback (see below); losing the mark
+  history on a panel toggle is a poor fit for "I resized while reading a transcript".
+- **Rejected — option 2 (OSC in the serialized stream).** Strictly more coupling for the same
+  result: two S1 dependencies, a chunk-splitting hazard, and a serializer whose output would
+  no longer be "just the screen".
+
+Cost and bound: one `readCursor()` per anchor (two WASM calls) inside a rebuild that already
+costs ~15 µs *per row* (`MAX_HISTORY_ROWS` comment, `ghostty.ts:198`). Hundreds of anchors are
+noise against a 25 000-row carry.
+
+Consequences the implementer must honour:
+
+- **The carry is bounded at `MAX_HISTORY_ROWS = 25000` rows** (`ghostty.ts:198`, a *time*
+  bound). A width change already discards history beyond it. Marks whose rows are not carried
+  are **evicted**, not re-anchored — their content is gone too, so an anchor would point at
+  nothing.
+- **An anchor that lands mid-logical-line snaps to the start of that logical line**
+  (`joinWrapped` merges wrapped rows), and this is documented in the UI as well as the code.
+  Prompt-start / output-start / command-end anchors are line starts in practice.
+- **Fallback, pre-authorised:** if the anchor-boundary split measurably regresses the rebuild
+  (assert it in `e2e/terminal-aged.spec.ts`'s style-saturated case) or the boundary rule proves
+  unsafe, fall back to option 3 for that build — *visibly* clearing marks per criterion 8.
+  Do not fall back to option 1.
+- F4 consumes the same re-anchoring module for its search results (its criterion 9); it is
+  exported from `serialize.ts`/`ghostty.ts` as one mechanism, not reimplemented.
 
 ## #PLAN_UNCERTAINTY — S1's outcome changes this spec's ceiling
+
+**Narrowed by Q1 (architect):** S1's outcome no longer touches the *reflow* half of this spec
+— re-anchoring is host-side and hook-free. What is still S1-dependent is only live mark-row
+precision under flood.
 
 If S1 returns **FALLBACK**, criterion 3's row precision under flood cannot be met as written.
 That relaxation must be signed off explicitly, with the measured precision loss from S1's
@@ -218,6 +290,12 @@ its text as a floating first row.
 | Scrollback sizing (absolute-row space) | `src/lib/terminal/options.ts:40` `UNLIMITED_SCROLLBACK_BYTES = 1_073_741_824` |
 | Keymap layer for ⌘↑/⌘↓ | `src/lib/terminal/keymap.ts` + `keymap.test.ts`; e2e `e2e/terminal-keymap.spec.ts` |
 | Theme tokens for margin glyphs | `src/lib/terminal/theme.ts`, `themeTokens.ts`, `src/index.css` |
+
+**Serialization warning (architect, 2026-08-27):** F1 changes the *same* seam —
+`terminal_env`'s signature and the spawn loop at `handle.rs:172` — to carry the agent-status
+token. **F1 lands that signature change first**; F2 adds `ZDOTDIR`/`--rcfile` to the shape F1
+established rather than re-shaping it. See "Serialization constraints" in
+`specs/iterm2-parity-overview-spec.md`.
 
 **Keymap warning (learned the hard way):** key bindings here failed three times before,
 because **two layers** are involved — xterm-style handling ignores meta keys, and the webview

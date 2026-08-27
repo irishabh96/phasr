@@ -59,10 +59,21 @@ This phase owns the program's acceptance-criteria table. Later phases reference 
    (`e2e/terminal-phase0.spec.ts`) and `SCROLL_PROBE=1` (`e2e/scroll-probe.spec.ts`) probes.
    The known-bad references are **idle 0.420–0.477 s / 8 s** and **scroll script 0.916 s**
    (ADR-002:275–276).
-7. **No probe becomes a CI gate in this phase.** All perf specs stay `test.skip`-by-default
+7. **`getScrollbackLine` throughput microbench** (architect, Q5 — added so F4's build-vs-patch
+   decision is data-driven when F4 starts, rather than argued). Extend the `PHASE0_PROBE=1`
+   spec (`e2e/terminal-phase0.spec.ts`) with a probe that fills a surface to a known depth,
+   then times `getScrollbackLine(offset)` (`node_modules/ghostty-web/dist/index.d.ts:359`)
+   over a large sample, reporting **lines/second and µs/line**, under **both** Chromium and
+   `pnpm test:e2e:webkit`. Report the fetch-only cost and the fetch+`getScrollbackGraphemeString`
+   cost separately — F4 needs graphemes for correct match spans, so the cheaper number alone
+   would flatter it. Reference point for sanity: the rebuild path measures ~15 µs per row for
+   *read plus re-emit* (`src/lib/terminal/backends/ghostty.ts:198`), so a fetch-only figure far
+   above that is a measurement bug, not a discovery. This belongs in the e2e probe, **not** in
+   `perfbench.rs`: it is a WASM/JS call and never crosses the IPC boundary.
+8. **No probe becomes a CI gate in this phase.** All perf specs stay `test.skip`-by-default
    behind their env flags, exactly like the existing three. Promoting thresholds is Phase 5's
-   job.
-8. Every baseline number is written into this spec's **Baseline** section with the date, the
+   job — and per P5's Q4 decision, only the *counting* ones are promoted at all.
+9. Every baseline number is written into this spec's **Baseline** section with the date, the
    machine, and the runtime it was taken on. A number without a runtime label is not a
    number.
 
@@ -137,3 +148,8 @@ _To be filled by the implementing agent. Every row must carry runtime + date + m
 | IPC hop, < 8 KB eval path | Rust↔JS bench | | | |
 | IPC hop, ≥ 8 KB fetch path | Rust↔JS bench | | | |
 | Flood throughput (`PHASR_BENCH`) | Rust | | | |
+| `getScrollbackLine` lines/s (fetch only) | Chromium | | | |
+| `getScrollbackLine` lines/s (fetch only) | WebKit | | | |
+| `getScrollbackLine` lines/s (+ graphemes) | WebKit | | | |
+| `resize_task` calls per horizontal gesture | Chromium (harness) | | | |
+| `resize_task` calls per vertical gesture | Chromium (harness) | | | |

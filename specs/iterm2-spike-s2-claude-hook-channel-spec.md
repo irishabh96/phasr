@@ -67,6 +67,20 @@ Preference (to be confirmed by the spike): **extend `terminal_env`**, because
 `should_pass_env` filtering already lives there and a task id set outside that filter can be
 silently stripped by a future change to it.
 
+**Settled by the architect (2026-08-27), two parts:**
+
+1. **Extend `terminal_env(shell) → terminal_env(shell, session)`** — confirmed, for the reason
+   above. Verified: the single call site is inside the spawn-candidate loop
+   (`src-tauri/src/pty/handle.rs:172`, `for (key, value) in shell::terminal_env(&launch.shell)`),
+   so the signature change is one line there plus the unit test at `shell.rs:233`.
+2. **The variable carries an unguessable per-session token, not the raw task id.** See
+   `specs/f1-agent-status-hooks-spec.md`, "#PATH_DECISION — Q2 corollary". The spike must
+   report the *variable name*; the *value* is a minted token by decision. The shim reads either
+   one from its environment, so this costs nothing and closes the spoofing hole in F1's socket.
+3. **Sequencing:** F1 lands this signature change; F2 later adds `ZDOTDIR`/`--rcfile` to the
+   same shape. The two must not both re-shape `terminal_env` — see "Serialization constraints"
+   in `specs/iterm2-parity-overview-spec.md`.
+
 ## Decision criteria
 
 Pick the route that satisfies all of:

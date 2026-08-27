@@ -101,12 +101,25 @@ mid-cluster buys nothing, because the tail is held anyway. If it does not hold,
 `e2e/terminal-grapheme-split.spec.ts` is the regression guard and the architect must decide
 whether the 50 ms tail timeout shortens.
 
-## #PLAN_UNCERTAINTY — REPLAY_BUFFER_BYTES is wanted by two phases
+## #PATH_DECISION — Q3 tail: P4 owns `REPLAY_BUFFER_BYTES`, and the default answer is "do not raise it"
 
-P3 may raise `REPLAY_BUFFER_BYTES` for lag recovery; this phase may raise it for LRU
-re-attach. Only one of them should own the change. Recommendation: **P4 owns it**, because
-P3's recommended recovery mechanism is log backfill; if P3 instead adopts replay-resubscribe,
-the raise moves to P3 and this criterion becomes "confirm the existing size suffices".
+**Decision (2026-08-27, System Architect): P4 is the only phase that may change
+`REPLAY_BUFFER_BYTES` (`handle.rs:14`), and it starts from "unchanged".**
+
+P3 settled on log backfill for every byte-carrying forwarder (see that spec's Q3 decision), so
+lag recovery no longer wants a bigger replay buffer at all — which leaves LRU re-attach
+(criterion 7) as the sole claimant. Re-attach should use **the same log-offset backfill P3
+builds**: one mechanism, unbounded history, already tested. Raising the buffer is a second
+mechanism with a worse bound, and it costs memory on *every* PTY to serve a case that happens
+on re-mount.
+
+So criterion 7 reads: re-attach via `subscribe_with_replay` for the recent tail, plus P3's
+log backfill for anything older. Raise `REPLAY_BUFFER_BYTES` **only** if a measurement in this
+phase shows backfill-on-re-attach is materially worse for the user, and record the number in
+the PR. **Rejected — raising it in P3:** P3 has no remaining need for it.
+
+*(Original uncertainty, for the record: P3 may raise it for lag recovery; this phase may raise
+it for LRU re-attach; only one of them should own the change.)*
 
 ## Implementation notes — verified entry points
 

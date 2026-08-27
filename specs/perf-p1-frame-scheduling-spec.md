@@ -43,7 +43,9 @@ the floor this phase removes.
    exponentially weighted. Cadence:
    - **60 fps** while output **< 10 000 B/s**
    - **30 fps** above 10 000 B/s
-   - **1 Hz** when idle for ~3 s, or when the surface is hidden
+   - **1 Hz** when idle for ~3 s, or when the surface is hidden (**"hidden" = the window is
+     occluded / the app is backgrounded — see the Q6 decision below; "parked" is `pause()`'s
+     job and is a different, stronger state**)
 4. **Cadence *decreases* are deferred by one frame**, so the first screenful of a burst
    paints at full rate before the rate drops. (iTerm2 does this deliberately;
    `iTermUpdateCadenceController.m:294–302`.)
@@ -89,15 +91,45 @@ Alternative considered and rejected: keep 60 fps and make the no-op frame cheape
 not reach ~0 — the rAF delivery itself, plus `getCursor()` and the dirty scan, is the floor,
 and it keeps the webview compositor awake.
 
-## #PLAN_UNCERTAINTY — hidden surfaces and the pause() overlap
+## #PATH_DECISION — Q6: "hidden" means window-occluded / app-backgrounded, not parked
 
-phasr already has *two* notions of "not visible": `setActive(false)` (parked, still fed) and
-LRU eviction (`src/lib/terminal/cache.ts`). A1's 1 Hz-when-hidden rule overlaps `pause()`,
-which stops frames entirely. Settle during implementation: does "hidden" in the cadence
-estimator mean "parked" (in which case pause() already covers it and the rule is
-redundant), or "window occluded / app in background" (in which case it is new behaviour that
-also applies to the *visible* terminal of a backgrounded window)? The second reading is more
-valuable and is the recommended one; record the choice in the PR.
+**Decision (2026-08-27, System Architect): in the cadence estimator, `hidden` = the *window*
+is occluded or the app is in the background. "Parked" is a strictly stronger state that
+`pause()` already owns, and the two must not be conflated.**
+
+Three states, named so nobody re-derives them:
+
+| State | Signal | Frames |
+|---|---|---|
+| **Parked** (off-screen tab, LRU-cached) | `setActive(false)` → the patched `pause()` (`dist:2804`), driven by `src/lib/terminal/cache.ts:42` and the three call sites (`Terminal.tsx:359`, `SessionTerminalTab.tsx:340`, `RunCommandTerminal.tsx:183`) | none at all |
+| **Hidden** (visible surface, occluded/backgrounded window) | `document.visibilityState` + Tauri's window focus event | ≤ 1 Hz |
+| **Visible** | neither | 60 / 30 / 1 Hz per the estimator |
+
+Why the occlusion reading and not "parked": parked is already free, so the rule would be dead
+code; occlusion is the uncovered case, and it is *phasr's* case — an agent flooding output into
+a terminal the user cannot see, on a laptop lid-half-closed or behind another app.
+
+**Both signals already exist in this codebase and must be reused, not reinvented:**
+`document.visibilityState` is used by `src/lib/terminal/liveness.ts:181`,
+`backends/ghostty.ts:1298` and `useCompletionNotifications.ts:115`, and the Tauri window
+`onFocusChanged` listener at `useCompletionNotifications.ts:122`.
+
+**Two consequences the implementer must handle, and they are the real content of this decision:**
+
+1. **A hidden page's rAF does not fire.** WebKit and Chromium both freeze `requestAnimationFrame`
+   for a hidden document, so a heartbeat built on rAF is 0 Hz while hidden, not 1 Hz. That is
+   *fine for cost* and *fatal for A1's "the chain never dies" property* unless resumption is
+   event-driven: the `visibilitychange` listener must kick the chain on the way back, which is
+   exactly what `liveness.ts:181–182` already does (`if (document.visibilityState === "visible")
+   checkAll("visible")`). Do not add a `setInterval` heartbeat to keep frames running while
+   hidden — that would spend battery to preserve a mechanism whose only job is to notice
+   staleness, and staleness while hidden is not observable.
+2. **The watchdog must not read "hidden" as "stalled."** `healIfStalled()` already returns
+   early when `document.visibilityState !== "visible"` (`backends/ghostty.ts:1297–1299`); the
+   new cadence must keep that invariant true, and `e2e/terminal-liveness.spec.ts` is the guard.
+
+Alternative considered and rejected: "hidden" = parked — redundant with `pause()`, and it
+would leave the actual battery case (a backgrounded window full of streaming agents) at 60 fps.
 
 ## Implementation notes — verified entry points
 

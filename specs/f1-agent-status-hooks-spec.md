@@ -136,10 +136,15 @@ moment it stops printing — the exact bug this whole track exists to fix.
 10. **`kill -9` on the agent degrades gracefully**: within the heuristic timeout the session
     stops reading as "working". No stuck orange dot. Hook silence must never be interpreted
     as "still working forever".
+    - **10a — process death clears hook state immediately** (architect, Q2).
+      `PtyEvent::Exit` for a session clears its `status`/`indicator`/`detail` rather than
+      waiting for `ACTIVITY_TIMEOUT_MS`. Asserted in Rust: a scripted `PreToolUse`
+      (working/orange) followed by `Exit` leaves no status. This is what makes criterion 10
+      true in the common case under the accepted (a) fallback.
 11. **Hook state is the primary source for Working / Idle / Waiting**; Wedged and Failed
     remain heuristic (a hook cannot report that the process it lives in has wedged).
 
-## #PLAN_UNCERTAINTY — the fallback pipeline is on a different branch
+## ~~#PLAN_UNCERTAINTY~~ — SETTLED (Q2, below) — the fallback pipeline is on a different branch
 
 The plan says F1 integrates with "the existing honest-status liveness pipeline". **That
 pipeline is not on `master` and therefore not on this branch.** It lives on `feat/task-board`
@@ -166,6 +171,65 @@ seam so that swapping in the richer pipeline is a localized change. Criterion 10
 gracefully" bar is correspondingly weaker under (a) — a killed agent takes up to
 `ACTIVITY_TIMEOUT_MS` to stop reading as active — and that must be accepted or (b) chosen.
 
+## #PATH_DECISION — Q2: build against (a); `feat/task-board` is not merged, now or later, as a branch
+
+**Decision (2026-08-27, System Architect): (a). F1 targets this branch's `lastOutputAt` seam,
+behind one adapter. `feat/task-board` is NOT merged into this program, and the option is
+closed rather than deferred.**
+
+This is stronger than the "two unmerged programs shouldn't be coupled" argument, because the
+branches are not merely unmerged — they are **divergent forks of the terminal stack**:
+
+```
+git merge-base master feat/task-board  →  f70c1b1  (v0.3.1-era)
+git diff --shortstat master feat/task-board  →  368 files, +51 628 / −29 931
+git ls-tree feat/task-board --name-only src/lib/terminal/  →  src/lib/terminal/xterm.ts
+```
+
+`feat/task-board` predates the ghostty migration entirely: relative to `master` it *deletes*
+`serialize.ts`, `reflow.ts`, `liveness.ts`, `settle.ts`, `selection.ts` and the rest of the
+0.4.x terminal layer and restores `xterm.ts`. Merging it here would revert the engine that
+ADR-002, the v0.4.0 release and the whole of Track P are built on. There is no version of this
+program in which that merge is the cheaper option.
+
+**Consequences, binding:**
+
+1. The richer liveness model (Working/Idle/Wedged/Done/Failed) is available only by **porting
+   the three files forward as source** (`orchestrator/liveness.rs`, `agentLiveness.ts`,
+   `deriveAgentState.ts`) in a separate, later ticket — never by merging the branch. F1 must
+   not block on that port.
+2. F1 consults the fallback through **exactly one function** (`heuristicStatus(taskId) →
+   {state, since}`), implemented over `list_task_activity` today. The port replaces that
+   function's body and nothing else. Assert the seam in review: no component may read
+   `useRecentlyActiveTasks` directly once F1 lands.
+3. Criterion 10's bar is explicitly **accepted at the weaker level**: after `kill -9`, hook
+   silence plus `ACTIVITY_TIMEOUT_MS = 10 * 60_000` (`src/lib/hooks/useTaskActivity.ts`) means
+   up to ten minutes before the heuristic clears. To keep criterion 10 honest at that bar,
+   **F1 must additionally clear hook state on `PtyEvent::Exit`** — process death is already
+   observed exactly and cheaply on the broadcast, and that, not the activity timeout, is what
+   removes the stuck orange dot in the common case. Add it as criterion 10a.
+
+**Rejected — merge `feat/task-board` first:** reverts the terminal engine (above).
+**Rejected — cherry-pick the liveness files into this program:** the Rust half depends on that
+branch's orchestrator module tree (`board_events.rs`, `cpu_macos.rs`, `ipc_server.rs`, …); it
+is a port, not a pick, and it is not F1-sized work.
+
+## #PATH_DECISION — Q2 corollary: the session identity in the env is a token, not the task id
+
+**Decision (2026-08-27, System Architect):** the variable S2 chooses carries an **unguessable
+per-session token** minted at spawn, not the raw task id. The backend maps token → session and
+drops frames whose token it does not hold.
+
+Prior art in this repo, and the reason: `feat/task-board`'s `orchestrator/ipc_server.rs` (989
+lines, already designed against the same threat model) states it plainly — *"the `token` is the
+SOLE ticket identity … so there is no separate `ticket` field to spoof"*. A task id is a UUID
+that appears in the DB, the UI and the logs, so #EXPORT_CRITICAL §3's "treat the session id as
+a claim, not proof" is only enforceable if the claim is itself a secret. The shim reads either
+one out of its environment, so the cost is identical and the guarantee is strictly better.
+That module is also the design F1's listener should follow (`tokio::net::UnixListener`,
+`remove_file` before bind, `set_permissions(0o600)`, one task per connection, removal on
+`RunEvent::Exit`) — **port the pattern, not the branch**.
+
 ## Correction to the plan — `PHASR_TASK_ID` does not exist
 
 The plan states `PHASR_TASK_ID` is "set in `terminal_env()`". Verified: it is **not**.
@@ -184,6 +248,8 @@ point; F1 implements it.
 | Agent enum + default command templates | `src-tauri/src/domain/agent.rs` — `Agent::Claude => "claude --dangerously-skip-permissions"` (:71) |
 | Command interpolation (where `--settings` would be appended, if S2 picks route A) | `src-tauri/src/orchestrator/templating.rs:37` `interpolate_command` |
 | Command registration + managed state | `src-tauri/src/lib.rs` — `generate_handler!` list and `.manage(...)` calls (see `NotificationRouteRegistry` at :55 for the pattern) |
+| **Where the listener lives** (architect) | A **new top-level module**, e.g. `src-tauri/src/agentstatus/`, registered in `lib.rs` beside `pty`/`orchestrator`. **Not** under `commands/`: that module's own docstring scopes it to "Tauri command surface. Each handler is a thin wrapper around a repository call." (`src-tauri/src/commands/mod.rs:1`). `commands/agent_status.rs` is the thin IPC surface over it. |
+| Socket teardown hook | `RunEvent::Exit` handler in `src-tauri/src/lib.rs` (the pattern `feat/task-board`'s `ipc_server.rs` documents) |
 | Frontend IPC surface ("3+1": Rust command, `tauri.ts`, `types.ts`, `e2e/harness.ts`) | `src/lib/tauri.ts`, `src/lib/types.ts`, `e2e/harness.ts` |
 | Agent icons / labels for the UI | `src/lib/agentIcons.ts`, `src/lib/types.ts:23` (`Agent` union) |
 | Sidebar surface to extend | `src/components/AppSidebar.tsx` |
