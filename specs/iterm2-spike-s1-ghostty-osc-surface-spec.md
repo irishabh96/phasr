@@ -1,6 +1,6 @@
 # Spec: Spike S1 — ghostty-web OSC hook surface
 
-**Status:** planned on `feat/iterm2-parity` · **Author:** BSA (agent) · **Date:** 2026-08-27
+**Status:** DECIDED — PATCH (see Decision, 2026-08-27) · **Author:** BSA (agent) · **Date:** 2026-08-27
 **Type:** Spike (time-boxed investigation) · **Timebox:** ½ day
 **Gates:** Track F2 (command marks). Blocks nothing else.
 **Provenance:** derived from a local iTerm2 source read, 2026-08-27.
@@ -126,14 +126,117 @@ work (that is F2's Emit layer) · OSC 7 (cwd) beyond noting whether the same sea
 
 ## Decision
 
-_To be appended by the implementing agent. Format:_
+**Decision (2026-08-27, spike agent — Claude, Fable 5): PATCH**
+
+…with one amendment to this spec's Method-step-3 sketch: the hook must be a **split-write
+scanner**, not a single row sample at the end of `writeInternal`. Measured: with a mark
+mid-chunk followed by 500 lines in the same write (the normal shape — the Rust side
+coalesces up to 32 KiB / 8 ms per chunk), end-of-chunk sampling reported `absRow=530`
+against a true mark row of 30; splitting the write at the sequence terminator and sampling
+between the two engine writes reported `absRow=30`, exact. Splitting is semantically free —
+final terminal state byte-identical across the split (probe case 3).
+
+### Observed behaviour of 133;A/B/C/D (Method step 1, Node probe against the installed patched dist)
+
+Probe scripts (scratchpad only, per AC 5): `probe-osc.mjs`, `probe-precision.mjs`, run under
+Node against `dist/ghostty-web.js` + `dist/ghostty-vt.wasm` — the dist exports the raw
+`GhosttyTerminal` wasm binding (class `W`), so the parse path runs with no DOM. Verbatim:
 
 ```
-**Decision (YYYY-MM-DD, <agent>): PATCH | FALLBACK | BLOCKED**
-
-Observed behaviour of 133;A/B/C/D: …
-Hook location: …
-Absolute-row source: …
-Estimated hunk size: …
-Consequences for F2: …
+after 'before\r\n': cursor=(0,1) scrollback=0 absRow=1 hasResponse=0
+wrote 133;A BEL:  cursor=(0,1) hasResponse=0 row1=""
+wrote 133;B BEL:  cursor=(0,1) hasResponse=0 row1=""
+wrote 133;C BEL:  cursor=(0,1) hasResponse=0 row1=""
+wrote 133;D;1 BEL: cursor=(0,1) hasResponse=0 row1=""
+wrote 133;A ST:   cursor=(0,1) hasResponse=0 row1=""
 ```
+
+- **All four sequences (BEL- and ST-terminated) are swallowed silently**: no echo into
+  cells, cursor unmoved, and — decisive for the `processTerminalResponses()` candidate —
+  **nothing ever reaches the device-response queue** (`hasResponse=0` throughout). That
+  candidate hook is dead without a Zig rebuild.
+- **A sequence split across two `write()` calls is carried by the core's own parser state**
+  (`\x1b]133;` then `C\x07tail` → only `tail` rendered). Splitting our writes is therefore
+  safe at any boundary.
+- **An OSC sequence never moves the cursor**, so the row sampled immediately after its
+  terminator parses equals the row at dispatch (`absRow=42` before and after `133;A` with
+  19 rows already in scrollback).
+- **OSC 7 and OSC 1337 are also swallowed cleanly** by the terminal write path
+  (`x…7…y…1337…z` renders as `xyz`); 1337 additionally logs
+  `warning(osc): invalid OSC command: 1337;CurrentDir=/tmp` through the wasm `env.log`
+  import — benign, no visual effect.
+- **The wasm build compiled semantic-prompt recognition in.** The export section of
+  `dist/ghostty-vt.wasm` (423 045 bytes; also inlined as base64 at `dist/ghostty-web.js:17`)
+  carries a standalone OSC parser the JS glue never binds: `ghostty_osc_new / next / end /
+  reset / free / command_type / command_data`. Driven directly, it classifies:
+  `133;A→3, 133;B→4, 133;C→5, 133;D;1→6, 7;file://…→8, 0/2;title→1`; `1337;…` is rejected.
+  So the Zig core in this build knows these commands — the terminal's stream handler simply
+  discards them with no JS-visible effect, and no `ghostty_terminal_set_osc_callback`-style
+  export exists.
+
+### Hook location (AC 3)
+
+- **File + symbol:** `Terminal.writeInternal` (class `IA`), installed patched dist
+  `node_modules/ghostty-web/dist/ghostty-web.js:2488`. The single `this.wasmTerm.write(A)`
+  at **line 2495** becomes a call to a new private `writeWithOscScan(A)`, placed beside
+  `anchorViewportAfterWrite` (line 2529). The emitter registers in the constructor's
+  emitter block (**line 2199**): `this.oscMarkEmitter = new J(), this.onOscMark =
+  this.oscMarkEmitter.event` — the exact `bellEmitter` pattern.
+- **Position in the patch file:** extends the existing
+  `@@ -2387,7 +2487,50 @@ class IA` hunk (`patches/ghostty-web@0.4.0.patch:233`, the hunk
+  that already owns `writeInternal`/`anchorViewportAfterWrite`), plus a one-line hunk at
+  the constructor emitter block and a `Terminal` d.ts addition beside the existing
+  `@@ -1686,6 +1710,36` hunk.
+- **Scanner shape:** fast path — no `0x1b,0x5d` pair in the chunk and no carried partial
+  sequence → one write, upstream-identical (this is every chunk that isn't a prompt
+  boundary). Slow path — for each recognized mark prefix (`133;`, `7;`; `1337;` is a
+  one-line table entry if ever wanted, classified by us since the engine rejects it), write
+  bytes **through** the terminator (BEL or ESC-`\`), sample the row, fire, continue with
+  the remainder. A carry buffer holds a chunk-final partial sequence **for classification
+  only** — the bytes themselves are always written to the engine immediately (no rendering
+  delay), and row exactness survives the split because OSC never moves the cursor. Same
+  carry idea as `src/lib/terminal/graphemeTail.ts`.
+- **Callback contract (public d.ts surface):**
+
+  ```ts
+  /** Fires when a recognized OSC mark (133 semantic prompt, 7 cwd) completes in the
+   *  stream. absoluteRow = scrollbackLength + cursor.y sampled immediately after the
+   *  sequence terminator parses — exact even when the mark sits mid-chunk. */
+  readonly onOscMark: IEvent<{ sequence: number; params: string[]; absoluteRow: number }>;
+  ```
+
+  No phasr-specific types → upstreamable as-is; upstream may prefer an xterm.js-style
+  `registerOscHandler(ident, cb)` shape, which this reshapes into trivially.
+
+### Absolute-row source
+
+`this.getScrollbackLength() + this.wasmTerm.getCursor().y`, read between the split writes —
+i.e. after the terminator byte parses and before any further byte of the same chunk reaches
+the engine, and before `anchorViewportAfterWrite` runs. Measured exact under a 500-line
+mid-chunk flood (30 vs 30; the naive end-of-chunk sample read 530).
+
+### Estimated hunk size
+
+~80–95 patch lines including house-style comments (scanner ~55, emitter wiring ~5, d.ts
+~20). Same order as the DEC-2026 hunk once its comments are counted; the criterion's
+"~40 lines" is exceeded by comments, not mechanism.
+
+### Consequences for F2
+
+- The engine layer is **confirmed feasible with exact parse-time rows under flood** — F2
+  keeps its strict mark-row precision acceptance criteria; no architect sign-off on a
+  relaxation is needed.
+- The Rust-side scanner fallback and the shell side-channel third option are **dead — do
+  not cost them**.
+- OSC 7 (cwd) rides the same seam for free. OSC 1337 is a scanner-table entry if ever
+  wanted (the engine's own OSC parser rejects it; ours classifies independently).
+- F2's estimate is unchanged or slightly reduced: the hook design work is done here, and
+  the patch layer is now mechanical.
+
+### Method deviations, recorded
+
+The probe ran under Node against the identical wasm binary instead of the Playwright
+harness, and the webkit cross-engine check was skipped: the parse path is pure wasm + JS
+glue with zero browser dependency, and the decision criteria were already met — Method says
+"stop as soon as a decision is reachable". If F2's implementation wants belt-and-braces, it
+can fold a 133-mark probe into its own e2e spec, where a real surface exists anyway.
