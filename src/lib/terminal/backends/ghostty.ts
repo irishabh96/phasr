@@ -40,6 +40,11 @@ import {
 } from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
 import {
+  createSurfacePerf,
+  type ScrollbackBenchResult,
+  type SurfacePerf,
+} from "@/lib/terminal/perf";
+import {
   applyChangedOptions,
   applyChangedTheme,
   buildSurfaceOptions,
@@ -305,6 +310,10 @@ export class GhosttySurface implements TerminalSurface {
   private heldTimer: number | null = null;
   /** See `diagnostics.ts` — OFF unless the user switches it on. */
   private readonly diag = terminalDiagnosticsEnabled();
+  /** Phase 0 instrumentation — `null` in prod builds and in dev unless
+   *  switched on, so hot paths pay one optional-chain when it is off.
+   *  See `perf.ts`. */
+  private perf: SurfacePerf | null = null;
   private linkSource: LinkSource | null = null;
   private keymap: ((event: KeyboardEvent) => string | null) | null = null;
   private clipboardWanted = false;
@@ -368,6 +377,7 @@ export class GhosttySurface implements TerminalSurface {
       installTerminalDiagnostics();
       diagCreate(this.id);
     }
+    this.perf = createSurfacePerf(this.id);
     this.options = buildSurfaceOptions(settings);
     this.themeTarget.theme = this.options.theme;
 
@@ -412,6 +422,16 @@ export class GhosttySurface implements TerminalSurface {
     // `element` into its mount and the first `fit()` sizes the grid.
     term.open(this.element);
 
+    // Perf FIRST, so the criterion-2 mark is stamped before the data
+    // callbacks spend time turning the bytes into an IPC call.
+    if (this.perf) {
+      term.onData(() => this.perf?.input());
+      this.perf.attach({
+        getStats: () => term.getRenderStats?.() ?? null,
+        backlogBytes: () => this.backlogBytes(),
+        host: this.element,
+      });
+    }
     for (const cb of this.dataCbs) term.onData(cb);
     for (const cb of this.resizeCbs) term.onResize(cb);
 
@@ -1181,6 +1201,7 @@ export class GhosttySurface implements TerminalSurface {
   setActive(active: boolean): void {
     this.active = active;
     if (this.disposed) return;
+    this.perf?.setActive(active);
     const term = this.term;
     // No engine yet is not a missing patch — it is the ordinary state of a
     // surface whose chunk has not resolved, and `attach()` re-applies the
@@ -1312,6 +1333,7 @@ export class GhosttySurface implements TerminalSurface {
   write(data: string | Uint8Array): void {
     if (this.disposed) return;
     if (this.diag) diagWrite(this.id, data);
+    this.perf?.output(data.length);
     if (!this.term) {
       this.pendingWrites.push(data);
       return;
@@ -1347,6 +1369,19 @@ export class GhosttySurface implements TerminalSurface {
         this.flushHeldTail();
       }, HELD_TAIL_MS);
     }
+  }
+
+  /**
+   * Bytes accepted by `write()` and not yet parsed by the engine — the
+   * "parse backlog" the perf HUD shows. The engine itself parses
+   * synchronously inside `term.write`, so the only queues are ours: the
+   * pre-attach `pendingWrites` and the held grapheme tail. Nonzero after
+   * attach therefore means bytes are genuinely waiting.
+   */
+  private backlogBytes(): number {
+    let sum = this.heldTail?.length ?? 0;
+    for (const data of this.pendingWrites) sum += data.length;
+    return sum;
   }
 
   /** Write whatever is being held, now. */
@@ -1501,6 +1536,81 @@ export class GhosttySurface implements TerminalSurface {
     return {
       offset: Math.max(0, Math.floor(term.getViewportY())),
       scrollback: term.getScrollbackLength(),
+    };
+  }
+
+  /**
+   * The Phase 0 `getScrollbackLine` throughput microbench (spec criterion
+   * 7, architect Q5) — F4's build-vs-patch decision is made against these
+   * numbers. DEV-bridge-only; never called by shipped code.
+   *
+   * Two passes over the same sampled offsets:
+   *
+   *   - **fetch-only**: `getScrollbackLine` plus a cell walk — the floor
+   *     for anything that reads history out of the engine.
+   *   - **fetch + graphemes**: the same fetch plus text assembly with
+   *     `getScrollbackGraphemeString` for cluster-bearing cells — what F4
+   *     actually needs for correct match spans, per the spec: "the cheaper
+   *     number alone would flatter it".
+   *
+   * A WASM/JS call that never crosses the IPC boundary, which is why this
+   * lives here and in the e2e probe rather than in `perfbench.rs`.
+   */
+  benchScrollback(samples: number): ScrollbackBenchResult | null {
+    const wasm = this.term?.wasmTerm;
+    if (!wasm) return null;
+    const depth = wasm.getScrollbackLength();
+    if (depth <= 0) return null;
+    const sampled = Math.max(1, Math.min(Math.floor(samples), depth));
+    const stride = depth / sampled;
+
+    let cells = 0;
+    const t0 = performance.now();
+    for (let i = 0; i < sampled; i++) {
+      const line = wasm.getScrollbackLine(Math.floor(i * stride));
+      if (!line) continue;
+      // Walk the cells so the fetch cannot be optimised away and the cost
+      // includes touching what came back — the minimum any consumer does.
+      for (let c = 0; c < line.length; c++) {
+        if ((line[c] as GhosttyCellLike).codepoint !== 0) cells += 1;
+      }
+    }
+    const fetchMs = performance.now() - t0;
+
+    let chars = 0;
+    const t1 = performance.now();
+    for (let i = 0; i < sampled; i++) {
+      const offset = Math.floor(i * stride);
+      const line = wasm.getScrollbackLine(offset);
+      if (!line) continue;
+      let text = "";
+      for (let c = 0; c < line.length; c++) {
+        const cell = line[c] as GhosttyCellLike;
+        if (cell.grapheme_len > 0) {
+          text += wasm.getScrollbackGraphemeString(offset, c);
+        } else if (cell.codepoint !== 0) {
+          text += String.fromCodePoint(cell.codepoint);
+        } else {
+          text += " ";
+        }
+      }
+      chars += text.length;
+    }
+    const graphemeMs = performance.now() - t1;
+
+    const perLine = (ms: number) => (ms * 1000) / sampled;
+    const perSec = (ms: number) => (ms > 0 ? (sampled * 1000) / ms : 0);
+    return {
+      depth,
+      sampled,
+      fetchMs,
+      graphemeMs,
+      fetchLinesPerSec: perSec(fetchMs),
+      graphemeLinesPerSec: perSec(graphemeMs),
+      fetchUsPerLine: perLine(fetchMs),
+      graphemeUsPerLine: perLine(graphemeMs),
+      cells,
+      chars,
     };
   }
 
@@ -1705,6 +1815,8 @@ export class GhosttySurface implements TerminalSurface {
     this.cancelRebuildRetry();
     this.clearHeldTimer();
     this.heldTail = null;
+    this.perf?.dispose();
+    this.perf = null;
     if (this.diag) diagDispose(this.id);
     try {
       this.term?.dispose();

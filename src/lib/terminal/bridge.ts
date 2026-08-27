@@ -1,4 +1,5 @@
 import { routeDroppedPaths } from "@/lib/terminal/drop";
+import type { ScrollbackBenchResult } from "@/lib/terminal/perf";
 import type {
   TerminalBackendKind,
   TerminalSurface,
@@ -71,6 +72,29 @@ export interface TerminalBridge {
    * must not quietly break it by resuming terminals the app paused.
    */
   renderTick(id: string): number | null;
+  /**
+   * Phase 0's `getScrollbackLine` throughput microbench (perf spec,
+   * criterion 7). Loops inside the page so the Playwright boundary is
+   * crossed once per RUN, not once per line. `null` when the backend has
+   * no bench (not ghostty, no engine yet) or no history to sample.
+   */
+  scrollbackBench(id: string, samples: number): ScrollbackBenchResult | null;
+}
+
+/** Backends that implement the microbench do so structurally. */
+interface ScrollbackBenchable {
+  benchScrollback(samples: number): ScrollbackBenchResult | null;
+}
+
+function benchable(
+  surface: TerminalSurface | undefined,
+): ScrollbackBenchable | null {
+  const candidate = surface as
+    | (TerminalSurface & Partial<ScrollbackBenchable>)
+    | undefined;
+  return typeof candidate?.benchScrollback === "function"
+    ? (candidate as TerminalSurface & ScrollbackBenchable)
+    : null;
 }
 
 declare global {
@@ -100,6 +124,8 @@ function bridge(): TerminalBridge {
     dropPaths: (paths, x, y) => routeDroppedPaths(paths, { x, y }),
     repaint: (id) => live.get(id)?.repaint(),
     renderTick: (id) => live.get(id)?.renderTick() ?? null,
+    scrollbackBench: (id, samples) =>
+      benchable(live.get(id))?.benchScrollback(samples) ?? null,
   };
 }
 
