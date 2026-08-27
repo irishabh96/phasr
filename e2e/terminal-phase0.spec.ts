@@ -186,8 +186,13 @@ async function measureScroll(
 
 test("Q4 (DIRECTIONAL, Chromium not WKWebView) — ghostty throughput", async ({
   page,
+  browserName,
 }) => {
   skipUnlessProbe();
+  test.skip(
+    browserName !== "chromium",
+    "CDP Performance metrics are Chromium-only — perf-baseline.spec.ts carries the engine-agnostic versions",
+  );
   test.setTimeout(240_000);
 
   const client = await page.context().newCDPSession(page);
@@ -227,6 +232,7 @@ test("Q4 (DIRECTIONAL, Chromium not WKWebView) — ghostty throughput", async ({
   );
 
   // Idle cost of N mounted terminals — the reason `setActive()` exists.
+  // (Baseline row: "Idle script / 8 s, 1 visible — Chromium".)
   // ghostty-web free-runs a rAF loop per OPEN terminal, so this is the
   // number that says whether parked terminals are really paused.
   const idleBefore = await snap();
@@ -241,4 +247,98 @@ test("Q4 (DIRECTIONAL, Chromium not WKWebView) — ghostty throughput", async ({
   await measureScroll(page, "TERMINAL_UP", snap);
 
   expect(after.ScriptDuration).toBeGreaterThan(0);
+});
+
+/**
+ * Perf Phase 0, criterion 7 (architect Q5) — `getScrollbackLine`
+ * throughput, so F4's build-vs-patch decision starts from a measured band
+ * instead of an argument.
+ *
+ * Runs under BOTH the default (Chromium) config and `pnpm test:e2e:webkit`
+ * — it is a WASM/JS call with no CDP dependency and no IPC crossing, which
+ * is also why it lives here and not in `perfbench.rs`. The loop runs
+ * inside the page (`bridge.scrollbackBench`), so the Playwright boundary
+ * is crossed once per run.
+ *
+ * Reports fetch-only AND fetch+`getScrollbackGraphemeString` separately:
+ * F4 needs graphemes for correct match spans, so the cheaper number alone
+ * would flatter it. Sanity anchor from the spec: the rebuild path measures
+ * ~15 µs/row for read PLUS re-emit, so a fetch-only figure far above that
+ * is a measurement bug, not a discovery.
+ */
+test("criterion 7 — getScrollbackLine throughput (fetch-only vs +graphemes)", async ({
+  page,
+  browserName,
+}) => {
+  skipUnlessProbe();
+  test.setTimeout(240_000);
+
+  await bootApp(page, makeFixtures());
+  await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  await expectBackend(page);
+  await page.waitForTimeout(2000);
+
+  // A known depth of mixed content: mostly the standard ASCII filler, with
+  // every 16th line carrying CJK + emoji so the grapheme pass has real
+  // clusters to resolve rather than a fast path all the way down.
+  const lines = 5000;
+  const burst = 500;
+  for (let i = 0; i < lines; i += burst) {
+    const chunk: string[] = [];
+    for (let n = i; n < Math.min(i + burst, lines); n++) {
+      chunk.push(
+        n % 16 === 0
+          ? `line ${String(n).padStart(5, "0")}  日本語テキスト 🚀 café naïve ${"─".repeat(20)}`
+          : `line ${String(n).padStart(5, "0")}  ${"lorem ipsum dolor sit amet ".repeat(3)}`,
+      );
+    }
+    await ptyOut(page, "ws-agent", chunk.join("\r\n") + "\r\n");
+    await page.waitForTimeout(20);
+  }
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate((samples) => {
+    const bridge = (window as any).__PHASR_TERM__;
+    if (!bridge) throw new Error("__PHASR_TERM__ missing (not a DEV build?)");
+    // The surface fed above is the one with the deepest history.
+    let best: string | null = null;
+    let bestDepth = -1;
+    for (const id of bridge.ids()) {
+      const v = bridge.viewport(id);
+      if (v && v.scrollback > bestDepth) {
+        bestDepth = v.scrollback;
+        best = id;
+      }
+    }
+    if (!best) throw new Error("no live surface");
+    return bridge.scrollbackBench(best, samples);
+  }, 4000);
+
+  expect(result).not.toBeNull();
+  const r = result as {
+    depth: number;
+    sampled: number;
+    fetchMs: number;
+    graphemeMs: number;
+    fetchLinesPerSec: number;
+    graphemeLinesPerSec: number;
+    fetchUsPerLine: number;
+    graphemeUsPerLine: number;
+    cells: number;
+    chars: number;
+  };
+  console.log(
+    `SCROLLBACK_BENCH engine=${browserName} depth=${r.depth} sampled=${r.sampled} ` +
+      `fetch-only ${r.fetchUsPerLine.toFixed(2)}us/line (${Math.round(r.fetchLinesPerSec).toLocaleString()} lines/s) ` +
+      `fetch+graphemes ${r.graphemeUsPerLine.toFixed(2)}us/line (${Math.round(r.graphemeLinesPerSec).toLocaleString()} lines/s) ` +
+      `cells=${r.cells} chars=${r.chars}`,
+  );
+  // The probe measured something real, at a real depth…
+  expect(r.depth).toBeGreaterThan(1000);
+  expect(r.cells).toBeGreaterThan(0);
+  expect(r.chars).toBeGreaterThan(0);
+  // …and the fetch-only figure is in the physically plausible band (the
+  // rebuild's read+re-emit is ~15 µs/row; two orders of magnitude above
+  // that is a broken measurement, not a slow engine).
+  expect(r.fetchUsPerLine).toBeLessThan(1500);
 });

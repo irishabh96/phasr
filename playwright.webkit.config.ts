@@ -12,17 +12,24 @@
  * Not the default: it needs `pnpm exec playwright install webkit`, and it
  * is slower. Reach for it when a change touches rendering, selection,
  * canvas metrics or clipboard behaviour.
+ *
+ * `E2E_PORT`: same isolation rule as the default config — an explicit port
+ * guarantees the server under test is this checkout's, not whatever another
+ * worktree left on 1420. Every recorded perf baseline states its port.
  */
 import { defineConfig, devices } from "@playwright/test";
+
+const port = Number(process.env.E2E_PORT) || 1420;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
   reporter: [["list"]],
-  use: { baseURL: "http://localhost:1420", trace: "off" },
+  use: { baseURL: `http://localhost:${port}`, trace: "off" },
   projects: [{ name: "webkit", use: { ...devices["Desktop Safari"] } }],
   webServer: {
     command: "pnpm dev",
-    url: "http://localhost:1420",
+    url: `http://localhost:${port}`,
     reuseExistingServer: true,
     timeout: 120_000,
   },

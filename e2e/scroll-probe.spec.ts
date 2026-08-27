@@ -104,7 +104,7 @@ async function measureWheelScroll(
   );
 }
 
-test("terminal scroll smoothness", async ({ page }) => {
+test("terminal scroll smoothness", async ({ page, browserName }) => {
   test.skip(!process.env.SCROLL_PROBE, "diagnostic — run with SCROLL_PROBE=1");
   test.setTimeout(180_000);
 
@@ -135,6 +135,9 @@ test("terminal scroll smoothness", async ({ page }) => {
   await measureWheelScroll(page, "TERMINAL_UP_NODOTS", 60, -120);
 
   // JS profile during a scroll storm — who actually burns the time?
+  // CDP is Chromium-only; under `pnpm test:e2e:webkit` the frame numbers
+  // above are the whole (and the load-bearing) story.
+  if (browserName !== "chromium") return;
   const client = await page.context().newCDPSession(page);
   await client.send("Profiler.enable");
   await client.send("Profiler.setSamplingInterval", { interval: 200 });

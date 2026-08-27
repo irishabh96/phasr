@@ -6,8 +6,17 @@ import path from "node:path";
 
 const host = process.env.TAURI_DEV_HOST;
 
+/**
+ * `E2E_PORT` exists for probe isolation: Playwright's `reuseExistingServer`
+ * happily reuses ANY dev server on 1420 — including another worktree's — and
+ * then silently measures stale code. A perf run sets an explicit port so the
+ * server under test is provably its own. Tauri dev keeps 1420
+ * (`tauri.conf.json` hard-codes the devUrl).
+ */
+const port = Number(process.env.E2E_PORT) || 1420;
+
 const server: ServerOptions = {
-  port: 1420,
+  port,
   strictPort: true,
   host: host || false,
   watch: {
