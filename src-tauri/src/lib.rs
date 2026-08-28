@@ -6,6 +6,9 @@ mod dock_icon;
 mod domain;
 mod fswatch;
 mod git;
+/// Rust↔JS IPC bench (Perf Phase 0, criterion 3). Compiled in, but every
+/// command is inert unless the shell was launched with PHASR_IPC_BENCH=1.
+mod ipcbench;
 mod launcher;
 mod localfs;
 mod orchestrator;
@@ -132,6 +135,9 @@ pub fn run() {
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
+            ipcbench::ipc_bench_config,
+            ipcbench::ipc_bench_send,
+            ipcbench::ipc_bench_report,
             auth_deeplink::consume_pending_auth_callback,
             sync::start_cloud_sync,
             sync::stop_cloud_sync,
