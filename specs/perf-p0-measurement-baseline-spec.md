@@ -176,6 +176,15 @@ idle 8 s browser-tree CPU 2.69 s (ps-diff, all processes incl. GPU);
 flood 2.06 MB TUI in 144 ms = **14.3 MB/s** in-page parse+write at ~69 fps
 during flood; deep-scrollback wheel p95 9.3 ms. 2026-08-27, M1P.
 
+**Rust-side IPC component costs** (`PHASR_BENCH=1 cargo test --lib ipcbench
+-- --ignored --nocapture`, **debug profile** — the shipping app is release,
+so absolute µs overstate; the json-vs-raw RATIO is the durable finding;
+2026-08-28, M1P): per chunk, serialize+send into a no-webview sink —
+4 KiB: json 221 µs vs raw **0.2 µs**; 32 KiB: json 1 999 µs vs raw
+**1.0 µs**. The base64+JSON envelope is ~1000× the Rust-side cost of
+Phase 4's raw bytes before the webview is even involved. Corpus context:
+73.07 MiB across 107 real PTY logs, ESC/KiB 61.7.
+
 **Measurement notes.**
 - The horizontal gesture's 14 `resize_task` calls are one per drag STEP
   (each 10 px step re-plans; `REBUILD_QUIET_MS` collapses the rebuild but
