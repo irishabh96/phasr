@@ -1564,6 +1564,18 @@ export class GhosttySurface implements TerminalSurface {
     const sampled = Math.max(1, Math.min(Math.floor(samples), depth));
     const stride = depth / sampled;
 
+    // Untimed warm-up over both call shapes: without it the first timed
+    // pass pays the JIT/wasm-boundary warm-up for both, and the second
+    // pass measures FASTER than the strictly-cheaper first one did.
+    for (let i = 0; i < Math.min(256, depth); i++) {
+      const line = wasm.getScrollbackLine(i);
+      if (!line) continue;
+      for (let c = 0; c < line.length; c++) {
+        if ((line[c] as GhosttyCellLike).grapheme_len > 0)
+          wasm.getScrollbackGraphemeString(i, c);
+      }
+    }
+
     let cells = 0;
     const t0 = performance.now();
     for (let i = 0; i < sampled; i++) {
