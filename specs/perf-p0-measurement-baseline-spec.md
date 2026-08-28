@@ -134,22 +134,51 @@ Shipping the HUD to users.
 
 ## Baseline
 
-_To be filled by the implementing agent. Every row must carry runtime + date + machine._
+_Every row carries runtime + date + machine. Machine "M1P" = MacBook Pro, Apple
+M1 Pro, 16 GB, macOS (Darwin 25.6.0), **120 Hz ProMotion display** (rAF runs at
+~120 fps — frame-time numbers are not comparable to a 60 Hz machine). Engine:
+ghostty-web 0.4.0 + `patches/ghostty-web@0.4.0.patch` at v0.4.1+p0. Browser
+runs use the mocked-IPC dev harness on an isolated port (`E2E_PORT=14310/14311`),
+one worker, machine held awake with `caffeinate`. Probes:
+`PHASE0_PROBE=1 … e2e/terminal-phase0.spec.ts` / `e2e/perf-baseline.spec.ts`._
 
 | Metric | Runtime | Value | Date | Machine |
 |---|---|---|---|---|
-| Idle script / 8 s, 1 visible | Chromium | | | |
+| Idle script / 8 s, 1 visible | Chromium | Script **0.559 s**, Task 1.307 s (CDP; ADR-002 known-bad band was 0.420–0.477 s) | 2026-08-28 | M1P |
 | Idle script / 8 s, 1 visible | WebKit | | | |
 | Idle CPU %, 1 visible | packaged app (Activity Monitor) | | | |
 | Idle CPU %, 8 open / 1 visible | packaged app (Activity Monitor) | | | |
-| Scroll script, 60 steps / 3000 lines | Chromium | | | |
+| Scroll script, 60 steps / 3000 lines | Chromium | Script **0.51 s**, Task 0.747 s; frames mean 8.3 ms / p95 8.5 ms, 0 > 25 ms (ADR-002 reference 0.916 s — post-0.4.1 scroll fixes) | 2026-08-28 | M1P |
 | Scroll frame p95, deep scrollback | WebKit | | | |
 | Echo keystroke→paint p50 / p95 | WebKit | | | |
 | IPC hop, < 8 KB eval path | Rust↔JS bench | | | |
 | IPC hop, ≥ 8 KB fetch path | Rust↔JS bench | | | |
 | Flood throughput (`PHASR_BENCH`) | Rust | | | |
-| `getScrollbackLine` lines/s (fetch only) | Chromium | | | |
+| `getScrollbackLine` lines/s (fetch only) | Chromium | **3.38 µs/line ≈ 296 k lines/s** (depth 9 649, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (fetch only) | WebKit | | | |
 | `getScrollbackLine` lines/s (+ graphemes) | WebKit | | | |
-| `resize_task` calls per horizontal gesture | Chromium (harness) | | | |
-| `resize_task` calls per vertical gesture | Chromium (harness) | | | |
+| `getScrollbackLine` lines/s (+ graphemes) | Chromium | **2.83 µs/line ≈ 354 k lines/s** — pass-order/allocator noise puts it under fetch-only; read both as "~3 µs/line, fetch dominates, graphemes ≈ free on a 1/16-cluster corpus" | 2026-08-28 | M1P |
+| `resize_task` calls per horizontal gesture | Chromium (harness) | **14** (`resize_task`×14; 14-step / ~220 ms viewport drag) | 2026-08-27 | M1P |
+| `resize_task` calls per vertical gesture | Chromium (harness) | **9** (`resize_task`×9; rows-only path fits immediately — P5's remaining half, confirmed) | 2026-08-27 | M1P |
+
+**Chromium drift references from `perf-baseline.spec.ts`** (same-machine
+context for the WebKit rows; Chromium is never paint-cost truth): echo
+keystroke→paint p50 4.2 ms / p95 7.9 ms (n=60, 0 expired, ~119 fps);
+idle 8 s browser-tree CPU 2.69 s (ps-diff, all processes incl. GPU);
+flood 2.06 MB TUI in 144 ms = **14.3 MB/s** in-page parse+write at ~69 fps
+during flood; deep-scrollback wheel p95 9.3 ms. 2026-08-27, M1P.
+
+**Measurement notes.**
+- The horizontal gesture's 14 `resize_task` calls are one per drag STEP
+  (each 10 px step re-plans; `REBUILD_QUIET_MS` collapses the rebuild but
+  the probe's stepped `setViewportSize` lands each step as its own settled
+  width — a real panel toggle animates continuously and produces one).
+  Read it as the probe's gesture model, not 14× per panel toggle; the
+  number to hold against P5 is the per-gesture count under the same probe.
+- Scrollback bench: re-fetching a just-fetched line is measurably cheaper
+  than a cold fetch even after warm-up, so the two passes sample disjoint
+  offsets (n / n+1). Corpus: every 16th line CJK + emoji, rest ASCII.
+- Runs on battery with aggressive sleep: two Chromium probe runs recorded
+  15-minute wall-clock gaps (test-timeout + teardown) with identical
+  measured values on retry — sleep gaps, not renderer wedges. Numbers
+  recorded only from runs that completed without a gap.
