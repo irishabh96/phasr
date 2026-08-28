@@ -145,21 +145,29 @@ one worker, machine held awake with `caffeinate`. Probes:
 | Metric | Runtime | Value | Date | Machine |
 |---|---|---|---|---|
 | Idle script / 8 s, 1 visible | Chromium | Script **0.559 s**, Task 1.307 s (CDP; ADR-002 known-bad band was 0.420–0.477 s) | 2026-08-28 | M1P |
-| Idle script / 8 s, 1 visible | WebKit | | | |
+| Idle script / 8 s, 1 visible | WebKit | browser-tree CPU **2.28 s / 8 s** (ps-diff; no CDP in WebKit — process-tree CPU, not ScriptDuration); rAF mean 17.7 ms / p95 19.0 ms at 60 Hz | 2026-08-28 | M1P |
 | Idle CPU %, 1 visible | packaged app (Activity Monitor) | | | |
 | Idle CPU %, 8 open / 1 visible | packaged app (Activity Monitor) | | | |
 | Scroll script, 60 steps / 3000 lines | Chromium | Script **0.51 s**, Task 0.747 s; frames mean 8.3 ms / p95 8.5 ms, 0 > 25 ms (ADR-002 reference 0.916 s — post-0.4.1 scroll fixes) | 2026-08-28 | M1P |
-| Scroll frame p95, deep scrollback | WebKit | | | |
-| Echo keystroke→paint p50 / p95 | WebKit | | | |
+| Scroll frame p95, deep scrollback | WebKit | **p95 19.0 ms** (mean 16.7, max 33.0, 2 frames > 25 ms of 129) — over the < 16.7 ms target; note idle p95 is also 19.0 ms on this 60 Hz proxy, so the scroll-specific overshoot is the max/>25 ms tail | 2026-08-28 | M1P |
+| Echo keystroke→paint p50 / p95 | WebKit | **p50 6.0 ms / p95 15.0 ms** (n=60, 0 expired, 60 fps) — within the p95 ≤ 1 frame + 10 ms target on this proxy | 2026-08-28 | M1P |
 | IPC hop, < 8 KB eval path | Rust↔JS bench | | | |
 | IPC hop, ≥ 8 KB fetch path | Rust↔JS bench | | | |
 | Flood throughput (`PHASR_BENCH`) | Rust | | | |
 | `getScrollbackLine` lines/s (fetch only) | Chromium | **3.38 µs/line ≈ 296 k lines/s** (depth 9 649, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
-| `getScrollbackLine` lines/s (fetch only) | WebKit | | | |
-| `getScrollbackLine` lines/s (+ graphemes) | WebKit | | | |
+| `getScrollbackLine` lines/s (fetch only) | WebKit | **4.00 µs/line ≈ 250 k lines/s** (depth 9 646, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
+| `getScrollbackLine` lines/s (+ graphemes) | WebKit | **9.25 µs/line ≈ 108 k lines/s** — graphemes cost **2.3×** on the shipping-engine proxy (Chromium hides this entirely; the spec's "the cheaper number alone would flatter it" warning, confirmed). F4's ~4 ms tick budget ≈ ~430 grapheme-correct lines/tick here | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (+ graphemes) | Chromium | **2.83 µs/line ≈ 354 k lines/s** — pass-order/allocator noise puts it under fetch-only; read both as "~3 µs/line, fetch dominates, graphemes ≈ free on a 1/16-cluster corpus" | 2026-08-28 | M1P |
 | `resize_task` calls per horizontal gesture | Chromium (harness) | **14** (`resize_task`×14; 14-step / ~220 ms viewport drag) | 2026-08-27 | M1P |
 | `resize_task` calls per vertical gesture | Chromium (harness) | **9** (`resize_task`×9; rows-only path fits immediately — P5's remaining half, confirmed) | 2026-08-27 | M1P |
+
+**WebKit context from `perf-baseline.spec.ts`** (2026-08-28, M1P; Playwright
+WebKit runs its rAF at 60 Hz on this machine while Chromium runs at ~120 —
+frame numbers between the two engines are not directly comparable): flood
+2.06 MB TUI in 140 ms = **14.7 MB/s** in-page parse+write, **~36 fps during
+flood** (the A1 cadence baseline: the free-running loop already yields under
+flood on WebKit); resize gesture horizontal **13** / vertical **10**
+(`resize_task`, same probe model as the Chromium rows).
 
 **Chromium drift references from `perf-baseline.spec.ts`** (same-machine
 context for the WebKit rows; Chromium is never paint-cost truth): echo
