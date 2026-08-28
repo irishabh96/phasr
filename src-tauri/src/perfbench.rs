@@ -381,7 +381,20 @@ fn bench_phase3_coalescing() {
     );
     eprintln!("PERFBENCH window={WINDOW_MS}ms reps={REPS}");
 
+    // Optional rate filter (`PHASR_BENCH_RATES=bulk` or `spinner,tui`):
+    // a full ladder is ~12 minutes, and on a battery machine that sleeps,
+    // re-running ONE lost rate must not cost the other three again.
+    let rate_filter = std::env::var("PHASR_BENCH_RATES").unwrap_or_default();
+    let wanted: Vec<&str> = rate_filter
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
     for rate in RATES {
+        if !wanted.is_empty() && !wanted.iter().any(|w| rate.label.contains(w)) {
+            continue;
+        }
         let mut before_eps = Vec::new();
         let mut before_bpe = Vec::new();
         let mut after_eps = Vec::new();
