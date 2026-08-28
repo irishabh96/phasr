@@ -1576,10 +1576,17 @@ export class GhosttySurface implements TerminalSurface {
       }
     }
 
+    // The two passes sample DISJOINT offsets (n and n+1): measured, a
+    // second fetch of a just-fetched line is cheaper than a cold one even
+    // after warm-up, so timing pass 2 over pass 1's offsets flattered it
+    // (3.85 vs 5.05 µs/line on lines whose grapheme pass does strictly
+    // more work).
     let cells = 0;
     const t0 = performance.now();
     for (let i = 0; i < sampled; i++) {
-      const line = wasm.getScrollbackLine(Math.floor(i * stride));
+      const line = wasm.getScrollbackLine(
+        Math.min(depth - 1, Math.floor(i * stride)),
+      );
       if (!line) continue;
       // Walk the cells so the fetch cannot be optimised away and the cost
       // includes touching what came back — the minimum any consumer does.
@@ -1592,7 +1599,7 @@ export class GhosttySurface implements TerminalSurface {
     let chars = 0;
     const t1 = performance.now();
     for (let i = 0; i < sampled; i++) {
-      const offset = Math.floor(i * stride);
+      const offset = Math.min(depth - 1, Math.floor(i * stride) + 1);
       const line = wasm.getScrollbackLine(offset);
       if (!line) continue;
       let text = "";
