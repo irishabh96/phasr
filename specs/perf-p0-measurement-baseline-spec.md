@@ -153,7 +153,7 @@ one worker, machine held awake with `caffeinate`. Probes:
 | Echo keystroke→paint p50 / p95 | WebKit | **p50 6.0 ms / p95 15.0 ms** (n=60, 0 expired, 60 fps) — within the p95 ≤ 1 frame + 10 ms target on this proxy | 2026-08-28 | M1P |
 | IPC hop, < 8 KB eval path | Rust↔JS bench | | | |
 | IPC hop, ≥ 8 KB fetch path | Rust↔JS bench | | | |
-| Flood throughput (`PHASR_BENCH`) | Rust | | | |
+| Flood throughput (`PHASR_BENCH`) | Rust, **release** profile | **63.12 MB/s** end-to-end through the shipping coalescer at bulk-unthrottled (AFTER 2 021 ev/s × 32 764 B/ev; BEFORE 111 400 ev/s @ 108.8 MB/s raw per-read; reduction 55.1×; zero lagged events). Debug profile cannot run this row — the bench's own subscriber lags and its guard refuses the undercount | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (fetch only) | Chromium | **3.38 µs/line ≈ 296 k lines/s** (depth 9 649, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (fetch only) | WebKit | **4.00 µs/line ≈ 250 k lines/s** (depth 9 646, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (+ graphemes) | WebKit | **9.25 µs/line ≈ 108 k lines/s** — graphemes cost **2.3×** on the shipping-engine proxy (Chromium hides this entirely; the spec's "the cheaper number alone would flatter it" warning, confirmed). F4's ~4 ms tick budget ≈ ~430 grapheme-correct lines/tick here | 2026-08-28 | M1P |
