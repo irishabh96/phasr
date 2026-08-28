@@ -103,3 +103,11 @@ function initSentryWhenIdle() {
 }
 
 initSentryWhenIdle();
+
+// Perf Phase 0: the Rust↔JS IPC bench self-runs when the real shell was
+// launched with PHASR_IPC_BENCH=1 (`src-tauri/src/ipcbench.rs`). Dev
+// builds only — the import is compile-time dead in production — and a
+// no-op in a plain browser or a normally-launched shell.
+if (import.meta.env.DEV) {
+  void import("./lib/perf/ipcBench").then((m) => m.runIpcBenchIfRequested());
+}
