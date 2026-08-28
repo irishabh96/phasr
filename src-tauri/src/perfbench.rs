@@ -204,8 +204,13 @@ impl Framing {
 /// frontend subscriber would receive.
 fn measure_shipping(corpus: &Path, script: &Path, rate: Rate) -> Framing {
     let tmp = tempfile::tempdir().expect("tempdir");
+    // QUOTED: this command is typed into a real shell, and the corpus
+    // lives under "~/Library/Application Support/…" — unquoted, the shell
+    // word-splits the path, node reads a file that does not exist, no
+    // sentinel is ever emitted, and the AFTER column silently measures 0
+    // events. That is exactly what it did.
     let cmd = format!(
-        "exec node {} {} {} {} {}",
+        "exec node '{}' '{}' {} {} {}",
         script.display(),
         corpus.display(),
         rate.burst,
