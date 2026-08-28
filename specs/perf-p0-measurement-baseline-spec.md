@@ -146,13 +146,13 @@ one worker, machine held awake with `caffeinate`. Probes:
 |---|---|---|---|---|
 | Idle script / 8 s, 1 visible | Chromium | Script **0.559 s**, Task 1.307 s (CDP; ADR-002 known-bad band was 0.420–0.477 s) | 2026-08-28 | M1P |
 | Idle script / 8 s, 1 visible | WebKit | browser-tree CPU **2.28 s / 8 s** (ps-diff; no CDP in WebKit — process-tree CPU, not ScriptDuration); rAF mean 17.7 ms / p95 19.0 ms at 60 Hz | 2026-08-28 | M1P |
-| Idle CPU %, 1 visible | packaged app (Activity Monitor) | | | |
-| Idle CPU %, 8 open / 1 visible | packaged app (Activity Monitor) | | | |
+| Idle CPU %, 1 visible | packaged app (Activity Monitor) | _unrecorded — needs a human at the GUI; table + instructions appended to `docs/MANUAL-VERIFICATION.md` (2026-08-28 entry)_ | | |
+| Idle CPU %, 8 open / 1 visible | packaged app (Activity Monitor) | _unrecorded — same entry_ | | |
 | Scroll script, 60 steps / 3000 lines | Chromium | Script **0.51 s**, Task 0.747 s; frames mean 8.3 ms / p95 8.5 ms, 0 > 25 ms (ADR-002 reference 0.916 s — post-0.4.1 scroll fixes) | 2026-08-28 | M1P |
 | Scroll frame p95, deep scrollback | WebKit | **p95 19.0 ms** (mean 16.7, max 33.0, 2 frames > 25 ms of 129) — over the < 16.7 ms target; note idle p95 is also 19.0 ms on this 60 Hz proxy, so the scroll-specific overshoot is the max/>25 ms tail | 2026-08-28 | M1P |
 | Echo keystroke→paint p50 / p95 | WebKit | **p50 6.0 ms / p95 15.0 ms** (n=60, 0 expired, 60 fps) — within the p95 ≤ 1 frame + 10 ms target on this proxy | 2026-08-28 | M1P |
-| IPC hop, < 8 KB eval path | Rust↔JS bench | | | |
-| IPC hop, ≥ 8 KB fetch path | Rust↔JS bench | | | |
+| IPC hop, < 8 KB eval path | Rust↔JS bench, real shell (`PHASR_IPC_BENCH=1 pnpm tauri dev`, debug) | json 4 KiB one-shot p50 **≤ 1 ms** (at WKWebView's 1 ms clock quantization; net ≈ 0 over invoke-noop); stream ×200: 0.31 ms/chunk, 12.6 MB/s payload — Rust send-loop was 61 of 62 ms (debug-profile serialize dominates). Raw 512 B: 0.12 ms/chunk | 2026-08-28 | M1P |
+| IPC hop, ≥ 8 KB fetch path | Rust↔JS bench, real shell (debug) | json 32 KiB (the coalescer chunk) one-shot p50 **4 ms** (net ~3 ms); stream ×200 total 489 ms = **2.4 ms/chunk, 12.8 MB/s payload**, of which the Rust send-loop (serialize) was 426 ms. **Raw 32 KiB: 80.1 MB/s, 0.39 ms/chunk, send-loop 3 ms** — Phase 4's raw path is 6.3× the JSON path's throughput before release-profile serialize gains are even counted | 2026-08-28 | M1P |
 | Flood throughput (`PHASR_BENCH`) | Rust, **release** profile | **63.12 MB/s** end-to-end through the shipping coalescer at bulk-unthrottled (AFTER 2 021 ev/s × 32 764 B/ev; BEFORE 111 400 ev/s @ 108.8 MB/s raw per-read; reduction 55.1×; zero lagged events). Debug profile cannot run this row — the bench's own subscriber lags and its guard refuses the undercount | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (fetch only) | Chromium | **3.38 µs/line ≈ 296 k lines/s** (depth 9 649, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
 | `getScrollbackLine` lines/s (fetch only) | WebKit | **4.00 µs/line ≈ 250 k lines/s** (depth 9 646, 4 000 sampled, warm, disjoint offsets) | 2026-08-28 | M1P |
@@ -175,6 +175,16 @@ keystroke→paint p50 4.2 ms / p95 7.9 ms (n=60, 0 expired, ~119 fps);
 idle 8 s browser-tree CPU 2.69 s (ps-diff, all processes incl. GPU);
 flood 2.06 MB TUI in 144 ms = **14.3 MB/s** in-page parse+write at ~69 fps
 during flood; deep-scrollback wheel p95 9.3 ms. 2026-08-27, M1P.
+
+**IPC bench reading notes** (2026-08-28, M1P, debug shell): WKWebView
+quantizes `performance.now()` to 1 ms, so one-shot p50s are floor values.
+On the 32 KiB JSON stream the arrival SPAN (0.31 ms/chunk) undercounts —
+fetch-path messages drain from the queue after the send-loop finishes, so
+the honest per-chunk figure is total/200. The eval-path echo chunk arrives
+in ≤ 1 ms end-to-end: **echo latency is not IPC-bound today.** Debug
+profile inflates the Rust serialize half (cf. the component-cost table
+below); the raw-bytes rows are transport-dominated and closest to
+profile-independent.
 
 **Coalescer ladder** (`PHASR_BENCH=1 … perfbench::bench_phase3`, real PTY +
 node producer over the 22.1 MiB corpus log, debug profile, 2026-08-28, M1P;
