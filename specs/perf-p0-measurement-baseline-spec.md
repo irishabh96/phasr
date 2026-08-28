@@ -176,6 +176,17 @@ idle 8 s browser-tree CPU 2.69 s (ps-diff, all processes incl. GPU);
 flood 2.06 MB TUI in 144 ms = **14.3 MB/s** in-page parse+write at ~69 fps
 during flood; deep-scrollback wheel p95 9.3 ms. 2026-08-27, M1P.
 
+**Coalescer ladder** (`PHASR_BENCH=1 … perfbench::bench_phase3`, real PTY +
+node producer over the 22.1 MiB corpus log, debug profile, 2026-08-28, M1P;
+BEFORE = one event per 4096-B read, AFTER = shipping coalescer):
+spinner 40 KB/s: 40.3 → **10.2 ev/s** (4 029 B/ev, 4.0×);
+tui-10hz 320 KB/s: 320.2 → **10.3 ev/s** (31 711 B/ev, 31.0×);
+tui-40hz 1.3 MB/s: 1 280 → **40.4 ev/s** (32 363 B/ev, 31.7×).
+The ladder confirms the ≤125 ev/s bound with full-size 32 KiB chunks under
+agent-repaint load. (Bench repair shipped with this phase: the shipping-path
+command was word-splitting the corpus path — every AFTER column silently
+measured 0 events before the fix.)
+
 **Rust-side IPC component costs** (`PHASR_BENCH=1 cargo test --lib ipcbench
 -- --ignored --nocapture`, **debug profile** — the shipping app is release,
 so absolute µs overstate; the json-vs-raw RATIO is the durable finding;
