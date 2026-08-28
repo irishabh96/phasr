@@ -191,3 +191,29 @@ release is actually decided.
 - [ ] Field styling after the `@layer base` fix: inputs, textareas, and selects across
       the app (new-task form, settings, run commands, history search, sign-in) render
       with the intended glass treatment and no double borders.
+
+---
+
+## 2026-08-28 — Perf Phase 0: measurement apparatus + Activity Monitor baselines
+
+Phase 0 (`specs/perf-p0-measurement-baseline-spec.md`) landed the tools this
+file's perf section has always needed. What a human at the GUI now has:
+
+- **Dev perf HUD**: `localStorage.setItem("phasr.perf.hud","1"); location.reload()`
+  (or `__PHASR_PERF__.enable()`) overlays keystroke→paint last/p50/p95, fps,
+  bytes/s and parse backlog on every terminal. Dev builds only; cannot render
+  in a bundled build.
+- **IPC end-to-end bench**: `PHASR_IPC_BENCH=1 pnpm tauri dev` self-measures
+  the real Rust→WKWebView channel hop (eval vs fetch path, base64+JSON vs raw)
+  and prints `IPCBENCH` lines to the launching terminal, then exits.
+
+**Activity Monitor baselines (spec criterion 5) — every row needs a human at
+the GUI with a bundled build; UNRECORDED as of this entry.** The implementing
+agent ran headless and could not drive the packaged app. Machine context for
+whoever fills this: M1 Pro MBP 16 GB, 120 Hz display; the WebKit-proxy idle
+figure to beat is 2.28 s of process-tree CPU per 8 s with one visible terminal.
+
+| Case | % CPU (phasr process) | Date | Build |
+|---|---|---|---|
+| 1 visible terminal, idle | _unrecorded_ | | |
+| 8 terminals open, 1 visible, idle | _unrecorded_ | | |
