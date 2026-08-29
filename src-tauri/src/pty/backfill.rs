@@ -57,18 +57,27 @@ pub struct LagRecovery {
     task_id: String,
     index: Arc<LogIndex>,
     /// Log offset the subscriber's stream has been delivered through.
-    /// `None` until the first `Output` arrives — a subscriber has no
-    /// expectation before it has seen anything.
+    /// Seeded at attach time, so a subscriber that lags before it has
+    /// received anything at all is still recoverable — that is exactly the
+    /// case a flood produces.
     next_offset: Option<u64>,
     stats: RecoveryStats,
 }
 
 impl LagRecovery {
+    /// Attach at the log's current end: "everything from here on".
+    ///
+    /// A forwarder replays the buffered history before the live stream, and
+    /// those events carry offsets *below* this seed, so they are passed
+    /// through untouched — but anything the replay had already evicted and
+    /// the receiver was too late to hear live is refilled, which is the
+    /// gap that used to be invisible.
     pub fn new(task_id: impl Into<String>, index: Arc<LogIndex>) -> Self {
+        let attached_at = index.flushed_through();
         Self {
             task_id: task_id.into(),
             index,
-            next_offset: None,
+            next_offset: Some(attached_at),
             stats: RecoveryStats::default(),
         }
     }
@@ -324,9 +333,10 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_recovered_before_the_first_event() {
-        // A subscriber that has seen nothing has no expectation to violate;
-        // inventing history here would replay bytes it never asked for.
+    fn attaching_mid_stream_does_not_replay_history() {
+        // The seed is "the log's end, now". Bytes written before a
+        // subscriber attached are not its business, and inventing them here
+        // would paint an agent's whole backlog into a fresh terminal.
         let dir = tempfile::tempdir().unwrap();
         let mut log = TaskLog::open(&dir.path().join("t.log")).unwrap();
         log.append(b"history the subscriber never asked for");

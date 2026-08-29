@@ -1210,6 +1210,246 @@ mod tests {
         (chunks, written, offsets, dir)
     }
 
+    // -- backpressure and zero-drop (Phase 3) -----------------------------
+
+    /// A reader that never runs out of bytes, for the backpressure tests.
+    struct Endless {
+        remaining: usize,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Ok(0);
+            }
+            let n = buf.len().min(self.remaining);
+            buf[..n].fill(b'z');
+            self.remaining -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn the_reader_parks_instead_of_buffering_without_bound() {
+        // Criterion 1. With the old unbounded channel this thread would have
+        // read the whole 4 MiB into memory with nobody consuming it. Bounded,
+        // it can get at most the queue plus the one chunk in flight, and then
+        // it blocks — which is what makes the kernel PTY buffer fill and the
+        // child block in `write()`.
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
+        let reader = Box::new(Endless {
+            remaining: 4 * 1024 * 1024,
+        });
+        let pump = std::thread::spawn(move || pump_pty_output(reader, bytes_tx, None));
+
+        // Let it fill the queue and park.
+        std::thread::sleep(Duration::from_millis(150));
+        let mut drained = 0usize;
+        while let Ok(chunk) = bytes_rx.try_recv() {
+            drained += chunk.len();
+        }
+        assert!(
+            drained <= (READER_QUEUE_SLOTS + 2) * READ_BUF_BYTES,
+            "reader queued {drained} B — the bound is not being enforced"
+        );
+
+        // And it resumes the moment there is room again.
+        let resumed = std::thread::spawn(move || {
+            let mut total = drained;
+            while let Ok(chunk) = bytes_rx.recv() {
+                total += chunk.len();
+            }
+            total
+        });
+        assert_eq!(resumed.join().unwrap(), 4 * 1024 * 1024);
+        pump.join().unwrap();
+    }
+
+    #[test]
+    fn the_reader_exits_when_the_coalescer_is_gone() {
+        // Criterion 6's other half: a dead coalescer must not leave a reader
+        // parked forever on a full channel with the child blocked behind it.
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+        let reader = Box::new(Endless {
+            remaining: usize::MAX,
+        });
+        let pump = std::thread::spawn(move || pump_pty_output(reader, bytes_tx, None));
+        std::thread::sleep(Duration::from_millis(50));
+        drop(bytes_rx);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pump.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "reader thread did not exit after the coalescer went away"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        pump.join().unwrap();
+    }
+
+    #[test]
+    fn every_emitted_chunk_is_stamped_with_its_own_log_offset() {
+        // The offsets are the recovery key: they must tile the log exactly,
+        // with no gap and no overlap, or a backfill reads the wrong bytes.
+        let reads: Vec<Vec<u8>> = (0..24).map(|_| vec![b'x'; 4096]).collect();
+        let (chunks, log, offsets, _dir) = run_coalescer_indexed(reads);
+
+        let mut expected = 0u64;
+        for (chunk, offset) in chunks.iter().zip(&offsets) {
+            assert_eq!(*offset, expected, "offsets must be contiguous");
+            assert_eq!(
+                &log[*offset as usize..*offset as usize + chunk.len()],
+                &chunk[..],
+                "the chunk at offset {offset} is not what the log holds there"
+            );
+            expected += chunk.len() as u64;
+        }
+        assert_eq!(expected as usize, log.len());
+    }
+
+    #[test]
+    fn a_lagging_subscriber_reconstructs_the_exact_byte_stream() {
+        // THE claim of this phase, end to end through the real coalescer.
+        //
+        // A four-slot ring against twenty ceiling flushes: this subscriber
+        // cannot help but lag, and before Phase 3 it would have silently
+        // dropped ~16 events (half a megabyte of terminal content) with a
+        // `continue`. Now every one of them comes back out of the log, and
+        // the stream it reconstructs IS the log.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("t.log");
+        let log = TaskLog::open(&log_path).unwrap();
+        let (tx, mut rx) = broadcast::channel::<PtyEvent>(4);
+        let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
+        let mut recovery = LagRecovery::new("t", log.index());
+
+        let producer = std::thread::spawn(move || {
+            for i in 0..20u8 {
+                // Each read is over the ceiling, so each becomes its own
+                // event and the ring turns over many times.
+                let chunk = vec![b'a' + (i % 26); COALESCE_BYTES + 1];
+                if bytes_tx.send(chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        coalesce_pty_output(
+            "t".into(),
+            bytes_rx,
+            log,
+            tx,
+            replay,
+            Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        );
+        producer.join().unwrap();
+
+        let mut delivered: Vec<u8> = Vec::new();
+        let mut push = |event: &PtyEvent, out: &mut Vec<u8>| {
+            if let PtyEvent::Output { chunk, .. } = event {
+                out.extend_from_slice(chunk);
+            }
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(event) => {
+                    let mut refilled = Vec::new();
+                    recovery.recover_before(&event, |missed| refilled.push(missed));
+                    for missed in &refilled {
+                        push(missed, &mut delivered);
+                    }
+                    push(&event, &mut delivered);
+                }
+                Err(broadcast::error::TryRecvError::Lagged(n)) => recovery.note_lag(n),
+                Err(_) => break,
+            }
+        }
+        let mut tail = Vec::new();
+        recovery.recover_tail(|missed| tail.push(missed));
+        for missed in &tail {
+            push(missed, &mut delivered);
+        }
+
+        let on_disk = std::fs::read(&log_path).unwrap();
+        assert!(
+            recovery.stats().lag_events > 0,
+            "the ring never overflowed — this test proved nothing"
+        );
+        assert_eq!(recovery.stats().unrecovered_bytes, 0);
+        assert_eq!(delivered.len(), on_disk.len(), "length mismatch after recovery");
+        assert_eq!(delivered, on_disk, "the reconstructed stream is not the log");
+        assert_eq!(on_disk.len(), 20 * (COALESCE_BYTES + 1));
+    }
+
+    #[test]
+    fn a_reset_scanner_cannot_complete_a_marker_from_before_the_hole() {
+        // The unit-level statement of the rule. Without the reset these two
+        // scans concatenate into `\x1b[?1049h` — a marker that was never
+        // printed, because the bytes between them are missing.
+        let mut scanner = TuiMarkerScanner::default();
+        assert!(!scanner.scan(b"prelude\x1b[?10"));
+        scanner.reset();
+        assert!(
+            !scanner.scan(b"49h and the rest"),
+            "the carry survived a reset and synthesised a marker"
+        );
+    }
+
+    /// Feed `first`, let the receiver consume it, then flood past the ring so
+    /// the next `try_recv` reports `Lagged`, then deliver `after`.
+    ///
+    /// A ONE-slot ring on purpose: `after` must be the very next chunk the
+    /// watcher sees, with nothing between it and the hole. Anything in
+    /// between would break the stitch by accident and the test would pass
+    /// for the wrong reason.
+    fn lag_between(first: &str, after: &str) -> broadcast::Receiver<PtyEvent> {
+        let (tx, rx) = broadcast::channel::<PtyEvent>(1);
+        let after = after.to_string();
+        tx.send(output(first)).unwrap();
+        std::thread::spawn(move || {
+            // The watcher polls every 15 ms, so it has certainly taken
+            // `first` (and stashed its carry) before this lands.
+            std::thread::sleep(Duration::from_millis(80));
+            for filler in ["filler one", "filler two"] {
+                let _ = tx.send(output(filler));
+            }
+            let _ = tx.send(output(&after));
+            // Hold the sender open so the watcher sees `Lagged`, not
+            // `Closed`, and keeps scanning to its deadline.
+            std::thread::sleep(Duration::from_millis(600));
+        });
+        rx
+    }
+
+    #[test]
+    fn a_hole_in_the_stream_cannot_synthesise_a_tui_marker() {
+        // The carry must not stitch across a `Lagged`. A marker assembled
+        // from the tail of a pre-hole chunk and the head of a post-hole one
+        // was never printed, and a false TUI-readiness positive types the
+        // user's prompt into whatever is really on screen — the failure mode
+        // that once cost this repo a prompt-delivery bug.
+        let mut rx = lag_between("prelude\x1b[?10", "49h and the rest");
+        assert_eq!(
+            wait_for_tui(&mut rx, Duration::from_millis(400)),
+            TuiWait::TimedOut,
+            "a marker was synthesised across a dropped range"
+        );
+    }
+
+    #[test]
+    fn a_hole_in_the_stream_cannot_synthesise_an_echo() {
+        // Same failure mode on the echo watcher: half the needle before the
+        // hole, half after, must not read as "the composer echoed it" — that
+        // is what green-lights the Enter.
+        let mut rx = lag_between("\u{276f} auth", "entication");
+        assert_eq!(
+            watch_after_typing(&mut rx, "authentication", Duration::from_millis(400)),
+            TypeOutcome::Quiet,
+            "an echo was synthesised across a dropped range"
+        );
+    }
+
     #[test]
     fn coalescer_stamps_activity_on_every_received_chunk() {
         let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
