@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75a7a11fd3 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a230504aa 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -30,7 +30,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
  class $ {
    constructor(A, B = {}) {
 -    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
-+    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
++    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.canvas = A;
      const g = A.getContext("2d", { alpha: !0 });
      if (!g)
        throw new Error("Failed to get 2D rendering context");
@@ -132,7 +132,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
          break;
        case "underline":
          const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
-@@ -1579,6 +1628,39 @@ class $ {
+@@ -1579,17 +1628,81 @@ class $ {
          break;
      }
    }
@@ -172,7 +172,52 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
    // ==========================================================================
    // Cursor Blinking
    // ==========================================================================
-@@ -1833,8 +1915,14 @@ const L = class Y {
++  /**
++   * PHASR PATCH: two changes for damage-driven frame scheduling.
++   *
++   * 1. The blink tick REQUESTS a frame. Upstream only flipped a boolean and
++   *    relied on the free-running render loop to notice; with the loop
++   *    degrading to a ~1 Hz heartbeat at idle, a blink that schedules
++   *    nothing would blink at the heartbeat, not at 530 ms.
++   * 2. The timer is gated on `blinkSuspended`, which the terminal drives
++   *    from focus (and the host's backgrounded signal): an unfocused
++   *    terminal requests no blink frames at all. Suspended starts TRUE —
++   *    the interval first starts on focus, not on construction.
++   */
+   startCursorBlink() {
+-    this.cursorBlinkInterval = window.setInterval(() => {
+-      this.cursorVisible = !this.cursorVisible;
+-    }, 530);
++    this.blinkSuspended || this.cursorBlinkInterval !== void 0 || (this.cursorBlinkInterval = window.setInterval(() => {
++      var A;
++      this.cursorVisible = !this.cursorVisible, (A = this.frameRequester) == null || A.call(this);
++    }, 530));
+   }
+   stopCursorBlink() {
+     this.cursorBlinkInterval !== void 0 && (clearInterval(this.cursorBlinkInterval), this.cursorBlinkInterval = void 0), this.cursorVisible = !0;
+   }
++  /**
++   * PHASR PATCH: how a blink tick reaches the render scheduler. The
++   * renderer knows nothing about the terminal that owns it; the terminal
++   * hands it this callback in open().
++   */
++  setFrameRequester(A) {
++    this.frameRequester = A;
++  }
++  /**
++   * PHASR PATCH: suspend/resume the blink timer without touching the
++   * `cursorBlink` OPTION. Suspending shows a steady cursor (the reading of
++   * "unfocused" every mainstream terminal uses) and asks for one frame to
++   * paint it; resuming restarts the timer only if blinking is enabled.
++   */
++  setBlinkSuspended(A) {
++    var B;
++    A = !!A, this.blinkSuspended !== A && (this.blinkSuspended = A, A ? (this.cursorBlinkInterval !== void 0 && (clearInterval(this.cursorBlinkInterval), this.cursorBlinkInterval = void 0), this.cursorVisible = !0, (B = this.frameRequester) == null || B.call(this)) : this.cursorBlink && this.startCursorBlink());
++  }
+   // ==========================================================================
+   // Public API
+   // ==========================================================================
+@@ -1833,8 +1946,14 @@ const L = class Y {
      for (; I >= E.cols; )
        I -= E.cols, C++;
      C = Math.min(C, E.rows - 1);
@@ -189,7 +234,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
    }
    /**
     * Select entire lines from start to end
-@@ -1843,8 +1931,8 @@ const L = class Y {
+@@ -1843,8 +1962,8 @@ const L = class Y {
    selectLines(A, B) {
      const g = this.wasmTerm.getDimensions();
      A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
@@ -200,7 +245,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
    }
    /**
     * Get selection position as buffer range
-@@ -1945,7 +2033,12 @@ const L = class Y {
+@@ -1945,7 +2064,12 @@ const L = class Y {
      }), this.boundMouseUpHandler = (B) => {
        if (this.isSelecting) {
          this.isSelecting = !1, this.stopAutoScroll();
@@ -214,7 +259,34 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2345,7 +2438,14 @@ class IA {
+@@ -2103,18 +2227,18 @@ class IA {
+       get activeVersion() {
+         return "15.1";
+       }
+-    }, this.dataEmitter = new J(), this.resizeEmitter = new J(), this.bellEmitter = new J(), this.selectionChangeEmitter = new J(), this.keyEmitter = new J(), this.titleChangeEmitter = new J(), this.scrollEmitter = new J(), this.renderEmitter = new J(), this.cursorMoveEmitter = new J(), this.onData = this.dataEmitter.event, this.onResize = this.resizeEmitter.event, this.onBell = this.bellEmitter.event, this.onSelectionChange = this.selectionChangeEmitter.event, this.onKey = this.keyEmitter.event, this.onTitleChange = this.titleChangeEmitter.event, this.onScroll = this.scrollEmitter.event, this.onRender = this.renderEmitter.event, this.onCursorMove = this.cursorMoveEmitter.event, this.isOpen = !1, this.isDisposed = !1, this.addons = [], this.currentTitle = "", this.viewportY = 0, this.targetViewportY = 0, this.lastCursorY = 0, this.isDraggingScrollbar = !1, this.scrollbarDragStart = null, this.scrollbarDragStartViewportY = 0, this.scrollbarVisible = !1, this.scrollbarOpacity = 0, this.SCROLLBAR_HIDE_DELAY_MS = 1500, this.SCROLLBAR_FADE_DURATION_MS = 200, this.animateScroll = () => {
++    }, this.dataEmitter = new J(), this.resizeEmitter = new J(), this.bellEmitter = new J(), this.selectionChangeEmitter = new J(), this.keyEmitter = new J(), this.titleChangeEmitter = new J(), this.scrollEmitter = new J(), this.renderEmitter = new J(), this.cursorMoveEmitter = new J(), this.onData = this.dataEmitter.event, this.onResize = this.resizeEmitter.event, this.onBell = this.bellEmitter.event, this.onSelectionChange = this.selectionChangeEmitter.event, this.onKey = this.keyEmitter.event, this.onTitleChange = this.titleChangeEmitter.event, this.onScroll = this.scrollEmitter.event, this.onRender = this.renderEmitter.event, this.onCursorMove = this.cursorMoveEmitter.event, this.isOpen = !1, this.isDisposed = !1, this.addons = [], this.currentTitle = "", this.viewportY = 0, this.targetViewportY = 0, this.lastCursorY = 0, this.isDraggingScrollbar = !1, this.scrollbarDragStart = null, this.scrollbarDragStartViewportY = 0, this.scrollbarVisible = !1, this.scrollbarOpacity = 0, this.SCROLLBAR_HIDE_DELAY_MS = 1500, this.SCROLLBAR_FADE_DURATION_MS = 200, this.frameRequested = !1, this.lastActivityAt = 0, this.cadence = FRAME_CADENCE.ACTIVE, this.cadenceDropPending = !1, this.backgrounded = !1, this.focusedForBlink = !1, this.throughput = new ThroughputEstimator(), this.animateScroll = () => {
+       if (!this.wasmTerm || this.scrollAnimationStartTime === void 0)
+         return;
+       const g = this.options.smoothScrollDuration ?? 100, E = this.targetViewportY - this.viewportY;
+       if (Math.abs(E) < 0.01) {
+-        this.viewportY = this.targetViewportY, this.scrollEmitter.fire(Math.floor(this.viewportY)), this.getScrollbackLength() > 0 && this.showScrollbar(), this.scrollAnimationFrame = void 0, this.scrollAnimationStartTime = void 0, this.scrollAnimationStartY = void 0;
++        this.viewportY = this.targetViewportY, this.scrollEmitter.fire(Math.floor(this.viewportY)), this.getScrollbackLength() > 0 && this.showScrollbar(), this.scrollAnimationFrame = void 0, this.scrollAnimationStartTime = void 0, this.scrollAnimationStartY = void 0, this.scheduleFrame();
+         return;
+       }
+       const D = 1 - (1 / (g / 1e3 * 60)) ** 2;
+       this.viewportY += E * D;
+       const i = Math.floor(this.viewportY);
+-      this.scrollEmitter.fire(i), this.getScrollbackLength() > 0 && this.showScrollbar(), this.scrollAnimationFrame = requestAnimationFrame(this.animateScroll);
++      this.scrollEmitter.fire(i), this.getScrollbackLength() > 0 && this.showScrollbar(), this.scheduleFrame(), this.scrollAnimationFrame = requestAnimationFrame(this.animateScroll);
+     }, this.handleMouseMove = (g) => {
+       if (!(!this.canvas || !this.renderer || !this.wasmTerm)) {
+         if (this.isDraggingScrollbar) {
+@@ -2341,11 +2465,18 @@ class IA {
+         cursorStyle: this.options.cursorStyle,
+         cursorBlink: this.options.cursorBlink,
+         theme: this.options.theme
+-      }), this.renderer.resize(this.cols, this.rows), this.inputHandler = new P(
++      }), this.renderer.resize(this.cols, this.rows), this.renderer.setFrameRequester(() => this.requestFrameInternal()), this.inputHandler = new P(
          this.ghostty,
          A,
          (E) => {
@@ -230,7 +302,32 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
          },
          () => {
            this.bellEmitter.fire();
-@@ -2387,7 +2487,50 @@ class IA {
+@@ -2364,13 +2495,22 @@ class IA {
+         this.wasmTerm,
+         this.textarea
+       ), this.renderer.setSelectionManager(this.selectionManager), this.selectionManager.onSelectionChange(() => {
+-        this.selectionChangeEmitter.fire();
++        this.scheduleFrame(), this.selectionChangeEmitter.fire();
+       }), this.textarea.addEventListener("paste", (E) => {
+         var I;
+         E.preventDefault(), E.stopPropagation();
+         const C = (I = E.clipboardData) == null ? void 0 : I.getData("text");
+         C && this.paste(C);
+-      }), this.linkDetector = new v(this), this.linkDetector.registerProvider(new X(this)), this.linkDetector.registerProvider(new _(this)), A.addEventListener("mousedown", this.handleMouseDown, { capture: !0 }), A.addEventListener("mousemove", this.handleMouseMove), A.addEventListener("mouseleave", this.handleMouseLeave), A.addEventListener("click", this.handleClick), document.addEventListener("mouseup", this.handleMouseUp), A.addEventListener("wheel", this.handleWheel, { passive: !1, capture: !0 }), this.renderer.render(this.wasmTerm, !0, this.viewportY, this, this.scrollbarOpacity), this.startRenderLoop(), this.focus();
++      }), this.linkDetector = new v(this), this.linkDetector.registerProvider(new X(this)), this.linkDetector.registerProvider(new _(this)), A.addEventListener("mousedown", this.handleMouseDown, { capture: !0 }), A.addEventListener("mousemove", this.handleMouseMove), A.addEventListener("mouseleave", this.handleMouseLeave), A.addEventListener("click", this.handleClick), document.addEventListener("mouseup", this.handleMouseUp), A.addEventListener("wheel", this.handleWheel, { passive: !1, capture: !0 }), this.handleFocusIn = () => {
++        // PHASR PATCH: the cursor-blink timer runs only while the surface
++        // is focused (see setBlinkSuspended). focusin/focusout are used
++        // because focus lands on the inner textarea, and both bubble.
++        this.focusedForBlink = !0, this.updateBlinkGate();
++      }, this.handleFocusOut = (E) => {
++        // Focus moving WITHIN the surface (host element -> textarea) is
++        // not a blur; only focus leaving the subtree suspends the blink.
++        E.relatedTarget instanceof Node && A.contains(E.relatedTarget) || (this.focusedForBlink = !1, this.updateBlinkGate());
++      }, A.addEventListener("focusin", this.handleFocusIn), A.addEventListener("focusout", this.handleFocusOut), this.lastActivityAt = performance.now(), this.renderer.render(this.wasmTerm, !0, this.viewportY, this, this.scrollbarOpacity), this.startRenderLoop(), this.focus();
+     } catch (B) {
+       throw this.isOpen = !1, this.cleanupComponents(), new Error(`Failed to open terminal: ${B}`);
+     }
+@@ -2387,7 +2527,50 @@ class IA {
     */
    writeInternal(A, B) {
      var g;
@@ -240,7 +337,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
 +    // anchorViewportAfterWrite. Costs nothing at the bottom, which is the
 +    // overwhelmingly common case.
 +    const E = this.viewportY > 0 ? this.getScrollbackLength() : -1;
-+    this.wasmTerm.write(A), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.anchorViewportAfterWrite(E), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), B && requestAnimationFrame(B);
++    this.wasmTerm.write(A), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.anchorViewportAfterWrite(E), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), this.throughput.record(A.length, performance.now()), this.scheduleFrame(), B && requestAnimationFrame(B);
 +  }
 +  /**
 +   * PHASR PATCH: output must never move the user's scroll position.
@@ -282,7 +379,32 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
    }
    /**
     * Write data with newline
-@@ -2564,6 +2707,20 @@ class IA {
+@@ -2424,13 +2607,13 @@ class IA {
+       return;
+     this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
+     const g = this.renderer.getMetrics();
+-    this.canvas.width = g.width * A, this.canvas.height = g.height * B, this.canvas.style.width = `${g.width * A}px`, this.canvas.style.height = `${g.height * B}px`, this.resizeEmitter.fire({ cols: A, rows: B }), this.renderer.render(this.wasmTerm, !0, this.viewportY, this);
++    this.canvas.width = g.width * A, this.canvas.height = g.height * B, this.canvas.style.width = `${g.width * A}px`, this.canvas.style.height = `${g.height * B}px`, this.resizeEmitter.fire({ cols: A, rows: B }), this.renderer.render(this.wasmTerm, !0, this.viewportY, this), this.scheduleFrame();
+   }
+   /**
+    * Clear terminal screen
+    */
+   clear() {
+-    this.assertOpen(), this.wasmTerm.write("\x1B[2J\x1B[H");
++    this.assertOpen(), this.wasmTerm.write("\x1B[2J\x1B[H"), this.scheduleFrame();
+   }
+   /**
+    * Reset terminal state
+@@ -2438,7 +2621,7 @@ class IA {
+   reset() {
+     this.assertOpen(), this.wasmTerm && this.wasmTerm.free();
+     const A = this.buildWasmConfig();
+-    this.wasmTerm = this.ghostty.createTerminal(this.cols, this.rows, A), this.renderer.clear(), this.currentTitle = "";
++    this.wasmTerm = this.ghostty.createTerminal(this.cols, this.rows, A), this.renderer.clear(), this.currentTitle = "", this.scheduleFrame();
+   }
+   /**
+    * Focus terminal input
+@@ -2564,6 +2747,20 @@ class IA {
    // ==========================================================================
    // Phase 2: Scrolling Methods
    // ==========================================================================
@@ -303,32 +425,32 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
    /**
     * Scroll viewport by a number of lines
     * @param amount Number of lines to scroll (positive = down, negative = up)
-@@ -2571,8 +2728,9 @@ class IA {
+@@ -2571,8 +2768,9 @@ class IA {
    scrollLines(A) {
      if (!this.wasmTerm)
        throw new Error("Terminal not open");
 +    this.cancelScrollAnimation();
      const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, this.viewportY - A));
 -    E !== this.viewportY && (this.viewportY = E, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar());
-+    E !== this.viewportY && (this.viewportY = E, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar()), this.targetViewportY = this.viewportY;
++    E !== this.viewportY && (this.viewportY = E, this.scrollEmitter.fire(this.viewportY), this.scheduleFrame(), B > 0 && this.showScrollbar()), this.targetViewportY = this.viewportY;
    }
    /**
     * Scroll viewport by a number of pages
-@@ -2585,22 +2743,24 @@ class IA {
+@@ -2585,22 +2783,24 @@ class IA {
     * Scroll viewport to the top of the scrollback buffer
     */
    scrollToTop() {
 +    this.cancelScrollAnimation();
      const A = this.getScrollbackLength();
 -    A > 0 && this.viewportY !== A && (this.viewportY = A, this.scrollEmitter.fire(this.viewportY), this.showScrollbar());
-+    A > 0 && this.viewportY !== A && (this.viewportY = A, this.scrollEmitter.fire(this.viewportY), this.showScrollbar()), this.targetViewportY = this.viewportY;
++    A > 0 && this.viewportY !== A && (this.viewportY = A, this.scrollEmitter.fire(this.viewportY), this.scheduleFrame(), this.showScrollbar()), this.targetViewportY = this.viewportY;
    }
    /**
     * Scroll viewport to the bottom (current output)
     */
    scrollToBottom() {
 -    this.viewportY !== 0 && (this.viewportY = 0, this.scrollEmitter.fire(this.viewportY), this.getScrollbackLength() > 0 && this.showScrollbar());
-+    this.cancelScrollAnimation(), this.viewportY !== 0 && (this.viewportY = 0, this.scrollEmitter.fire(this.viewportY), this.getScrollbackLength() > 0 && this.showScrollbar()), this.targetViewportY = 0;
++    this.cancelScrollAnimation(), this.viewportY !== 0 && (this.viewportY = 0, this.scrollEmitter.fire(this.viewportY), this.scheduleFrame(), this.getScrollbackLength() > 0 && this.showScrollbar()), this.targetViewportY = 0;
    }
    /**
     * Scroll viewport to a specific line in the buffer
@@ -338,15 +460,33 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
 +    this.cancelScrollAnimation();
      const B = this.getScrollbackLength(), g = Math.max(0, Math.min(B, A));
 -    g !== this.viewportY && (this.viewportY = g, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar());
-+    g !== this.viewportY && (this.viewportY = g, this.scrollEmitter.fire(this.viewportY), B > 0 && this.showScrollbar()), this.targetViewportY = this.viewportY;
++    g !== this.viewportY && (this.viewportY = g, this.scrollEmitter.fire(this.viewportY), this.scheduleFrame(), B > 0 && this.showScrollbar()), this.targetViewportY = this.viewportY;
    }
    /**
     * Smoothly scroll to a target viewport position
-@@ -2633,18 +2793,166 @@ class IA {
-   // ==========================================================================
+@@ -2611,7 +2811,7 @@ class IA {
+       return;
+     const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
+     if ((this.options.smoothScrollDuration ?? 100) === 0) {
+-      this.viewportY = E, this.targetViewportY = E, this.scrollEmitter.fire(Math.floor(this.viewportY)), B > 0 && this.showScrollbar();
++      this.viewportY = E, this.targetViewportY = E, this.scrollEmitter.fire(Math.floor(this.viewportY)), this.scheduleFrame(), B > 0 && this.showScrollbar();
+       return;
+     }
+     this.targetViewportY = E, !this.scrollAnimationFrame && (this.scrollAnimationStartTime = Date.now(), this.scrollAnimationStartY = this.viewportY, this.animateScroll());
+@@ -2624,7 +2824,7 @@ class IA {
+    */
+   dispose() {
+     if (!this.isDisposed) {
+-      this.isDisposed = !0, this.isOpen = !1, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0), this.scrollAnimationFrame && (cancelAnimationFrame(this.scrollAnimationFrame), this.scrollAnimationFrame = void 0), this.mouseMoveThrottleTimeout && (clearTimeout(this.mouseMoveThrottleTimeout), this.mouseMoveThrottleTimeout = void 0), this.pendingMouseMove = void 0;
++      this.isDisposed = !0, this.isOpen = !1, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0), this.clearCadenceTimers(), this.scrollAnimationFrame && (cancelAnimationFrame(this.scrollAnimationFrame), this.scrollAnimationFrame = void 0), this.mouseMoveThrottleTimeout && (clearTimeout(this.mouseMoveThrottleTimeout), this.mouseMoveThrottleTimeout = void 0), this.pendingMouseMove = void 0;
+       for (const A of this.addons)
+         A.dispose();
+       this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
+@@ -2634,17 +2834,258 @@ class IA {
    // Private Methods
    // ==========================================================================
-+  /**
+   /**
+-   * Start the render loop
 +   * Pause the render loop.
 +   *
 +   * The loop is otherwise unconditional from open() to dispose(), so a
@@ -359,7 +499,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
 +    // chain alive — the smooth-scroll animation is its own
 +    // requestAnimationFrame chain, separate from the render loop, and
 +    // survived parking before this line.
-+    this.isPaused || (this.isPaused = !0, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0), this.cancelScrollAnimation(), this.targetViewportY = this.viewportY);
++    this.isPaused || (this.isPaused = !0, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0), this.clearCadenceTimers(), this.cancelScrollAnimation(), this.targetViewportY = this.viewportY);
 +  }
 +  /**
 +   * Resume the render loop.
@@ -405,7 +545,16 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
 +      open: !!this.isOpen,
 +      disposed: !!this.isDisposed,
 +      frameErrors: this.frameErrors ?? 0,
-+      lastFrameError: this.lastFrameError
++      lastFrameError: this.lastFrameError,
++      // PHASR PATCH (perf phase 1): cadence observability. `cadence` is
++      // the fps tier the scheduler last chose (60 / 30 / 1), `bps` the
++      // throughput estimate that chose it, `pending` whether damage is
++      // waiting for a frame, `heartbeat` whether the chain is parked on
++      // the 1 Hz timer rather than an animation frame.
++      cadence: this.cadence,
++      bps: Math.round(this.throughput.bytesPerSecond(performance.now())),
++      pending: !!this.frameRequested,
++      heartbeat: this.heartbeatTimer !== void 0
 +    };
 +  }
 +  /**
@@ -455,42 +604,58 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
 +      return !0;
 +    return this.syncFrameDeadline = void 0, !1;
 +  }
-   /**
-    * Start the render loop
++  /**
++   * PHASR PATCH: damage-driven frame scheduling (perf phase 1).
 +   *
-+   * PHASR PATCH: three changes, all of them about the loop being the ONLY
-+   * thing that ever paints. `write()` does not schedule a frame; it relies
-+   * on this chain running forever. So every way the chain can end is a
-+   * terminal that goes permanently blind while still accepting input.
++   * Upstream ran ONE `requestAnimationFrame` chain from open() to
++   * dispose() that re-queued itself unconditionally — ~60 fps forever,
++   * even with nothing to draw, measured at ~5% of a core per visible
++   * terminal at idle. The chain is now a SCHEDULER:
 +   *
-+   *  1. `animationFrameId` is cleared on frame ENTRY, so it means "a frame
-+   *     is queued" rather than "a frame was queued at some point". That is
-+   *     what makes it safe for this function to be idempotent, and what
-+   *     lets `getRenderStats()` tell the truth.
-+   *  2. Idempotent: re-entry used to fork a second self-perpetuating chain
-+   *     that `pause()` could not cancel, because it only remembers one id.
-+   *  3. The body is wrapped. One throw — a canvas op failing after the GPU
-+   *     process restarts, a grid freed underneath the renderer — used to
-+   *     end the loop for good, since the re-queue is the last statement
-+   *     and never ran. Measured: a single synthetic failure inside
-+   *     `fillText` froze the terminal permanently, and no click, focus or
-+   *     visibility change brought it back.
++   *  - A frame paints only when something asked for one (`scheduleFrame`:
++   *    writes, the cursor-blink tick, scroll/selection/hover changes,
++   *    resize). A frame that finds nothing requested does no render work
++   *    at all — it costs the callback and a cadence decision.
++   *  - The chain re-queues itself at an ADAPTIVE cadence: every animation
++   *    frame while output is light (< 10 000 B/s over the estimator's
++   *    window), ~30 fps under flood, and a ~1 Hz heartbeat once the
++   *    terminal has been idle for ~3 s or the window is hidden or
++   *    backgrounded. Cadence DECREASES are deferred by one frame so the
++   *    first screenful of a burst paints at full rate before the rate
++   *    drops (iTerm2 does the same, deliberately).
++   *  - The chain NEVER stops on purpose — the heartbeat is the floor, so
++   *    "this terminal is alive" stays observable from getRenderStats()
++   *    and a swallowed frame is still the only way to blind it. While the
++   *    page is hidden the queued animation frame is simply not delivered;
++   *    that is free, no timer spins to compensate, and the browser's own
++   *    delivery of the parked frame on unhide is the resume path (plus
++   *    the host's visibilitychange watchdog).
++   *
++   * The three earlier hardening properties are kept verbatim:
++   * `animationFrameId` cleared on frame ENTRY (it means "a frame is
++   * queued"), idempotent restart, and a wrapped body so one throw cannot
++   * end the loop — a failed frame's damage is re-requested and retried at
++   * cadence.
     */
    startRenderLoop() {
-+    if (this.isDisposed || !this.isOpen || this.isPaused || this.animationFrameId !== void 0)
-+      return;
-     const A = () => {
+-    const A = () => {
 -      if (!this.isDisposed && this.isOpen) {
 -        this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
 -        const B = this.wasmTerm.getCursor();
 -        B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire()), this.animationFrameId = requestAnimationFrame(A);
++    this.isDisposed || !this.isOpen || this.isPaused || (this.renderFrame === void 0 && (this.renderFrame = () => {
 +      this.animationFrameId = void 0;
 +      if (this.isDisposed || !this.isOpen || this.isPaused)
 +        return;
-+      this.renderTicks = (this.renderTicks ?? 0) + 1, this.lastFrameAt = performance.now();
++      const A = performance.now();
++      this.renderTicks = (this.renderTicks ?? 0) + 1, this.lastFrameAt = A;
 +      try {
-+        if (!this.isFrameSynchronized()) {
-+          this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
++        // Suppressed, not skipped: while DEC 2026 defers painting, the
++        // request stays PENDING, so the frame after the sync window ends
++        // (or its 150 ms bound expires) paints without waiting for any
++        // further event.
++        if (this.frameRequested && !this.isFrameSynchronized()) {
++          this.frameRequested = !1, this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
 +          const B = this.wasmTerm.getCursor();
 +          B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire());
 +        }
@@ -500,34 +665,232 @@ index a4ca427b95288e70c782ce303013cd644893dcec..eeddcf15ca1deb9682131f7380584e75
 +        // requestAnimationFrame, so before this catch existed a render
 +        // failure reached Sentry on its own — and a fix that keeps the
 +        // terminal alive by making its errors invisible is a worse bug
-+        // than the one it fixes.
-+        this.frameErrors = (this.frameErrors ?? 0) + 1, this.lastFrameError = B;
++        // than the one it fixes. The damage was NOT painted, so it is
++        // re-requested and retried at cadence.
++        this.frameRequested = !0, this.frameErrors = (this.frameErrors ?? 0) + 1, this.lastFrameError = B;
 +        // Rate-limited: a renderer that fails every frame must not turn a
 +        // blank terminal into a hung one by way of the console.
 +        const g = this.lastFrameErrorLoggedAt ?? 0;
 +        this.lastFrameAt - g > 2e3 && (this.lastFrameErrorLoggedAt = this.lastFrameAt, console.error("[ghostty-web] render frame failed; the loop continues", B));
        }
-+      this.animationFrameId = requestAnimationFrame(A);
++      this.scheduleNext(A);
++    }), this.animationFrameId === void 0 && this.heartbeatTimer === void 0 && this.cadenceTimer === void 0 && (this.animationFrameId = requestAnimationFrame(this.renderFrame)));
++  }
++  /**
++   * PHASR PATCH: ask for a frame — the public entry point for damage.
++   * Everything that changes what the screen should show calls this;
++   * the host may call it too (its liveness watchdog verifies the chain by
++   * requesting a frame and watching the tick counter, which works at any
++   * cadence). Counts as activity for the idle detector. The blink tick
++   * goes through `requestFrameInternal` instead, which does not — a
++   * blinking cursor must not pin the chain at full rate forever.
++   */
++  scheduleFrame() {
++    this.lastActivityAt = performance.now(), this.requestFrameInternal();
++  }
++  requestFrameInternal() {
++    if (this.frameRequested = !0, this.isDisposed || !this.isOpen || this.isPaused || this.animationFrameId !== void 0)
++      return;
++    if (this.heartbeatTimer !== void 0)
++      clearTimeout(this.heartbeatTimer), this.heartbeatTimer = void 0;
++    else if (this.cadenceTimer !== void 0)
++      return;
++    this.startRenderLoop();
++  }
++  /**
++   * PHASR PATCH: re-queue the chain at the cadence the policy picks (see
++   * `nextCadence` for the deferred-decrease rule). The ~30 fps tier
++   * re-queues through a short timeout — REDUCED_FRAME_MS is tuned so the
++   * DELIVERED frame lands near 33 ms after vsync quantization — and the
++   * 1 Hz tier arms the heartbeat. Only an explicit frame request may
++   * cancel the heartbeat; the short cadence timer is left to ride, since
++   * the next frame is imminent either way.
++   */
++  scheduleNext(A) {
++    if (this.isDisposed || !this.isOpen || this.isPaused)
++      return;
++    const B = nextCadence(this.cadence, this.cadenceDropPending, this.computeCadence(A));
++    if (this.cadence = B.cadence, this.cadenceDropPending = B.dropPending, this.cadence >= FRAME_CADENCE.ACTIVE) {
++      this.animationFrameId = requestAnimationFrame(this.renderFrame);
++      return;
++    }
++    const g = () => {
++      this.heartbeatTimer = void 0, this.cadenceTimer = void 0, !(this.isDisposed || !this.isOpen || this.isPaused) && this.animationFrameId === void 0 && (this.animationFrameId = requestAnimationFrame(this.renderFrame));
      };
 -    A();
-+    this.animationFrameId = requestAnimationFrame(A);
++    this.cadence <= FRAME_CADENCE.IDLE ? this.heartbeatTimer = setTimeout(g, FRAME_CADENCE.HEARTBEAT_MS) : this.cadenceTimer = setTimeout(g, Math.max(1, FRAME_CADENCE.REDUCED_FRAME_MS - (performance.now() - A)));
++  }
++  /**
++   * PHASR PATCH: the cadence input. Hidden (page not visible, or the host
++   * said the window is backgrounded/occluded) and idle (~3 s without an
++   * activity-carrying frame request) both floor at the heartbeat;
++   * otherwise the throughput estimator picks full rate vs ~30 fps.
++   */
++  computeCadence(A) {
++    return typeof document < "u" && document.visibilityState !== "visible" || this.backgrounded ? FRAME_CADENCE.IDLE : A - this.lastActivityAt >= FRAME_CADENCE.IDLE_AFTER_MS ? FRAME_CADENCE.IDLE : this.throughput.bytesPerSecond(A) >= FRAME_CADENCE.HIGH_THROUGHPUT_BPS ? FRAME_CADENCE.REDUCED : FRAME_CADENCE.ACTIVE;
++  }
++  clearCadenceTimers() {
++    this.heartbeatTimer !== void 0 && (clearTimeout(this.heartbeatTimer), this.heartbeatTimer = void 0), this.cadenceTimer !== void 0 && (clearTimeout(this.cadenceTimer), this.cadenceTimer = void 0);
++  }
++  /**
++   * PHASR PATCH: "hidden" includes the app being backgrounded or the
++   * window occluded — states the page cannot always observe (a WKWebView
++   * keeps DOM focus and often `visibilityState === "visible"` while the
++   * app is inactive). The host tells the terminal via this setter (phasr
++   * wires it to Tauri's window focus events). Coming back pokes the chain
++   * so the screen refreshes at once instead of at the next heartbeat.
++   */
++  setBackgrounded(A) {
++    A = !!A, this.backgrounded !== A && (this.backgrounded = A, this.updateBlinkGate(), A || this.scheduleFrame());
++  }
++  updateBlinkGate() {
++    this.renderer && this.renderer.setBlinkSuspended(!this.focusedForBlink || this.backgrounded);
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +2972,7 @@ class IA {
+@@ -2664,7 +3105,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
 -    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), this.isOpen && typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
-+    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
++    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.handleFocusIn && this.element.removeEventListener("focusin", this.handleFocusIn), this.handleFocusOut && this.element.removeEventListener("focusout", this.handleFocusOut), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
    }
    /**
     * Assert terminal is open (throw if not)
+@@ -2697,7 +3138,7 @@ class IA {
+       D = this.wasmTerm.getLine(C);
+     D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
+     const s = this.renderer.hoveredHyperlinkId || 0;
+-    I !== s && this.renderer.setHoveredHyperlinkId(I);
++    I !== s && (this.renderer.setHoveredHyperlinkId(I), this.scheduleFrame());
+     const N = this.wasmTerm.getScrollbackLength();
+     let k;
+     const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
+@@ -2713,7 +3154,9 @@ class IA {
+     this.linkDetector.getLinkAt(g, k).then((h) => {
+       var G, U, t, c;
+       if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
+-        if (h) {
++        // PHASR PATCH: a hover change is damage — the damage-driven loop
++        // paints nothing it was not asked to.
++        if (this.scheduleFrame(), h) {
+           const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
+           p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
+             startX: h.range.start.x,
+@@ -2923,6 +3366,84 @@ class DA {
+     }), this._resizeObserver.observe(this._terminal.element)));
+   }
+ }
++/**
++ * PHASR PATCH (perf phase 1): the frame-cadence policy, in one place and
++ * exported so the host can unit-test it without a DOM, a canvas or WASM.
++ *
++ * Numbers, and why:
++ *  - ACTIVE/REDUCED/IDLE are fps tiers, compared numerically (60 > 30 > 1).
++ *  - HIGH_THROUGHPUT_BPS: above 10 000 B/s the terminal is being flooded
++ *    and painting every delivery is wasted work — drop to ~30 fps
++ *    (iTerm2's adaptive cadence does the same at the same threshold).
++ *  - IDLE_AFTER_MS: ~3 s without an activity-carrying frame request and
++ *    the chain degrades to the heartbeat.
++ *  - HEARTBEAT_MS: the 1 Hz floor. The chain never stops entirely — a
++ *    dead chain is a blind terminal (the failure the liveness watchdog
++ *    exists for), and one no-op callback per second is ~free.
++ *  - REDUCED_FRAME_MS: the ~30 fps re-queue delay. 25 ms rather than 33
++ *    because the timer only QUEUES an animation frame — vsync delivery
++ *    adds most of a frame on top, landing the observed period near 33 ms.
++ *  - The estimator: BUCKET_COUNT buckets of BUCKET_MS (5 s of history in
++ *    1/30 s buckets), weighted exponentially with a HALF_LIFE_MS half-life
++ *    so a burst registers immediately and ages out within ~a second.
++ */
++const FRAME_CADENCE = {
++  ACTIVE: 60,
++  REDUCED: 30,
++  IDLE: 1,
++  HIGH_THROUGHPUT_BPS: 1e4,
++  IDLE_AFTER_MS: 3e3,
++  HEARTBEAT_MS: 1e3,
++  REDUCED_FRAME_MS: 25,
++  BUCKET_MS: 1e3 / 30,
++  BUCKET_COUNT: 150,
++  HALF_LIFE_MS: 1e3
++};
++class ThroughputEstimator {
++  constructor() {
++    this.buckets = new Float64Array(FRAME_CADENCE.BUCKET_COUNT), this.head = 0, this.headEpoch = 0, this.weights = new Float64Array(FRAME_CADENCE.BUCKET_COUNT);
++    let A = 0;
++    for (let B = 0; B < FRAME_CADENCE.BUCKET_COUNT; B++) {
++      const g = 0.5 ** (B * FRAME_CADENCE.BUCKET_MS / FRAME_CADENCE.HALF_LIFE_MS);
++      this.weights[B] = g, A += g * (FRAME_CADENCE.BUCKET_MS / 1e3);
++    }
++    this.weightedWindowSeconds = A;
++  }
++  /** Advance the ring so `head` is the bucket containing `now`. */
++  rotate(A) {
++    const B = Math.floor(A / FRAME_CADENCE.BUCKET_MS);
++    if (B <= this.headEpoch)
++      return;
++    const g = Math.min(B - this.headEpoch, FRAME_CADENCE.BUCKET_COUNT);
++    for (let E = 0; E < g; E++)
++      this.head = (this.head + 1) % FRAME_CADENCE.BUCKET_COUNT, this.buckets[this.head] = 0;
++    this.headEpoch = B;
++  }
++  record(A, B) {
++    this.rotate(B), this.buckets[this.head] += A;
++  }
++  /**
++   * Exponentially-weighted bytes/second. Exact for a steady stream; a
++   * single 32 KiB chunk into a quiet terminal reads as ~20 KB/s for the
++   * first moments and decays below the flood threshold within ~1 s.
++   */
++  bytesPerSecond(A) {
++    this.rotate(A);
++    let B = 0;
++    for (let g = 0; g < FRAME_CADENCE.BUCKET_COUNT; g++)
++      B += this.buckets[(this.head - g + FRAME_CADENCE.BUCKET_COUNT) % FRAME_CADENCE.BUCKET_COUNT] * this.weights[g];
++    return B / this.weightedWindowSeconds;
++  }
++}
++/**
++ * The cadence transition rule. Increases apply immediately (a burst into
++ * an idle terminal paints NOW); decreases are deferred by one frame, so
++ * the first screenful of a burst paints at full rate before the rate
++ * drops — iTerm2 does this deliberately (iTermUpdateCadenceController).
++ */
++function nextCadence(A, B, g) {
++  return g >= A ? { cadence: g, dropPending: !1 } : B ? { cadence: g, dropPending: !1 } : { cadence: A, dropPending: !0 };
++}
+ let R = null;
+ async function oA() {
+   R || (R = await q.load());
+@@ -2948,6 +3469,9 @@ export {
+   e as CellFlags,
+   J as EventEmitter,
+   DA as FitAddon,
++  FRAME_CADENCE,
++  ThroughputEstimator,
++  nextCadence,
+   q as Ghostty,
+   W as GhosttyTerminal,
+   P as InputHandler,
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654153127c0 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..5aee8281930a384600a008e4cd070cf3a3e769ad 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -417,6 +417,14 @@ export declare class GhosttyTerminal {
+@@ -64,6 +64,13 @@ export declare class CanvasRenderer {
+     private renderCursor;
+     private startCursorBlink;
+     private stopCursorBlink;
++    /** PHASR PATCH: blink-timer gate + frame requester (damage-driven
++     *  scheduling: a blink tick must ASK for a frame, and only a focused
++     *  surface blinks at all). */
++    private blinkSuspended;
++    private frameRequester?;
++    setFrameRequester(requester: (() => void) | undefined): void;
++    setBlinkSuspended(suspended: boolean): void;
+     /**
+      * Update theme colors
+      */
+@@ -417,6 +424,14 @@ export declare class GhosttyTerminal {
   * All color values use 0xRRGGBB format. A value of 0 means "use default".
   */
  declare interface GhosttyTerminalConfig {
@@ -542,7 +905,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654
      scrollbackLimit?: number;
      fgColor?: number;
      bgColor?: number;
-@@ -888,6 +896,13 @@ export declare interface ITerminalOptions {
+@@ -888,6 +903,13 @@ export declare interface ITerminalOptions {
      cursorBlink?: boolean;
      cursorStyle?: 'block' | 'underline' | 'bar';
      theme?: ITheme;
@@ -556,7 +919,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654
      scrollback?: number;
      fontSize?: number;
      fontFamily?: string;
-@@ -903,7 +918,9 @@ export declare interface ITheme {
+@@ -903,7 +925,9 @@ export declare interface ITheme {
      background?: string;
      cursor?: string;
      cursorAccent?: string;
@@ -566,7 +929,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654
      selectionForeground?: string;
      black?: string;
      red?: string;
-@@ -1497,6 +1514,13 @@ export declare class Terminal implements ITerminalCore {
+@@ -1497,6 +1521,13 @@ export declare class Terminal implements ITerminalCore {
      private isOpen;
      private isDisposed;
      private animationFrameId?;
@@ -580,7 +943,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654
      private addons;
      private customKeyEventHandler?;
      private currentTitle;
-@@ -1686,6 +1710,36 @@ export declare class Terminal implements ITerminalCore {
+@@ -1686,6 +1717,66 @@ export declare class Terminal implements ITerminalCore {
       * Dispose terminal and clean up resources
       */
      dispose(): void;
@@ -613,7 +976,87 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..836afafb6c09c236a6f3cad7701ce654
 +         *  reports them. */
 +        frameErrors: number;
 +        lastFrameError: unknown;
++        /** PHASR PATCH (perf phase 1): the fps tier the scheduler last
++         *  chose (60 / 30 / 1). */
++        cadence: number;
++        /** The throughput estimate (bytes/second) that chose it. */
++        bps: number;
++        /** Damage is waiting for a frame. */
++        pending: boolean;
++        /** The chain is parked on the 1 Hz heartbeat timer. */
++        heartbeat: boolean;
 +    };
++    /**
++     * PHASR PATCH (perf phase 1): ask for a frame — the public entry
++     * point for damage. The render loop is a scheduler now: a frame
++     * paints only when one was requested, and the chain degrades to a
++     * ~1 Hz heartbeat when idle or hidden. Requesting is idempotent and
++     * cheap; a live chain honours the request within one frame at any
++     * cadence, which is also how a liveness watchdog should probe it.
++     */
++    scheduleFrame(): void;
++    private requestFrameInternal;
++    private scheduleNext;
++    private computeCadence;
++    private clearCadenceTimers;
++    /**
++     * PHASR PATCH (perf phase 1): the host's "the window is backgrounded
++     * or occluded" signal (states the page cannot always observe).
++     * While set, the chain runs at the 1 Hz heartbeat and the cursor
++     * does not blink; clearing it repaints immediately.
++     */
++    setBackgrounded(backgrounded: boolean): void;
++    private updateBlinkGate;
      /**
       * Start the render loop
       */
+@@ -1839,4 +1930,49 @@ export declare class UrlRegexProvider implements ILinkProvider {
+     dispose(): void;
+ }
+ 
++/**
++ * PHASR PATCH (perf phase 1): the frame-cadence policy, exported so a host
++ * can unit-test it without a DOM, a canvas or WASM. See the implementation
++ * for what each number means and why.
++ */
++export declare const FRAME_CADENCE: {
++    ACTIVE: number;
++    REDUCED: number;
++    IDLE: number;
++    HIGH_THROUGHPUT_BPS: number;
++    IDLE_AFTER_MS: number;
++    HEARTBEAT_MS: number;
++    REDUCED_FRAME_MS: number;
++    BUCKET_MS: number;
++    BUCKET_COUNT: number;
++    HALF_LIFE_MS: number;
++};
++
++/**
++ * PHASR PATCH (perf phase 1): exponentially-weighted output-rate estimator
++ * (5 s of history in 1/30 s buckets, ~1 s half-life). Drives the adaptive
++ * cadence: < 10 000 B/s paints at full rate, above it at ~30 fps.
++ */
++export declare class ThroughputEstimator {
++    private buckets;
++    private head;
++    private headEpoch;
++    private weights;
++    private weightedWindowSeconds;
++    constructor();
++    private rotate;
++    record(bytes: number, nowMs: number): void;
++    bytesPerSecond(nowMs: number): number;
++}
++
++/**
++ * PHASR PATCH (perf phase 1): the cadence transition rule. Increases apply
++ * immediately; decreases are deferred by one frame so the first screenful
++ * of a burst paints at full rate before the rate drops.
++ */
++export declare function nextCadence(current: number, dropPending: boolean, target: number): {
++    cadence: number;
++    dropPending: boolean;
++};
++
+ export { }
