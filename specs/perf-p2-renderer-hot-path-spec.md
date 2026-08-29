@@ -177,6 +177,93 @@ _(Labelled P2-a/b/c to avoid collision with the program's spikes S1 and S2.)_
   the "is scrolling smooth" judgement are **manual**, on a packaged build, per
   `docs/MANUAL-VERIFICATION.md`.
 
+## Evidence — before/after (implemented 2026-08-29)
+
+All rows: M1P (the P0 baseline machine), `E2E_PORT=14312`, one worker,
+`caffeinate`. **Before** = the tree at `8d3f34a` (P1 landed; neither P2 nor P4's
+frontend commits), measured fresh the same day because P1 moved the landscape.
+**After** = P2 complete (`69155af`), with P4's byte-payload commits (`55f683d`,
+`73baffd`) also on the branch — the scroll/paint measurement windows carry no
+PTY traffic, so those rows are P2-attributable; the flood rows share credit
+with P4 and are marked †.
+
+| Metric | Runtime | Before (post-P1) | After P2 |
+|---|---|---|---|
+| Scroll work, 60 steps / 3 000 lines (CDP) | Chromium | Script 0.325 s / Task 0.489 s (program start: **0.916 s** ADR-002:276; P0 row: 0.51 s) | **Script 0.063 s / Task 0.227 s** — 5.2× vs post-P1, 14.5× vs ADR-002; **meets criterion 3's < 0.1 s** |
+| Scroll-storm CPU profile (200 µs CDP sampling) | Chromium | fillText 4.6 % + renderCellText 3.9 % + renderLine 1.0 % (idle 83.9 %) | fillText **0.5 %** + renderCellText **0.1 %** + renderLine 0.1 % (idle 93.8 %) — the render cost of a scroll storm is ~gone |
+| Deep-scroll frame time (`SCROLL_DEEP`) | WebKit | P0 row: p95 19.0 ms, max 33.0, 2 frames > 25 ms of 129 | **p95 18.0 ms, max 22.0, 0 frames > 25 ms** of 126; scroll-probe variants p95 19.0 **= the idle sampler's own p95**, mean 16.7 |
+| TUI flood, 2 MB escape-dense repaint (CDP) | Chromium | Script 0.051 s | **Script 0.025 s** (2× — run batching on fully-dirty live frames) |
+| Flood in-page throughput † | WebKit | 14.2 MB/s @ ~20.7 fps (P0: 14.7 @ ~36 free-running) | **18.4 MB/s @ ~28.3 fps**, cadence tier 30 held |
+| Flood in-page throughput † | Chromium | 18.5 MB/s @ ~27.0 fps | 19.4 MB/s @ ~29.8 fps |
+| Idle browser-tree CPU / 8 s † | WebKit | 1.25 s (post-P1) | **0.75 s** (criterion 7's blink gating + P4's byte path) |
+| Idle script / 8 s (CDP) | Chromium | 0.041–0.050 s | 0.037 s — flat; **P1's scheduler is not regressed** |
+| Blits during a 12-step wheel in 2 000-line history | Chromium (harness) | structurally 0 (every step a full repaint) | counter climbs in both directions — asserted in `e2e/terminal-scroll-blit.spec.ts` |
+| `getScrollbackLine` bench (F4's path) | Chromium | 4.73 µs/line | 4.83 µs/line — flat, no regression |
+| Q5 memory (engine + 1 / per terminal) | Chromium | 7.00 MiB / 5.21 MiB | identical |
+
+**Reading the WebKit p95 against the < 16.7 ms target:** a 60 Hz rAF-delta
+sampler cannot report p95 < 16.7 ms even for a blank page — a saturated 60 Hz
+IS ~16.7 ms per frame, and WebKit's whole-ms quantization puts the sampler's
+own idle p95 at 19.0 ms (the P0 spec's row says exactly this). The criterion is
+met in that row's own operational reading: scroll p95 now **equals** idle p95,
+the scroll-attributable tail (max 33 ms, 2 frames > 25 ms) is **eliminated**,
+and the Chromium self-comparison meets its < 0.1 s number literally.
+
+**Criteria closed:** 1 (viewport parsed once, `frameLine`; `getLine` no longer
+in the render path), 2 (RLE background runs + memoized colour/font +
+shadow-compared state, one set per run), 3 (rows above), 4 (blit + the e2e
+counter guard), 5 (field equality), 7 (change-gated cursor-row repaint),
+8 (flood paint work halved again on top of P1's cadence; canvas ops per scroll
+frame fell ≥ 10–50× — blit + 2–3 exposed-row draws vs 50 full per-cell rows),
+9 (see below), 10 (six patch commits, each `pnpm patch-commit` regenerated, no
+phasr types in hunks).
+
+**Criterion 9 — suite results at close (2026-08-29):** vitest 394/394. Full
+Chromium suite `--workers=1`: **155 passed / 12 skipped / 0 failed**. Full
+WebKit suite `--workers=1`: 133 passed / 15 skipped / 4 failed, of which
+three (`terminal-grapheme-split:147`, `terminal-reflow-anchor:815`,
+`terminal-scroll-follow:84`) pass individually — paint-window timing under an
+8-minute serial grind — and all eight criterion-9 visual suites pass under
+WebKit when run as files. The fourth, `terminal-aged.spec.ts:185` ("the
+5,000-line setting is enforced at the rebuild", WebKit only, deterministic),
+**reproduces byte-for-byte with the P1 engine installed** (patch + lockfile
+reverted to `8d3f34a`, package re-extracted, cache purged, rerun) — it is not
+a P2 regression; left for the branch's rebuild-path owners with this
+attribution note. Also run at default parallelism for the record: the extra
+failures there are all of the `__PHASR_TERM__ missing` / boot-timeout class —
+the timing-sensitive terminal tests are written for serial runs, and there is
+no parallel green precedent (CI runs no Playwright job).
+
+**Bench drift note (F4's row, not this phase's):** the WebKit
+`getScrollbackLine` bench post-P2 reads fetch-only 7.5–7.8 µs/line with
+fetch+graphemes 5.0–5.3 (P0: 4.00 and 9.25) — the two passes swapped
+magnitudes with a ~constant total on a code path P2 does not touch, on a
+machine an hour into suite grinding. Chromium read flat (4.73 → 4.83). Read
+per the P0 row's own guidance (~µs/line, pass order is noise); re-baseline on
+a quiet machine before F4 consumes it.
+
+**Criterion 6 — deviation, recorded:** "BEL detection moves into the parser"
+is not implementable in this patch: the WASM exposes **no bell surface** (the
+`ghostty_*` export table has no bell entry), so parser-side BEL is an upstream
+engine change. What shipped instead: the scan is gated on
+`bellEmitter.listeners.length` — phasr subscribes no bell listener, so the
+per-write scan is **gone from `write()`** in this product (the criterion's
+actual cost target), and hosts that do subscribe keep the old behaviour
+unchanged.
+
+## #PATH_DECISION — P2-c (GANG fast path): gate closed, not attempted
+
+The stretch gate said: attempt only if flood numbers still miss target after
+1–7. They do not miss what the harness can prove: in-page flood throughput
+ROSE on both engines (WebKit 14.2 → 18.4 MB/s), the ~30 fps cadence tier holds
+under flood (asserted in the default suite), fully-dirty paint work halved
+again on top of P1, and the UI-responsiveness half is asserted by the liveness
+suite. The remaining judgement — a 100 MB `cat` on a packaged WKWebView build —
+is exactly what this spec's own test plan marks **manual**
+(`docs/MANUAL-VERIFICATION.md`, 2026-08-29 P2 entry). If that manual run
+disappoints, P2-c reopens as its own engine-level piece; nothing in P2's
+changes forecloses it.
+
 ## Out of scope
 
 Frame *scheduling* (P1) · anything Rust-side · the A4 GANG path unless the stretch gate opens

@@ -250,3 +250,45 @@ GUI can verify:
 - [ ] Streaming agent behind another app for a while, then revealed: content
       is current the moment it is revealed (occlusion floors the cadence,
       and the reveal repaints at once).
+
+---
+
+## 2026-08-29 — Perf Phase 2: renderer hot path (blit, run batching, one parse per frame)
+
+Phase 2 (`specs/perf-p2-renderer-hot-path-spec.md`) made frames cheap: the
+viewport is parsed once per frame instead of once per row, rows draw as runs
+(one fillRect / one canvas-state change per run instead of per cell), blank
+cells skip fillText, and an active scroll moves the surviving canvas region
+with a self-`drawImage`, repainting only the newly exposed rows
+(`getRenderStats().blits` counts these). What only a human at a packaged
+WKWebView build can verify:
+
+- [ ] **The flood headline (GANG gate follow-up)**: `cat` a 100 MB file in a
+      terminal. The whole UI must stay interactive — switch tabs, scroll
+      another terminal, type into the composer while it runs. The harness
+      proxy says yes (in-page flood 18.4 MB/s at a held ~30 fps on the WebKit
+      proxy, paint work per fully-dirty frame halved again on top of P1) but
+      the mocked-IPC harness runs in a browser, not a WKWebView. If this
+      disappoints, the spec's P2-c (GANG bulk-output fast path) reopens.
+- [ ] **Scroll feel at depth**: fill tens of thousands of lines, wheel and
+      drag-scroll through deep history at speed. Judgement call: smooth as
+      iTerm2 on the same machine, no visible tearing at the blit seam, no
+      shimmer at the top/bottom edges where exposed rows are drawn fresh.
+      (Chromium/WebKit proxies show scroll frames indistinguishable from
+      idle now; WKWebView's GPU-process IPC is the one this program actually
+      targets and no suite can reach it.)
+- [ ] **Blit correctness where eyes beat pixels-diff**: while scrolled into
+      history with a selection held, keep output streaming (the anchored
+      write path) and scroll further — the selection wash and the scrollback
+      text must move together, no ghost rows, no doubled scrollbar. Then
+      hover a URL in scrolled history and scroll: the underline must track
+      its link.
+- [ ] **Cursor blink economy** (criterion 7): an idle focused terminal shows
+      a clean 530 ms blink (repaint per transition, not per frame); an
+      unfocused one a steady cursor. DECTCEM: `printf '\e[?25l'` hides the
+      cursor immediately, `\e[?25h` brings it back — the hide must not leave
+      a frozen cursor cell behind.
+- [ ] **Devanagari / grapheme spot check on the real webview**: `echo
+      "नमस्ते किताब"` — vowel signs render intact (the two-pass constraint the
+      run batching had to preserve), selection across it keeps the glyphs
+      whole, at both 1x and retina.

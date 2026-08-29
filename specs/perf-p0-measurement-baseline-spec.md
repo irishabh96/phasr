@@ -165,6 +165,13 @@ one worker, machine held awake with `caffeinate`. Probes:
 | Idle browser-tree CPU / 8 s, 1 visible — **post-P1** | Chromium | 1.79 s / 8 s (was 2.69; same probe-sampler caveat at ~120 Hz, 960 frames) | 2026-08-29 | M1P |
 | Cadence under flood — **post-P1** (A1 target) | Chromium (harness) | engine reports **cadence 30, bps > 10 000** under a sustained ~150 KB/s flood; tick rate over the flood window bounded 12–50 fps (asserted in `e2e/terminal-liveness.spec.ts`, default suite) | 2026-08-29 | M1P |
 | Idle tick rate — **post-P1** | Chromium (harness) | **~1/s** unfocused (≤ 8 ticks / 2 s asserted; a focused terminal adds ~2/s of cursor-blink frames), vs ~60–120/s free-running before | 2026-08-29 | M1P |
+| Scroll script, 60 steps / 3000 lines — **post-P2** | Chromium | Script **0.063 s**, Task 0.227 s (was 0.325/0.489 post-P1, 0.51 at P0, 0.916 in ADR-002 — meets P2's < 0.1 s criterion). Scroll-storm profile: fillText 4.6 % → 0.5 %, renderCellText 3.9 % → 0.1 % | 2026-08-29 | M1P |
+| Scroll frame p95, deep scrollback — **post-P2** | WebKit | `SCROLL_DEEP` **p95 18.0 ms, max 22.0, 0 frames > 25 ms** (P0 row: p95 19.0, max 33.0, 2 > 25 ms). Scroll-probe variants p95 19.0 = the sampler's own idle p95; the scroll-attributable tail is gone — a 60 Hz rAF sampler cannot read below ~16.7 by construction | 2026-08-29 | M1P |
+| TUI flood 2 MB paint work — **post-P2** | Chromium | Script **0.025 s** (was 0.051 post-P1) — run batching on fully-dirty frames | 2026-08-29 | M1P |
+| Flood in-page throughput — **post-P2 + P4 bytes** | WebKit | **18.4 MB/s @ ~28.3 fps** (was 14.2 @ ~20.7; P0 free-running 14.7 @ ~36); cadence tier 30 held. Credit shared with P4's byte-payload path | 2026-08-29 | M1P |
+| Idle browser-tree CPU / 8 s — **post-P2 + P4** | WebKit | **0.75 s / 8 s** (was 1.25 post-P1, 2.28 at P0); Chromium CDP idle script flat at 0.037 s — P1's scheduler unregressed | 2026-08-29 | M1P |
+| Scroll blits — **post-P2** (new counter) | Chromium (harness) | `getRenderStats().blits` climbs both directions over a 12-step wheel in 2 000-line history; flat at the live bottom (asserted, `e2e/terminal-scroll-blit.spec.ts`) | 2026-08-29 | M1P |
+| `getScrollbackLine` lines/s — **post-P2 drift check** | WebKit | fetch-only **7.5–7.8 µs/line**, +graphemes **5.0–5.3** (P0: 4.00 / 9.25 — the two passes swapped magnitudes at ~constant total, on a path P2 does not touch, after an hour of suite load; Chromium flat 4.73 → 4.83). Re-baseline quiet before F4 consumes this row | 2026-08-29 | M1P |
 
 **WebKit context from `perf-baseline.spec.ts`** (2026-08-28, M1P; Playwright
 WebKit runs its rAF at 60 Hz on this machine while Chromium runs at ~120 —
