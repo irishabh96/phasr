@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819d5e7735a 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a71e429f90 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -34,7 +34,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
      const g = A.getContext("2d", { alpha: !0 });
      if (!g)
        throw new Error("Failed to get 2D rendering context");
-@@ -1378,6 +1384,69 @@ class $ {
+@@ -1378,6 +1384,98 @@ class $ {
    rgbToCSS(A, B, g) {
      return `rgb(${A}, ${B}, ${g})`;
    }
@@ -101,10 +101,39 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
 +    const B = `${this.fontSize}px ${this.fontFamily}`;
 +    return this.fontVariantsBase !== B && (this.fontVariantsBase = B, this.fontVariants = [B, `italic ${B}`, `bold ${B}`, `italic bold ${B}`]), this.fontVariants[A];
 +  }
++  // PHASR PATCH (perf phase 2, criterion 4): guard + executor for the
++  // scroll blit (the plan itself is `planScrollBlit`, exported below).
++  //
++  // The guard demands what makes a self-copy EXACT: an integral row
++  // height in device pixels (a fractional height would put row boundaries
++  // between pixels — each blit would resample, and repeated scrolling
++  // re-blits already-blitted pixels, accumulating blur; metrics are
++  // ceil'd and macOS DPRs are 1 or 2, so in practice this always holds)
++  // and an opaque theme background (the context is created with alpha, so
++  // a translucent background would make source-over compositing blend the
++  // copy with what is under it instead of replacing it).
++  canBlit() {
++    if (this.metrics.height * this.devicePixelRatio % 1 !== 0)
++      return !1;
++    const A = this.theme.background;
++    return typeof A == "string" && (/^#[0-9a-fA-F]{6}$/.test(A) || /^#[0-9a-fA-F]{3}$/.test(A) || /^rgb\(/.test(A));
++  }
++  blitRows(A) {
++    const B = this.metrics.height * this.devicePixelRatio, g = this.canvas.width, E = A.copyRows * B;
++    this.ctx.save();
++    try {
++      // Device-pixel coordinates: the frame transform carries the DPR
++      // scale, and a scaled self-copy would resample. drawImage snapshots
++      // the source before drawing, so the overlap is safe.
++      this.ctx.setTransform(1, 0, 0, 1, 0, 0), this.ctx.drawImage(this.canvas, 0, A.srcRow * B, g, E, 0, A.dstRow * B, g, E);
++    } finally {
++      this.ctx.restore();
++    }
++  }
    // ==========================================================================
    // Canvas Sizing
    // ==========================================================================
-@@ -1386,7 +1455,7 @@ class $ {
+@@ -1386,7 +1484,7 @@ class $ {
     */
    resize(A, B) {
      const g = A * this.metrics.width, E = B * this.metrics.height;
@@ -113,7 +142,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    // ==========================================================================
    // Main Rendering
-@@ -1396,17 +1465,46 @@ class $ {
+@@ -1396,17 +1494,70 @@ class $ {
     */
    render(A, B = !1, g = 0, E, C = 1) {
      var U;
@@ -134,7 +163,31 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
 +    // changes, i.e. when the user actually scrolled. At the bottom the
 +    // upstream check is kept verbatim.
 +    const vF = Math.floor(g), vT = vF > 0 ? i - vF : -1;
-+    (vF > 0 ? vT !== this.lastTopAbsRow : g !== this.lastViewportY) && (B = !0), this.lastViewportY = g, this.lastTopAbsRow = vT;
++    // PHASR PATCH (perf phase 2, criterion 4): a real scroll between two
++    // scrolled frames BLITS the surviving region (canvas self-drawImage)
++    // and repaints only the newly exposed rows, instead of forcing a
++    // full-canvas repaint. `vX` carries the exposed span into the dirty
++    // loop below. Everything the blit cannot serve — first scrolled frame,
++    // jump of a screenful, fractional device-pixel rows, translucent
++    // background, any same-frame full-redraw cause — falls back to the
++    // full repaint exactly as before. The hovered-link ranges are canvas-
++    // row coordinates; the content they were computed against just moved,
++    // so they shift with it (a repaint-on-change would otherwise erase an
++    // underline at its OLD canvas row while the pixels sit at the new one).
++    let vX = null;
++    if (vF > 0) {
++      if (vT !== this.lastTopAbsRow) {
++        const t = !B && this.canBlit() ? planScrollBlit(this.lastTopAbsRow, vT, D.rows) : null;
++        if (t) {
++          this.blitRows(t), vX = t;
++          const c = t.delta;
++          this.hoveredLinkRange && (this.hoveredLinkRange = { ...this.hoveredLinkRange, startY: this.hoveredLinkRange.startY - c, endY: this.hoveredLinkRange.endY - c }), this.previousHoveredLinkRange && (this.previousHoveredLinkRange = { ...this.previousHoveredLinkRange, startY: this.previousHoveredLinkRange.startY - c, endY: this.previousHoveredLinkRange.endY - c });
++        } else
++          B = !0;
++      }
++    } else
++      g !== this.lastViewportY && (B = !0);
++    this.lastViewportY = g, this.lastTopAbsRow = vT;
      const s = I.x !== this.lastCursorPosition.x || I.y !== this.lastCursorPosition.y;
 -    if (s || this.cursorBlink) {
 +    // PHASR PATCH: the cursor-row quick paint below draws ACTIVE-SCREEN row
@@ -165,7 +218,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
          t && this.renderLine(t, this.lastCursorPosition.y, D.cols);
        }
      }
-@@ -1424,7 +1522,7 @@ class $ {
+@@ -1424,7 +1575,7 @@ class $ {
          this.selectionManager.clearDirtySelectionRows();
        }
      }
@@ -174,7 +227,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
      if (a) {
        for (let t = 0; t < D.rows; t++) {
          let c = null;
-@@ -1434,10 +1532,10 @@ class $ {
+@@ -1434,10 +1585,10 @@ class $ {
              c = E.getScrollbackLine(F);
            } else {
              const F = t - Math.floor(g);
@@ -187,7 +240,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
          if (c) {
            for (const F of c)
              if (F.hyperlink_id === this.hoveredHyperlinkId || F.hyperlink_id === this.previousHoveredHyperlinkId) {
-@@ -1458,8 +1556,18 @@ class $ {
+@@ -1458,8 +1609,18 @@ class $ {
        this.previousHoveredLinkRange = this.hoveredLinkRange;
      }
      const G = /* @__PURE__ */ new Set();
@@ -203,11 +256,11 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
 +    // canvas rows), so they pass through unchanged.
      for (let t = 0; t < D.rows; t++)
 -      (g > 0 ? !0 : B || A.isRowDirty(t) || k.has(t) || M.has(t)) && (G.add(t), t > 0 && G.add(t - 1), t < D.rows - 1 && G.add(t + 1));
-+      ((vF > 0 ? B || t >= vF && A.isRowDirty(t - vF) : B || A.isRowDirty(t)) || k.has(t) || M.has(t)) && (G.add(t), t > 0 && G.add(t - 1), t < D.rows - 1 && G.add(t + 1));
++      ((vF > 0 ? B || t >= vF && A.isRowDirty(t - vF) : B || A.isRowDirty(t)) || k.has(t) || M.has(t) || vX && t >= vX.exposedStart && t <= vX.exposedEnd) && (G.add(t), t > 0 && G.add(t - 1), t < D.rows - 1 && G.add(t + 1));
      for (let t = 0; t < D.rows; t++) {
        if (!G.has(t))
          continue;
-@@ -1470,13 +1578,13 @@ class $ {
+@@ -1470,13 +1631,13 @@ class $ {
            c = E.getScrollbackLine(F);
          } else {
            const F = g > 0 ? t - Math.floor(g) : t;
@@ -224,7 +277,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Render a single line using two-pass approach:
-@@ -1490,52 +1598,90 @@ class $ {
+@@ -1490,52 +1651,90 @@ class $ {
     * cover any left-extending portions of graphemes from cell N-1.
     */
    renderLine(A, B, g) {
@@ -345,7 +398,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
        const M = C + this.metrics.baseline + 2;
        this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, M), this.ctx.lineTo(E + I, M), this.ctx.stroke();
      }
-@@ -1560,9 +1706,15 @@ class $ {
+@@ -1560,9 +1759,15 @@ class $ {
     */
    renderCursor(A, B) {
      const g = A * this.metrics.width, E = B * this.metrics.height;
@@ -362,7 +415,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
          break;
        case "underline":
          const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
-@@ -1579,17 +1731,80 @@ class $ {
+@@ -1579,17 +1784,80 @@ class $ {
          break;
      }
    }
@@ -446,7 +499,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    // ==========================================================================
    // Public API
    // ==========================================================================
-@@ -1650,12 +1865,12 @@ class $ {
+@@ -1650,12 +1918,12 @@ class $ {
     */
    renderScrollbar(A, B, g, E = 1) {
      const C = this.ctx, I = this.canvas.height / this.devicePixelRatio, D = this.canvas.width / this.devicePixelRatio, i = 8, w = D - i - 4, s = 4, N = I - s * 2;
@@ -462,7 +515,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    getMetrics() {
      return { ...this.metrics };
-@@ -1712,7 +1927,7 @@ class $ {
+@@ -1712,7 +1980,7 @@ class $ {
     * Clear entire canvas
     */
    clear() {
@@ -471,7 +524,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Cleanup resources
-@@ -1833,8 +2048,14 @@ const L = class Y {
+@@ -1833,8 +2101,14 @@ const L = class Y {
      for (; I >= E.cols; )
        I -= E.cols, C++;
      C = Math.min(C, E.rows - 1);
@@ -488,7 +541,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Select entire lines from start to end
-@@ -1843,8 +2064,8 @@ const L = class Y {
+@@ -1843,8 +2117,8 @@ const L = class Y {
    selectLines(A, B) {
      const g = this.wasmTerm.getDimensions();
      A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
@@ -499,7 +552,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Get selection position as buffer range
-@@ -1945,7 +2166,12 @@ const L = class Y {
+@@ -1945,7 +2219,12 @@ const L = class Y {
      }), this.boundMouseUpHandler = (B) => {
        if (this.isSelecting) {
          this.isSelecting = !1, this.stopAutoScroll();
@@ -513,7 +566,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2103,18 +2329,18 @@ class IA {
+@@ -2103,18 +2382,18 @@ class IA {
        get activeVersion() {
          return "15.1";
        }
@@ -535,7 +588,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
      }, this.handleMouseMove = (g) => {
        if (!(!this.canvas || !this.renderer || !this.wasmTerm)) {
          if (this.isDraggingScrollbar) {
-@@ -2341,11 +2567,18 @@ class IA {
+@@ -2341,11 +2620,18 @@ class IA {
          cursorStyle: this.options.cursorStyle,
          cursorBlink: this.options.cursorBlink,
          theme: this.options.theme
@@ -556,7 +609,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
          },
          () => {
            this.bellEmitter.fire();
-@@ -2364,13 +2597,22 @@ class IA {
+@@ -2364,13 +2650,22 @@ class IA {
          this.wasmTerm,
          this.textarea
        ), this.renderer.setSelectionManager(this.selectionManager), this.selectionManager.onSelectionChange(() => {
@@ -581,7 +634,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
      } catch (B) {
        throw this.isOpen = !1, this.cleanupComponents(), new Error(`Failed to open terminal: ${B}`);
      }
-@@ -2387,7 +2629,50 @@ class IA {
+@@ -2387,7 +2682,50 @@ class IA {
     */
    writeInternal(A, B) {
      var g;
@@ -633,7 +686,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Write data with newline
-@@ -2424,13 +2709,13 @@ class IA {
+@@ -2424,13 +2762,13 @@ class IA {
        return;
      this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
      const g = this.renderer.getMetrics();
@@ -649,7 +702,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Reset terminal state
-@@ -2438,7 +2723,7 @@ class IA {
+@@ -2438,7 +2776,7 @@ class IA {
    reset() {
      this.assertOpen(), this.wasmTerm && this.wasmTerm.free();
      const A = this.buildWasmConfig();
@@ -658,7 +711,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Focus terminal input
-@@ -2564,6 +2849,20 @@ class IA {
+@@ -2564,6 +2902,20 @@ class IA {
    // ==========================================================================
    // Phase 2: Scrolling Methods
    // ==========================================================================
@@ -679,7 +732,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    /**
     * Scroll viewport by a number of lines
     * @param amount Number of lines to scroll (positive = down, negative = up)
-@@ -2571,8 +2870,9 @@ class IA {
+@@ -2571,8 +2923,9 @@ class IA {
    scrollLines(A) {
      if (!this.wasmTerm)
        throw new Error("Terminal not open");
@@ -690,7 +743,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Scroll viewport by a number of pages
-@@ -2585,22 +2885,24 @@ class IA {
+@@ -2585,22 +2938,24 @@ class IA {
     * Scroll viewport to the top of the scrollback buffer
     */
    scrollToTop() {
@@ -718,7 +771,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Smoothly scroll to a target viewport position
-@@ -2611,7 +2913,7 @@ class IA {
+@@ -2611,7 +2966,7 @@ class IA {
        return;
      const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
      if ((this.options.smoothScrollDuration ?? 100) === 0) {
@@ -727,7 +780,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
        return;
      }
      this.targetViewportY = E, !this.scrollAnimationFrame && (this.scrollAnimationStartTime = Date.now(), this.scrollAnimationStartY = this.viewportY, this.animateScroll());
-@@ -2624,7 +2926,7 @@ class IA {
+@@ -2624,7 +2979,7 @@ class IA {
     */
    dispose() {
      if (!this.isDisposed) {
@@ -736,7 +789,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2936,258 @@ class IA {
+@@ -2634,17 +2989,258 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -1002,7 +1055,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3207,7 @@ class IA {
+@@ -2664,7 +3260,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -1011,7 +1064,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3240,7 @@ class IA {
+@@ -2697,7 +3293,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -1020,7 +1073,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3256,9 @@ class IA {
+@@ -2713,7 +3309,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -1031,7 +1084,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3468,84 @@ class DA {
+@@ -2923,6 +3521,122 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -1113,21 +1166,60 @@ index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819
 +function nextCadence(A, B, g) {
 +  return g >= A ? { cadence: g, dropPending: !1 } : B ? { cadence: g, dropPending: !1 } : { cadence: A, dropPending: !0 };
 +}
++/**
++ * PHASR PATCH (perf phase 2, criteria 3+4): the scroll-blit plan.
++ *
++ * While scrolled into history, the canvas is a window onto the ABSOLUTE
++ * row space — canvas row t shows absolute row top+t whether that row is
++ * served by the scrollback buffer or the live screen, and scrollback
++ * content is immutable. So when a scroll moves the window's top by a few
++ * rows, almost every pixel the new frame needs is already ON the canvas,
++ * just at a different y. Upstream treated any viewport move as a full
++ * repaint: every row a getScrollbackLine WASM fetch plus a full
++ * cell-by-cell draw, ~rows/delta times more canvas work than the scroll
++ * required — and on WKWebView every canvas op is a GPU-process IPC
++ * round-trip.
++ *
++ * The plan says which region a canvas self-drawImage can move and which
++ * rows were newly exposed and must be drawn. Rows whose content actually
++ * changed (the live tail under the window) stay covered by the engine's
++ * row dirty flags at their shifted positions, exactly as before. Null
++ * means "no blit is valid — repaint in full": the previous frame was not
++ * a scrolled frame (top < 0 — its sentinel is -1 at the live bottom), or
++ * the jump is a screenful or more, or nothing moved.
++ *
++ * Exported, like the cadence policy above, so the host can unit-test the
++ * row arithmetic without a DOM, a canvas or WASM.
++ *
++ * @param A previous top absolute row (-1 = was at the live bottom)
++ * @param B new top absolute row
++ * @param g viewport rows
++ */
++function planScrollBlit(A, B, g) {
++  if (A < 0 || B < 0 || g <= 0)
++    return null;
++  const E = B - A;
++  if (E === 0 || Math.abs(E) >= g)
++    return null;
++  const C = Math.abs(E), I = g - C;
++  return E > 0 ? { delta: E, srcRow: C, dstRow: 0, copyRows: I, exposedStart: I, exposedEnd: g - 1 } : { delta: E, srcRow: 0, dstRow: C, copyRows: I, exposedStart: 0, exposedEnd: C - 1 };
++}
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3571,9 @@ export {
+@@ -2948,6 +3662,10 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
 +  FRAME_CADENCE,
 +  ThroughputEstimator,
 +  nextCadence,
++  planScrollBlit,
    q as Ghostty,
    W as GhosttyTerminal,
    P as InputHandler,
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..5e587c312f5292d5086758854b2a4051c0c6b223 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..ba62258e5a3023d0807e132c7310e481828bf3d9 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -64,6 +64,13 @@ export declare class CanvasRenderer {
@@ -1264,7 +1356,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..5e587c312f5292d5086758854b2a4051
      /**
       * Start the render loop
       */
-@@ -1839,4 +1930,49 @@ export declare class UrlRegexProvider implements ILinkProvider {
+@@ -1839,4 +1930,70 @@ export declare class UrlRegexProvider implements ILinkProvider {
      dispose(): void;
  }
  
@@ -1312,5 +1404,26 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..5e587c312f5292d5086758854b2a4051
 +    cadence: number;
 +    dropPending: boolean;
 +};
++
++/**
++ * PHASR PATCH (perf phase 2, criteria 3+4): the scroll-blit plan. While
++ * scrolled into history the canvas is a window onto the absolute row
++ * space, so a scroll of a few rows can move the surviving region with a
++ * canvas self-drawImage and repaint only the newly exposed rows. Returns
++ * null when only a full repaint is correct (previous frame was at the
++ * live bottom, a jump of a screenful or more, or no movement).
++ *
++ * @param lastTopAbsRow previous top absolute row (-1 = was at the bottom)
++ * @param topAbsRow new top absolute row
++ * @param rows viewport rows
++ */
++export declare function planScrollBlit(lastTopAbsRow: number, topAbsRow: number, rows: number): {
++    delta: number;
++    srcRow: number;
++    dstRow: number;
++    copyRows: number;
++    exposedStart: number;
++    exposedEnd: number;
++} | null;
 +
  export { }
