@@ -1573,6 +1573,37 @@ mod tests {
     }
 
     #[test]
+    fn the_log_offset_stays_off_the_wire() {
+        // Phase 3 added a field to `Output`, and the IPC payload has to be
+        // byte-identical to v0.4.1's — no `logOffset` for `types.ts` to
+        // learn, no base64 envelope change, nothing for P4 to re-measure.
+        let event = PtyEvent::Output {
+            task_id: "t".into(),
+            log_offset: 987_654_321,
+            chunk: b"hi".to_vec(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(json, r#"{"type":"output","taskId":"t","chunk":"aGk="}"#);
+    }
+
+    #[test]
+    fn desync_serializes_as_a_tagged_event_with_a_byte_count() {
+        // The one wire ADDITION this phase makes. `src/lib/types.ts` needs a
+        // matching arm before the frontend can act on it; until then the
+        // three `if (event.type === …)` handlers ignore it, which is the
+        // same silence as today rather than a regression.
+        let event = PtyEvent::Desync {
+            task_id: "t".into(),
+            missed_bytes: 4096,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"desync","taskId":"t","missedBytes":4096}"#
+        );
+    }
+
+    #[test]
     fn scanner_finds_marker_split_across_a_ceiling_flush() {
         // Coalescing makes chunks 8× bigger, so splits are rarer — but a
         // marker can still straddle a 32 KiB ceiling flush, and the carry
