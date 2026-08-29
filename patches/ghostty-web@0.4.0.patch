@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a71e429f90 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf82dd6e910 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -634,7 +634,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
      } catch (B) {
        throw this.isOpen = !1, this.cleanupComponents(), new Error(`Failed to open terminal: ${B}`);
      }
-@@ -2387,7 +2682,50 @@ class IA {
+@@ -2387,7 +2682,59 @@ class IA {
     */
    writeInternal(A, B) {
      var g;
@@ -644,7 +644,16 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
 +    // anchorViewportAfterWrite. Costs nothing at the bottom, which is the
 +    // overwhelmingly common case.
 +    const E = this.viewportY > 0 ? this.getScrollbackLength() : -1;
-+    this.wasmTerm.write(A), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.anchorViewportAfterWrite(E), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), this.throughput.record(A.length, performance.now()), this.scheduleFrame(), B && requestAnimationFrame(B);
++    // PHASR PATCH (perf phase 2, criterion 6): the BEL scan is gated on
++    // someone actually listening. Upstream walked EVERY written chunk —
++    // up to 32 KiB per write at flood, megabytes per second of byte
++    // comparisons — to maybe fire an event with no subscribers (phasr
++    // registers none). The WASM parser, which already reads every byte,
++    // exposes no bell surface (verified against the ghostty_* exports),
++    // so true parser-side detection is an upstream engine change; until
++    // then, hosts that subscribe onBell keep the exact old behaviour and
++    // hosts that do not stop paying for it on the hot write path.
++    this.wasmTerm.write(A), this.processTerminalResponses(), this.bellEmitter.listeners.length > 0 && (typeof A == "string" ? A.includes("\x07") && this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire()), (g = this.linkDetector) == null || g.invalidateCache(), this.anchorViewportAfterWrite(E), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), this.throughput.record(A.length, performance.now()), this.scheduleFrame(), B && requestAnimationFrame(B);
 +  }
 +  /**
 +   * PHASR PATCH: output must never move the user's scroll position.
@@ -686,7 +695,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Write data with newline
-@@ -2424,13 +2762,13 @@ class IA {
+@@ -2424,13 +2771,13 @@ class IA {
        return;
      this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
      const g = this.renderer.getMetrics();
@@ -702,7 +711,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Reset terminal state
-@@ -2438,7 +2776,7 @@ class IA {
+@@ -2438,7 +2785,7 @@ class IA {
    reset() {
      this.assertOpen(), this.wasmTerm && this.wasmTerm.free();
      const A = this.buildWasmConfig();
@@ -711,7 +720,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Focus terminal input
-@@ -2564,6 +2902,20 @@ class IA {
+@@ -2564,6 +2911,20 @@ class IA {
    // ==========================================================================
    // Phase 2: Scrolling Methods
    // ==========================================================================
@@ -732,7 +741,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    /**
     * Scroll viewport by a number of lines
     * @param amount Number of lines to scroll (positive = down, negative = up)
-@@ -2571,8 +2923,9 @@ class IA {
+@@ -2571,8 +2932,9 @@ class IA {
    scrollLines(A) {
      if (!this.wasmTerm)
        throw new Error("Terminal not open");
@@ -743,7 +752,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Scroll viewport by a number of pages
-@@ -2585,22 +2938,24 @@ class IA {
+@@ -2585,22 +2947,24 @@ class IA {
     * Scroll viewport to the top of the scrollback buffer
     */
    scrollToTop() {
@@ -771,7 +780,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Smoothly scroll to a target viewport position
-@@ -2611,7 +2966,7 @@ class IA {
+@@ -2611,7 +2975,7 @@ class IA {
        return;
      const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
      if ((this.options.smoothScrollDuration ?? 100) === 0) {
@@ -780,7 +789,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
        return;
      }
      this.targetViewportY = E, !this.scrollAnimationFrame && (this.scrollAnimationStartTime = Date.now(), this.scrollAnimationStartY = this.viewportY, this.animateScroll());
-@@ -2624,7 +2979,7 @@ class IA {
+@@ -2624,7 +2988,7 @@ class IA {
     */
    dispose() {
      if (!this.isDisposed) {
@@ -789,7 +798,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2989,258 @@ class IA {
+@@ -2634,17 +2998,258 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -1055,7 +1064,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3260,7 @@ class IA {
+@@ -2664,7 +3269,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -1064,7 +1073,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3293,7 @@ class IA {
+@@ -2697,7 +3302,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -1073,7 +1082,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3309,9 @@ class IA {
+@@ -2713,7 +3318,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -1084,7 +1093,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3521,122 @@ class DA {
+@@ -2923,6 +3530,122 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -1207,7 +1216,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..e85528e4860cd2d3d99753dd31ef67a7
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3662,10 @@ export {
+@@ -2948,6 +3671,10 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
