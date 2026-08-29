@@ -88,6 +88,10 @@ pub struct StartedTask {
 pub struct TaskTerminalSubscription {
     pub task_id: String,
     pub started_at: DateTime<Utc>,
+    /// The PTY itself. The forwarder registers it so `set_terminal_visible`
+    /// and `detach_terminal_stream` can reach this terminal by channel id
+    /// without a second lookup through the runtime map.
+    pub handle: Arc<PtyHandle>,
     pub replay: Vec<PtyEvent>,
     pub rx: broadcast::Receiver<PtyEvent>,
     /// Per-subscriber cursor that refills anything the broadcast drops out
@@ -381,6 +385,7 @@ impl TaskOrchestrator {
                 replay,
                 rx,
                 recovery: handle.recovery(),
+                handle,
             });
         }
 
@@ -448,6 +453,7 @@ impl TaskOrchestrator {
             replay,
             rx,
             recovery: handle.recovery(),
+            handle,
         })
     }
 

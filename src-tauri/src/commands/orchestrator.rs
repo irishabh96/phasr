@@ -8,16 +8,16 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::{AuthError, SessionState};
+use crate::commands::pty_stream::{self, PtyStreamRegistry};
 use crate::domain::Agent;
 use crate::orchestrator::{
     OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
 };
-use crate::pty::{LagRecovery, PtyEvent};
 use crate::sync::CloudSyncState;
 
 /// Tauri event name on which task status transitions are broadcast.
@@ -110,10 +110,11 @@ pub async fn stop_task(
 #[tauri::command]
 pub async fn open_task_terminal(
     task_id: String,
-    on_event: Channel<PtyEvent>,
+    on_event: Channel<InvokeResponseBody>,
     rows: Option<u16>,
     cols: Option<u16>,
     orchestrator: State<'_, TaskOrchestrator>,
+    streams: State<'_, Arc<PtyStreamRegistry>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<RunningTaskInfo, OrchestratorError> {
     session.require()?;
@@ -124,51 +125,18 @@ pub async fn open_task_terminal(
         task_id: sub.task_id.clone(),
         started_at: sub.started_at,
     };
-    spawn_task_event_forwarder(sub.replay, sub.rx, sub.recovery, on_event);
+    // An agent terminal outlives its channel: the task keeps running when the
+    // surface is evicted, so there is nothing to clean up on exit here.
+    pty_stream::spawn(
+        streams.inner().clone(),
+        sub.handle,
+        sub.replay,
+        sub.rx,
+        sub.recovery,
+        on_event,
+        || {},
+    );
     Ok(info)
-}
-
-fn spawn_task_event_forwarder(
-    replay: Vec<PtyEvent>,
-    mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
-    mut recovery: LagRecovery,
-    channel: Channel<PtyEvent>,
-) {
-    tauri::async_runtime::spawn(async move {
-        for event in replay {
-            recovery.recover_before(&event, |missed| {
-                let _ = channel.send(missed);
-            });
-            let _ = channel.send(event);
-        }
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let is_exit = matches!(event, PtyEvent::Exit { .. });
-                    // Anything the broadcast dropped is read back out of the
-                    // per-task log and delivered first, so the terminal
-                    // never sees a hole. Costs one integer compare when
-                    // nothing was lost.
-                    recovery.recover_before(&event, |missed| {
-                        let _ = channel.send(missed);
-                    });
-                    let _ = channel.send(event);
-                    if is_exit {
-                        break;
-                    }
-                }
-                Err(RecvError::Lagged(n)) => recovery.note_lag(n),
-                // Closed with a gap outstanding: the last bytes are still on
-                // disk even though no event will ever carry them.
-                Err(RecvError::Closed) => {
-                    recovery.recover_tail(|missed| {
-                        let _ = channel.send(missed);
-                    });
-                    break;
-                }
-            }
-        }
-    });
 }
 
 #[tauri::command]

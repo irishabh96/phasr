@@ -119,6 +119,11 @@ pub fn run() {
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
             app.manage(task_runtime.clone());
 
+            // Every live PTY→webview forwarder, so `set_terminal_visible` and
+            // `detach_terminal_stream` can find one by the channel id the
+            // frontend already holds.
+            app.manage(Arc::new(commands::pty_stream::PtyStreamRegistry::default()));
+
             let watch_registry =
                 Arc::new(fswatch::WorktreeWatchRegistry::new(app.handle().clone()));
             app.manage(watch_registry.clone());
@@ -173,6 +178,8 @@ pub fn run() {
             commands::orchestrator::read_task_log,
             commands::orchestrator::resize_task,
             commands::orchestrator::interrupt_task,
+            commands::pty_stream::detach_terminal_stream,
+            commands::pty_stream::set_terminal_visible,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,

@@ -7,13 +7,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 use thiserror::Error;
-use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::{AuthError, SessionState};
+use crate::commands::pty_stream::{self, PtyStreamRegistry};
 use crate::domain::RunCommand;
+use crate::pty::handle::PtyHandle;
 use crate::pty::{LagRecovery, PtyEvent, TaskRuntime};
 use crate::store::{RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError};
 use crate::sync::CloudSyncState;
@@ -142,12 +143,13 @@ pub async fn delete_run_command(
 #[tauri::command]
 pub async fn start_run_command(
     id: String,
-    on_event: Channel<PtyEvent>,
+    on_event: Channel<InvokeResponseBody>,
     rows: Option<u16>,
     cols: Option<u16>,
     run_commands: State<'_, RunCommandRepo>,
     repositories: State<'_, RepositoryRepo>,
     runtime: State<'_, Arc<TaskRuntime>>,
+    streams: State<'_, Arc<PtyStreamRegistry>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RunCommandError> {
     session.require()?;
@@ -158,6 +160,8 @@ pub async fn start_run_command(
     if let Some(handle) = runtime.get(&key) {
         let (replay, rx) = handle.subscribe_with_replay();
         forward(
+            streams.inner().clone(),
+            handle.clone(),
             replay,
             rx,
             handle.recovery(),
@@ -185,6 +189,8 @@ pub async fn start_run_command(
     )?;
     let (replay, rx) = handle.subscribe_with_replay();
     forward(
+        streams.inner().clone(),
+        handle.clone(),
         replay,
         rx,
         handle.recovery(),
@@ -241,47 +247,21 @@ pub async fn resize_run_command(
     Ok(())
 }
 
+/// Local shim over the shared forwarder (`commands/pty_stream.rs`): these
+/// PTYs have no workspace row behind them, so the runtime map is the only
+/// thing that remembers them and it has to be cleared when the child exits.
+#[allow(clippy::too_many_arguments)]
 fn forward(
+    streams: Arc<PtyStreamRegistry>,
+    handle: Arc<PtyHandle>,
     replay: Vec<PtyEvent>,
-    mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
-    mut recovery: LagRecovery,
-    channel: Channel<PtyEvent>,
+    rx: tokio::sync::broadcast::Receiver<PtyEvent>,
+    recovery: LagRecovery,
+    channel: Channel<InvokeResponseBody>,
     runtime: Arc<TaskRuntime>,
     key: String,
 ) {
-    tauri::async_runtime::spawn(async move {
-        for event in replay {
-            recovery.recover_before(&event, |missed| {
-                let _ = channel.send(missed);
-            });
-            let _ = channel.send(event);
-        }
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let is_exit = matches!(event, PtyEvent::Exit { .. });
-                    // Anything the broadcast dropped is read back out of the
-                    // per-task log and delivered first, so the terminal never
-                    // sees a hole. One integer compare when nothing was lost.
-                    recovery.recover_before(&event, |missed| {
-                        let _ = channel.send(missed);
-                    });
-                    let _ = channel.send(event);
-                    if is_exit {
-                        runtime.drop_task(&key);
-                        break;
-                    }
-                }
-                Err(RecvError::Lagged(n)) => recovery.note_lag(n),
-                // Closed with a gap outstanding: the last bytes are still on
-                // disk even though no event will ever carry them.
-                Err(RecvError::Closed) => {
-                    recovery.recover_tail(|missed| {
-                        let _ = channel.send(missed);
-                    });
-                    break;
-                }
-            }
-        }
+    pty_stream::spawn(streams, handle, replay, rx, recovery, channel, move || {
+        runtime.drop_task(&key)
     });
 }

@@ -7,6 +7,7 @@ pub mod git;
 pub mod notes;
 pub mod notifications;
 pub mod orchestrator;
+pub mod pty_stream;
 pub mod repositories;
 pub mod run_commands;
 pub mod session_terminal;
