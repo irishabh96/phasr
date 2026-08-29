@@ -9,14 +9,26 @@ import type { TerminalSurface } from "@/lib/terminal/surface";
  * ## What this is a reaction to
  *
  * ghostty-web paints from a single `requestAnimationFrame` chain that
- * re-queues itself from inside its own callback, and `write()` schedules
- * nothing. So the chain IS the display: if one callback fails to run, the
- * terminal never paints again — while it keeps its focus, keeps accepting
- * keystrokes and keeps feeding them to the PTY. What the user sees is a
- * terminal that "stopped responding to clicks"; what is actually true is
- * that every click landed, every keystroke arrived, and nothing was ever
- * drawn in reply. Measured (e2e/terminal-liveness.spec.ts): one swallowed
- * frame callback and the terminal is dead for the rest of its life.
+ * re-queues itself from inside its own callback. The chain IS the
+ * display: if one callback fails to run, the terminal never paints
+ * again — while it keeps its focus, keeps accepting keystrokes and keeps
+ * feeding them to the PTY. What the user sees is a terminal that "stopped
+ * responding to clicks"; what is actually true is that every click
+ * landed, every keystroke arrived, and nothing was ever drawn in reply.
+ * Measured (e2e/terminal-liveness.spec.ts): one swallowed frame callback
+ * and the terminal is dead for the rest of its life.
+ *
+ * ## Since perf phase 1 (damage-driven scheduling)
+ *
+ * The chain is a scheduler now: `write()` DOES request a frame, and an
+ * idle chain degrades to a ~1 Hz heartbeat instead of spinning at 60 fps.
+ * Two consequences for this module. First, the heartbeat is itself a
+ * liveness signal — but this watchdog stays, because it covers what a
+ * heartbeat cannot: frames (and timers) a suspended web view swallows
+ * wholesale (sleep, occlusion, App Nap). Second, "the counter did not
+ * move for 200 ms" stopped being evidence — at idle that is the healthy
+ * state — so every check now REQUESTS a frame first and watches whether
+ * the request is honoured, which a live chain does at any cadence.
  *
  * Two things end a frame callback, and both happen to a machine that has
  * been left alone:
@@ -57,6 +69,16 @@ export interface LivenessTarget {
   readonly id: string;
   renderTick(): number | null;
   kickRendering(): void;
+  /**
+   * Ask the engine for one frame (perf phase 1). The chain is
+   * damage-driven now: at idle it parks on a ~1 Hz heartbeat, so "did the
+   * counter move in the last 200 ms" is only a fair question after asking
+   * for a frame — a live chain honours the request within one frame at
+   * any cadence, and a dead one cannot. Optional so a backend without the
+   * patched engine still type-checks; absent, the check degrades to the
+   * old free-running assumption.
+   */
+  requestFrame?(): void;
 }
 
 export interface LivenessOutcome {
@@ -123,6 +145,12 @@ export function verifyRenderLoop(
   // the app deliberately paused.
   if (before === null) return;
 
+  // The probe: request a frame, then watch whether the request is
+  // honoured. Without this, a healthy chain idling at the ~1 Hz heartbeat
+  // reads as stalled (no tick for up to a second is its NORMAL state) and
+  // every click would kick it.
+  surface.requestFrame?.();
+
   deps.schedule(() => {
     const after = surface.renderTick();
     if (after === null || after !== before) {
@@ -137,6 +165,14 @@ export function verifyRenderLoop(
       });
       return;
     }
+    // Hidden is not stalled: a hidden page delivers no animation frames at
+    // all, legitimately, so a requested frame not arriving proves nothing.
+    // The `visible` trigger re-runs the check on the way back.
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState !== "visible"
+    )
+      return;
     surface.kickRendering();
     deps.schedule(() => {
       const settled = surface.renderTick();
@@ -181,6 +217,26 @@ export function installTerminalLivenessWatch(
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") checkAll("visible");
   });
+
+  // Perf phase 1, Q6: "hidden" includes the app being backgrounded or the
+  // window occluded — states the page cannot see (a WKWebView keeps DOM
+  // focus and `visibilityState === "visible"` while the app is merely
+  // inactive). Tauri's window focus event is the signal, the same one
+  // `useCompletionNotifications` already listens to; each live surface
+  // floors its engine at the ~1 Hz heartbeat while backgrounded. Dynamic
+  // import + catch: in vitest and the mocked e2e harness there is no
+  // Tauri window, and the cadence then simply never degrades this way.
+  void import("@tauri-apps/api/window")
+    .then(({ getCurrentWindow }) =>
+      getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        for (const surface of liveSurfaces())
+          surface.setBackgrounded?.(!focused);
+        if (focused) checkAll("window-focus");
+      }),
+    )
+    .catch(() => {
+      /* not running under Tauri */
+    });
 
   // A click inside a terminal is the user's own report that it is not
   // working — the gesture they make BEFORE they tell anyone. Capture, so

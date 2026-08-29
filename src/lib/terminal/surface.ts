@@ -183,6 +183,28 @@ export interface TerminalSurface {
    * restart and one full redraw. The recovery half of `renderTick`.
    */
   kickRendering(): void;
+  /**
+   * Ask the engine for one frame (perf phase 1: the render chain is
+   * damage-driven and parks on a ~1 Hz heartbeat at idle). The liveness
+   * watchdog's probe: a live chain honours the request within one frame
+   * at any cadence. Optional — a backend without a schedulable engine
+   * simply cannot be probed this way.
+   */
+  requestFrame?(): void;
+  /**
+   * The app window went to the background / came back (Tauri focus
+   * events; see `liveness.ts`). A backgrounded surface floors its render
+   * cadence at the ~1 Hz heartbeat — "hidden" in the perf phase 1 sense,
+   * strictly weaker than parked (`setActive(false)`), which stops frames
+   * entirely.
+   */
+  setBackgrounded?(backgrounded: boolean): void;
+  /**
+   * The engine's render/cadence stats (ticks, cadence tier, throughput
+   * estimate…), for the dev bridge and perf probes. `null` when the
+   * engine is not attached or unpatched.
+   */
+  renderStats?(): Record<string, unknown> | null;
 
   applySettings(settings: Partial<TerminalSurfaceSettings> | undefined): void;
   applyTheme(theme: TerminalTheme): void;

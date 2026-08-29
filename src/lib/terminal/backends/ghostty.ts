@@ -39,6 +39,7 @@ import {
   terminalDiagnosticsEnabled,
 } from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
+import { STALL_DEADLINE_MS } from "@/lib/terminal/liveness";
 import {
   createSurfacePerf,
   type ScrollbackBenchResult,
@@ -276,14 +277,18 @@ interface GridSwap {
 const SCROLLBAR_WIDTH = 15;
 
 /**
- * How long the render loop may go without running before a surface that is
- * supposed to be painting is declared stalled.
+ * How long the render loop may go without running before a write into a
+ * visible surface escalates to the deferred stall verification (see
+ * `healIfStalled` — since perf phase 1 the age alone is no longer a
+ * verdict, because an idle chain legitimately heartbeats at ~1 Hz).
  *
  * A second, not a frame or two: the point is to be unambiguous. A busy
  * main thread, a long WASM write, a garbage collection — all of those skip
  * frames, and none of them skip a whole second while the page is visible
- * and the terminal is on screen. Below that, this would be a repaint
- * heuristic instead of a fault detector.
+ * and the terminal is on screen. It is also exactly the engine's
+ * `FRAME_CADENCE.HEARTBEAT_MS`, so a healthy idle chain sits just under
+ * the gate and only phase jitter ever escalates — and the verification
+ * then resolves "alive" silently.
  */
 const STALL_MS = 1000;
 
@@ -323,6 +328,10 @@ export class GhosttySurface implements TerminalSurface {
   private pausedWarned = false;
   /** Throttles the write-path restart. See `healIfStalled`. */
   private lastKickAt = 0;
+  /** A write-path stall verification is already in flight. */
+  private stallCheckPending = false;
+  /** The app-window occlusion/background signal — see `setBackgrounded`. */
+  private backgrounded = false;
   /** Frame failures already reported. See `reportFrameErrors`. */
   private reportedFrameErrors = 0;
 
@@ -461,6 +470,7 @@ export class GhosttySurface implements TerminalSurface {
     if (this.pendingFocus) term.focus();
     this.pendingFocus = false;
     if (!this.active) this.setActive(false);
+    if (this.backgrounded) term.setBackgrounded?.(true);
   }
 
   // -------------------------------------------------------------------
@@ -1293,15 +1303,55 @@ export class GhosttySurface implements TerminalSurface {
   }
 
   /**
-   * New output has arrived. If the loop has demonstrably not run for a
-   * second while this surface was supposed to be painting, it is not
-   * going to run again on its own — restart it, or the bytes just written
-   * are invisible for the rest of the terminal's life.
+   * Ask the engine for one frame. The chain is damage-driven now (perf
+   * phase 1): at idle it parks on a ~1 Hz heartbeat, so "no tick in the
+   * last 200 ms" is a healthy state — the only sound liveness probe is to
+   * REQUEST a frame and watch whether the tick counter honours it, which a
+   * live chain does within one frame at any cadence. The watchdog
+   * (`liveness.ts`) calls this before it samples.
+   */
+  requestFrame(): void {
+    if (this.disposed || !this.active) return;
+    this.term?.scheduleFrame?.();
+  }
+
+  /**
+   * The app window went to the background / came back (Tauri's window
+   * focus events, wired app-wide in `liveness.ts`). While backgrounded the
+   * engine floors its cadence at the 1 Hz heartbeat — the page itself
+   * often cannot see this state (a WKWebView keeps `visibilityState ===
+   * "visible"` while the app is merely inactive), which is exactly the
+   * battery case phasr cares about: agents flooding output into windows
+   * the user is not looking at.
+   */
+  setBackgrounded(backgrounded: boolean): void {
+    if (this.disposed) return;
+    this.backgrounded = backgrounded;
+    this.term?.setBackgrounded?.(backgrounded);
+  }
+
+  /** The engine's render/cadence stats, for the dev bridge and probes. */
+  renderStats(): Record<string, unknown> | null {
+    return this.term?.getRenderStats?.() ?? null;
+  }
+
+  /**
+   * New output has arrived into a surface whose loop has not run for over
+   * a second. Under the damage-driven engine (perf phase 1) that is NOT
+   * yet evidence of a stall — an idle chain legitimately parks on a ~1 Hz
+   * heartbeat, so a write can land with the last frame up to a second
+   * old. What IS evidence: the write itself requests a frame, and a live
+   * chain honours a request within one frame at any cadence. So instead
+   * of kicking on age alone (which restarted healthy heartbeat chains and
+   * cried wolf in the console), sample the tick counter, let the write's
+   * own frame request run, and restart only if the counter provably did
+   * not move.
    *
-   * This is the arm of the watchdog that needs no user and no event: an
-   * agent working while nobody is looking heals its own terminal. It costs
-   * one property read and one subtraction per PTY chunk, and reaches
-   * `kickRendering` only when something is actually wrong.
+   * This is still the arm of the watchdog that needs no user and no
+   * event: an agent working while nobody is looking heals its own
+   * terminal. The fast path costs one property read and one subtraction
+   * per PTY chunk; the deferred check runs only when the chain has been
+   * quiet past the heartbeat period.
    */
   private healIfStalled(): void {
     if (!this.active || this.disposed) return;
@@ -1318,12 +1368,33 @@ export class GhosttySurface implements TerminalSurface {
     // hidden. The watchdog's `visible` trigger covers the way back.
     if (typeof document !== "undefined" && document.visibilityState !== "visible")
       return;
+    if (this.stallCheckPending) return;
     if (now - this.lastKickAt < STALL_MS) return;
-    console.warn(
-      `[terminal] ${this.id}: no frame in ${Math.round(now - stats.lastFrameAt)}ms ` +
-        "while output was arriving — restarting the render loop",
-    );
-    this.kickRendering();
+    const before = stats.ticks;
+    // The write that triggered this check schedules a frame itself, but
+    // not unconditionally (a chunk held back as a partial grapheme tail
+    // never reaches the engine) — ask for one explicitly so the probe is
+    // self-contained.
+    this.requestFrame();
+    this.stallCheckPending = true;
+    window.setTimeout(() => {
+      this.stallCheckPending = false;
+      if (!this.active || this.disposed) return;
+      const after = this.term?.getRenderStats?.();
+      if (!after || after.paused || !after.open || after.disposed) return;
+      if (after.ticks !== before) return;
+      // Hidden is still not stalled, even if it became hidden mid-check.
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState !== "visible"
+      )
+        return;
+      console.warn(
+        `[terminal] ${this.id}: no frame in ${Math.round(performance.now() - after.lastFrameAt)}ms ` +
+          "while output was arriving — restarting the render loop",
+      );
+      this.kickRendering();
+    }, STALL_DEADLINE_MS);
   }
 
   // -------------------------------------------------------------------

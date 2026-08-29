@@ -123,6 +123,36 @@ describe("verifyRenderLoop", () => {
     expect(deps.outcomes[0]).toMatchObject({ alive: true, kicked: false });
   });
 
+  it("asks for a frame before it samples (the heartbeat probe)", () => {
+    // Perf phase 1: an idle chain parks on a ~1 Hz heartbeat, so "the
+    // counter did not move for 200 ms" is the HEALTHY idle state. The
+    // check is only sound because it requests a frame first — a live
+    // chain honours that within one frame at any cadence. A surface whose
+    // counter advances only when a frame is requested (exactly how the
+    // damage-driven engine behaves at idle) must therefore read as alive.
+    const state = { tick: 50, requested: 0, kicks: 0 };
+    const target: LivenessTarget = {
+      id: "ghostty-idle",
+      renderTick: () => {
+        // The requested frame ran between the two samples; nothing else
+        // moves the counter within the deadline.
+        if (state.requested > 0) state.tick += 1;
+        return state.tick;
+      },
+      kickRendering: () => {
+        state.kicks += 1;
+      },
+      requestFrame: () => {
+        state.requested += 1;
+      },
+    };
+    const deps = immediateDeps();
+    verifyRenderLoop(target, "click", deps);
+    expect(state.requested).toBe(1);
+    expect(state.kicks).toBe(0);
+    expect(deps.outcomes[0]).toMatchObject({ alive: true, kicked: false });
+  });
+
   it("waits before deciding — a slow frame is not a dead loop", () => {
     // The scheduler is what separates "has not painted yet" from "will
     // never paint again". If the check read the counter twice in the same

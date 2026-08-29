@@ -73,6 +73,12 @@ export interface TerminalBridge {
    */
   renderTick(id: string): number | null;
   /**
+   * The engine's render/cadence stats (perf phase 1): tick counter,
+   * cadence tier (60/30/1), throughput estimate, pending damage,
+   * heartbeat state. What a probe asserts adaptive cadence against.
+   */
+  stats(id: string): Record<string, unknown> | null;
+  /**
    * Phase 0's `getScrollbackLine` throughput microbench (perf spec,
    * criterion 7). Loops inside the page so the Playwright boundary is
    * crossed once per RUN, not once per line. `null` when the backend has
@@ -124,6 +130,7 @@ function bridge(): TerminalBridge {
     dropPaths: (paths, x, y) => routeDroppedPaths(paths, { x, y }),
     repaint: (id) => live.get(id)?.repaint(),
     renderTick: (id) => live.get(id)?.renderTick() ?? null,
+    stats: (id) => live.get(id)?.renderStats?.() ?? null,
     scrollbackBench: (id, samples) =>
       benchable(live.get(id))?.benchScrollback(samples) ?? null,
   };
