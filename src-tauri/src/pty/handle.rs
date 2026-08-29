@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -62,15 +63,22 @@ pub enum PtyEvent {
         #[serde(skip_serializing)]
         log_offset: u64,
         /// The PTY's bytes, verbatim. A terminal emulator is a byte
-        /// protocol, so nothing here decodes them: they cross the IPC
-        /// base64-encoded and are handed to the emulator as bytes.
+        /// protocol, so nothing here decodes them: they cross the IPC as a
+        /// **raw payload** and are handed to the emulator as bytes.
         ///
         /// This used to be a lossy `String`, which forced a carry buffer to
         /// avoid splitting a codepoint across reads (mid-codepoint decoding
         /// corrupted column tracking) and turned any non-UTF-8 byte into
         /// U+FFFD permanently. Both problems are absent from a byte stream.
+        ///
+        /// `Bytes`, not `Vec<u8>` (P4): one chunk is pushed to the replay
+        /// buffer AND cloned once per broadcast subscriber, and every one of
+        /// those used to be a full memcpy of up to 32 KiB. Refcounted, the
+        /// allocation is made once by the coalescer and shared — the only
+        /// remaining copy of a chunk is the one Tauri's `InvokeResponseBody`
+        /// insists on owning at the IPC boundary.
         #[serde(serialize_with = "serialize_base64")]
-        chunk: Vec<u8>,
+        chunk: Bytes,
     },
     /// A hole in the stream that could not be refilled from the log —
     /// the missing range had already rotated off the end of it.
@@ -89,13 +97,18 @@ pub enum PtyEvent {
     },
 }
 
-/// Base64, not a JSON array of numbers: an array costs ~4x the bytes and
-/// would be strictly worse than the lossy string it replaces. Base64 is a
-/// flat 1.333x with no characters JSON has to escape — measured against
-/// 49 MB of real phasr PTY logs it is 2.3% *smaller* than the escaped
-/// string was, because agent TUI output is dense in ESC (0x1b), which
-/// `serde_json` expands to six characters each.
-fn serialize_base64<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+/// **Not the live wire any more.** Since P4 an `Output` chunk crosses the IPC
+/// as `InvokeResponseBody::Raw` (`commands/pty_stream.rs`) — no base64, no
+/// JSON envelope. Only `Exit` and `Desync` are serialized in production.
+///
+/// This stays because it is the *baseline* the raw path is measured against:
+/// `ipcbench` sends the identical event both ways in one run, and
+/// `output_chunk_serializes_as_base64` pins the shape those numbers refer to.
+/// Base64 rather than a JSON number array — an array costs ~4x the bytes;
+/// base64 is a flat 1.333x, and against 49 MB of real phasr PTY logs it came
+/// out 2.3% *smaller* than an escaped string, because agent TUI output is
+/// dense in ESC (0x1b), which `serde_json` expands to six characters each.
+fn serialize_base64<S: serde::Serializer>(bytes: &Bytes, s: S) -> Result<S::Ok, S::Error> {
     use base64::Engine as _;
     s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
 }
@@ -170,6 +183,10 @@ pub struct PtyHandle {
     /// coalescer thread. Initialised to spawn time so a freshly started
     /// task counts as active before its first byte arrives.
     last_output_at: Arc<std::sync::atomic::AtomicI64>,
+    /// Is a human actually looking at this terminal? Advisory only: it
+    /// picks the coalescer's flush window (8 ms vs 50 ms) and nothing
+    /// else. See `set_visible`.
+    visible: Arc<std::sync::atomic::AtomicBool>,
     /// Readable view of the per-task log — the source every subscriber
     /// recovers dropped broadcast bytes from.
     log_index: Arc<LogIndex>,
@@ -291,6 +308,10 @@ impl PtyHandle {
             tx: tx.clone(),
             replay: Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES))),
             last_output_at: Arc::new(std::sync::atomic::AtomicI64::new(epoch_ms())),
+            // Visible until told otherwise: a terminal is spawned because
+            // someone opened it, and guessing "hidden" would put 50 ms of
+            // latency on the first thing they type.
+            visible: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             log_index: task_log.index(),
             exit: Arc::new(Mutex::new(None)),
         });
@@ -337,6 +358,7 @@ impl PtyHandle {
         let tx_for_coalesce = tx.clone();
         let replay_for_coalesce = handle.replay.clone();
         let last_output_for_coalesce = handle.last_output_at.clone();
+        let visible_for_coalesce = handle.visible.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-out-{task_id_for_coalesce}"))
             .spawn(move || {
@@ -347,6 +369,7 @@ impl PtyHandle {
                     tx_for_coalesce,
                     replay_for_coalesce,
                     last_output_for_coalesce,
+                    visible_for_coalesce,
                 )
             })
             .map_err(PtyError::from)?;
@@ -383,6 +406,21 @@ impl PtyHandle {
     pub fn last_output_ms(&self) -> i64 {
         self.last_output_at
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Tell the coalescer whether anyone can see this terminal (P4,
+    /// criterion 8). A hidden one flushes on a 50 ms window instead of 8 ms:
+    /// **the same bytes**, in roughly 6× fewer messages, so a parked agent
+    /// stops paying repeatedly for the global channel mutex every IPC
+    /// payload ≥ 8 KiB goes through.
+    ///
+    /// Advisory and last-writer-wins: the flag lives on the PTY, not on a
+    /// subscriber, so two channels attached to one PTY share it. Getting it
+    /// wrong costs at most 42 ms of latency and never a byte — the byte
+    /// ceiling (`COALESCE_BYTES`) and P3's backfill are both untouched by it.
+    pub fn set_visible(&self, visible: bool) {
+        self.visible
+            .store(visible, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// How the child ended, or `None` while it is still running. The
@@ -774,6 +812,20 @@ pub(super) const COALESCE_BYTES: usize = 32 * 1024;
 /// the added latency: a byte read at t is on the frontend by t + 8ms.
 pub(super) const COALESCE_WINDOW: Duration = Duration::from_millis(8);
 
+/// The same bound for a terminal nobody is looking at (`set_visible(false)`).
+///
+/// Hidden surfaces do not paint, so latency there buys the user nothing —
+/// but every flush still costs a trip through Tauri's global
+/// `Mutex<HashMap>` channel queue, which the *visible* terminal shares.
+/// phasr's normal state is many hidden agents streaming at once, so this is
+/// the coalescer's biggest single lever on their cost. Same byte ceiling,
+/// same bytes, ~6× fewer messages.
+///
+/// Deliberately NOT a widening of `COALESCE_WINDOW`: ADR-002:1250–1260
+/// rejected that, and this phase's #PATH_DECISION restates it. The visible
+/// window is untouched.
+pub(super) const HIDDEN_COALESCE_WINDOW: Duration = Duration::from_millis(50);
+
 /// Thread A: read the PTY, hand raw bytes to the coalescer, nothing else.
 ///
 /// It stays a pure `read → send` loop because `portable-pty`'s
@@ -834,6 +886,21 @@ fn pump_pty_output(
 /// Same bytes to the log, same bytes to the frontend, same 128 KB replay
 /// budget — only the framing changes. Fewer, larger messages also make
 /// `RecvError::Lagged` on the broadcast materially less likely.
+///
+/// ## The leading edge (P4, criterion 4)
+///
+/// A pure trailing-edge coalescer taxes the case it should protect: after a
+/// keystroke the shell echoes ~1 byte, and that byte waited the full window
+/// before it was even handed to the IPC. So: if the buffer is empty **and**
+/// the last flush is older than the current window, the stream has gone
+/// quiet and this read is the *leading edge* of a new burst — flush it at
+/// once. Everything that follows within the window coalesces exactly as
+/// before, and a flood never sees the rule at all (during one, a flush is
+/// never more than a window old).
+///
+/// This is the shape ADR-002:1250–1260 asked for: flush *earlier* on the
+/// edge instead of widening the window for everyone. Worst case it adds one
+/// small event per burst; it can never add one to a saturated stream.
 fn coalesce_pty_output(
     task_id: String,
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
@@ -841,6 +908,7 @@ fn coalesce_pty_output(
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
     last_output_at: Arc<std::sync::atomic::AtomicI64>,
+    visible: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -848,8 +916,18 @@ fn coalesce_pty_output(
     // When the oldest byte currently in `buf` must be flushed by. `None`
     // while `buf` is empty, so an idle PTY blocks instead of spinning.
     let mut deadline: Option<Instant> = None;
+    // When the last event went out. `None` = never, which makes the very
+    // first read a leading edge — a terminal's first byte should not wait.
+    let mut last_flush: Option<Instant> = None;
 
     loop {
+        // Re-read per iteration: the hint can flip at any moment (the user
+        // switched tabs) and the next flush should already honour it.
+        let window = if visible.load(std::sync::atomic::Ordering::Relaxed) {
+            COALESCE_WINDOW
+        } else {
+            HIDDEN_COALESCE_WINDOW
+        };
         let received = match deadline {
             None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -867,17 +945,23 @@ fn coalesce_pty_output(
                 // being exactly what the PTY produced. Buffered now, flushed
                 // on the tick below.
                 log.append(&bytes);
-                if buf.is_empty() {
-                    deadline = Some(Instant::now() + COALESCE_WINDOW);
-                }
+                // Decided BEFORE the append: "was the buffer empty when this
+                // read arrived", not "is it empty now".
+                let leading_edge =
+                    buf.is_empty() && last_flush.is_none_or(|at| at.elapsed() >= window);
                 buf.extend_from_slice(&bytes);
-                if buf.len() >= COALESCE_BYTES {
+                if leading_edge || buf.len() >= COALESCE_BYTES {
                     flush_output(&task_id, &mut buf, &mut log, &tx, &replay);
+                    last_flush = Some(Instant::now());
                     deadline = None;
+                } else if deadline.is_none() {
+                    deadline = Some(Instant::now() + window);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_output(&task_id, &mut buf, &mut log, &tx, &replay);
+                if flush_output(&task_id, &mut buf, &mut log, &tx, &replay) {
+                    last_flush = Some(Instant::now());
+                }
                 deadline = None;
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -889,7 +973,9 @@ fn coalesce_pty_output(
 }
 
 /// Emit everything buffered as ONE event. Leaves `buf` empty (capacity
-/// retained).
+/// retained). Returns whether anything was actually emitted, which is what
+/// the caller stamps its leading-edge clock on — an empty flush is not a
+/// flush and must not reset it.
 ///
 /// There is no codepoint carry here: the chunk is bytes end to end, so a
 /// multi-byte character split across two PTY reads is simply reassembled by
@@ -900,9 +986,9 @@ fn flush_output(
     log: &mut TaskLog,
     tx: &broadcast::Sender<PtyEvent>,
     replay: &Mutex<ReplayBuffer>,
-) {
+) -> bool {
     if buf.is_empty() {
-        return;
+        return false;
     }
     // Push the log to the filesystem BEFORE the event goes out. That
     // ordering is the backfill contract: any byte a subscriber has heard of
@@ -915,14 +1001,17 @@ fn flush_output(
     let log_offset = log.written_through() - buf.len() as u64;
     // Hand the buffer over and start a fresh one already sized for the next
     // batch — `take` would leave a zero-capacity Vec to regrow every cycle.
-    let chunk = std::mem::replace(buf, Vec::with_capacity(COALESCE_BYTES));
+    // `Bytes::from(Vec)` takes ownership of that allocation rather than
+    // copying it, so this whole hand-off is still a move.
+    let chunk = Bytes::from(std::mem::replace(buf, Vec::with_capacity(COALESCE_BYTES)));
     emit_output(task_id, log_offset, chunk, tx, replay);
+    true
 }
 
 fn emit_output(
     task_id: &str,
     log_offset: u64,
-    chunk: Vec<u8>,
+    chunk: Bytes,
     tx: &broadcast::Sender<PtyEvent>,
     replay: &Mutex<ReplayBuffer>,
 ) {
@@ -933,6 +1022,11 @@ fn emit_output(
     };
     // Recorded for replay even with no subscribers — a send failure just
     // means nobody is attached yet, which is exactly what replay is for.
+    //
+    // `event.clone()` used to deep-copy the whole chunk (up to 32 KiB per
+    // flush, on every flush, for a buffer nobody may ever read); with
+    // `Bytes` it is a refcount bump plus the task-id `String`. The broadcast
+    // then clones once more per subscriber, at the same price.
     //
     // The lock spans BOTH halves and that is the whole point; see
     // `subscribe_with_replay_locked`.
@@ -1031,7 +1125,7 @@ mod tests {
         PtyEvent::Output {
             task_id: "t".into(),
             log_offset: 0,
-            chunk: chunk.as_bytes().to_vec(),
+            chunk: Bytes::copy_from_slice(chunk.as_bytes()),
         }
     }
 
@@ -1173,6 +1267,20 @@ mod tests {
     fn run_coalescer_indexed(
         reads: Vec<Vec<u8>>,
     ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<u64>, tempfile::TempDir) {
+        run_coalescer_script(
+            reads.into_iter().map(|r| (Duration::ZERO, r)).collect(),
+            true,
+        )
+    }
+
+    /// The general form: each read is preceded by a pause, and the terminal's
+    /// visibility hint is a parameter. Both matter to P4 — the leading-edge
+    /// rule is about the *gap* between reads, and the hidden window is what
+    /// that gap is compared against.
+    fn run_coalescer_script(
+        reads: Vec<(Duration, Vec<u8>)>,
+        visible: bool,
+    ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<u64>, tempfile::TempDir) {
         let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
         let (tx, mut rx) = broadcast::channel::<PtyEvent>(256);
         let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
@@ -1184,7 +1292,10 @@ mod tests {
         // moment the script is longer than the queue, so the producer gets
         // its own thread — exactly the shape production runs.
         let producer = std::thread::spawn(move || {
-            for r in reads {
+            for (pause, r) in reads {
+                if !pause.is_zero() {
+                    std::thread::sleep(pause);
+                }
                 if bytes_tx.send(r).is_err() {
                     break;
                 }
@@ -1192,7 +1303,15 @@ mod tests {
         });
 
         let last_output = Arc::new(std::sync::atomic::AtomicI64::new(0));
-        coalesce_pty_output("t".into(), bytes_rx, log, tx, replay, last_output);
+        coalesce_pty_output(
+            "t".into(),
+            bytes_rx,
+            log,
+            tx,
+            replay,
+            last_output,
+            Arc::new(std::sync::atomic::AtomicBool::new(visible)),
+        );
         producer.join().unwrap();
 
         let mut chunks = Vec::new();
@@ -1202,7 +1321,7 @@ mod tests {
                 chunk, log_offset, ..
             } = event
             {
-                chunks.push(chunk);
+                chunks.push(chunk.to_vec());
                 offsets.push(log_offset);
             }
         }
@@ -1342,6 +1461,7 @@ mod tests {
             tx,
             replay,
             Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
         );
         producer.join().unwrap();
 
@@ -1463,7 +1583,15 @@ mod tests {
         drop(bytes_tx);
 
         let before = epoch_ms();
-        coalesce_pty_output("t".into(), bytes_rx, log, tx, replay, last_output.clone());
+        coalesce_pty_output(
+            "t".into(),
+            bytes_rx,
+            log,
+            tx,
+            replay,
+            last_output.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        );
 
         let stamped = last_output.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
@@ -1476,6 +1604,12 @@ mod tests {
     fn coalescer_merges_many_small_reads_into_one_event() {
         // 40 reads that would have been 40 separate IPC messages + 40
         // synchronous emulator writes.
+        //
+        // TWO events since P4, not one, and the split is the whole point: the
+        // first read arrives on a cold coalescer (no flush behind it) so it is
+        // a LEADING EDGE and goes out immediately — that is the keystroke
+        // echo. The other 39 land inside the window and coalesce exactly as
+        // they always did.
         let reads: Vec<Vec<u8>> = (0..40).map(|i| format!("line {i}\r\n").into_bytes()).collect();
         let expected: Vec<u8> = (0..40)
             .map(|i| format!("line {i}\r\n"))
@@ -1484,9 +1618,10 @@ mod tests {
 
         let (chunks, log) = run_coalescer(reads);
 
-        assert_eq!(chunks.len(), 1, "expected one coalesced event");
-        assert_eq!(chunks[0], expected);
-        // Same bytes to the log, regardless of framing.
+        assert_eq!(chunks.len(), 2, "expected a leading edge + one coalesced tail");
+        assert_eq!(chunks[0], b"line 0\r\n".to_vec(), "the leading edge is read #1");
+        // What has to hold regardless of framing: the bytes, in order.
+        assert_eq!(chunks.concat(), expected);
         assert_eq!(log, expected);
     }
 
@@ -1501,7 +1636,12 @@ mod tests {
             "expected >=3 ceiling flushes, got {}",
             chunks.len()
         );
-        for chunk in chunks.iter().take(chunks.len() - 1) {
+        // `skip(1)`: chunk #0 is the leading-edge flush of the first read (see
+        // above). Everything after it is inside a saturated stream, where the
+        // rule can never fire again — so those MUST still be full ceiling
+        // flushes. That is the guard against the leading edge leaking into
+        // flood framing.
+        for chunk in chunks.iter().take(chunks.len() - 1).skip(1) {
             assert!(
                 chunk.len() >= COALESCE_BYTES,
                 "non-final chunk should be a full ceiling flush, was {}",
@@ -1510,6 +1650,108 @@ mod tests {
         }
         assert_eq!(chunks.concat().len(), 24 * 4096);
         assert_eq!(log.len(), 24 * 4096);
+    }
+
+    // -- leading edge and the visibility hint (Phase 4) --------------------
+
+    #[test]
+    fn a_quiet_stream_flushes_its_next_read_on_the_leading_edge() {
+        // The echo case, stated as framing rather than as a stopwatch: three
+        // keystroke-sized reads, each after a gap longer than the window.
+        // Every one of them finds an empty buffer and a stale flush, so every
+        // one goes out on its own instead of waiting 8 ms first.
+        let gap = COALESCE_WINDOW * 3;
+        let reads = vec![
+            (gap, b"a".to_vec()),
+            (gap, b"b".to_vec()),
+            (gap, b"c".to_vec()),
+        ];
+        let (chunks, log, _offsets, _dir) = run_coalescer_script(reads, true);
+
+        assert_eq!(
+            chunks,
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            "each keystroke should have been its own immediate flush"
+        );
+        assert_eq!(log, b"abc".to_vec());
+    }
+
+    #[test]
+    fn a_burst_behind_the_leading_edge_still_coalesces() {
+        // The other half of criterion 4: the rule fires ONCE per burst. The
+        // trailing repaint — which is what actually costs bytes — is framed by
+        // the unchanged 32 KiB / 8 ms window, so this cannot become "flush
+        // every read".
+        let mut reads = vec![(COALESCE_WINDOW * 3, b"k".to_vec())];
+        reads.extend((0..30).map(|i| (Duration::ZERO, format!("row {i}\r\n").into_bytes())));
+        let (chunks, log, _offsets, _dir) = run_coalescer_script(reads, true);
+
+        assert_eq!(chunks.len(), 2, "expected leading edge + one coalesced burst");
+        assert_eq!(chunks[0], b"k".to_vec());
+        assert_eq!(chunks.concat(), log);
+    }
+
+    #[test]
+    fn a_hidden_terminal_coalesces_reads_a_visible_one_would_flush() {
+        // Criterion 8. The identical script, run twice: the only difference is
+        // the visibility hint, and it must change the FRAMING and nothing
+        // else. Gaps of 12 ms are stale against the 8 ms visible window and
+        // fresh against the 50 ms hidden one, and the three of them together
+        // still fit inside one hidden window.
+        let script = || {
+            let mut reads = vec![(Duration::ZERO, b"first".to_vec())];
+            reads.extend(
+                (0..3).map(|i| (Duration::from_millis(12), format!("<{i}>").into_bytes())),
+            );
+            reads
+        };
+        let expected = b"first<0><1><2>".to_vec();
+
+        let (visible_chunks, visible_log, _o1, _d1) = run_coalescer_script(script(), true);
+        let (hidden_chunks, hidden_log, _o2, _d2) = run_coalescer_script(script(), false);
+
+        assert!(
+            visible_chunks.len() >= 3,
+            "a visible terminal should flush these separately, got {visible_chunks:?}"
+        );
+        assert!(
+            hidden_chunks.len() <= 2,
+            "a hidden terminal should have coalesced these, got {hidden_chunks:?}"
+        );
+        assert!(
+            hidden_chunks.len() < visible_chunks.len(),
+            "the hint changed nothing: {hidden_chunks:?} vs {visible_chunks:?}"
+        );
+        // Not one byte fewer, and not one byte reordered — P3's guarantee is
+        // untouched by the hint.
+        assert_eq!(visible_chunks.concat(), expected);
+        assert_eq!(hidden_chunks.concat(), expected);
+        assert_eq!(visible_log, expected);
+        assert_eq!(hidden_log, expected);
+    }
+
+    #[test]
+    fn a_chunk_is_shared_with_the_replay_buffer_not_copied_into_it() {
+        // Criterion 3, as a property rather than a benchmark: the replay
+        // buffer and the broadcast subscriber must hold the SAME allocation
+        // the coalescer made. Before P4 each of these was a full memcpy of up
+        // to 32 KiB, per flush, per subscriber.
+        let (tx, mut rx) = broadcast::channel::<PtyEvent>(8);
+        let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
+        let chunk = Bytes::from(vec![b'z'; COALESCE_BYTES]);
+        let origin = chunk.as_ptr();
+
+        emit_output("t", 0, chunk, &tx, &replay);
+
+        let snapshot = replay.lock().snapshot();
+        let PtyEvent::Output { chunk: replayed, .. } = &snapshot[0] else {
+            panic!("expected an output event in the replay buffer");
+        };
+        let Ok(PtyEvent::Output { chunk: received, .. }) = rx.try_recv() else {
+            panic!("expected an output event on the broadcast");
+        };
+        assert_eq!(replayed.as_ptr(), origin, "the replay buffer deep-copied the chunk");
+        assert_eq!(received.as_ptr(), origin, "the broadcast deep-copied the chunk");
     }
 
     #[test]
@@ -1563,7 +1805,7 @@ mod tests {
         let event = PtyEvent::Output {
             task_id: "t".into(),
             log_offset: 12_345,
-            chunk: vec![0x1b, b'[', b'2', b'K', 0xff],
+            chunk: Bytes::from_static(&[0x1b, b'[', b'2', b'K', 0xff]),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert_eq!(
@@ -1580,7 +1822,7 @@ mod tests {
         let event = PtyEvent::Output {
             task_id: "t".into(),
             log_offset: 987_654_321,
-            chunk: b"hi".to_vec(),
+            chunk: Bytes::from_static(b"hi"),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert_eq!(json, r#"{"type":"output","taskId":"t","chunk":"aGk="}"#);
@@ -1672,7 +1914,7 @@ mod tests {
             std::thread::spawn(move || {
                 let mut n: u64 = 0;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    emit_output("t", n, format!("{n}\n").into_bytes(), &tx, &replay);
+                    emit_output("t", n, Bytes::from(format!("{n}\n")), &tx, &replay);
                     n += 1;
                 }
             })

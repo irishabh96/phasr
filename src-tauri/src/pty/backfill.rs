@@ -174,13 +174,22 @@ impl LagRecovery {
             self.stats.recovered_bytes += bytes.len() as u64;
             // Re-framed at the coalescer's own ceiling so a backfilled event
             // is indistinguishable from a live one downstream.
-            for chunk in bytes.chunks(COALESCE_BYTES) {
+            // One `Bytes` over the whole read, sliced per event: `slice` is a
+            // refcount bump into the same allocation, so re-framing a 4 MiB
+            // backfill into 32 KiB events copies nothing.
+            let refilled = bytes::Bytes::from(bytes);
+            let mut start = 0usize;
+            while start < refilled.len() {
+                let end = (start + COALESCE_BYTES).min(refilled.len());
+                let chunk = refilled.slice(start..end);
+                let len = chunk.len() as u64;
                 sink(PtyEvent::Output {
                     task_id: self.task_id.clone(),
                     log_offset: cursor,
-                    chunk: chunk.to_vec(),
+                    chunk,
                 });
-                cursor += chunk.len() as u64;
+                cursor += len;
+                start = end;
             }
         }
         self.next_offset = Some(to);
@@ -196,7 +205,7 @@ mod tests {
         PtyEvent::Output {
             task_id: task.into(),
             log_offset,
-            chunk: chunk.to_vec(),
+            chunk: bytes::Bytes::copy_from_slice(chunk),
         }
     }
 

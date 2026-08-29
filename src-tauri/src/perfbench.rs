@@ -477,7 +477,7 @@ fn bench_phase4_base64_wire_format() {
             b64 += serde_json::to_string(&PtyEvent::Output {
                 task_id: "t".into(),
                 log_offset: raw as u64,
-                chunk: chunk.to_vec(),
+                chunk: bytes::Bytes::copy_from_slice(chunk),
             })
             .unwrap()
             .len();
@@ -523,7 +523,7 @@ fn bench_phase4_base64_wire_format() {
             sink += serde_json::to_string(&PtyEvent::Output {
                 task_id: "t".into(),
                 log_offset: sink as u64,
-                chunk: chunk.to_vec(),
+                chunk: bytes::Bytes::copy_from_slice(chunk),
             })
             .unwrap()
             .len();

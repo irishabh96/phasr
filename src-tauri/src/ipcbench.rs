@@ -72,15 +72,21 @@ fn corpus_bytes(n: usize) -> Vec<u8> {
     out
 }
 
-/// The exact bytes the shipping path puts on the wire for one chunk:
+/// The bytes the **pre-P4** path put on the wire for one chunk:
 /// `PtyEvent::Output` through serde (base64 + JSON envelope).
+///
+/// Still built here, and only here: it is the BEFORE column. Since P4 the
+/// shipping path is `InvokeResponseBody::Raw` of the chunk itself, which is
+/// exactly what the `"raw"` format below sends — so one run of this bench
+/// prints both sides of the change, on the same machine, through the same
+/// real `Channel`.
 fn json_body(chunk: &[u8]) -> Result<String, String> {
     serde_json::to_string(&PtyEvent::Output {
         task_id: "bench".into(),
         // Not serialized (backend-internal cursor), so it costs the wire
         // nothing — the envelope this measures is unchanged.
         log_offset: 0,
-        chunk: chunk.to_vec(),
+        chunk: bytes::Bytes::copy_from_slice(chunk),
     })
     .map_err(|e| e.to_string())
 }
