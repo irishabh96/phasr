@@ -174,7 +174,32 @@ The terminal hot path is well built: the emulator buffers `term.write` and flush
 - **Fix:** Register `webgl.onContextLoss(() => { webgl.dispose(); /* fall back to canvas */ })`; add an LRU cap that disposes least-recently-used cached terminals beyond a limit.
 - **Impact × Effort: Med-High × M.**
 
-### D3. PTY output is one IPC/Channel message per 4 KB read, and lag silently drops chunks
+### ~~D3. PTY output is one IPC/Channel message per 4 KB read, and lag silently drops chunks~~ — CLOSED 2026-08-29
+
+> **Closed by perf phases 3 and 4** (`specs/perf-p3-backpressure-zero-drop-spec.md`,
+> `specs/perf-p4-pipe-shrink-spec.md`), both halves of it:
+>
+> * **Chattiness.** Output coalesces at 32 KiB / 8 ms
+>   (`pty/handle.rs::coalesce_pty_output`). Measured on real phasr logs, a
+>   1.3 MB/s TUI stream went from 1 280 events/s to 80, and an unthrottled
+>   flood from ~196 000 to ~4 200 — 16x and 47x fewer IPC messages for the
+>   same bytes. P4 added a leading-edge flush so the first read after a quiet
+>   gap still goes out immediately (that is the second of those two events per
+>   burst), and a per-PTY visibility hint that widens the window to 50 ms for
+>   terminals nobody is looking at.
+> * **Silent drops.** `RecvError::Lagged` is no longer `continue` anywhere
+>   (`grep -rn "Lagged(_) => continue" src-tauri/src/` → no matches). Every
+>   forwarder pairs its receiver with a `LagRecovery` (`pty/backfill.rs`) that
+>   refills the missed range out of the per-task log using byte offsets, and
+>   emits `PtyEvent::Desync` — never silence — when the log has rotated past
+>   the gap. The 80 MiB unthrottled flood test forces 204 lagged events,
+>   refills 6.4 MB, and reconstructs a stream whose hash equals the log's,
+>   with **0 unrecovered bytes** (`loadtest::bulk_flood_never_drops_a_byte`).
+>
+> The 128 KB replay buffer is deliberately **unchanged** — P4 owned that
+> decision and log backfill made a bigger one unnecessary. Original finding
+> preserved below.
+
 - **Problem:** The PTY pump reads 4096-byte chunks and emits one `PtyEvent::Output` per read, each relayed straight to the Tauri `Channel` — a chatty agent or `cat bigfile` floods small IPC messages with no coalescing. The broadcast channel is bounded at 2048 and `RecvError::Lagged` is treated as `continue` (skipped), so a burst while a consumer is briefly behind leaves **gaps in the terminal** (corrupted emulator state); the replay buffer is only 128 KB.
 - **Where:** `src-tauri/src/pty/handle.rs:13` (128 KB replay), `:178` (2048 cap), `:323,344-368` (per-4 KB emit); `commands/orchestrator.rs:104-127` (forwarder), `:122` + `orchestrator/service.rs:489` (Lagged → continue).
 - **Impact (Med):** IPC overhead under heavy output, and rare but real terminal corruption on lag.
@@ -317,7 +342,7 @@ The terminal hot path is well built: the emulator buffers `term.write` and flush
 | 15 | Incremental sync pulls + batched pushes | E4 | Med × M |
 | 16 | Non-atomic status update → conditional SQL / txn | F8 | Med × M |
 | 17 | WebGL context-loss handler + LRU terminal cap | D1 | Med-High × M |
-| 18 | Coalesce PTY output + backfill on lag | D3 | Med × S |
+| ~~18~~ | ~~Coalesce PTY output + backfill on lag~~ — **done** (perf P3+P4, 2026-08-29) | D3 | Med × S |
 | 19 | Tail `read_task_log` instead of full slurp | E5 | Med × S |
 | 20 | Worktree↔DB orphan reconciliation | F7 | Med × M |
 | 21 | Debounce terminal `refit` | D2 | Med × S |
@@ -353,7 +378,7 @@ Confirm the hotspots with real numbers before/after each change:
 
 - **fs-watcher instead of status polling** — the *mechanism* is right (debounced 300 ms, per-workspace, stopped on navigate-away). It just needs scoping + coalescing (A8) and single-mounting (A4) to stop amplifying the diff storm; keep the fs-watcher approach, fix its blast radius.
 - **Route-level code splitting** via TanStack Router `autoCodeSplitting` — works; the terminal and heavy routes are off first paint. No action.
-- **Terminal hot path** — rAF-batched emulator writes, PTY input with no per-keystroke React state, dedicated blocking thread per PTY, listeners/observers cleaned up on unmount. (Caveats: the WebGL context accumulation in D1 and the output-coalescing/lag-drop in D3 are the two things to fix; the write path itself is fine.)
+- **Terminal hot path** — rAF-batched emulator writes, PTY input with no per-keystroke React state, dedicated blocking thread per PTY, listeners/observers cleaned up on unmount. (Caveats: the WebGL context accumulation in D1 is the thing to fix; the output-coalescing/lag-drop in D3 was closed by perf phases 3 and 4 on 2026-08-29; the write path itself is fine.)
 - **Zustand discipline** — one store but consumers use field selectors returning primitives/stable slices; not a re-render source.
 - **React Query config** — `staleTime: 30s`, `refetchOnWindowFocus: false`, immutable data cached `Infinity`, stable structured query keys.
 - **SQLite** — WAL, `synchronous=NORMAL`, foreign keys, pooled, migrations at init (add `busy_timeout`, E3).

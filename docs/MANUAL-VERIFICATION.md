@@ -292,3 +292,62 @@ WKWebView build can verify:
       "नमस्ते किताब"` — vowel signs render intact (the two-pass constraint the
       run batching had to preserve), selection across it keeps the glyphs
       whole, at both 1x and retina.
+
+---
+
+## 2026-08-29 — Perf Phases 3 & 4: the PTY pipe (zero drop, then cheaper per byte)
+
+Phase 3 (`specs/perf-p3-backpressure-zero-drop-spec.md`) made the byte stream
+lossless: a bounded reader queue so a flood pushes back through the kernel to
+the child, and a per-subscriber `LagRecovery` that refills anything the
+broadcast dropped out of the per-task log by byte offset — `RecvError::Lagged`
+is `continue` nowhere any more. Phase 4
+(`specs/perf-p4-pipe-shrink-spec.md`) made each byte cheaper: chunks are
+refcounted (`bytes::Bytes`) instead of copied into the replay buffer and again
+per subscriber, big chunks cross the IPC as raw payloads with no base64 or
+JSON envelope, the first read after a quiet gap flushes immediately, hidden
+terminals coalesce on a 50 ms window, and an LRU-evicted terminal tears its
+Rust forwarder down.
+
+The automated evidence is Rust-side and quoted in both specs (80 MiB flood,
+204 lagged events, 6.4 MB refilled, **0 unrecovered bytes**, delivered hash ==
+log hash; the IPC bench through a real `Channel`). **The mocked-IPC e2e
+harness cannot reach any of it** — it never spawns a PTY and never crosses an
+IPC, so it proves only that the app handles the payload shape. What needs a
+human at a packaged build:
+
+- [ ] **The zero-drop claim, end to end** (P3's own entry): `cat` a 100 MB
+      file in a packaged build. The UI must stay interactive throughout, and
+      when it finishes the last screen must match `tail` of the same file —
+      no hole, no truncation, no wrapped-wrong rows. This is the one that
+      matters; every other box here is speed.
+- [ ] **Echo feel** (P4 criterion 6, target p95 ≤ 1 frame + 10 ms): type into
+      an idle shell and into a booted agent TUI. Keystrokes should feel
+      immediate, not merely fast — the leading-edge flush removed up to 8 ms
+      that used to sit in front of every echo, and only a human can say
+      whether the remaining latency reads as instant on a 120 Hz display.
+- [ ] **Eight agents streaming, one visible** (P4 criteria 7 and 8): start
+      eight, look at one, leave it for a few minutes. Activity Monitor should
+      show the app near the one-terminal idle figure, not eight times it.
+      Fill the Phase 0 table above. Then reveal each of the other seven in
+      turn: content must be current the moment it is revealed, with nothing
+      missing from the middle of its output.
+- [ ] **LRU eviction still costs only scrollback, never the process.** Open
+      more terminals than `phasr.terminal.maxCached` (default 8), then come
+      back to the oldest. Its agent must still be running and still
+      responding — the forwarder was torn down, the child was not — and the
+      terminal repopulates from replay. Console shows one
+      `[terminal] evicted …` line per eviction and no errors.
+- [ ] **Raw transport on the real webview.** This is the class of gap that let
+      a 404 template URL ship: the Rust sender and the JS receiver have never
+      met in any automated test. In a packaged build (not `tauri dev` — the
+      CSP differs), run something dense and non-UTF-8: `cat` a binary file,
+      then a full-screen TUI. Bytes must arrive verbatim — no replacement
+      characters, no dropped escape sequences, no stalled repaints. A silent
+      failure here looks like a terminal that stops updating under load.
+- [ ] **Desync is visible if it ever happens.** Not reproducible by hand
+      (it needs the log to rotate past an unread gap, ~96 MiB behind), so
+      this is a "if you ever see it" note rather than a step: the screen
+      clears and prints one dim `[phasr: N bytes of output were lost …]`
+      line. If that ever appears in normal use, the log retention window is
+      the thing to raise — it is not a rendering bug.
