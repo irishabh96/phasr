@@ -320,6 +320,21 @@ vacuously). Crosses two rotation boundaries.
 error anywhere. After: every byte is delivered and the reconstructed stream hashes
 identical to the on-disk log.
 
+### `PHASR_LOAD=1` — the real-agent ramp
+
+Ran (`PHASR_LOAD_STEPS=1,2`, release). The integrity assertions — zero unrecovered bytes,
+zero stream mismatches — **passed**, but the rung produced no useful load: the agent never
+submitted its prompt (2 822 B in 120 s, 0 lagged).
+
+Cause, from the harness's own transcript dump: claude's first-run trust dialog now
+highlights **"No, exit"** by default, so the `\r` both the harness and
+`e2e_real_claude_prompt_submits` send on seeing "safety" *exits the CLI* instead of
+accepting. Pre-existing and independent of this phase — the transcript is complete and
+intact end to end (command echo → dialog → shell prompt after exit, 2 826 B, nothing lost),
+which is itself a small confirmation of the pipeline. **Worth a separate fix**; the ramp is
+not usable agent-load evidence until then, and the `bulk` step above is what carries
+criterion 3.
+
 ### `PHASR_BENCH=1` — throughput, release profile (criterion 5)
 
 ```
@@ -346,9 +361,10 @@ $ grep -rn "Lagged(_) => continue\|Lagged(_)) => continue" src-tauri/src/
 
 ### Suites
 
-`cargo test --manifest-path src-tauri/Cargo.toml --lib` → **243 passed, 0 failed, 8 ignored**
-(218 passed / 7 ignored before this phase; +25 passing tests, +1 ignored — the new
-`bulk_flood_never_drops_a_byte`). IPC contract checker green for every command whose
+`cargo test --manifest-path src-tauri/Cargo.toml --lib` → **244 passed, 0 failed, 8 ignored**
+(218 passed / 7 ignored before this phase; +26 passing tests, +1 ignored — the new
+`bulk_flood_never_drops_a_byte`). Note: the suite needs a real `openpty`, so it must be
+run outside a filesystem sandbox. IPC contract checker green for every command whose
 forwarder changed — `open_task_terminal`, `start_session_terminal`,
 `attach_session_terminal`, `start_run_command`, `read_task_log` — none of which changed
 name, args or return shape.
