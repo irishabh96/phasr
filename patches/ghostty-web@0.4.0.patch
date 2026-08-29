@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a230504aa 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de167d4e9ec 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -30,13 +30,56 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
  class $ {
    constructor(A, B = {}) {
 -    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
-+    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.canvas = A;
++    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.frameViewport = null, this.frameViewportCols = 0, this.frameViewportRows = 0, this.lastPaintedCursorVisible = null, this.lastPaintedCursorOn = null, this.canvas = A;
      const g = A.getContext("2d", { alpha: !0 });
      if (!g)
        throw new Error("Failed to get 2D rendering context");
-@@ -1398,9 +1404,28 @@ class $ {
+@@ -1378,6 +1384,39 @@ class $ {
+   rgbToCSS(A, B, g) {
+     return `rgb(${A}, ${B}, ${g})`;
+   }
++  // PHASR PATCH (perf phase 2): one viewport parse per frame.
++  //
++  // `getLine(row)` calls `getViewport()` — a full-grid WASM copy plus a
++  // parse of every cell — and then copies one row out of it. Called from
++  // the render path it made a fully-dirty frame O(rows² × cols): a 50×200
++  // grid paid ~500,000 cell parses before drawing anything. The render
++  // path now parses the viewport ONCE per frame (lazily — a frame that
++  // repaints no live row never parses it) and slices rows out of the pool.
++  // The slices alias the engine's reusable cell pool, which is exactly why
++  // `getLine` copies — but within one frame nothing re-parses the pool, and
++  // every consumer here draws the row before the frame ends. `render()`
++  // resets the cache at frame entry; the public `getLine` keeps its
++  // defensive copy for external callers.
++  frameLine(A, B) {
++    if (B < 0)
++      return null;
++    if (!this.frameViewport) {
++      if (!A || typeof A.getViewport != "function" || typeof A.getDimensions != "function")
++        return A && typeof A.getLine == "function" ? A.getLine(B) : null;
++      typeof A.update == "function" && A.update();
++      const g = A.getDimensions();
++      this.frameViewport = A.getViewport(), this.frameViewportCols = g.cols, this.frameViewportRows = g.rows;
++    }
++    if (B >= this.frameViewportRows)
++      return null;
++    const g = B * this.frameViewportCols;
++    return this.frameViewport.slice(g, g + this.frameViewportCols);
++  }
++  // PHASR PATCH (perf phase 2): the hovered-link ranges are four-field
++  // rectangles; comparing them was two JSON.stringify calls per frame.
++  linkRangesEqual(A, B) {
++    return A === B || !!A && !!B && A.startX === B.startX && A.startY === B.startY && A.endX === B.endX && A.endY === B.endY;
++  }
+   // ==========================================================================
+   // Canvas Sizing
+   // ==========================================================================
+@@ -1396,17 +1435,46 @@ class $ {
+    */
+   render(A, B = !1, g = 0, E, C = 1) {
      var U;
-     this.currentBuffer = A;
+-    this.currentBuffer = A;
++    this.currentBuffer = A, this.frameViewport = null;
      const I = A.getCursor(), D = A.getDimensions(), i = E ? E.getScrollbackLength() : 0;
 -    (U = A.needsFullRedraw) != null && U.call(A) && (B = !0), (this.canvas.width !== D.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== D.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(D.cols, D.rows), B = !0), g !== this.lastViewportY && (B = !0, this.lastViewportY = g);
 +    (U = A.needsFullRedraw) != null && U.call(A) && (B = !0), (this.canvas.width !== D.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== D.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(D.cols, D.rows), B = !0);
@@ -61,11 +104,51 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
 +    // happened to sit there; upstream masked the misdraw by repainting
 +    // every row every frame while scrolled, which is exactly the cost the
 +    // change above removes. No cursor is drawn while scrolled anyway.
-+    if ((s || this.cursorBlink) && vF === 0) {
++    //
++    // PHASR PATCH (perf phase 2): the quick paint fires on CHANGE, not on
++    // the blink OPTION. Upstream repainted the cursor row every frame
++    // whenever `cursorBlink` was merely enabled — one row parse + full
++    // repaint per frame between blink ticks, for a cursor that had not
++    // moved or flipped. It now fires only when the cursor moved, the blink
++    // phase flipped since the last paint, or the program showed/hid the
++    // cursor (DECTCEM — the old every-frame repaint was also what erased a
++    // freshly hidden cursor, so that transition must stay a trigger).
++    const vC = this.cursorVisible !== this.lastPaintedCursorVisible || I.visible !== this.lastPaintedCursorOn;
++    if ((s || vC) && vF === 0) {
        if (!B && !A.isRowDirty(I.y)) {
-         const t = A.getLine(I.y);
+-        const t = A.getLine(I.y);
++        const t = this.frameLine(A, I.y);
          t && this.renderLine(t, I.y, D.cols);
-@@ -1458,8 +1483,18 @@ class $ {
+       }
+       if (s && this.lastCursorPosition.y !== I.y && !B && !A.isRowDirty(this.lastCursorPosition.y)) {
+-        const t = A.getLine(this.lastCursorPosition.y);
++        const t = this.frameLine(A, this.lastCursorPosition.y);
+         t && this.renderLine(t, this.lastCursorPosition.y, D.cols);
+       }
+     }
+@@ -1424,7 +1492,7 @@ class $ {
+         this.selectionManager.clearDirtySelectionRows();
+       }
+     }
+-    const M = /* @__PURE__ */ new Set(), a = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId, h = JSON.stringify(this.hoveredLinkRange) !== JSON.stringify(this.previousHoveredLinkRange);
++    const M = /* @__PURE__ */ new Set(), a = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId, h = !this.linkRangesEqual(this.hoveredLinkRange, this.previousHoveredLinkRange);
+     if (a) {
+       for (let t = 0; t < D.rows; t++) {
+         let c = null;
+@@ -1434,10 +1502,10 @@ class $ {
+             c = E.getScrollbackLine(F);
+           } else {
+             const F = t - Math.floor(g);
+-            c = A.getLine(F);
++            c = this.frameLine(A, F);
+           }
+         else
+-          c = A.getLine(t);
++          c = this.frameLine(A, t);
+         if (c) {
+           for (const F of c)
+             if (F.hyperlink_id === this.hoveredHyperlinkId || F.hyperlink_id === this.previousHoveredHyperlinkId) {
+@@ -1458,8 +1526,18 @@ class $ {
        this.previousHoveredLinkRange = this.hoveredLinkRange;
      }
      const G = /* @__PURE__ */ new Set();
@@ -85,7 +168,24 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
      for (let t = 0; t < D.rows; t++) {
        if (!G.has(t))
          continue;
-@@ -1508,12 +1543,15 @@ class $ {
+@@ -1470,13 +1548,13 @@ class $ {
+           c = E.getScrollbackLine(F);
+         } else {
+           const F = g > 0 ? t - Math.floor(g) : t;
+-          c = A.getLine(F);
++          c = this.frameLine(A, F);
+         }
+       else
+-        c = A.getLine(t);
++        c = this.frameLine(A, t);
+       c && this.renderLine(c, t, D.cols);
+     }
+-    g === 0 && I.visible && this.cursorVisible && this.renderCursor(I.x, I.y), E && C > 0 && this.renderScrollbar(g, i, D.rows, C), this.lastCursorPosition = { x: I.x, y: I.y }, A.clearDirty();
++    g === 0 && I.visible && this.cursorVisible && this.renderCursor(I.x, I.y), E && C > 0 && this.renderScrollbar(g, i, D.rows, C), this.lastCursorPosition = { x: I.x, y: I.y }, this.lastPaintedCursorVisible = this.cursorVisible, this.lastPaintedCursorOn = I.visible, A.clearDirty();
+   }
+   /**
+    * Render a single line using two-pass approach:
+@@ -1508,12 +1586,15 @@ class $ {
     */
    renderCellBackground(A, B, g) {
      const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
@@ -105,7 +205,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Render a cell's text and decorations (Pass 2 of two-pass rendering)
-@@ -1526,7 +1564,12 @@ class $ {
+@@ -1526,7 +1607,12 @@ class $ {
        return;
      const D = this.isInSelection(B, g);
      let i = "";
@@ -119,7 +219,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
        this.ctx.fillStyle = this.theme.selectionForeground;
      else {
        let M = A.fg_r, a = A.fg_g, h = A.fg_b;
-@@ -1563,6 +1606,12 @@ class $ {
+@@ -1563,6 +1649,12 @@ class $ {
      switch (this.ctx.fillStyle = this.theme.cursor, this.cursorStyle) {
        case "block":
          this.ctx.fillRect(g, E, this.metrics.width, this.metrics.height);
@@ -132,7 +232,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
          break;
        case "underline":
          const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
-@@ -1579,17 +1628,81 @@ class $ {
+@@ -1579,17 +1671,81 @@ class $ {
          break;
      }
    }
@@ -148,7 +248,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
 +      return;
 +    let I = null;
 +    try {
-+      I = C.getLine(B);
++      I = this.frameLine(C, B);
 +    } catch {
 +      return;
 +    }
@@ -217,7 +317,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    // ==========================================================================
    // Public API
    // ==========================================================================
-@@ -1833,8 +1946,14 @@ const L = class Y {
+@@ -1833,8 +1989,14 @@ const L = class Y {
      for (; I >= E.cols; )
        I -= E.cols, C++;
      C = Math.min(C, E.rows - 1);
@@ -234,7 +334,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Select entire lines from start to end
-@@ -1843,8 +1962,8 @@ const L = class Y {
+@@ -1843,8 +2005,8 @@ const L = class Y {
    selectLines(A, B) {
      const g = this.wasmTerm.getDimensions();
      A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
@@ -245,7 +345,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Get selection position as buffer range
-@@ -1945,7 +2064,12 @@ const L = class Y {
+@@ -1945,7 +2107,12 @@ const L = class Y {
      }), this.boundMouseUpHandler = (B) => {
        if (this.isSelecting) {
          this.isSelecting = !1, this.stopAutoScroll();
@@ -259,7 +359,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2103,18 +2227,18 @@ class IA {
+@@ -2103,18 +2270,18 @@ class IA {
        get activeVersion() {
          return "15.1";
        }
@@ -281,7 +381,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
      }, this.handleMouseMove = (g) => {
        if (!(!this.canvas || !this.renderer || !this.wasmTerm)) {
          if (this.isDraggingScrollbar) {
-@@ -2341,11 +2465,18 @@ class IA {
+@@ -2341,11 +2508,18 @@ class IA {
          cursorStyle: this.options.cursorStyle,
          cursorBlink: this.options.cursorBlink,
          theme: this.options.theme
@@ -302,7 +402,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
          },
          () => {
            this.bellEmitter.fire();
-@@ -2364,13 +2495,22 @@ class IA {
+@@ -2364,13 +2538,22 @@ class IA {
          this.wasmTerm,
          this.textarea
        ), this.renderer.setSelectionManager(this.selectionManager), this.selectionManager.onSelectionChange(() => {
@@ -327,7 +427,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
      } catch (B) {
        throw this.isOpen = !1, this.cleanupComponents(), new Error(`Failed to open terminal: ${B}`);
      }
-@@ -2387,7 +2527,50 @@ class IA {
+@@ -2387,7 +2570,50 @@ class IA {
     */
    writeInternal(A, B) {
      var g;
@@ -379,7 +479,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Write data with newline
-@@ -2424,13 +2607,13 @@ class IA {
+@@ -2424,13 +2650,13 @@ class IA {
        return;
      this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
      const g = this.renderer.getMetrics();
@@ -395,7 +495,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Reset terminal state
-@@ -2438,7 +2621,7 @@ class IA {
+@@ -2438,7 +2664,7 @@ class IA {
    reset() {
      this.assertOpen(), this.wasmTerm && this.wasmTerm.free();
      const A = this.buildWasmConfig();
@@ -404,7 +504,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Focus terminal input
-@@ -2564,6 +2747,20 @@ class IA {
+@@ -2564,6 +2790,20 @@ class IA {
    // ==========================================================================
    // Phase 2: Scrolling Methods
    // ==========================================================================
@@ -425,7 +525,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    /**
     * Scroll viewport by a number of lines
     * @param amount Number of lines to scroll (positive = down, negative = up)
-@@ -2571,8 +2768,9 @@ class IA {
+@@ -2571,8 +2811,9 @@ class IA {
    scrollLines(A) {
      if (!this.wasmTerm)
        throw new Error("Terminal not open");
@@ -436,7 +536,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Scroll viewport by a number of pages
-@@ -2585,22 +2783,24 @@ class IA {
+@@ -2585,22 +2826,24 @@ class IA {
     * Scroll viewport to the top of the scrollback buffer
     */
    scrollToTop() {
@@ -464,7 +564,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Smoothly scroll to a target viewport position
-@@ -2611,7 +2811,7 @@ class IA {
+@@ -2611,7 +2854,7 @@ class IA {
        return;
      const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
      if ((this.options.smoothScrollDuration ?? 100) === 0) {
@@ -473,7 +573,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
        return;
      }
      this.targetViewportY = E, !this.scrollAnimationFrame && (this.scrollAnimationStartTime = Date.now(), this.scrollAnimationStartY = this.viewportY, this.animateScroll());
-@@ -2624,7 +2824,7 @@ class IA {
+@@ -2624,7 +2867,7 @@ class IA {
     */
    dispose() {
      if (!this.isDisposed) {
@@ -482,7 +582,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2834,258 @@ class IA {
+@@ -2634,17 +2877,258 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -748,7 +848,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3105,7 @@ class IA {
+@@ -2664,7 +3148,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -757,7 +857,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3138,7 @@ class IA {
+@@ -2697,7 +3181,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -766,7 +866,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3154,9 @@ class IA {
+@@ -2713,7 +3197,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -777,7 +877,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3366,84 @@ class DA {
+@@ -2923,6 +3409,84 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -862,7 +962,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3469,9 @@ export {
+@@ -2948,6 +3512,9 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
@@ -873,7 +973,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f37fc04c7c1ec7ba706d152718e3248a
    W as GhosttyTerminal,
    P as InputHandler,
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..5aee8281930a384600a008e4cd070cf3a3e769ad 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..5e587c312f5292d5086758854b2a4051c0c6b223 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -64,6 +64,13 @@ export declare class CanvasRenderer {
