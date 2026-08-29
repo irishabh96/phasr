@@ -224,9 +224,10 @@ test("flood throughput + frame cadence under flood", async ({
   await expectBackend(page);
   await page.waitForTimeout(2000);
 
-  const chunks = Array.from({ length: 64 }, (_, i) =>
-    Buffer.from(tuiFrame(i), "utf8").toString("base64"),
-  );
+  // Plain text, not base64: since perf phase 4 the wire carries the bytes
+  // themselves, so the harness encodes to UTF-8 inside the page and the
+  // byte count below is the text's length rather than a base64 estimate.
+  const chunks = Array.from({ length: 64 }, (_, i) => tuiFrame(i));
 
   const result = await page.evaluate(async (encoded) => {
     const bridge = (window as any).__PHASR_TERM__;
@@ -241,8 +242,8 @@ test("flood throughput + frame cadence under flood", async ({
     for (let i = 0; i < encoded.length; i += 8) {
       for (let j = i; j < Math.min(i + 8, encoded.length); j++) {
         const chunk = encoded[j]!;
-        bytes += Math.floor((chunk.length * 3) / 4);
-        e2e.pty("ws-agent", { type: "output", chunk });
+        bytes += chunk.length;
+        e2e.ptyOut("ws-agent", chunk);
       }
       // Yield the task, exactly one macrotask per burst — the event shape
       // the real forwarder produces.

@@ -5,7 +5,7 @@ import {
   clearCalls,
   expectBackend,
   makeFixtures,
-  pty,
+  ptyOut,
   terminal,
   waitForCall,
 } from "./harness";
@@ -56,11 +56,7 @@ const visibleId = async (page: Page) =>
   (await terminal(page).getAttribute("data-terminal-id"))!;
 
 /** Emit raw PTY bytes (escape sequences included) on a channel. */
-const raw = (page: Page, key: string, text: string) =>
-  pty(page, key, {
-    type: "output",
-    chunk: Buffer.from(text, "utf8").toString("base64"),
-  });
+const raw = (page: Page, key: string, text: string) => ptyOut(page, key, text);
 
 /** Every `send_*` call, as "cmd:target:data" — who got which keystroke. */
 const sent = (page: Page) =>

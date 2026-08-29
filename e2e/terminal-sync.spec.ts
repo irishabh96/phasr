@@ -124,10 +124,7 @@ async function msUntilErased(page: Page, bytes: string): Promise<number> {
     };
     const base = ink();
     const t0 = performance.now();
-    (window as any).__E2E__.pty("ws-agent", {
-      type: "output",
-      chunk: btoa(bytes),
-    });
+    (window as any).__E2E__.ptyOut("ws-agent", bytes);
     return await new Promise<number>((resolve) => {
       const tick = () => {
         const now = performance.now() - t0;

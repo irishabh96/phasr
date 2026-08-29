@@ -373,6 +373,16 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     emit: (event: string, payload: unknown) =>
       (listeners[event] ?? []).forEach((h) => h({ event, id: 1, payload })),
     pty: (key: string, msg: unknown) => channels[key]?.onmessage?.(msg),
+    // Raw PTY output. Since perf phase 4 a real channel delivers output as
+    // an ArrayBuffer with no envelope at all (`InvokeResponseBody::Raw`),
+    // so the mock delivers one too — otherwise every terminal spec would be
+    // exercising a shape the app no longer receives.
+    //
+    // `TextEncoder` gives the UTF-8 bytes of the text, which is what a PTY
+    // would have produced for it; its result owns an exactly-sized buffer,
+    // so `.buffer` is the chunk and nothing is copied.
+    ptyOut: (key: string, text: string) =>
+      channels[key]?.onmessage?.(new TextEncoder().encode(text).buffer),
     channelKeys: () => Object.keys(channels),
     setResponse: (cmd: string, val: unknown) => { overrides[cmd] = val; },
     clearCalls: () => { calls.length = 0; },
@@ -452,31 +462,36 @@ export const pty = (page: Page, key: string, msg: unknown) =>
   page.evaluate(([k, m]) => (window as any).__E2E__.pty(k, m), [key, msg] as const);
 
 /**
- * Emit PTY output. **Use this instead of hand-building `{type:"output"}`** —
- * the wire encoding of `chunk` is a backend detail, and every spec that
- * spelled it out inline had to be edited by hand when it changed. This is
- * the single place that knows.
+ * Emit PTY output. **Use this instead of hand-building an output message** —
+ * the wire shape is a backend detail, and every spec that spelled it out
+ * inline had to be edited by hand when it changed (twice now: lossy string →
+ * base64 JSON → raw bytes). This is the single place that knows.
+ *
+ * **What this cannot prove.** The mock never spawns a PTY and never crosses
+ * a real IPC, so it validates that the app *handles* the current payload
+ * shape and nothing whatsoever about the transport that produces it. The
+ * evidence for the raw-payload move is `src-tauri/src/ipcbench.rs` running
+ * in a real shell, plus the `docs/MANUAL-VERIFICATION.md` entry — the same
+ * class of gap ADR-002:820-830 recorded when it noted that the Rust
+ * serializer and the JS decoder had never met in one process.
  */
 export const ptyOut = (page: Page, key: string, text: string) =>
-  pty(page, key, { type: "output", chunk: encodeChunk(text) });
+  page.evaluate(
+    ([k, t]) => (window as any).__E2E__.ptyOut(k, t),
+    [key, text] as const,
+  );
 
 /** Feed many chunks inside ONE round trip — for throughput probes, where
  *  per-`evaluate` overhead would otherwise swamp what is being measured. */
 export const ptyBurst = (page: Page, key: string, texts: string[]) =>
   page.evaluate(
     ([k, chunks]) => {
-      for (const chunk of chunks as string[]) {
-        (window as any).__E2E__.pty(k, { type: "output", chunk });
+      for (const text of chunks as string[]) {
+        (window as any).__E2E__.ptyOut(k, text);
       }
     },
-    [key, texts.map(encodeChunk)] as const,
+    [key, texts] as const,
   );
-
-/** `PtyEvent.output.chunk` is base64 of the PTY's raw bytes — see
- *  `src/lib/ptyChunk.ts`. Specs pass plain text and this encodes it. */
-function encodeChunk(text: string): string {
-  return Buffer.from(text, "utf8").toString("base64");
-}
 export const setResponse = (page: Page, cmd: string, val: unknown) =>
   page.evaluate(([c, v]) => (window as any).__E2E__.setResponse(c, v), [cmd, val] as const);
 
