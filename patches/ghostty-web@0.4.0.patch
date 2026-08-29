@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfdabf48d9aa 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0978b611c 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -240,7 +240,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
          if (c) {
            for (const F of c)
              if (F.hyperlink_id === this.hoveredHyperlinkId || F.hyperlink_id === this.previousHoveredHyperlinkId) {
-@@ -1458,8 +1609,18 @@ class $ {
+@@ -1458,8 +1609,19 @@ class $ {
        this.previousHoveredLinkRange = this.hoveredLinkRange;
      }
      const G = /* @__PURE__ */ new Set();
@@ -248,8 +248,9 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
 +    // every frame" — merely BEING scrolled up was a permanent full-canvas
 +    // repaint at the frame rate, with the free-running render loop as the
 +    // metronome. While scrolled, canvas rows above `vF` show scrollback
-+    // (immutable — only a real scroll, which forces `B` above, changes what
-+    // they display) and rows from `vF` down show the tail of the live
++    // (immutable — only a real scroll, which above either blits them to
++    // their new position or forces `B`, changes what they display) and
++    // rows from `vF` down show the tail of the live
 +    // screen, which keeps honouring the engine's own dirty flags at its
 +    // shifted position. `k`/`M` are viewport-row sets either way
 +    // (normalizeSelection clamps to the viewport; the hover loop builds
@@ -260,7 +261,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
      for (let t = 0; t < D.rows; t++) {
        if (!G.has(t))
          continue;
-@@ -1470,13 +1631,13 @@ class $ {
+@@ -1470,13 +1632,13 @@ class $ {
            c = E.getScrollbackLine(F);
          } else {
            const F = g > 0 ? t - Math.floor(g) : t;
@@ -277,7 +278,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Render a single line using two-pass approach:
-@@ -1490,52 +1651,90 @@ class $ {
+@@ -1490,52 +1652,90 @@ class $ {
     * cover any left-extending portions of graphemes from cell N-1.
     */
    renderLine(A, B, g) {
@@ -398,7 +399,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
        const M = C + this.metrics.baseline + 2;
        this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, M), this.ctx.lineTo(E + I, M), this.ctx.stroke();
      }
-@@ -1560,9 +1759,15 @@ class $ {
+@@ -1560,9 +1760,15 @@ class $ {
     */
    renderCursor(A, B) {
      const g = A * this.metrics.width, E = B * this.metrics.height;
@@ -415,7 +416,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
          break;
        case "underline":
          const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
-@@ -1579,17 +1784,80 @@ class $ {
+@@ -1579,17 +1785,80 @@ class $ {
          break;
      }
    }
@@ -499,7 +500,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    // ==========================================================================
    // Public API
    // ==========================================================================
-@@ -1650,12 +1918,12 @@ class $ {
+@@ -1650,12 +1919,12 @@ class $ {
     */
    renderScrollbar(A, B, g, E = 1) {
      const C = this.ctx, I = this.canvas.height / this.devicePixelRatio, D = this.canvas.width / this.devicePixelRatio, i = 8, w = D - i - 4, s = 4, N = I - s * 2;
@@ -515,7 +516,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    getMetrics() {
      return { ...this.metrics };
-@@ -1712,7 +1980,7 @@ class $ {
+@@ -1712,7 +1981,7 @@ class $ {
     * Clear entire canvas
     */
    clear() {
@@ -524,7 +525,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Cleanup resources
-@@ -1833,8 +2101,14 @@ const L = class Y {
+@@ -1833,8 +2102,14 @@ const L = class Y {
      for (; I >= E.cols; )
        I -= E.cols, C++;
      C = Math.min(C, E.rows - 1);
@@ -541,7 +542,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Select entire lines from start to end
-@@ -1843,8 +2117,8 @@ const L = class Y {
+@@ -1843,8 +2118,8 @@ const L = class Y {
    selectLines(A, B) {
      const g = this.wasmTerm.getDimensions();
      A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
@@ -552,7 +553,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Get selection position as buffer range
-@@ -1945,7 +2219,12 @@ const L = class Y {
+@@ -1945,7 +2220,12 @@ const L = class Y {
      }), this.boundMouseUpHandler = (B) => {
        if (this.isSelecting) {
          this.isSelecting = !1, this.stopAutoScroll();
@@ -566,7 +567,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2103,18 +2382,18 @@ class IA {
+@@ -2103,18 +2383,18 @@ class IA {
        get activeVersion() {
          return "15.1";
        }
@@ -588,7 +589,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
      }, this.handleMouseMove = (g) => {
        if (!(!this.canvas || !this.renderer || !this.wasmTerm)) {
          if (this.isDraggingScrollbar) {
-@@ -2341,11 +2620,18 @@ class IA {
+@@ -2341,11 +2621,18 @@ class IA {
          cursorStyle: this.options.cursorStyle,
          cursorBlink: this.options.cursorBlink,
          theme: this.options.theme
@@ -609,7 +610,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
          },
          () => {
            this.bellEmitter.fire();
-@@ -2364,13 +2650,22 @@ class IA {
+@@ -2364,13 +2651,22 @@ class IA {
          this.wasmTerm,
          this.textarea
        ), this.renderer.setSelectionManager(this.selectionManager), this.selectionManager.onSelectionChange(() => {
@@ -634,7 +635,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
      } catch (B) {
        throw this.isOpen = !1, this.cleanupComponents(), new Error(`Failed to open terminal: ${B}`);
      }
-@@ -2387,7 +2682,59 @@ class IA {
+@@ -2387,7 +2683,59 @@ class IA {
     */
    writeInternal(A, B) {
      var g;
@@ -695,7 +696,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Write data with newline
-@@ -2424,13 +2771,13 @@ class IA {
+@@ -2424,13 +2772,13 @@ class IA {
        return;
      this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
      const g = this.renderer.getMetrics();
@@ -711,7 +712,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Reset terminal state
-@@ -2438,7 +2785,7 @@ class IA {
+@@ -2438,7 +2786,7 @@ class IA {
    reset() {
      this.assertOpen(), this.wasmTerm && this.wasmTerm.free();
      const A = this.buildWasmConfig();
@@ -720,7 +721,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Focus terminal input
-@@ -2564,6 +2911,20 @@ class IA {
+@@ -2564,6 +2912,20 @@ class IA {
    // ==========================================================================
    // Phase 2: Scrolling Methods
    // ==========================================================================
@@ -741,7 +742,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    /**
     * Scroll viewport by a number of lines
     * @param amount Number of lines to scroll (positive = down, negative = up)
-@@ -2571,8 +2932,9 @@ class IA {
+@@ -2571,8 +2933,9 @@ class IA {
    scrollLines(A) {
      if (!this.wasmTerm)
        throw new Error("Terminal not open");
@@ -752,7 +753,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Scroll viewport by a number of pages
-@@ -2585,22 +2947,24 @@ class IA {
+@@ -2585,22 +2948,24 @@ class IA {
     * Scroll viewport to the top of the scrollback buffer
     */
    scrollToTop() {
@@ -780,7 +781,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Smoothly scroll to a target viewport position
-@@ -2611,7 +2975,7 @@ class IA {
+@@ -2611,7 +2976,7 @@ class IA {
        return;
      const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
      if ((this.options.smoothScrollDuration ?? 100) === 0) {
@@ -789,7 +790,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
        return;
      }
      this.targetViewportY = E, !this.scrollAnimationFrame && (this.scrollAnimationStartTime = Date.now(), this.scrollAnimationStartY = this.viewportY, this.animateScroll());
-@@ -2624,7 +2988,7 @@ class IA {
+@@ -2624,7 +2989,7 @@ class IA {
     */
    dispose() {
      if (!this.isDisposed) {
@@ -798,7 +799,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2998,262 @@ class IA {
+@@ -2634,17 +2999,262 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -1068,7 +1069,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3273,7 @@ class IA {
+@@ -2664,7 +3274,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -1077,7 +1078,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3306,7 @@ class IA {
+@@ -2697,7 +3307,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -1086,7 +1087,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3322,9 @@ class IA {
+@@ -2713,7 +3323,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -1097,7 +1098,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3534,122 @@ class DA {
+@@ -2923,6 +3535,122 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -1220,7 +1221,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfda
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3675,10 @@ export {
+@@ -2948,6 +3676,10 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
