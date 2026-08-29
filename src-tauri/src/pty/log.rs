@@ -271,9 +271,20 @@ impl TaskLog {
     /// Seal the live segment, start a fresh one, and delete whatever fell off
     /// the end. Only ever called from `flush`, so the sealed file is complete
     /// on disk before it is renamed.
+    ///
+    /// **The whole body runs under the index write lock, including the
+    /// rename.** A backfiller holds the read lock across its open+read, so
+    /// otherwise it could resolve `<task>.log` to the fresh, empty segment
+    /// while still using the old segment's base — and read the wrong bytes at
+    /// the right-looking offset, which is worse than the hole this phase
+    /// exists to close. The cost is that a rotation waits for an in-flight
+    /// 4 MiB backfill read; that is the correct precedence.
     fn rotate(&mut self) {
         let live = self.live.clone();
         let sealed = PathBuf::from(format!("{}.{}", live.display(), self.next_seq));
+        let base = self.written_through;
+        let mut segments = self.index.segments.write();
+
         if std::fs::rename(&live, &sealed).is_err() {
             // Keep writing into the current segment rather than losing the
             // stream; the cap is best-effort, the byte stream is not.
@@ -290,8 +301,6 @@ impl TaskLog {
         self.writer = BufWriter::with_capacity(64 * 1024, fresh);
         self.segment_len = 0;
 
-        let base = self.written_through;
-        let mut segments = self.index.segments.write();
         if let Some(last) = segments.last_mut() {
             last.path = sealed;
         }
@@ -475,6 +484,69 @@ mod tests {
         log.flush();
 
         assert_eq!(read_all_segments(&path).unwrap(), b"one;two;three;".to_vec());
+    }
+
+    #[test]
+    fn a_reader_never_sees_the_wrong_bytes_while_the_writer_rotates() {
+        // Rotation renames the live segment. If that rename could land
+        // between a reader resolving `<task>.log` and reading it, the reader
+        // would seek to the OLD segment's base inside the NEW file and
+        // return bytes that look plausible and are wrong — strictly worse
+        // than the hole this whole phase exists to close.
+        //
+        // Safety comes from the ORDERING (the rename runs under the index
+        // write lock, which `read_range` holds across its open+read), not
+        // from this test: the window is microseconds and does not reproduce
+        // on demand. What this does buy is a hard stress of 400 rotations
+        // against a reader that never stops, with every byte a function of
+        // its own absolute stream offset — so a misaligned read cannot pass
+        // by luck, and a future refactor that drops the lock has a chance of
+        // being caught here rather than by a user.
+        let byte_at = |offset: u64| (offset % 251) as u8;
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TaskLog::open(&dir.path().join("t.log")).unwrap();
+        let index = log.index();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let reader = {
+            let index = index.clone();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let mut verified = 0u64;
+                while !done.load(Ordering::Relaxed) {
+                    let from = index.oldest_offset();
+                    let to = index.flushed_through();
+                    if from == u64::MAX || from >= to {
+                        continue;
+                    }
+                    let bytes = index.read_range(from, to);
+                    for (i, byte) in bytes.iter().enumerate() {
+                        assert_eq!(
+                            *byte,
+                            byte_at(from + i as u64),
+                            "read the wrong byte at offset {}",
+                            from + i as u64
+                        );
+                    }
+                    verified += bytes.len() as u64;
+                }
+                verified
+            })
+        };
+
+        for _ in 0..400 {
+            let start = log.written_through();
+            let chunk: Vec<u8> = (0..777u64).map(|i| byte_at(start + i)).collect();
+            log.append(&chunk);
+            log.flush();
+            log.rotate_for_test();
+        }
+        done.store(true, Ordering::Relaxed);
+        let verified = reader.join().unwrap();
+        assert!(
+            verified > 0,
+            "the reader never landed a read — the race was not exercised"
+        );
     }
 
     #[test]
