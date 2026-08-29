@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf82dd6e910 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..208d65fb84d74b024b7ae1b31421cfdabf48d9aa 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -30,7 +30,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
  class $ {
    constructor(A, B = {}) {
 -    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
-+    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.frameViewport = null, this.frameViewportCols = 0, this.frameViewportRows = 0, this.lastPaintedCursorVisible = null, this.lastPaintedCursorOn = null, this.cssColorCache = /* @__PURE__ */ new Map(), this.ctxFillStyle = null, this.ctxFont = null, this.fontVariantsBase = "", this.fontVariants = null, this.canvas = A;
++    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.frameViewport = null, this.frameViewportCols = 0, this.frameViewportRows = 0, this.lastPaintedCursorVisible = null, this.lastPaintedCursorOn = null, this.cssColorCache = /* @__PURE__ */ new Map(), this.ctxFillStyle = null, this.ctxFont = null, this.fontVariantsBase = "", this.fontVariants = null, this.blitCount = 0, this.canvas = A;
      const g = A.getContext("2d", { alpha: !0 });
      if (!g)
        throw new Error("Failed to get 2D rendering context");
@@ -120,7 +120,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
 +  }
 +  blitRows(A) {
 +    const B = this.metrics.height * this.devicePixelRatio, g = this.canvas.width, E = A.copyRows * B;
-+    this.ctx.save();
++    this.blitCount++, this.ctx.save();
 +    try {
 +      // Device-pixel coordinates: the frame transform carries the DPR
 +      // scale, and a scaled self-copy would resample. drawImage snapshots
@@ -798,7 +798,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2998,258 @@ class IA {
+@@ -2634,17 +2998,262 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -870,7 +870,11 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
 +      cadence: this.cadence,
 +      bps: Math.round(this.throughput.bytesPerSecond(performance.now())),
 +      pending: !!this.frameRequested,
-+      heartbeat: this.heartbeatTimer !== void 0
++      heartbeat: this.heartbeatTimer !== void 0,
++      // PHASR PATCH (perf phase 2): scroll-blit observability. Frames
++      // that moved the scrolled window with a canvas self-copy instead of
++      // a full repaint — the e2e guard for criterion 4 reads this.
++      blits: this.renderer && this.renderer.blitCount || 0
 +    };
 +  }
 +  /**
@@ -1064,7 +1068,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3269,7 @@ class IA {
+@@ -2664,7 +3273,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -1073,7 +1077,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3302,7 @@ class IA {
+@@ -2697,7 +3306,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -1082,7 +1086,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3318,9 @@ class IA {
+@@ -2713,7 +3322,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -1093,7 +1097,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3530,122 @@ class DA {
+@@ -2923,6 +3534,122 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -1216,7 +1220,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3671,10 @@ export {
+@@ -2948,6 +3675,10 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
@@ -1228,7 +1232,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..f719803492b5d312c5037da11b1f7bf8
    W as GhosttyTerminal,
    P as InputHandler,
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..ba62258e5a3023d0807e132c7310e481828bf3d9 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..924d37ac3762db3bb1b46151f17677afa9923ff8 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -64,6 +64,13 @@ export declare class CanvasRenderer {
@@ -1298,7 +1302,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..ba62258e5a3023d0807e132c7310e481
      private addons;
      private customKeyEventHandler?;
      private currentTitle;
-@@ -1686,6 +1717,66 @@ export declare class Terminal implements ITerminalCore {
+@@ -1686,6 +1717,69 @@ export declare class Terminal implements ITerminalCore {
       * Dispose terminal and clean up resources
       */
      dispose(): void;
@@ -1340,6 +1344,9 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..ba62258e5a3023d0807e132c7310e481
 +        pending: boolean;
 +        /** The chain is parked on the 1 Hz heartbeat timer. */
 +        heartbeat: boolean;
++        /** PHASR PATCH (perf phase 2): frames that moved the scrolled
++         *  window with a canvas self-copy instead of a full repaint. */
++        blits: number;
 +    };
 +    /**
 +     * PHASR PATCH (perf phase 1): ask for a frame — the public entry
@@ -1365,7 +1372,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..ba62258e5a3023d0807e132c7310e481
      /**
       * Start the render loop
       */
-@@ -1839,4 +1930,70 @@ export declare class UrlRegexProvider implements ILinkProvider {
+@@ -1839,4 +1933,70 @@ export declare class UrlRegexProvider implements ILinkProvider {
      dispose(): void;
  }
  
