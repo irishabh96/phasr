@@ -139,8 +139,13 @@ test("a revealed terminal takes the keyboard AND starts painting again", async (
 
   // Half two: it is actually painting. A terminal that has the keyboard
   // and a dead render loop is the exact failure this spec used to miss.
+  // Since the damage-driven engine (perf phase 1), an idle chain ticks at
+  // a ~1 Hz heartbeat — waiting 400 ms and expecting movement is a coin
+  // toss, and painting is proven the way it happens in the field: output
+  // arrives, a frame follows.
   const tick = await renderTick(page, agentTerm!);
   expect(tick).not.toBeNull();
+  await ptyOut(page, "ws-agent", "revealed and painting\r\n");
   await page.waitForTimeout(400);
   expect(await renderTick(page, agentTerm!)).toBeGreaterThan(tick!);
 });

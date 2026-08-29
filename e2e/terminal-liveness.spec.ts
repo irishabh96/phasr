@@ -192,6 +192,12 @@ test("one throw inside a frame no longer ends the loop", async ({ page }) => {
       ptyOut(page, "ws-agent", "after the throw\r\n"),
     ),
   ).toBeGreaterThan(0);
+  // The Sentry-bound report is READ off getRenderStats on the write path,
+  // and under the damage-driven engine the throw happens on the write's
+  // OWN frame — after that write's stats read — so it is the next chunk
+  // that carries the report out. That next chunk always comes in the
+  // scenario this spec models: an agent that keeps streaming.
+  await ptyOut(page, "ws-agent", "and the agent kept going\r\n");
   // It is reported rather than swallowed — a renderer that fails is still
   // a bug, it just no longer takes the terminal with it. Two channels,
   // because the engine's own console line is the developer's and the
@@ -268,6 +274,119 @@ test("the focus probe says which of the three failures it was", async ({
   // Class 3 (renderer frozen) is what remains, and the counter is the
   // evidence: it was sampled before the recovery and had not moved.
   expect(typeof record.frames).toBe("number");
+});
+
+test("an idle chain degrades to the heartbeat; output wakes it within a frame", async ({
+  page,
+}) => {
+  // Perf phase 1's whole point, asserted from the engine's own counters:
+  // a visible terminal with nothing to draw ticks at ~1/s (the heartbeat),
+  // not ~60/s — and the next byte of output paints immediately, not at
+  // the heartbeat.
+  await bootPainting(page);
+  const agent = await page.evaluate(
+    () => (window as any).__PHASR_TERM__.ids()[0] as string,
+  );
+  const tick = (id: string) =>
+    page.evaluate(
+      (i) => (window as any).__PHASR_TERM__.renderTick(i) as number,
+      id,
+    );
+  const stats = (id: string) =>
+    page.evaluate(
+      (i) =>
+        (window as any).__PHASR_TERM__.stats(i) as {
+          cadence: number;
+          bps: number;
+          heartbeat: boolean;
+        },
+      id,
+    );
+  // Unfocus the surface: criterion 6 — an unfocused terminal requests no
+  // blink frames, so what remains below is the bare heartbeat.
+  await page.evaluate(() =>
+    (document.activeElement as HTMLElement | null)?.blur?.(),
+  );
+  // Past IDLE_AFTER_MS (3 s) plus the one-frame decrease deferral.
+  await page.waitForTimeout(3600);
+  expect((await stats(agent)).cadence).toBe(1);
+  const t1 = await tick(agent);
+  await page.waitForTimeout(2000);
+  const delta = (await tick(agent)) - t1;
+  // ~1/s with jitter allowance — and nowhere near the ~120 the old
+  // free-running chain would have racked up on this display.
+  expect(delta).toBeGreaterThanOrEqual(1);
+  expect(delta).toBeLessThanOrEqual(8);
+  // The wake: output paints within a frame, and the cadence comes back up.
+  expect(
+    await paintsOver(page, 250, () => ptyOut(page, "ws-agent", "wake\r\n")),
+  ).toBeGreaterThan(0);
+  expect((await stats(agent)).cadence).toBe(60);
+});
+
+test("flood drops the cadence to ~30 fps — observably, via getRenderStats", async ({
+  page,
+}) => {
+  // Criterion: adaptive cadence under load. >10 000 B/s must move the
+  // scheduler to the reduced tier; the tick rate over the flood window is
+  // the proof it actually painted at that tier.
+  await bootPainting(page);
+  const agent = await page.evaluate(
+    () => (window as any).__PHASR_TERM__.ids()[0] as string,
+  );
+  const tick = (id: string) =>
+    page.evaluate(
+      (i) => (window as any).__PHASR_TERM__.renderTick(i) as number,
+      id,
+    );
+  const chunk = ("x".repeat(80) + "\r\n").repeat(200); // ~16.4 KB
+  const t1 = await tick(agent);
+  const start = Date.now();
+  for (let i = 0; i < 24; i++) {
+    await ptyOut(page, "ws-agent", chunk);
+    await page.waitForTimeout(100);
+  }
+  const elapsed = (Date.now() - start) / 1000; // ~150+ KB/s sustained
+  const t2 = await tick(agent);
+  const s = await page.evaluate(
+    (i) =>
+      (window as any).__PHASR_TERM__.stats(i) as {
+        cadence: number;
+        bps: number;
+      },
+    agent,
+  );
+  expect(s.cadence).toBe(30);
+  expect(s.bps).toBeGreaterThan(10_000);
+  const fps = (t2 - t1) / elapsed;
+  // ~30, not the display rate: the reduced tier re-queues on a timer, so
+  // vsync quantization lands runs anywhere in the 20s; the bound that
+  // matters is "well under the ~60/~120 of the active tier".
+  expect(fps).toBeGreaterThan(12);
+  expect(fps).toBeLessThan(50);
+});
+
+test("five minutes idle, then output still paints (soak)", async ({
+  page,
+}) => {
+  // The long-idle guarantee, run on demand: nothing in five minutes of
+  // heartbeat idling may kill the chain OR talk the watchdog into a kick.
+  test.skip(
+    !process.env.LIVENESS_SOAK,
+    "5-minute soak — run with LIVENESS_SOAK=1",
+  );
+  test.setTimeout(420_000);
+  const { errors } = await bootPainting(page);
+  await page.waitForTimeout(300_000);
+  expect(
+    await paintsOver(page, 500, () =>
+      ptyOut(page, "ws-agent", "still alive after five minutes\r\n"),
+    ),
+  ).toBeGreaterThan(0);
+  // The watchdog never fired during normal idle operation (criterion 9).
+  const noise = errors.join("\n");
+  expect(noise).not.toContain("render loop had stopped");
+  expect(noise).not.toContain("restarting the render loop");
 });
 
 test("the probe records clicks that never go near a terminal", async ({
