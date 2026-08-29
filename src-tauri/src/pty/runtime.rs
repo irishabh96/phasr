@@ -124,6 +124,7 @@ mod tests {
                     combined.push_str(&String::from_utf8_lossy(&chunk))
                 }
                 Ok(super::super::PtyEvent::Exit { .. }) => exited = true,
+                Ok(super::super::PtyEvent::Desync { .. }) => panic!("stream desynced"),
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -174,6 +175,7 @@ mod tests {
                 // child dying does not mean its last bytes have been
                 // broadcast yet. Keep draining; the deadline decides.
                 Ok(super::super::PtyEvent::Exit { .. }) => {}
+                Ok(super::super::PtyEvent::Desync { .. }) => panic!("stream desynced"),
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -259,6 +261,7 @@ mod tests {
                     combined.push_str(&String::from_utf8_lossy(&chunk))
                 }
                 Ok(super::super::PtyEvent::Exit { .. }) => break false,
+                Ok(super::super::PtyEvent::Desync { .. }) => break false,
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                     std::thread::sleep(Duration::from_millis(50));
                 }

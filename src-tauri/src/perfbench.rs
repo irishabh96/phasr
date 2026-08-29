@@ -264,7 +264,7 @@ fn measure_shipping(corpus: &Path, script: &Path, rate: Rate) -> Framing {
                 let keep = carry_len(START.max(END)).min(hay.len());
                 carry = hay[hay.len() - keep..].to_vec();
             }
-            Ok(PtyEvent::Exit { .. }) => break,
+            Ok(PtyEvent::Exit { .. }) | Ok(PtyEvent::Desync { .. }) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 lagged += n as usize;
             }
@@ -476,6 +476,7 @@ fn bench_phase4_base64_wire_format() {
             raw += chunk.len();
             b64 += serde_json::to_string(&PtyEvent::Output {
                 task_id: "t".into(),
+                log_offset: raw as u64,
                 chunk: chunk.to_vec(),
             })
             .unwrap()
@@ -521,6 +522,7 @@ fn bench_phase4_base64_wire_format() {
         for chunk in bytes.chunks(WIRE_CHUNK) {
             sink += serde_json::to_string(&PtyEvent::Output {
                 task_id: "t".into(),
+                log_offset: sink as u64,
                 chunk: chunk.to_vec(),
             })
             .unwrap()

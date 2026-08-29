@@ -17,7 +17,7 @@ use crate::domain::Agent;
 use crate::orchestrator::{
     OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
 };
-use crate::pty::PtyEvent;
+use crate::pty::{LagRecovery, PtyEvent};
 use crate::sync::CloudSyncState;
 
 /// Tauri event name on which task status transitions are broadcast.
@@ -124,30 +124,48 @@ pub async fn open_task_terminal(
         task_id: sub.task_id.clone(),
         started_at: sub.started_at,
     };
-    spawn_task_event_forwarder(sub.replay, sub.rx, on_event);
+    spawn_task_event_forwarder(sub.replay, sub.rx, sub.recovery, on_event);
     Ok(info)
 }
 
 fn spawn_task_event_forwarder(
     replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
+    mut recovery: LagRecovery,
     channel: Channel<PtyEvent>,
 ) {
     tauri::async_runtime::spawn(async move {
         for event in replay {
+            recovery.recover_before(&event, |missed| {
+                let _ = channel.send(missed);
+            });
             let _ = channel.send(event);
         }
         loop {
             match rx.recv().await {
                 Ok(event) => {
                     let is_exit = matches!(event, PtyEvent::Exit { .. });
+                    // Anything the broadcast dropped is read back out of the
+                    // per-task log and delivered first, so the terminal
+                    // never sees a hole. Costs one integer compare when
+                    // nothing was lost.
+                    recovery.recover_before(&event, |missed| {
+                        let _ = channel.send(missed);
+                    });
                     let _ = channel.send(event);
                     if is_exit {
                         break;
                     }
                 }
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(n)) => recovery.note_lag(n),
+                // Closed with a gap outstanding: the last bytes are still on
+                // disk even though no event will ever carry them.
+                Err(RecvError::Closed) => {
+                    recovery.recover_tail(|missed| {
+                        let _ = channel.send(missed);
+                    });
+                    break;
+                }
             }
         }
     });
@@ -206,8 +224,18 @@ pub fn spawn_status_bridge(orchestrator: Arc<TaskOrchestrator>, app: AppHandle) 
                 Ok(event) => {
                     let _ = app.emit(TASK_STATUS_EVENT, event_payload(&event));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                // A missed status event is a missed *state transition*, and
+                // this broadcast carries no bytes to backfill from — so
+                // re-derive the truth from the store and re-emit it, rather
+                // than leaving the UI on a status that is now a lie
+                // (P3, Q3 rule 2). Idempotent: the frontend applies the
+                // status it is given.
+                Err(RecvError::Lagged(_)) => {
+                    for event in orchestrator.live_status_snapshot().await {
+                        let _ = app.emit(TASK_STATUS_EVENT, event_payload(&event));
+                    }
+                }
+                Err(RecvError::Closed) => break,
             }
         }
     });

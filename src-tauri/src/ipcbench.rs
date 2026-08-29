@@ -77,6 +77,9 @@ fn corpus_bytes(n: usize) -> Vec<u8> {
 fn json_body(chunk: &[u8]) -> Result<String, String> {
     serde_json::to_string(&PtyEvent::Output {
         task_id: "bench".into(),
+        // Not serialized (backend-internal cursor), so it costs the wire
+        // nothing — the envelope this measures is unchanged.
+        log_offset: 0,
         chunk: chunk.to_vec(),
     })
     .map_err(|e| e.to_string())

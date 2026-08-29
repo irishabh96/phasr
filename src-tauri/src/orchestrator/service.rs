@@ -30,7 +30,7 @@ use tokio::sync::broadcast;
 use crate::domain::{Agent, Workspace, WorkspaceStatus};
 use crate::git;
 use crate::pty::handle::PtyHandle;
-use crate::pty::{PtyEvent, TaskRuntime};
+use crate::pty::{log, LagRecovery, PtyEvent, TaskRuntime};
 use crate::store::{RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
 use super::error::OrchestratorError;
@@ -90,6 +90,10 @@ pub struct TaskTerminalSubscription {
     pub started_at: DateTime<Utc>,
     pub replay: Vec<PtyEvent>,
     pub rx: broadcast::Receiver<PtyEvent>,
+    /// Per-subscriber cursor that refills anything the broadcast drops out
+    /// of the per-task log. Handed out with the receiver so a forwarder
+    /// cannot forget to wire it up.
+    pub recovery: LagRecovery,
 }
 
 /// The orchestrator itself. Hand it the dependencies it needs and call
@@ -376,6 +380,7 @@ impl TaskOrchestrator {
                 started_at: workspace.started_at.unwrap_or_else(Utc::now),
                 replay,
                 rx,
+                recovery: handle.recovery(),
             });
         }
 
@@ -442,15 +447,20 @@ impl TaskOrchestrator {
             started_at: now,
             replay,
             rx,
+            recovery: handle.recovery(),
         })
     }
 
     pub async fn read_task_log(&self, task_id: &str) -> Result<String, OrchestratorError> {
         let path = self.runtime.log_dir.join(format!("{task_id}.log"));
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-            Err(err) => return Err(OrchestratorError::Pty(err.into())),
+        // Every retained segment, oldest first — the log is size-capped and
+        // rotates, and the user-visible log must not stop at the seam.
+        let bytes = match tokio::task::spawn_blocking(move || log::read_all_segments(&path)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Ok(Err(err)) => return Err(OrchestratorError::Pty(err.into())),
+            // The blocking pool panicked or was shut down; nothing to show.
+            Err(_) => return Ok(String::new()),
         };
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
@@ -572,48 +582,108 @@ impl TaskOrchestrator {
 
         tokio::spawn(async move {
             loop {
-                match rx.recv().await {
-                    Ok(PtyEvent::Output { .. }) => continue,
-                    Ok(PtyEvent::Exit { exit_code, .. }) => {
-                        let current = workspaces.get(&task_id).await.ok();
-                        if !current
-                            .as_ref()
-                            .is_some_and(|w| w.status == WorkspaceStatus::Running)
-                        {
-                            runtime.drop_task(&task_id);
-                            break;
+                let exit_code = match rx.recv().await {
+                    Ok(PtyEvent::Output { .. }) | Ok(PtyEvent::Desync { .. }) => continue,
+                    Ok(PtyEvent::Exit { exit_code, .. }) => exit_code,
+                    // This receiver only cares about ONE event, and lagging
+                    // past it would leave the row stuck on `running`
+                    // forever. There is no byte log to backfill a process
+                    // exit from, so re-read the child's state directly
+                    // (published before the event was ever sent) instead of
+                    // assuming the exit is still coming.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        match handle.exit_state() {
+                            Some(exit) => exit.exit_code,
+                            None => continue,
                         }
-                        let next = if exit_code == Some(0) {
-                            WorkspaceStatus::Completed
-                        } else {
-                            WorkspaceStatus::Failed
-                        };
-                        let update = WorkspaceUpdate {
-                            // Only flip if we're still in `running` —
-                            // if `stop_task` already moved us to
-                            // `stopped`, leave it alone.
-                            status: Some(next),
-                            exit_code: Some(exit_code),
-                            finished_at: Some(Some(Utc::now())),
-                            ..Default::default()
-                        };
-                        let flipped = workspaces.update(&task_id, update).await.ok();
-                        runtime.drop_task(&task_id);
-                        if flipped.is_some() {
-                            let _ = status_tx.send(TaskStatusEvent {
-                                task_id: task_id.clone(),
-                                repository_id: repository_id.clone(),
-                                status: next,
-                                exit_code,
-                            });
-                        }
-                        break;
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    // Closed means every sender is gone, including the wait
+                    // thread — the exit, if there was one, is only in the
+                    // child state now.
+                    Err(broadcast::error::RecvError::Closed) => match handle.exit_state() {
+                        Some(exit) => exit.exit_code,
+                        None => break,
+                    },
+                };
+
+                let current = workspaces.get(&task_id).await.ok();
+                if !current
+                    .as_ref()
+                    .is_some_and(|w| w.status == WorkspaceStatus::Running)
+                {
+                    runtime.drop_task(&task_id);
+                    break;
                 }
+                let next = if exit_code == Some(0) {
+                    WorkspaceStatus::Completed
+                } else {
+                    WorkspaceStatus::Failed
+                };
+                let update = WorkspaceUpdate {
+                    // Only flip if we're still in `running` — if `stop_task`
+                    // already moved us to `stopped`, leave it alone.
+                    status: Some(next),
+                    exit_code: Some(exit_code),
+                    finished_at: Some(Some(Utc::now())),
+                    ..Default::default()
+                };
+                let flipped = workspaces.update(&task_id, update).await.ok();
+                runtime.drop_task(&task_id);
+                if flipped.is_some() {
+                    let _ = status_tx.send(TaskStatusEvent {
+                        task_id: task_id.clone(),
+                        repository_id: repository_id.clone(),
+                        status: next,
+                        exit_code,
+                    });
+                }
+                break;
             }
         });
+    }
+
+    /// Current status of every task that is still in flight — anything with
+    /// a live PTY, plus any row the store still believes is pending or
+    /// running.
+    ///
+    /// This is the recovery for the *status* broadcast, which carries state
+    /// transitions rather than bytes and therefore has no log to backfill
+    /// from (P3, Q3 rule 2). A missed transition is re-derived from the
+    /// authoritative source — the store — rather than swallowed.
+    ///
+    /// Deliberately NOT every workspace: re-emitting a months-old
+    /// `completed` would fire its completion toast and OS notification all
+    /// over again. A terminal transition for a task in a repository with
+    /// nothing else in flight is reconciled by the frontend's next refetch
+    /// instead (each event it *does* receive invalidates that repository's
+    /// list).
+    pub async fn live_status_snapshot(&self) -> Vec<TaskStatusEvent> {
+        let mut ids: std::collections::BTreeSet<String> = self
+            .runtime
+            .activity()
+            .into_iter()
+            .map(|(task_id, _)| task_id)
+            .collect();
+        for status in [WorkspaceStatus::Pending, WorkspaceStatus::Running] {
+            if let Ok(rows) = self.workspaces.list_by_status(status).await {
+                ids.extend(rows.into_iter().map(|w| w.id));
+            }
+        }
+
+        let mut events = Vec::new();
+        for id in ids {
+            // Run-command and ad-hoc session PTYs share the runtime map but
+            // have no workspace row; they have no status to resync.
+            if let Ok(workspace) = self.workspaces.get(&id).await {
+                events.push(TaskStatusEvent {
+                    task_id: workspace.id,
+                    repository_id: workspace.repository_id,
+                    status: workspace.status,
+                    exit_code: workspace.exit_code,
+                });
+            }
+        }
+        events
     }
 }
 

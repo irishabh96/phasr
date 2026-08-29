@@ -9,9 +9,34 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
+use super::backfill::LagRecovery;
+use super::log::{LogIndex, TaskLog};
 use super::shell;
 
 const REPLAY_BUFFER_BYTES: usize = 128 * 1024;
+
+/// Slots in the reader→coalescer channel, and the whole of phase 3.1.
+///
+/// This channel used to be `std::sync::mpsc::channel` — unbounded — so the
+/// reader thread never blocked, the kernel's PTY buffer never filled, and the
+/// child never blocked in `write()`. There was no backpressure anywhere in
+/// the pipeline; a flood was absorbed as unbounded memory.
+///
+/// Bounded with a **blocking** send, the reader parks when the coalescer
+/// falls behind → the kernel buffer fills → the child blocks in `write()`.
+/// That is how every native terminal throttles `yes`, and it is mechanically
+/// iTerm2's `TokenExecutor` semaphore (`bufferDepth` 40 chunks of ~1 KB).
+/// Ours are 4 KiB reads, so 48 slots is ~192 KiB in flight — the same slot
+/// budget, comfortably above the 32 KiB coalesce ceiling so a single flush
+/// can never starve. iTerm2's own tmux code warns against exactly the bug we
+/// had: "infinite data could be buffered by GCD, breaking the backpressure
+/// mechanism."
+///
+/// What this does **not** buy: end-to-end backpressure from the frontend. A
+/// tokio broadcast send never blocks, so a slow webview exerts no pressure on
+/// the coalescer. Bounding here converts an unbounded memory queue into a
+/// real stall signal; the zero-drop guarantee is carried by `pty/backfill.rs`.
+const READER_QUEUE_SLOTS: usize = 48;
 
 /// Event emitted by a running PTY task.
 #[derive(Debug, Clone, Serialize)]
@@ -24,6 +49,18 @@ pub enum PtyEvent {
     /// A chunk of stdout/stderr output (PTYs merge them).
     Output {
         task_id: String,
+        /// Offset of this chunk's first byte in the per-task log.
+        ///
+        /// The recovery key for a lagging subscriber: the coalescer writes
+        /// every byte to the log before it frames anything, so a subscriber
+        /// that compares this against what it has delivered knows exactly
+        /// which bytes the broadcast dropped and can read them back
+        /// (`pty/backfill.rs`).
+        ///
+        /// Not serialized: it is a backend-internal cursor, and keeping it
+        /// off the wire leaves the IPC payload byte-identical to v0.4.1's.
+        #[serde(skip_serializing)]
+        log_offset: u64,
         /// The PTY's bytes, verbatim. A terminal emulator is a byte
         /// protocol, so nothing here decodes them: they cross the IPC
         /// base64-encoded and are handed to the emulator as bytes.
@@ -34,6 +71,16 @@ pub enum PtyEvent {
         /// U+FFFD permanently. Both problems are absent from a byte stream.
         #[serde(serialize_with = "serialize_base64")]
         chunk: Vec<u8>,
+    },
+    /// A hole in the stream that could not be refilled from the log —
+    /// the missing range had already rotated off the end of it.
+    ///
+    /// The honest floor of the zero-drop guarantee: never silent. A
+    /// subscriber that receives this knows its screen is now a fiction and
+    /// must force a full repaint rather than keep painting over corruption.
+    Desync {
+        task_id: String,
+        missed_bytes: u64,
     },
     /// Child process exited.
     Exit {
@@ -95,8 +142,17 @@ pub struct PtySpawnOptions {
     pub cols: u16,
 }
 
+/// How the child ended, published by the wait thread *before* it broadcasts
+/// `Exit`. A watcher that missed the broadcast event can ask for this
+/// directly instead of waiting forever for an exit that already happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildExit {
+    pub exit_code: Option<i64>,
+}
+
 /// Owns one running task's PTY. Cheaply cloneable (`Arc` inside).
 pub struct PtyHandle {
+    task_id: String,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     /// Writer for the PTY's stdin. `MasterPty::take_writer()` is
     /// **one-shot**, so we take it once at spawn time and lock it for
@@ -114,6 +170,11 @@ pub struct PtyHandle {
     /// coalescer thread. Initialised to spawn time so a freshly started
     /// task counts as active before its first byte arrives.
     last_output_at: Arc<std::sync::atomic::AtomicI64>,
+    /// Readable view of the per-task log — the source every subscriber
+    /// recovers dropped broadcast bytes from.
+    log_index: Arc<LogIndex>,
+    /// `None` while the child is alive.
+    exit: Arc<Mutex<Option<ChildExit>>>,
 }
 
 /// Wall-clock epoch milliseconds. The frontend compares this against
@@ -216,13 +277,22 @@ impl PtyHandle {
         let writer = Arc::new(Mutex::new(writer));
         let child = Arc::new(Mutex::new(child));
 
+        // Opened before the handle exists: the log index is part of the
+        // handle's contract (every subscriber recovers through it), so a
+        // failure to open the log is a failure to spawn, not a silent
+        // downgrade to an unrecoverable stream.
+        let task_log = TaskLog::open(&log_path)?;
+
         let handle = Arc::new(Self {
+            task_id: task_id.clone(),
             master,
             writer,
             killer: Mutex::new(killer),
             tx: tx.clone(),
             replay: Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES))),
             last_output_at: Arc::new(std::sync::atomic::AtomicI64::new(epoch_ms())),
+            log_index: task_log.index(),
+            exit: Arc::new(Mutex::new(None)),
         });
 
         // Schedule the agent command + optional prompt as keystrokes
@@ -244,20 +314,15 @@ impl PtyHandle {
             )
         });
 
-        // Ensure log dir exists; open log file for appending.
-        if let Some(parent) = log_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-
         // Two dedicated blocking threads — the PTY reader is sync and would
         // block the async runtime, and the flush timer needs a thread that
         // can wait on the clock instead of on `read`. See
         // `coalesce_pty_output`.
-        let (bytes_tx, bytes_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        //
+        // BOUNDED, with a blocking send: see `READER_QUEUE_SLOTS`. The block
+        // stays confined to this dedicated reader thread, which is why a
+        // stalled pipeline cannot reach the UI thread.
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
         let task_id_for_reader = task_id.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-{task_id_for_reader}"))
@@ -278,7 +343,7 @@ impl PtyHandle {
                 coalesce_pty_output(
                     task_id_for_coalesce,
                     bytes_rx,
-                    log_file,
+                    task_log,
                     tx_for_coalesce,
                     replay_for_coalesce,
                     last_output_for_coalesce,
@@ -290,6 +355,7 @@ impl PtyHandle {
         let task_id_for_wait = task_id.clone();
         let child_for_wait = child.clone();
         let tx_for_wait = tx;
+        let exit_for_wait = handle.exit.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-wait-{task_id_for_wait}"))
             .spawn(move || {
@@ -297,6 +363,11 @@ impl PtyHandle {
                     let mut guard = child_for_wait.lock();
                     guard.wait().ok().and_then(exit_status_to_code)
                 };
+                // Published BEFORE the broadcast: a watcher whose receiver
+                // lagged past this event must still be able to find out that
+                // the child is gone (`exit_state`), and it can only do that
+                // if the state is visible by the time the event is sent.
+                *exit_for_wait.lock() = Some(ChildExit { exit_code });
                 let _ = tx_for_wait.send(PtyEvent::Exit {
                     task_id: task_id_for_wait,
                     exit_code,
@@ -314,12 +385,35 @@ impl PtyHandle {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// How the child ended, or `None` while it is still running. The
+    /// authoritative answer for a watcher that may have missed the `Exit`
+    /// broadcast.
+    pub fn exit_state(&self) -> Option<ChildExit> {
+        *self.exit.lock()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<PtyEvent> {
         self.tx.subscribe()
     }
 
     pub fn subscribe_with_replay(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
         subscribe_with_replay_locked(&self.tx, &self.replay)
+    }
+
+    /// The task's log, as a subscriber reads it. Read by the load harness,
+    /// which proves the stream it reconstructs is byte-identical to what
+    /// went to disk.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn log_index(&self) -> Arc<LogIndex> {
+        self.log_index.clone()
+    }
+
+    /// A fresh recovery cursor for one subscriber. Pair it with
+    /// `subscribe`/`subscribe_with_replay`: every event handed to the
+    /// subscriber goes through it, and it refills anything the broadcast
+    /// dropped out of the log before the subscriber ever sees a hole.
+    pub fn recovery(&self) -> LagRecovery {
+        LagRecovery::new(self.task_id.clone(), self.log_index.clone())
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
@@ -563,7 +657,17 @@ fn watch_after_typing(
                 }
             }
             Ok(PtyEvent::Exit { .. }) | Err(TryRecvError::Closed) => return TypeOutcome::Ended,
-            Err(TryRecvError::Lagged(_)) => continue,
+            // A hole in the byte stream. Both stitched buffers have to be
+            // dropped: a marker or an echo needle assembled ACROSS a hole
+            // was never actually printed, and either false positive submits
+            // the user's prompt into whatever is really on screen — the
+            // exact failure mode the TUI-readiness protocol exists to
+            // prevent. No backfill here: this runs before any frontend
+            // exists, and the deadline already backstops a missed marker.
+            Ok(PtyEvent::Desync { .. }) | Err(TryRecvError::Lagged(_)) => {
+                marker_scanner.reset();
+                window.clear();
+            }
             Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(15)),
         }
     }
@@ -597,9 +701,13 @@ fn wait_for_tui(events: &mut broadcast::Receiver<PtyEvent>, deadline: Duration) 
                 }
             }
             Ok(PtyEvent::Exit { .. }) | Err(TryRecvError::Closed) => return TuiWait::Ended,
-            // Missed chunks (marker possibly among them) — keep
-            // scanning what still arrives; the deadline backstops us.
-            Err(TryRecvError::Lagged(_)) => continue,
+            // Missed chunks (marker possibly among them) — keep scanning
+            // what still arrives; the deadline backstops us. The carry MUST
+            // be dropped first: stitching the tail of a pre-hole chunk onto
+            // a post-hole one can synthesise a marker that was never
+            // emitted, and a false TUI-readiness positive types the user's
+            // prompt into a trust dialog.
+            Ok(PtyEvent::Desync { .. }) | Err(TryRecvError::Lagged(_)) => scanner.reset(),
             Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(15)),
         }
     }
@@ -633,6 +741,12 @@ struct TuiMarkerScanner {
 }
 
 impl TuiMarkerScanner {
+    /// Forget the trailing bytes of the previous chunk. Called when the
+    /// stream has a hole in it, so nothing is ever matched across one.
+    fn reset(&mut self) {
+        self.carry.clear();
+    }
+
     fn scan(&mut self, chunk: &[u8]) -> bool {
         let mut haystack = std::mem::take(&mut self.carry);
         haystack.extend_from_slice(chunk);
@@ -654,11 +768,11 @@ impl TuiMarkerScanner {
 const READ_BUF_BYTES: usize = 4096;
 
 /// Bytes buffered before a flush is forced.
-const COALESCE_BYTES: usize = 32 * 1024;
+pub(super) const COALESCE_BYTES: usize = 32 * 1024;
 
 /// Longest any byte may sit in the coalescer before it is emitted. Bounds
 /// the added latency: a byte read at t is on the frontend by t + 8ms.
-const COALESCE_WINDOW: Duration = Duration::from_millis(8);
+pub(super) const COALESCE_WINDOW: Duration = Duration::from_millis(8);
 
 /// Thread A: read the PTY, hand raw bytes to the coalescer, nothing else.
 ///
@@ -667,6 +781,14 @@ const COALESCE_WINDOW: Duration = Duration::from_millis(8);
 /// seconds on an idle terminal, so a "flush after 8ms" timer cannot live in
 /// this loop. It has to be a second thread that can wait on *either* bytes
 /// or the clock.
+///
+/// The send is **blocking** (`SyncSender` over a bounded channel): when the
+/// coalescer falls behind, this thread parks here, stops draining the PTY,
+/// and the backpressure propagates through the kernel to the child. The
+/// block is confined to this dedicated thread — nothing the UI touches waits
+/// on it. When the send *fails* the coalescer is gone for good, so the loop
+/// exits rather than leaving a reader parked forever with the child blocked
+/// behind it.
 ///
 /// Returning drops `out`, which is how the coalescer learns the PTY is done
 /// and performs its final flush.
@@ -679,7 +801,7 @@ const COALESCE_WINDOW: Duration = Duration::from_millis(8);
 /// the observer must not be able to disturb the terminal.
 fn pump_pty_output(
     mut reader: Box<dyn Read + Send>,
-    out: std::sync::mpsc::Sender<Vec<u8>>,
+    out: std::sync::mpsc::SyncSender<Vec<u8>>,
     vt_tap: Option<std::sync::mpsc::Sender<Vec<u8>>>,
 ) {
     let mut buf = [0u8; READ_BUF_BYTES];
@@ -712,10 +834,10 @@ fn pump_pty_output(
 /// Same bytes to the log, same bytes to the frontend, same 128 KB replay
 /// budget — only the framing changes. Fewer, larger messages also make
 /// `RecvError::Lagged` on the broadcast materially less likely.
-fn coalesce_pty_output<W: Write>(
+fn coalesce_pty_output(
     task_id: String,
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
-    mut log: W,
+    mut log: TaskLog,
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
     last_output_at: Arc<std::sync::atomic::AtomicI64>,
@@ -740,24 +862,26 @@ fn coalesce_pty_output<W: Write>(
                 // of how those bytes are framed for delivery.
                 last_output_at.store(epoch_ms(), std::sync::atomic::Ordering::Relaxed);
                 // The log is the raw byte stream, written before any framing
-                // decision — `read_task_log` and the B1 replay corpus both
-                // depend on it being exactly what the PTY produced.
-                let _ = log.write_all(&bytes);
+                // decision — `read_task_log`, the B1 replay corpus and (since
+                // Phase 3) every subscriber's lag recovery all depend on it
+                // being exactly what the PTY produced. Buffered now, flushed
+                // on the tick below.
+                log.append(&bytes);
                 if buf.is_empty() {
                     deadline = Some(Instant::now() + COALESCE_WINDOW);
                 }
                 buf.extend_from_slice(&bytes);
                 if buf.len() >= COALESCE_BYTES {
-                    flush_output(&task_id, &mut buf, &tx, &replay);
+                    flush_output(&task_id, &mut buf, &mut log, &tx, &replay);
                     deadline = None;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_output(&task_id, &mut buf, &tx, &replay);
+                flush_output(&task_id, &mut buf, &mut log, &tx, &replay);
                 deadline = None;
             }
             Err(RecvTimeoutError::Disconnected) => {
-                flush_output(&task_id, &mut buf, &tx, &replay);
+                flush_output(&task_id, &mut buf, &mut log, &tx, &replay);
                 break;
             }
         }
@@ -773,26 +897,38 @@ fn coalesce_pty_output<W: Write>(
 fn flush_output(
     task_id: &str,
     buf: &mut Vec<u8>,
+    log: &mut TaskLog,
     tx: &broadcast::Sender<PtyEvent>,
     replay: &Mutex<ReplayBuffer>,
 ) {
     if buf.is_empty() {
         return;
     }
+    // Push the log to the filesystem BEFORE the event goes out. That
+    // ordering is the backfill contract: any byte a subscriber has heard of
+    // is already readable on disk, so a recovery never has to wait for a
+    // writer's buffer it cannot see. It is also strictly fewer syscalls than
+    // the unbuffered per-read `write_all` this replaced.
+    log.flush();
+    // Every byte in `buf` was appended to the log in the same step, so the
+    // chunk's log offset is simply the write cursor minus its length.
+    let log_offset = log.written_through() - buf.len() as u64;
     // Hand the buffer over and start a fresh one already sized for the next
     // batch — `take` would leave a zero-capacity Vec to regrow every cycle.
     let chunk = std::mem::replace(buf, Vec::with_capacity(COALESCE_BYTES));
-    emit_output(task_id, chunk, tx, replay);
+    emit_output(task_id, log_offset, chunk, tx, replay);
 }
 
 fn emit_output(
     task_id: &str,
+    log_offset: u64,
     chunk: Vec<u8>,
     tx: &broadcast::Sender<PtyEvent>,
     replay: &Mutex<ReplayBuffer>,
 ) {
     let event = PtyEvent::Output {
         task_id: task_id.to_string(),
+        log_offset,
         chunk,
     };
     // Recorded for replay even with no subscribers — a send failure just
@@ -851,7 +987,7 @@ impl ReplayBuffer {
     fn push(&mut self, event: PtyEvent) {
         let event_bytes = match &event {
             PtyEvent::Output { chunk, .. } => chunk.len(),
-            PtyEvent::Exit { .. } => 0,
+            PtyEvent::Desync { .. } | PtyEvent::Exit { .. } => 0,
         };
         self.bytes += event_bytes;
         self.events.push_back(event);
@@ -894,6 +1030,7 @@ mod tests {
     fn output(chunk: &str) -> PtyEvent {
         PtyEvent::Output {
             task_id: "t".into(),
+            log_offset: 0,
             chunk: chunk.as_bytes().to_vec(),
         }
     }
@@ -1020,48 +1157,73 @@ mod tests {
 
     /// Run the coalescer to completion over a scripted byte stream.
     /// Returns (emitted chunks, bytes written to the log).
+    ///
+    /// The log is a real file in a temp dir rather than a `Vec` sink: the
+    /// coalescer's offsets, its `flush`-before-broadcast ordering and the
+    /// backfill that depends on both are only exercised against the real
+    /// writer.
     fn run_coalescer(reads: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<u8>) {
-        let (bytes_tx, bytes_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (chunks, log, _offsets, dir) = run_coalescer_indexed(reads);
+        drop(dir);
+        (chunks, log)
+    }
+
+    /// `run_coalescer` plus the log offset stamped on each emitted chunk and
+    /// the temp dir the log lives in (kept alive by the caller).
+    fn run_coalescer_indexed(
+        reads: Vec<Vec<u8>>,
+    ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<u64>, tempfile::TempDir) {
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
         let (tx, mut rx) = broadcast::channel::<PtyEvent>(256);
         let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
-        for r in reads {
-            bytes_tx.send(r).unwrap();
-        }
-        drop(bytes_tx);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("t.log");
+        let log = TaskLog::open(&log_path).unwrap();
 
-        let mut sink: Vec<u8> = Vec::new();
+        // A bounded channel and a single-threaded test would deadlock the
+        // moment the script is longer than the queue, so the producer gets
+        // its own thread — exactly the shape production runs.
+        let producer = std::thread::spawn(move || {
+            for r in reads {
+                if bytes_tx.send(r).is_err() {
+                    break;
+                }
+            }
+        });
+
         let last_output = Arc::new(std::sync::atomic::AtomicI64::new(0));
-        coalesce_pty_output("t".into(), bytes_rx, &mut sink, tx, replay, last_output);
+        coalesce_pty_output("t".into(), bytes_rx, log, tx, replay, last_output);
+        producer.join().unwrap();
 
         let mut chunks = Vec::new();
+        let mut offsets = Vec::new();
         while let Ok(event) = rx.try_recv() {
-            if let PtyEvent::Output { chunk, .. } = event {
+            if let PtyEvent::Output {
+                chunk, log_offset, ..
+            } = event
+            {
                 chunks.push(chunk);
+                offsets.push(log_offset);
             }
         }
-        (chunks, sink)
+        let written = std::fs::read(&log_path).unwrap();
+        (chunks, written, offsets, dir)
     }
 
     #[test]
     fn coalescer_stamps_activity_on_every_received_chunk() {
-        let (bytes_tx, bytes_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_SLOTS);
         let (tx, _rx) = broadcast::channel::<PtyEvent>(16);
         let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
         let last_output = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let log = TaskLog::open(&dir.path().join("t.log")).unwrap();
 
         bytes_tx.send(b"hello".to_vec()).unwrap();
         drop(bytes_tx);
 
         let before = epoch_ms();
-        let mut sink: Vec<u8> = Vec::new();
-        coalesce_pty_output(
-            "t".into(),
-            bytes_rx,
-            &mut sink,
-            tx,
-            replay,
-            last_output.clone(),
-        );
+        coalesce_pty_output("t".into(), bytes_rx, log, tx, replay, last_output.clone());
 
         let stamped = last_output.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
@@ -1160,6 +1322,7 @@ mod tests {
         // non-UTF-8 bytes above at all.
         let event = PtyEvent::Output {
             task_id: "t".into(),
+            log_offset: 12_345,
             chunk: vec![0x1b, b'[', b'2', b'K', 0xff],
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -1238,7 +1401,7 @@ mod tests {
             std::thread::spawn(move || {
                 let mut n: u64 = 0;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    emit_output("t", format!("{n}\n").into_bytes(), &tx, &replay);
+                    emit_output("t", n, format!("{n}\n").into_bytes(), &tx, &replay);
                     n += 1;
                 }
             })
@@ -1249,7 +1412,7 @@ mod tests {
                 PtyEvent::Output { chunk, .. } => {
                     String::from_utf8_lossy(chunk).trim().parse().ok()
                 }
-                PtyEvent::Exit { .. } => None,
+                PtyEvent::Desync { .. } | PtyEvent::Exit { .. } => None,
             }
         };
 
@@ -1316,7 +1479,7 @@ mod tests {
             .iter()
             .map(|e| match e {
                 PtyEvent::Output { chunk, .. } => chunk.len(),
-                PtyEvent::Exit { .. } => 0,
+                PtyEvent::Desync { .. } | PtyEvent::Exit { .. } => 0,
             })
             .sum();
         assert!(

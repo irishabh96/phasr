@@ -13,7 +13,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::{AuthError, SessionState};
-use crate::pty::{PtyEvent, TaskRuntime};
+use crate::pty::{LagRecovery, PtyEvent, TaskRuntime};
 
 /// Distinct from `run:` and bare workspace UUIDs so the keys never collide.
 const SESSION_PTY_PREFIX: &str = "session:";
@@ -62,7 +62,14 @@ pub async fn start_session_terminal(
     )?;
 
     let (replay, rx) = handle.subscribe_with_replay();
-    forward(replay, rx, on_event, runtime.inner().clone(), key);
+    forward(
+        replay,
+        rx,
+        handle.recovery(),
+        on_event,
+        runtime.inner().clone(),
+        key,
+    );
     Ok(session_id)
 }
 
@@ -79,7 +86,14 @@ pub async fn attach_session_terminal(
         .get(&key)
         .ok_or_else(|| SessionTerminalError::NotRunning(session_id.clone()))?;
     let (replay, rx) = handle.subscribe_with_replay();
-    forward(replay, rx, on_event, runtime.inner().clone(), key);
+    forward(
+        replay,
+        rx,
+        handle.recovery(),
+        on_event,
+        runtime.inner().clone(),
+        key,
+    );
     Ok(())
 }
 
@@ -132,26 +146,43 @@ pub async fn stop_session_terminal(
 fn forward(
     replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
+    mut recovery: LagRecovery,
     channel: Channel<PtyEvent>,
     runtime: Arc<TaskRuntime>,
     key: String,
 ) {
     tauri::async_runtime::spawn(async move {
         for event in replay {
+            recovery.recover_before(&event, |missed| {
+                let _ = channel.send(missed);
+            });
             let _ = channel.send(event);
         }
         loop {
             match rx.recv().await {
                 Ok(event) => {
                     let is_exit = matches!(event, PtyEvent::Exit { .. });
+                    // Anything the broadcast dropped is read back out of the
+                    // per-task log and delivered first, so the terminal never
+                    // sees a hole. One integer compare when nothing was lost.
+                    recovery.recover_before(&event, |missed| {
+                        let _ = channel.send(missed);
+                    });
                     let _ = channel.send(event);
                     if is_exit {
                         runtime.drop_task(&key);
                         break;
                     }
                 }
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(n)) => recovery.note_lag(n),
+                // Closed with a gap outstanding: the last bytes are still on
+                // disk even though no event will ever carry them.
+                Err(RecvError::Closed) => {
+                    recovery.recover_tail(|missed| {
+                        let _ = channel.send(missed);
+                    });
+                    break;
+                }
             }
         }
     });

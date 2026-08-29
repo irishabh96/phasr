@@ -15,19 +15,68 @@
 //!     TUI-marker + echo-verified-Enter protocol, under concurrency —
 //!     single-agent success proves nothing about 16 booting at once)
 //!   * time to readiness and time to submit, per agent
-//!   * PTY throughput after coalescing, and **dropped output**:
-//!     `RecvError::Lagged` is silently `continue`d by the production
-//!     forwarders, so a burst that outruns the 2048-slot broadcast loses
-//!     terminal content with no error anywhere. Counted here.
+//!   * PTY throughput after coalescing, and **unrecovered output**. The
+//!     2048-slot broadcast still drops the oldest value for a lagging
+//!     receiver — that cannot be prevented, a broadcast send never blocks —
+//!     but since Phase 3 every dropped range is refilled from the per-task
+//!     log (`pty/backfill.rs`). So lag is *counted*, and what is asserted at
+//!     zero is **unrecovered bytes**: the harness reconstructs each
+//!     subscriber's stream (live events + backfill) and requires it to be
+//!     byte-identical to the log.
 //!   * process RSS and thread count for the whole tree.
+//!
+//! `bulk_flood_never_drops_a_byte` is the flood half of the same claim and
+//! needs no agent CLI at all (so it costs no quota): it floods a real PTY
+//! unthrottled, deliberately stalls the subscriber past the broadcast ring,
+//! and asserts the same byte-identity.
 #![cfg(test)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::pty::log::LogIndex;
 use crate::pty::PtyEvent;
 use crate::pty::TaskRuntime;
+
+/// FNV-1a over a stream, so byte-identity can be asserted over hundreds of
+/// megabytes without holding any of it. Two streams with the same length and
+/// the same hash are the evidence; a mismatch prints both lengths.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct StreamDigest {
+    hash: u64,
+    len: u64,
+}
+
+impl StreamDigest {
+    fn new() -> Self {
+        Self { hash: 0xcbf2_9ce4_8422_2325, len: 0 }
+    }
+    fn feed(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.hash ^= *b as u64;
+            self.hash = self.hash.wrapping_mul(0x1000_0000_01b3);
+        }
+        self.len += bytes.len() as u64;
+    }
+}
+
+/// The same digest, taken over the log itself — the thing the delivered
+/// stream has to match. Read in `read_range`-sized bites so a 90 MiB log
+/// never lands in memory at once.
+fn digest_log_range(index: &LogIndex, from: u64, to: u64) -> StreamDigest {
+    let mut digest = StreamDigest::new();
+    let mut cursor = from;
+    while cursor < to {
+        let bytes = index.read_range(cursor, to);
+        if bytes.is_empty() {
+            break;
+        }
+        digest.feed(&bytes);
+        cursor += bytes.len() as u64;
+    }
+    digest
+}
 
 const AGENT_CMD: &str = "claude --dangerously-skip-permissions";
 /// Small, safe, and real: each is a genuine turn, none of them touch
@@ -48,7 +97,18 @@ struct AgentResult {
     bytes: u64,
     events: u64,
     lagged: u64,
+    /// Bytes the broadcast dropped that the log could not give back. The
+    /// number this whole phase exists to keep at zero.
+    unrecovered: u64,
+    /// Bytes the broadcast dropped that WERE given back.
+    recovered: u64,
+    /// Did the reconstructed stream match the log byte for byte?
+    identical: bool,
 }
+
+/// Per-step totals across every agent: (bytes, events, lagged events,
+/// unrecovered bytes, subscribers whose stream did not match the log).
+type Counters = (AtomicU64, AtomicU64, AtomicU64, AtomicU64, AtomicU64);
 
 /// RSS (MB) and thread count for this process tree, via ps.
 fn proc_stats() -> (u64, u64) {
@@ -84,7 +144,7 @@ fn drive_agent(
     runtime: &TaskRuntime,
     idx: usize,
     dir: std::path::PathBuf,
-    counters: Arc<(AtomicU64, AtomicU64, AtomicU64)>,
+    counters: Arc<Counters>,
 ) -> AgentResult {
     let id = format!("load-{idx}");
     let started = Instant::now();
@@ -107,12 +167,42 @@ fn drive_agent(
                 bytes: 0,
                 events: 0,
                 lagged: 0,
+                unrecovered: 0,
+                recovered: 0,
+                identical: true,
             };
         }
     };
 
-    let mut rx = handle.subscribe();
+    // Attach with replay so the stream starts at the first byte the PTY
+    // produced, and with a recovery cursor so anything the broadcast drops
+    // is refilled from the log before this subscriber ever sees a hole —
+    // exactly what the three production forwarders do.
+    let (replay, mut rx) = handle.subscribe_with_replay();
+    let mut recovery = handle.recovery();
+    let log_index = handle.log_index();
+    let mut delivered = StreamDigest::new();
+    let mut first_offset: Option<u64> = None;
     let mut seen = String::new();
+
+    let absorb = |event: &PtyEvent, digest: &mut StreamDigest, first: &mut Option<u64>| {
+        if let PtyEvent::Output { chunk, log_offset, .. } = event {
+            first.get_or_insert(*log_offset);
+            digest.feed(chunk);
+        }
+    };
+    for event in replay {
+        recovery.recover_before(&event, |missed| {
+            absorb(&missed, &mut delivered, &mut first_offset);
+            if let PtyEvent::Output { chunk, .. } = &missed {
+                seen.push_str(&String::from_utf8_lossy(chunk));
+            }
+        });
+        absorb(&event, &mut delivered, &mut first_offset);
+        if let PtyEvent::Output { chunk, .. } = &event {
+            seen.push_str(&String::from_utf8_lossy(chunk));
+        }
+    }
     let mut ready_ms = None;
     let mut submitted_ms = None;
     let mut trust_done = false;
@@ -155,29 +245,85 @@ fn drive_agent(
             break;
         }
         match rx.try_recv() {
-            Ok(PtyEvent::Output { chunk, .. }) => {
-                events += 1;
-                bytes += chunk.len() as u64;
-                seen.push_str(&String::from_utf8_lossy(&chunk));
-                if seen.len() > 200_000 {
-                    seen.drain(..100_000);
+            Ok(event) => {
+                // Refill first, in order, so `seen` and the digest carry the
+                // same bytes the terminal would have painted.
+                recovery.recover_before(&event, |missed| {
+                    absorb(&missed, &mut delivered, &mut first_offset);
+                    if let PtyEvent::Output { chunk, .. } = &missed {
+                        events += 1;
+                        bytes += chunk.len() as u64;
+                        seen.push_str(&String::from_utf8_lossy(chunk));
+                    }
+                });
+                absorb(&event, &mut delivered, &mut first_offset);
+                match event {
+                    PtyEvent::Output { chunk, .. } => {
+                        events += 1;
+                        bytes += chunk.len() as u64;
+                        seen.push_str(&String::from_utf8_lossy(&chunk));
+                        if seen.len() > 200_000 {
+                            seen.drain(..100_000);
+                        }
+                    }
+                    PtyEvent::Desync { missed_bytes, .. } => {
+                        eprintln!("  [{id}] DESYNC: {missed_bytes} bytes unrecoverable");
+                    }
+                    PtyEvent::Exit { .. } => break,
                 }
             }
-            Ok(PtyEvent::Exit { .. }) => break,
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                 lagged += n;
+                recovery.note_lag(n);
             }
             Err(_) => break,
         }
     }
+    // Whatever the log holds past the last event this subscriber saw. The
+    // exit watcher and the output pipeline are separate threads, so the
+    // final bytes routinely arrive after the loop has already stopped.
+    recovery.recover_tail(|missed| {
+        absorb(&missed, &mut delivered, &mut first_offset);
+        if let PtyEvent::Output { chunk, .. } = &missed {
+            events += 1;
+            bytes += chunk.len() as u64;
+        }
+    });
     let _ = handle.kill();
+
+    // The claim: what a subscriber reconstructed is the log, byte for byte.
+    let stats = recovery.stats();
+    let from = first_offset.unwrap_or(0);
+    let to = recovery.delivered_through().unwrap_or(from);
+    let on_disk = digest_log_range(&log_index, from, to);
+    let identical = on_disk == delivered;
+    if !identical {
+        eprintln!(
+            "  [{id}] STREAM MISMATCH: delivered {} B (hash {:x}) vs log[{from}..{to}] {} B (hash {:x})",
+            delivered.len, delivered.hash, on_disk.len, on_disk.hash
+        );
+    }
+
     counters.0.fetch_add(bytes, Ordering::Relaxed);
     counters.1.fetch_add(events, Ordering::Relaxed);
     counters.2.fetch_add(lagged, Ordering::Relaxed);
-    AgentResult { id, ready_ms, submitted_ms, tasks_completed: completed, bytes, events, lagged }
+    counters.3.fetch_add(stats.unrecovered_bytes, Ordering::Relaxed);
+    counters.4.fetch_add(u64::from(!identical), Ordering::Relaxed);
+    AgentResult {
+        id,
+        ready_ms,
+        submitted_ms,
+        tasks_completed: completed,
+        bytes,
+        events,
+        lagged,
+        unrecovered: stats.unrecovered_bytes,
+        recovered: stats.recovered_bytes,
+        identical,
+    }
 }
 
 #[test]
@@ -206,15 +352,22 @@ fn load_ramp_real_agents() {
     println!("tasks/agent: {}", TASKS.len());
     println!("machine load at start: {}", load_avg());
     println!();
-    println!("{:>3} {:>7} {:>9} {:>9} {:>8} {:>9} {:>8} {:>7} {:>6} {:>5}",
-        "N", "wall_s", "ready_p50", "subm_p50", "tasks", "bytes", "events", "drop", "rssMB", "thr");
+    println!("{:>3} {:>7} {:>9} {:>9} {:>8} {:>9} {:>8} {:>7} {:>9} {:>7} {:>6} {:>5}",
+        "N", "wall_s", "ready_p50", "subm_p50", "tasks", "bytes", "events", "lagged",
+        "refilled", "lostB", "rssMB", "thr");
 
     for &n in &steps {
         let dir = tempfile::tempdir().unwrap();
         let log_dir = dir.path().join("logs");
         std::fs::create_dir_all(&log_dir).unwrap();
         let runtime = TaskRuntime::new(log_dir);
-        let counters = Arc::new((AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)));
+        let counters: Arc<Counters> = Arc::new((
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+        ));
 
         let t0 = Instant::now();
         let mut workdirs = Vec::new();
@@ -249,9 +402,12 @@ fn load_ramp_real_agents() {
         let tasks: usize = results.iter().map(|r| r.tasks_completed).sum();
         let bytes = counters.0.load(Ordering::Relaxed);
         let events = counters.1.load(Ordering::Relaxed);
-        let dropped = counters.2.load(Ordering::Relaxed);
+        let lagged = counters.2.load(Ordering::Relaxed);
+        let unrecovered = counters.3.load(Ordering::Relaxed);
+        let mismatched = counters.4.load(Ordering::Relaxed);
+        let recovered: u64 = results.iter().map(|r| r.recovered).sum();
 
-        println!("{n:>3} {wall:>7.1} {ready:>9} {subm:>9} {:>8} {bytes:>9} {events:>8} {dropped:>7} {rss:>6} {threads:>5}",
+        println!("{n:>3} {wall:>7.1} {ready:>9} {subm:>9} {:>8} {bytes:>9} {events:>8} {lagged:>7} {recovered:>9} {unrecovered:>7} {rss:>6} {threads:>5}",
             format!("{tasks}/{}", n * TASKS.len()));
 
         for r in &results {
@@ -259,14 +415,29 @@ fn load_ramp_real_agents() {
                 println!("     ! {} NEVER SUBMITTED (bytes={} events={} lag={})",
                     r.id, r.bytes, r.events, r.lagged);
             }
+            if r.unrecovered > 0 || !r.identical {
+                println!("     ! {} STREAM NOT INTACT (unrecovered={} identical={})",
+                    r.id, r.unrecovered, r.identical);
+            }
         }
+        if lagged > 0 {
+            println!("     i {lagged} events lagged at N={n}; {recovered} B refilled from the log");
+        }
+        // Criterion 3. Lag is allowed — a broadcast send never blocks, so it
+        // cannot be prevented — but every lagged byte must come back, and
+        // the stream a subscriber reconstructs must BE the log.
+        assert_eq!(
+            unrecovered, 0,
+            "N={n}: {unrecovered} bytes were dropped and could not be recovered"
+        );
+        assert_eq!(
+            mismatched, 0,
+            "N={n}: {mismatched} subscriber stream(s) diverged from the on-disk log"
+        );
         if submitted_n < n {
             println!("\nBROKE AT N={n}: {submitted_n}/{n} agents submitted their prompt.");
             println!("load now: {}", load_avg());
             break;
-        }
-        if dropped > 0 {
-            println!("     ! {dropped} PTY events dropped (broadcast lag) at N={n}");
         }
         std::thread::sleep(Duration::from_secs(3));
     }

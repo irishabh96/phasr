@@ -16,9 +16,12 @@
 //! The frontend subscribes via a Tauri Channel; the sync worker (Phase 6)
 //! and any future log analyzer can subscribe independently.
 
+pub mod backfill;
 pub mod handle;
+pub mod log;
 mod runtime;
 mod shell;
 
+pub use backfill::LagRecovery;
 pub use handle::PtyEvent;
 pub use runtime::TaskRuntime;
