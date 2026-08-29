@@ -1,6 +1,7 @@
 # Spec: Perf Phase 3 — Never drop a byte: backpressure + recovery (incl. amendment A3)
 
-**Status:** planned on `feat/iterm2-parity` · **Author:** BSA (agent) · **Date:** 2026-08-27
+**Status:** **implemented** on `feat/iterm2-parity` (2026-08-29) · **Author:** BSA (agent) · **Date:** 2026-08-27
+**Evidence:** see the `## Evidence` section at the foot of this file.
 **Track:** P (performance) · **Ships as:** 0.4.2 · **Size:** 2–3 days
 **Depends on:** P0 (baselines) · **Independent of:** P1, P2 (Rust-only)
 **Blocks:** all Track F work — no feature work proceeds until this lands.
@@ -270,6 +271,115 @@ chosen deliberately, with both constraints named in the PR, and rotated segments
 - **Manual:** add a `docs/MANUAL-VERIFICATION.md` entry — `cat` a 100 MB file in a packaged
   build and confirm (a) the UI stays interactive and (b) the final screen matches
   `tail` of the same file, i.e. no hole.
+
+## Evidence — implemented 2026-08-29, `feat/iterm2-parity`
+
+Machine **M1P** (MacBook Pro, Apple M1 Pro, 16 GB, Darwin 25.6.0), on battery.
+Commits: `bd79674` (pipeline) · `818ff04` (pty tests) · `285a7e1` (orchestrator) ·
+`2c076a1` (load harness) · `dd57026` (wire contract).
+
+### What shipped, per criterion
+
+| # | Criterion | As built |
+|---|---|---|
+| 1 | Bounded reader→coalescer | `sync_channel(READER_QUEUE_SLOTS = 48)` with a blocking send (`handle.rs`). 48 × 4 KiB reads ≈ **192 KiB in flight** — iTerm2's slot budget, our chunk size, ≥ 5 coalesce windows of headroom |
+| 2 | Lag recovered, never swallowed | `PtyEvent::Output` carries a serde-**skipped** `log_offset`; `pty/backfill.rs::LagRecovery` refills the gap from the log before the event that revealed it. Unrecoverable ⇒ `PtyEvent::Desync { taskId, missedBytes }` + an `eprintln!`. Status sites resync from the store; scanner sites reset their carry |
+| 3 | Zero **unrecovered** bytes | Asserted at every ramp step *and* in the new `bulk` step; see below |
+| 4 | Log buffered + bounded | `pty/log.rs`: `BufWriter` flushed on the coalesce tick **before** the matching broadcast; 32 MiB segments × 3 sealed kept |
+| 5 | No throughput regression | See the bench rows |
+| 6 | A blocked reader never wedges anything | Two unit tests: the bound is enforced and resumes; the reader exits when the coalescer goes away |
+
+### Rotation arithmetic (both constraints, as the #EXPORT_CRITICAL note requires)
+
+* **Floor (recovery pulls up).** Broadcast worst case = 2048 slots × (32 KiB coalesce
+  ceiling + one 4 KiB read of overshoot) = **72 MiB**. Guaranteed retained =
+  `LOG_SEGMENTS_KEPT` × `LOG_SEGMENT_BYTES` = 3 × 32 MiB = **96 MiB** (the floor is reached
+  the instant after a rotation, when the live segment is empty). 96 > 72, with 33% headroom.
+* **Ceiling (privacy pulls down).** 4 files × 32 MiB = **128 MiB** per task, and the oldest
+  is `remove_file`d — never moved anywhere longer-lived. Strictly less durable than the
+  status quo at every size: rotation only binds a stream that, uncapped, would already be
+  larger than the cap.
+* `read_task_log` reads every retained segment in order, so the user-visible log does not
+  stop at the seam (`read_task_log_spans_a_rotation_boundary`). The B1 replay corpus and
+  `perfbench` list `extension == "log"`, and a sealed segment is `<task>.log.<n>` — so they
+  keep seeing exactly one file per task, with no duplicate or half-stream entries.
+
+### `PHASR_LOAD=1` — the unthrottled `bulk` step (new)
+
+80 MiB `cat` through a real PTY, subscriber held still until the producer is past the
+broadcast's 64 MiB ring so `Lagged` is **guaranteed** (asserted, so the test cannot pass
+vacuously). Crosses two rotation boundaries.
+
+| Profile | lagged | refilled from log | **unrecovered** | delivered | log range | identical |
+|---|---|---|---|---|---|---|
+| debug | 383 events | 12 354 886 B | **0 B** | 83 887 430 B (`67f5b8f55b1a3b8d`) | `[0..83887430]` (`67f5b8f55b1a3b8d`) | ✅ |
+| release | 221 events | 6 980 934 B | **0 B** | 83 887 430 B (`6d681022bace0587`) | `[0..83887430]` (`6d681022bace0587`) | ✅ |
+
+**Before/after, stated plainly:** those 383 (resp. 221) lagged events are 12.35 MB (resp.
+6.98 MB) of terminal content that the pre-P3 forwarders discarded with `continue`, with no
+error anywhere. After: every byte is delivered and the reconstructed stream hashes
+identical to the on-disk log.
+
+### `PHASR_BENCH=1` — throughput, release profile (criterion 5)
+
+```
+COALESCE bulk unthrottled  BEFORE ev/s 194243.5  B/ev  1024  189.66 MB/s
+                           AFTER  ev/s   3677.0  B/ev 32767  114.90 MB/s   reduction 52.8x
+COALESCE tui-40hz 1.3 MB/s BEFORE ev/s   1279.9  B/ev  1024    1.25 MB/s
+                           AFTER  ev/s     44.9  B/ev 29127    1.25 MB/s   reduction 28.5x
+```
+
+The absolute flood number (114.90 MB/s) is **above** P0's recorded 63.12 MB/s, but so is
+the raw per-read BEFORE column (189.66 vs 108.8 MB/s) — different corpus (22.1 MiB log) and
+a differently-loaded machine, so the absolute numbers are not comparable. The comparable
+figure is the **ratio the shipping path retains of raw PTY throughput**: P0 63.12/108.8 =
+**0.58**, now 114.90/189.66 = **0.61**. Unchanged within noise, marginally better — the
+buffered log write is fewer syscalls than the per-read `write_all` it replaced. The
+throttled `tui-40hz` rate is producer-bound at 1.25 MB/s in both columns, as before.
+
+### Grep invariant
+
+```
+$ grep -rn "Lagged(_) => continue\|Lagged(_)) => continue" src-tauri/src/
+(no matches)
+```
+
+### Suites
+
+`cargo test --manifest-path src-tauri/Cargo.toml --lib` → **243 passed, 0 failed, 8 ignored**
+(218 passed / 7 ignored before this phase; +25 passing tests, +1 ignored — the new
+`bulk_flood_never_drops_a_byte`). IPC contract checker green for every command whose
+forwarder changed — `open_task_terminal`, `start_session_terminal`,
+`attach_session_terminal`, `start_run_command`, `read_task_log` — none of which changed
+name, args or return shape.
+
+### Deviations from the spec, and open items
+
+1. **`PtyEvent::Output`'s `log_offset` is `#[serde(skip_serializing)]`.** The spec says the
+   event "gains a log byte offset"; it is a backend-internal cursor, and keeping it off the
+   wire leaves the IPC payload byte-identical to v0.4.1's (pinned by
+   `the_log_offset_stays_off_the_wire`) — no `types.ts` change, nothing for P4 to re-measure.
+2. **`PtyEvent::Desync` is the one wire ADDITION, and its TS arm is not yet written.**
+   `src/lib/types.ts` needs `| { type: "desync"; taskId: string; missedBytes: number }`, and
+   the three `if (event.type === "output") … else if (event.type === "exit")` handlers
+   (`Terminal.tsx:200`, `SessionTerminalTab.tsx:161`, `RunCommandTerminal.tsx:101`) need a
+   repaint branch. Until then an unknown `type` falls through both branches and is ignored —
+   the same silence as today, not a regression. **Left to the frontend owner** to avoid
+   colliding with the concurrent P1 work under `src/`.
+3. **The status resync is scoped to tasks still in flight** (live PTY ∪ pending ∪ running),
+   not to every workspace. Re-emitting a finished task's status would re-fire its completion
+   toast and OS notification (`useCompletionNotifications.ts`). The residual gap — a
+   terminal transition for a task in a repository with nothing else in flight — is
+   reconciled by the frontend's next refetch, since every event it *does* receive
+   invalidates that repository's list. Recorded rather than hidden.
+4. **`docs/MANUAL-VERIFICATION.md` entry not appended, and report item D3
+   (`docs/PERFORMANCE-RETENTION-REPORT.md:320`, "Coalesce PTY output + backfill on lag") is
+   not yet struck through.** Both are out of this agent's file scope while P1 is live under
+   `src/`; the text to append is in the handoff. Criterion 7's *evidence* — the loadtest
+   assertion — exists and is quoted above.
+5. **The exit watcher also recovers on `Closed`,** not only on `Lagged` — the spec only asked
+   for the `Lagged` case, but the same "ask the child directly" answer is correct there and
+   the arm was two lines away.
 
 ## Out of scope
 
