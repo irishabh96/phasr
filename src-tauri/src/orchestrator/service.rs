@@ -1587,6 +1587,92 @@ mod tests {
         assert!(matches!(err, OrchestratorError::WorktreeUnavailable));
     }
 
+    /// The user-visible log must not stop at a rotation seam. `read_task_log`
+    /// is the only consumer that reads the whole stream rather than a range,
+    /// and Phase 3's size cap is the first thing that could truncate it.
+    #[tokio::test]
+    async fn read_task_log_spans_a_rotation_boundary() {
+        let (orchestrator, _repositories, _db, _dir) = fresh_orchestrator().await;
+        let log_path = orchestrator.runtime.log_dir.join("rotated.log");
+        std::fs::create_dir_all(&orchestrator.runtime.log_dir).unwrap();
+
+        let mut log = crate::pty::log::TaskLog::open(&log_path).unwrap();
+        log.append(b"before the seam\n");
+        log.flush();
+        log.rotate_for_test();
+        log.append(b"after the seam\n");
+        log.flush();
+
+        let read = orchestrator.read_task_log("rotated").await.unwrap();
+        assert_eq!(read, "before the seam\nafter the seam\n");
+    }
+
+    /// The status broadcast carries state transitions, not bytes, so a
+    /// `Lagged` there is recovered by re-reading the store. What the snapshot
+    /// must contain: everything still in flight. What it must NOT contain:
+    /// finished tasks, whose re-emission would fire their completion toast
+    /// and OS notification a second time.
+    #[tokio::test]
+    async fn status_resync_reports_live_tasks_and_not_finished_ones() {
+        let (orchestrator, repositories, _db, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "resync-repo").await;
+
+        let running = orchestrator
+            .start_task(sleep_request(&repo.id, "still-going"))
+            .await
+            .unwrap();
+
+        let mut finished = Workspace::new(repo.id.clone(), "already-done".into(), "true".into());
+        finished.status = WorkspaceStatus::Completed;
+        finished.exit_code = Some(0);
+        orchestrator.workspaces.insert(&finished).await.unwrap();
+
+        let snapshot = orchestrator.live_status_snapshot().await;
+        let ids: Vec<&str> = snapshot.iter().map(|e| e.task_id.as_str()).collect();
+        assert!(
+            ids.contains(&running.task_id.as_str()),
+            "the running task must be resynced; got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&finished.id.as_str()),
+            "a finished task must not be re-announced; got {ids:?}"
+        );
+        assert!(snapshot
+            .iter()
+            .any(|e| e.task_id == running.task_id && e.status == WorkspaceStatus::Running));
+
+        cleanup(&orchestrator, &[&running]).await;
+    }
+
+    /// A watcher that lags past the one event it cares about would leave the
+    /// row on `running` forever. The child's state is published before the
+    /// event is ever sent, so it can be asked directly.
+    #[tokio::test]
+    async fn a_childs_exit_is_readable_without_the_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = TaskRuntime::new(dir.path().join("logs"));
+        let handle = runtime
+            .spawn(
+                "exit-state".into(),
+                Some("exit 3".into()),
+                None,
+                std::env::temp_dir(),
+                24,
+                80,
+            )
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while handle.exit_state().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child state never became readable"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(handle.exit_state().map(|e| e.exit_code), Some(Some(3)));
+    }
+
     #[test]
     fn interpolate_for_task_substitutes_prompt() {
         let out = interpolate_for_task(r#"claude -p "{{prompt}}""#, Some("hi"));

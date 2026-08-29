@@ -1346,7 +1346,7 @@ mod tests {
         producer.join().unwrap();
 
         let mut delivered: Vec<u8> = Vec::new();
-        let mut push = |event: &PtyEvent, out: &mut Vec<u8>| {
+        let push = |event: &PtyEvent, out: &mut Vec<u8>| {
             if let PtyEvent::Output { chunk, .. } = event {
                 out.extend_from_slice(chunk);
             }
