@@ -3,7 +3,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
-import { decodePtyChunk } from "@/lib/ptyChunk";
+import {
+  desyncNotice,
+  detachTerminalStream,
+  hintTerminalVisible,
+  isPtyOutput,
+  ptyChunkBytes,
+} from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import {
   canTakeTerminalFocus,
@@ -20,7 +26,7 @@ import type {
   TerminalSurface,
 } from "@/lib/terminal/surface";
 import { readTerminalTheme } from "@/lib/terminal/theme";
-import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
+import type { PtyStreamMessage, WorkspaceStatus } from "@/lib/types";
 
 export interface TerminalProps {
   workspaceId: string;
@@ -74,6 +80,10 @@ interface CachedMain {
   /** Read at click time by the link layer — kept fresh across remounts
    *  (the surface and its link closures outlive component instances). */
   linkContext: { cwd: string | null; editorId: string | null };
+  /** Channel id of the live PTY stream, for the visibility hint and the
+   *  detach-on-eviction path. `null` until a channel is opened (a finished
+   *  workspace replaying its log never opens one). */
+  channelId: number | null;
 }
 
 const mainSurfaceCache = new TerminalSurfaceCache<CachedMain>("agent");
@@ -142,6 +152,7 @@ export function Terminal({
         setStatus: null,
         exitStatus: null,
         linkContext: { cwd: null, editorId: null },
+        channelId: null,
       };
       const created = entry;
       surface.installLinks(
@@ -195,14 +206,28 @@ export function Terminal({
             ? { state: "restarting" }
             : { state: "starting" },
       );
-      const channel = new Channel<PtyEvent>();
-      channel.onmessage = (event) => {
-        if (event.type === "output") {
-          surface.write(decodePtyChunk(event.chunk));
-        } else if (event.type === "exit") {
-          entry!.exitStatus = { exitCode: event.exitCode };
-          entry!.setStatus?.({ state: "exited", exitCode: event.exitCode });
-          entry!.onExit?.(event.exitCode);
+      const channel = new Channel<PtyStreamMessage>();
+      entry!.channelId = channel.id;
+      channel.onmessage = (message) => {
+        if (isPtyOutput(message)) {
+          // The surface is gone — LRU eviction disposed it while this
+          // workspace was parked — so nothing downstream of here can use
+          // these bytes. Tell the backend to stop producing them; the PTY
+          // keeps running and the next mount re-attaches with replay. One
+          // wasted chunk instead of a pipe that runs forever.
+          if (!surface.element.isConnected) {
+            detachTerminalStream(channel.id);
+            return;
+          }
+          surface.write(ptyChunkBytes(message));
+          return;
+        }
+        if (message.type === "exit") {
+          entry!.exitStatus = { exitCode: message.exitCode };
+          entry!.setStatus?.({ state: "exited", exitCode: message.exitCode });
+          entry!.onExit?.(message.exitCode);
+        } else if (message.type === "desync") {
+          surface.write(desyncNotice(message.missedBytes));
         }
       };
       try {
@@ -319,6 +344,10 @@ export function Terminal({
       // Park the persistent element offscreen so the canvas stays in the
       // document — preserves the WebGL GPU context.
       parkSurface(entry!.surface);
+      // Parked, so nobody can see it: the PTY may widen its flush window.
+      // Same bytes, far fewer trips through the IPC — which is the whole
+      // point when eight of these are streaming behind the one on screen.
+      hintTerminalVisible(entry!.channelId, false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
@@ -357,6 +386,9 @@ export function Terminal({
     // inactive too — ghostty-web's free-running frame loop would otherwise
     // render every hidden tab, forever.
     entry.surface.setActive(visible);
+    // The same fact, pushed one layer further down: an inactive surface does
+    // not paint, and its PTY does not need to flush on the 8 ms window.
+    hintTerminalVisible(entry.channelId, visible);
     if (!visible) return;
     if (!isSurfaceVisible(entry.surface.element)) return;
     // Revealing a tab into a same-width slot is a rows-only change at

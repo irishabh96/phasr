@@ -3,7 +3,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
-import { decodePtyChunk } from "@/lib/ptyChunk";
+import {
+  desyncNotice,
+  detachTerminalStream,
+  hintTerminalVisible,
+  isPtyOutput,
+  ptyChunkBytes,
+} from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import { canTakeTerminalFocus } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
@@ -15,7 +21,7 @@ import type {
   TerminalSurface,
 } from "@/lib/terminal/surface";
 import { readTerminalTheme } from "@/lib/terminal/theme";
-import type { PtyEvent } from "@/lib/types";
+import type { PtyStreamMessage } from "@/lib/types";
 
 type StartMode = "initial" | "retry" | "restart";
 
@@ -51,6 +57,9 @@ export function RunCommandTerminal({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onExitRef = useRef(onExit);
   const surfaceRef = useRef<TerminalSurface | null>(null);
+  // The visibility effect runs outside the mount effect that owns the
+  // channel, so the id it needs lives in a ref rather than a closure.
+  const channelIdRef = useRef<number | null>(null);
   const [status, setStatus] = useState<TermStatus>(null);
   // See Terminal.tsx — mirrored onto the container for e2e.
   const [surfaceInfo, setSurfaceInfo] = useState<{
@@ -95,14 +104,26 @@ export function RunCommandTerminal({
 
     const disposables: SurfaceDisposable[] = [];
 
-    const channel = new Channel<PtyEvent>();
-    channel.onmessage = (event) => {
+    const channel = new Channel<PtyStreamMessage>();
+    channelIdRef.current = channel.id;
+    channel.onmessage = (message) => {
       if (cancelled) return;
-      if (event.type === "output") {
-        surface.write(decodePtyChunk(event.chunk));
-      } else if (event.type === "exit") {
-        setStatus({ state: "exited", exitCode: event.exitCode });
-        onExitRef.current?.(event.exitCode);
+      if (isPtyOutput(message)) {
+        // This surface is disposed on unmount rather than cached, so a
+        // disconnected element means the pane is gone for good. Same
+        // answer either way: stop the forwarder, leave the process alone.
+        if (!surface.element.isConnected) {
+          detachTerminalStream(channel.id);
+          return;
+        }
+        surface.write(ptyChunkBytes(message));
+        return;
+      }
+      if (message.type === "exit") {
+        setStatus({ state: "exited", exitCode: message.exitCode });
+        onExitRef.current?.(message.exitCode);
+      } else if (message.type === "desync") {
+        surface.write(desyncNotice(message.missedBytes));
       }
     };
 
@@ -155,6 +176,12 @@ export function RunCommandTerminal({
       cancelled = true;
       resizeObserver.disconnect();
       for (const d of disposables) d.dispose();
+      // Unlike the cached terminals this one really is going away, so the
+      // forwarder goes with it instead of waiting for the next chunk to
+      // notice. The run-command process is untouched — `stopRunCommand`
+      // is the only thing that kills it.
+      detachTerminalStream(channel.id);
+      channelIdRef.current = null;
       // Disposes the renderer too — this surface owns a WebGL context
       // that used to be leaked on every unmount.
       surface.dispose();
@@ -181,6 +208,9 @@ export function RunCommandTerminal({
     const surface = surfaceRef.current;
     if (!surface) return;
     surface.setActive(visible);
+    // A hidden run-command pane still streams; it just does not need the
+    // 8 ms window to do it.
+    hintTerminalVisible(channelIdRef.current, visible);
     if (!visible) return;
     surface.fitAnchored();
     surface.repaint();

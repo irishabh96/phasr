@@ -20,7 +20,7 @@ import type {
   NoteOriginKind,
   OpenPullRequestOutcome,
   PathValidation,
-  PtyEvent,
+  PtyStreamMessage,
   Repository,
   RunCommand,
   RunningTaskInfo,
@@ -125,7 +125,7 @@ export const tauri = {
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
   startSessionTerminal: (
     cwd: string,
-    onEvent: Channel<PtyEvent>,
+    onEvent: Channel<PtyStreamMessage>,
     rows?: number,
     cols?: number,
     initialCommand?: string,
@@ -137,7 +137,7 @@ export const tauri = {
       cols,
       initialCommand,
     }),
-  attachSessionTerminal: (sessionId: string, onEvent: Channel<PtyEvent>) =>
+  attachSessionTerminal: (sessionId: string, onEvent: Channel<PtyStreamMessage>) =>
     invoke<void>("attach_session_terminal", { sessionId, onEvent }),
   sendSessionInput: (sessionId: string, data: string) =>
     invoke<void>("send_session_input", { sessionId, data }),
@@ -285,7 +285,7 @@ export const tauri = {
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
   startRunCommand: (
     id: string,
-    onEvent: Channel<PtyEvent>,
+    onEvent: Channel<PtyStreamMessage>,
     rows = 24,
     cols = 80,
   ) => invoke<void>("start_run_command", { id, onEvent, rows, cols }),
@@ -307,7 +307,7 @@ export const tauri = {
   stopTask: (taskId: string) => invoke<void>("stop_task", { taskId }),
   openTaskTerminal: (
     taskId: string,
-    onEvent: Channel<PtyEvent>,
+    onEvent: Channel<PtyStreamMessage>,
     rows = 24,
     cols = 80,
   ) =>
@@ -323,6 +323,25 @@ export const tauri = {
   resizeTask: (taskId: string, rows: number, cols: number) =>
     invoke<void>("resize_task", { taskId, rows, cols }),
   interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
+
+  // ── terminal streams (any family: task, session, run-command) ────────
+  //
+  // Both are keyed by `channel.id` — the callback id the JS `Channel`
+  // already carries — so one pair of commands serves all three terminal
+  // kinds and a re-attach can drop the old stream while the new one for the
+  // same PTY keeps running.
+  //
+  /** Stop forwarding this terminal's output. The child process is NOT
+   *  touched; the next mount re-attaches with replay. Called when a surface
+   *  goes away (LRU eviction, explicit close) so an unwatched agent stops
+   *  paying for a pipe nobody reads. Idempotent. */
+  detachTerminalStream: (channelId: number) =>
+    invoke<void>("detach_terminal_stream", { channelId }),
+  /** Tell a PTY whether anyone can see it. Hidden terminals coalesce their
+   *  output on a 50 ms window instead of 8 ms — same bytes, ~6x fewer trips
+   *  through the IPC. */
+  setTerminalVisible: (channelId: number, visible: boolean) =>
+    invoke<void>("set_terminal_visible", { channelId, visible }),
   listTaskActivity: () => invoke<TaskActivity[]>("list_task_activity"),
 };
 

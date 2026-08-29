@@ -3,7 +3,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
-import { decodePtyChunk } from "@/lib/ptyChunk";
+import {
+  desyncNotice,
+  detachTerminalStream,
+  hintTerminalVisible,
+  isPtyOutput,
+  ptyChunkBytes,
+} from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import {
   canTakeTerminalFocus,
@@ -20,7 +26,7 @@ import type {
   TerminalSurface,
 } from "@/lib/terminal/surface";
 import { readTerminalTheme } from "@/lib/terminal/theme";
-import type { PtyEvent } from "@/lib/types";
+import type { PtyStreamMessage } from "@/lib/types";
 
 type StartMode = "initial" | "retry" | "restart";
 
@@ -63,7 +69,7 @@ interface SessionTerminalTabProps {
  */
 interface CachedSession {
   surface: TerminalSurface;
-  channel: Channel<PtyEvent>;
+  channel: Channel<PtyStreamMessage>;
   sessionId: string | null;
   /** Input/resize handlers — replaced on each remount. */
   inputDisposables: SurfaceDisposable[];
@@ -138,7 +144,7 @@ export function SessionTerminalTab({
         surface.fit();
       }
 
-      const channel = new Channel<PtyEvent>();
+      const channel = new Channel<PtyStreamMessage>();
       entry = {
         surface,
         channel,
@@ -157,12 +163,24 @@ export function SessionTerminalTab({
       );
       sessionSurfaceCache.set(tabId, entry);
 
-      channel.onmessage = (event) => {
-        if (event.type === "output") {
-          surface.write(decodePtyChunk(event.chunk));
-        } else if (event.type === "exit") {
-          created.exitStatus = { exitCode: event.exitCode };
-          created.setStatus?.({ state: "exited", exitCode: event.exitCode });
+      channel.onmessage = (message) => {
+        if (isPtyOutput(message)) {
+          // Surface disposed under us (LRU eviction while this tab was
+          // parked): stop the Rust forwarder rather than keep decoding for
+          // nobody. The shell process keeps running; the next mount
+          // re-attaches with replay. See Terminal.tsx.
+          if (!surface.element.isConnected) {
+            detachTerminalStream(channel.id);
+            return;
+          }
+          surface.write(ptyChunkBytes(message));
+          return;
+        }
+        if (message.type === "exit") {
+          created.exitStatus = { exitCode: message.exitCode };
+          created.setStatus?.({ state: "exited", exitCode: message.exitCode });
+        } else if (message.type === "desync") {
+          surface.write(desyncNotice(message.missedBytes));
         }
       };
     } else {
@@ -307,6 +325,8 @@ export function SessionTerminalTab({
       // Park the persistent element offscreen so the canvas stays in the
       // document — preserves the WebGL GPU context.
       parkSurface(entry!.surface);
+      // Nobody can see it now — the PTY may coalesce on the wide window.
+      hintTerminalVisible(entry!.channel.id, false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, repositoryId, tabId, cwd, initialCommand]);
@@ -338,6 +358,7 @@ export function SessionTerminalTab({
     if (!entry) return;
     // See Terminal.tsx — a mounted-but-hidden tab must be inactive too.
     entry.surface.setActive(visible);
+    hintTerminalVisible(entry.channel.id, visible);
     if (!visible) return;
     if (!isSurfaceVisible(entry.surface.element)) return;
     entry.surface.fitAnchored();

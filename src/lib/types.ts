@@ -70,15 +70,34 @@ export interface UserSettings {
   updatedAt: string;
 }
 
+/**
+ * The control plane of a terminal channel — everything that is *not* bytes.
+ *
+ * Output is no longer a member of this union: since perf phase 4 it crosses
+ * the IPC as a raw payload and arrives as an `ArrayBuffer` with no envelope
+ * to put a `type` in (`PtyStreamMessage` below). These two stay JSON because
+ * they are rare and carry named fields rather than a byte stream.
+ */
 export type PtyEvent =
+  | { type: "exit"; taskId: string; exitCode: number | null }
   /**
-   * `chunk` is **base64** of the PTY's raw bytes, not text — decode it with
-   * `decodePtyChunk` before handing it to a terminal. A terminal is a byte
-   * protocol; carrying it as a string forced a lossy UTF-8 decode that
-   * destroyed non-UTF-8 output and needed a split-codepoint carry in Rust.
+   * Bytes were dropped by the broadcast AND had already rotated off the end
+   * of the task log, so they are gone for good — the honest floor of the
+   * zero-drop guarantee, and never silent
+   * (`src-tauri/src/pty/backfill.rs`). A receiver must force a repaint
+   * rather than keep painting over a screen it can no longer trust; see
+   * `desyncNotice` in `src/lib/ptyChunk.ts`.
    */
-  | { type: "output"; taskId: string; chunk: string }
-  | { type: "exit"; taskId: string; exitCode: number | null };
+  | { type: "desync"; taskId: string; missedBytes: number };
+
+/**
+ * What a terminal `Channel` actually delivers.
+ *
+ * An `ArrayBuffer` is the PTY's raw output bytes; an object is a control
+ * event. `ptyChunkBytes()` is the discriminator — do not hand-roll the
+ * `instanceof` at call sites.
+ */
+export type PtyStreamMessage = ArrayBuffer | PtyEvent;
 
 /**
  * Result of `start_task` — orchestrator-side vocabulary uses "task" but
