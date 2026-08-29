@@ -162,6 +162,28 @@ would leave the actual battery case (a backgrounded window full of streaming age
   and 8-open/1-visible, per `docs/MANUAL-VERIFICATION.md`. **The e2e harness cannot produce
   the CPU-percentage number** — script time is a proxy, not the metric in the targets table.
 
+## Evidence — before/after (implemented 2026-08-29)
+
+All rows: M1P (same machine as the P0 baseline), `E2E_PORT=14311`, one worker,
+`caffeinate`. Engine: ghostty-web 0.4.0 + `patches/ghostty-web@0.4.0.patch`
+regenerated at this phase's commit.
+
+| Metric | Runtime | Before (P0 baseline) | After P1 |
+|---|---|---|---|
+| Idle script / 8 s, 1 visible (CDP) | Chromium | Script 0.559 s / Task 1.307 s | **Script 0.050 s / Task 0.200 s** (11.2× / 6.5×) |
+| Idle browser-tree CPU / 8 s (ps-diff) | WebKit | 2.28 s | **1.25 s** — the residual is the probe's own 60 Hz rAF sampler (481 frames); the engine idled at the heartbeat |
+| Idle browser-tree CPU / 8 s (ps-diff) | Chromium | 2.69 s | 1.79 s (same sampler caveat at ~120 Hz) |
+| Idle engine tick rate | Chromium harness | ~60–120/s (free-running) | **~1/s** unfocused (asserted ≤ 8/2 s); +~2/s blink frames while focused |
+| Flood cadence | Chromium harness | free-running (~36 fps incidental on WebKit) | **cadence tier 30 reported, bps > 10 000** (asserted); ticks 12–50 fps over the flood window |
+
+Criteria closed by automated coverage: 1–4, 6 (blink gating: idle test blurs first),
+8 (both halves asserted), 9 (liveness suite + the two adapted tests + `LIVENESS_SOAK=1`
+5-minute soak), 10 (patch regenerated via `pnpm patch-commit`, own commit). Criterion 5
+is the DEC 2026 suppression (`e2e/terminal-sync.spec.ts` still green — the pending
+frame paints when the window closes/expires, no event needed). Criterion 7's headline
+%-CPU number needs a human with Activity Monitor on a packaged build —
+`docs/MANUAL-VERIFICATION.md`, 2026-08-29 entry.
+
 ## Out of scope
 
 Making individual frames cheaper (that is P2) · scrollback blitting (P2.3) · anything on the

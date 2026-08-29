@@ -160,6 +160,11 @@ one worker, machine held awake with `caffeinate`. Probes:
 | `getScrollbackLine` lines/s (+ graphemes) | Chromium | **2.83 µs/line ≈ 354 k lines/s** — pass-order/allocator noise puts it under fetch-only; read both as "~3 µs/line, fetch dominates, graphemes ≈ free on a 1/16-cluster corpus" | 2026-08-28 | M1P |
 | `resize_task` calls per horizontal gesture | Chromium (harness) | **14** (`resize_task`×14; 14-step / ~220 ms viewport drag) | 2026-08-27 | M1P |
 | `resize_task` calls per vertical gesture | Chromium (harness) | **9** (`resize_task`×9; rows-only path fits immediately — P5's remaining half, confirmed) | 2026-08-27 | M1P |
+| Idle script / 8 s, 1 visible — **post-P1** | Chromium | Script **0.050 s**, Task 0.200 s (CDP; was 0.559 / 1.307 above — **11.2× / 6.5×**; ADR-002's known-bad band was 0.420–0.477 s) | 2026-08-29 | M1P |
+| Idle browser-tree CPU / 8 s, 1 visible — **post-P1** | WebKit | **1.25 s / 8 s** (ps-diff; was 2.28 — **1.8×**. The residual is dominated by the probe's OWN 60 Hz rAF sampler chain, 481 frames over the window; the engine itself idled at the ~1 Hz heartbeat throughout) | 2026-08-29 | M1P |
+| Idle browser-tree CPU / 8 s, 1 visible — **post-P1** | Chromium | 1.79 s / 8 s (was 2.69; same probe-sampler caveat at ~120 Hz, 960 frames) | 2026-08-29 | M1P |
+| Cadence under flood — **post-P1** (A1 target) | Chromium (harness) | engine reports **cadence 30, bps > 10 000** under a sustained ~150 KB/s flood; tick rate over the flood window bounded 12–50 fps (asserted in `e2e/terminal-liveness.spec.ts`, default suite) | 2026-08-29 | M1P |
+| Idle tick rate — **post-P1** | Chromium (harness) | **~1/s** unfocused (≤ 8 ticks / 2 s asserted; a focused terminal adds ~2/s of cursor-blink frames), vs ~60–120/s free-running before | 2026-08-29 | M1P |
 
 **WebKit context from `perf-baseline.spec.ts`** (2026-08-28, M1P; Playwright
 WebKit runs its rAF at 60 Hz on this machine while Chromium runs at ~120 —

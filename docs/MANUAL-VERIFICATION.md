@@ -217,3 +217,36 @@ figure to beat is 2.28 s of process-tree CPU per 8 s with one visible terminal.
 |---|---|---|---|
 | 1 visible terminal, idle | _unrecorded_ | | |
 | 8 terminals open, 1 visible, idle | _unrecorded_ | | |
+
+---
+
+## 2026-08-29 — Perf Phase 1: damage-driven frame scheduling
+
+Phase 1 (`specs/perf-p1-frame-scheduling-spec.md`) replaced the engine's
+free-running ~60 fps rAF chain with a damage-driven scheduler: frames paint
+only when requested (writes, blink, scroll/selection/hover, resize), the
+chain degrades to a **~1 Hz heartbeat** after ~3 s idle (or while the window
+is hidden/backgrounded), and floods run at ~30 fps. What only a human at the
+GUI can verify:
+
+- [ ] **The headline number**: Activity Monitor on a bundled build, 1 visible
+      terminal at idle. Target ≤ 0.5% of a core (spec criterion 7); fill the
+      Phase 0 table above while at it. The WebKit-proxy idle figure went from
+      2.28 s to 1.25 s of browser-tree CPU per 8 s — and that residual is
+      dominated by the probe's own 60 Hz rAF sampler, which a packaged build
+      does not run: the engine itself sat at the ~1 Hz heartbeat (Chromium
+      CDP script time 0.559 s → 0.050 s per 8 s). The packaged number should
+      now be dominated by the app, not the terminal.
+- [ ] Idle with the app **backgrounded** (⌘-tab away, window still visible):
+      CPU should drop to ~0 within a few seconds — this is the Tauri
+      `onFocusChanged` → `setBackgrounded` path, which no e2e can drive.
+      Refocusing repaints immediately (no 1 s heartbeat lag visible).
+- [ ] Cursor blink: blinks only in the focused terminal; an unfocused
+      terminal's cursor is steady; blink stops while the app is
+      backgrounded. Focus flips between two visible terminals move the
+      blink with them.
+- [ ] A TUI (claude, htop) after 5+ minutes untouched: first keypress paints
+      instantly, no visible wake-up hitch, no watchdog console warnings.
+- [ ] Streaming agent behind another app for a while, then revealed: content
+      is current the moment it is revealed (occlusion floors the cadence,
+      and the reveal repaints at once).
