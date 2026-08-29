@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de167d4e9ec 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..1d7be6688e127ed1ae4a51c908f3d819d5e7735a 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -30,11 +30,11 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
  class $ {
    constructor(A, B = {}) {
 -    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
-+    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.frameViewport = null, this.frameViewportCols = 0, this.frameViewportRows = 0, this.lastPaintedCursorVisible = null, this.lastPaintedCursorOn = null, this.canvas = A;
++    this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.lastTopAbsRow = -1, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.blinkSuspended = !0, this.frameRequester = void 0, this.frameViewport = null, this.frameViewportCols = 0, this.frameViewportRows = 0, this.lastPaintedCursorVisible = null, this.lastPaintedCursorOn = null, this.cssColorCache = /* @__PURE__ */ new Map(), this.ctxFillStyle = null, this.ctxFont = null, this.fontVariantsBase = "", this.fontVariants = null, this.canvas = A;
      const g = A.getContext("2d", { alpha: !0 });
      if (!g)
        throw new Error("Failed to get 2D rendering context");
-@@ -1378,6 +1384,39 @@ class $ {
+@@ -1378,6 +1384,69 @@ class $ {
    rgbToCSS(A, B, g) {
      return `rgb(${A}, ${B}, ${g})`;
    }
@@ -71,15 +71,54 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
 +  linkRangesEqual(A, B) {
 +    return A === B || !!A && !!B && A.startX === B.startX && A.startY === B.startY && A.endX === B.endX && A.endY === B.endY;
 +  }
++  // PHASR PATCH (perf phase 2): canvas-state caching (criterion 2).
++  //
++  // Upstream rebuilt an `rgb(...)` string and assigned ctx.fillStyle per
++  // CELL, and rebuilt the font template string and assigned ctx.font per
++  // CELL — every assignment a string parse inside the canvas
++  // implementation, x10,000 on a full 50x200 frame. Colour strings are
++  // memoized (24-bit key; the cache is cleared if a true-colour gradient
++  // ever pushes it past 4096 entries), the four font variants
++  // (regular/italic/bold/both) are precomputed per font config, and every
++  // ctx.font / ctx.fillStyle write in the renderer goes through a
++  // shadow-compare so the canvas only ever sees actual CHANGES — one set
++  // per run of identical style, not one per cell. The shadows are reset
++  // whenever the canvas backing store is resized (that resets ctx state)
++  // and defensively at every frame entry.
++  cssColor(A, B, g) {
++    const E = A << 16 | B << 8 | g;
++    let C = this.cssColorCache.get(E);
++    return C !== void 0 || (this.cssColorCache.size >= 4096 && this.cssColorCache.clear(), C = `rgb(${A}, ${B}, ${g})`, this.cssColorCache.set(E, C)), C;
++  }
++  setCtxFill(A) {
++    A !== this.ctxFillStyle && (this.ctx.fillStyle = A, this.ctxFillStyle = A);
++  }
++  setCtxFont(A) {
++    A !== this.ctxFont && (this.ctx.font = A, this.ctxFont = A);
++  }
++  /** @param A style bits: 1 = italic, 2 = bold */
++  fontFor(A) {
++    const B = `${this.fontSize}px ${this.fontFamily}`;
++    return this.fontVariantsBase !== B && (this.fontVariantsBase = B, this.fontVariants = [B, `italic ${B}`, `bold ${B}`, `italic bold ${B}`]), this.fontVariants[A];
++  }
    // ==========================================================================
    // Canvas Sizing
    // ==========================================================================
-@@ -1396,17 +1435,46 @@ class $ {
+@@ -1386,7 +1455,7 @@ class $ {
+    */
+   resize(A, B) {
+     const g = A * this.metrics.width, E = B * this.metrics.height;
+-    this.canvas.style.width = `${g}px`, this.canvas.style.height = `${E}px`, this.canvas.width = g * this.devicePixelRatio, this.canvas.height = E * this.devicePixelRatio, this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio), this.ctx.textBaseline = "alphabetic", this.ctx.textAlign = "left", this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, g, E);
++    this.canvas.style.width = `${g}px`, this.canvas.style.height = `${E}px`, this.canvas.width = g * this.devicePixelRatio, this.canvas.height = E * this.devicePixelRatio, this.ctxFillStyle = null, this.ctxFont = null, this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio), this.ctx.textBaseline = "alphabetic", this.ctx.textAlign = "left", this.setCtxFill(this.theme.background), this.ctx.fillRect(0, 0, g, E);
+   }
+   // ==========================================================================
+   // Main Rendering
+@@ -1396,17 +1465,46 @@ class $ {
     */
    render(A, B = !1, g = 0, E, C = 1) {
      var U;
 -    this.currentBuffer = A;
-+    this.currentBuffer = A, this.frameViewport = null;
++    this.currentBuffer = A, this.frameViewport = null, this.ctxFillStyle = null, this.ctxFont = null;
      const I = A.getCursor(), D = A.getDimensions(), i = E ? E.getScrollbackLength() : 0;
 -    (U = A.needsFullRedraw) != null && U.call(A) && (B = !0), (this.canvas.width !== D.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== D.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(D.cols, D.rows), B = !0), g !== this.lastViewportY && (B = !0, this.lastViewportY = g);
 +    (U = A.needsFullRedraw) != null && U.call(A) && (B = !0), (this.canvas.width !== D.cols * this.metrics.width * this.devicePixelRatio || this.canvas.height !== D.rows * this.metrics.height * this.devicePixelRatio) && (this.resize(D.cols, D.rows), B = !0);
@@ -126,7 +165,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
          t && this.renderLine(t, this.lastCursorPosition.y, D.cols);
        }
      }
-@@ -1424,7 +1492,7 @@ class $ {
+@@ -1424,7 +1522,7 @@ class $ {
          this.selectionManager.clearDirtySelectionRows();
        }
      }
@@ -135,7 +174,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
      if (a) {
        for (let t = 0; t < D.rows; t++) {
          let c = null;
-@@ -1434,10 +1502,10 @@ class $ {
+@@ -1434,10 +1532,10 @@ class $ {
              c = E.getScrollbackLine(F);
            } else {
              const F = t - Math.floor(g);
@@ -148,7 +187,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
          if (c) {
            for (const F of c)
              if (F.hyperlink_id === this.hoveredHyperlinkId || F.hyperlink_id === this.previousHoveredHyperlinkId) {
-@@ -1458,8 +1526,18 @@ class $ {
+@@ -1458,8 +1556,18 @@ class $ {
        this.previousHoveredLinkRange = this.hoveredLinkRange;
      }
      const G = /* @__PURE__ */ new Set();
@@ -168,7 +207,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
      for (let t = 0; t < D.rows; t++) {
        if (!G.has(t))
          continue;
-@@ -1470,13 +1548,13 @@ class $ {
+@@ -1470,13 +1578,13 @@ class $ {
            c = E.getScrollbackLine(F);
          } else {
            const F = g > 0 ? t - Math.floor(g) : t;
@@ -185,42 +224,133 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Render a single line using two-pass approach:
-@@ -1508,12 +1586,15 @@ class $ {
+@@ -1490,52 +1598,90 @@ class $ {
+    * cover any left-extending portions of graphemes from cell N-1.
     */
-   renderCellBackground(A, B, g) {
-     const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
+   renderLine(A, B, g) {
+-    const E = B * this.metrics.height;
+-    this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, E, g * this.metrics.width, this.metrics.height);
+-    for (let C = 0; C < A.length; C++) {
+-      const I = A[C];
+-      I.width !== 0 && this.renderCellBackground(I, C, B);
++    const E = B * this.metrics.height, C = this.metrics.width, I = this.metrics.height;
++    this.setCtxFill(this.theme.background), this.ctx.fillRect(0, E, g * C, I);
++    // PHASR PATCH (perf phase 2): the row's selection span is computed ONCE
++    // (per-cell isInSelection re-destructured the coords for every cell in
++    // both passes — the same row-range arithmetic, x2 per cell). The span
++    // is [D, i] inclusive; no selection leaves it empty (-1, -2).
++    let D = -1, i = -2;
++    const w = this.currentSelectionCoords;
++    if (w) {
++      const t = A.length - 1;
++      w.startRow === w.endRow ? B === w.startRow && (D = w.startCol, i = w.endCol) : B === w.startRow ? (D = w.startCol, i = t) : B === w.endRow ? (i = w.endCol, D = 0) : B > w.startRow && B < w.endRow && (D = 0, i = t);
+     }
+-    for (let C = 0; C < A.length; C++) {
+-      const I = A[C];
+-      I.width !== 0 && this.renderCellText(I, C, B);
++    // PASS 1 — backgrounds, walked in RUNS of identical effective colour
++    // (A6: RLE'd background rects are one of the legs that make iTerm2's
++    // cheap full frames cheap). One fillRect per run instead of one per
++    // cell; a typical terminal row is one run.
++    //
++    // Two behaviours carried over from the per-cell code verbatim: paint
++    // the cells' OWN background first, then composite the selection colour
++    // over it (upstream returned early, so a selected cell never got its
++    // background at all and a translucent `selectionBackground` blended
++    // with the line fill instead of with the cell — the 0.4.1 fix), and
++    // treat rgb(0,0,0) as "default, already painted by the line fill".
++    // A wide character's spacer cell (width 0) continues its base
++    // character's run, which reproduces the old width*cellWidth fill rect.
++    const s = this.theme.selectionBackground;
++    let N = -1, k = -2, M = !1;
++    const a = (h) => {
++      N < 0 || h <= N || (k >= 0 && (this.setCtxFill(this.cssColor(k >> 16 & 255, k >> 8 & 255, k & 255)), this.ctx.fillRect(N * C, E, (h - N) * C, I)), M && s && (this.setCtxFill(s), this.ctx.fillRect(N * C, E, (h - N) * C, I)));
++    };
++    for (let h = 0; h < A.length; h++) {
++      const G = A[h];
++      let U, t;
++      if (G.width === 0)
++        U = k, t = M;
++      else {
++        let c = G.bg_r, F = G.bg_g, S = G.bg_b;
++        G.flags & e.INVERSE && (c = G.fg_r, F = G.fg_g, S = G.fg_b), U = c === 0 && F === 0 && S === 0 ? -1 : c << 16 | F << 8 | S, t = h >= D && h <= i;
++      }
++      (h === 0 || U !== k || t !== M) && (a(h), N = h, k = U, M = t);
+     }
+-  }
+-  /**
+-   * Render a cell's background only (Pass 1 of two-pass rendering)
+-   * Selection highlighting is integrated here to avoid z-order issues with
+-   * complex glyphs (like Devanagari) that extend outside their cell bounds.
+-   */
+-  renderCellBackground(A, B, g) {
+-    const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
 -    if (this.isInSelection(B, g)) {
 -      this.ctx.fillStyle = this.theme.selectionBackground, this.ctx.fillRect(E, C, I, this.metrics.height);
 -      return;
--    }
-     let i = A.bg_r, w = A.bg_g, s = A.bg_b;
-     A.flags & e.INVERSE && (i = A.fg_r, w = A.fg_g, s = A.fg_b), i === 0 && w === 0 && s === 0 || (this.ctx.fillStyle = this.rgbToCSS(i, w, s), this.ctx.fillRect(E, C, I, this.metrics.height));
-+    // PHASR PATCH: paint the cell's OWN background first, then composite the
-+    // selection colour over it. Upstream returned early here, so a selected
-+    // cell never got its background at all and a translucent
-+    // `selectionBackground` blended with the line fill instead of with the
-+    // cell — every coloured background (diff hunks, SGR runs, INVERSE) lost
-+    // its colour the moment it was selected.
-+    this.isInSelection(B, g) && this.theme.selectionBackground && (this.ctx.fillStyle = this.theme.selectionBackground, this.ctx.fillRect(E, C, I, this.metrics.height));
++    a(A.length);
++    // PASS 2 — text and decorations, with the selection span passed down so
++    // it is not recomputed per cell. Still per-cell fillText (a glyph atlas
++    // is the P2-a stretch), but font/colour state changes only at run
++    // boundaries via the shadow-compared setters.
++    for (let h = 0; h < A.length; h++) {
++      const G = A[h];
++      G.width !== 0 && this.renderCellText(G, h, B, h >= D && h <= i);
+     }
+-    let i = A.bg_r, w = A.bg_g, s = A.bg_b;
+-    A.flags & e.INVERSE && (i = A.fg_r, w = A.fg_g, s = A.fg_b), i === 0 && w === 0 && s === 0 || (this.ctx.fillStyle = this.rgbToCSS(i, w, s), this.ctx.fillRect(E, C, I, this.metrics.height));
    }
    /**
     * Render a cell's text and decorations (Pass 2 of two-pass rendering)
-@@ -1526,7 +1607,12 @@ class $ {
+    * Selection foreground color is applied here to match the selection background.
+-   */
+-  renderCellText(A, B, g) {
++   *
++   * PHASR PATCH (perf phase 2): three changes, no visual difference.
++   * The selection decision arrives precomputed from renderLine's span (the
++   * per-cell fallback stays for any external caller); ctx.font and
++   * ctx.fillStyle go through the memoized variants + shadow-compared
++   * setters, so the canvas sees one state change per RUN of identical
++   * style instead of two per cell; and a cell with no ink — codepoint 0 or
++   * a plain space, the overwhelming majority of a terminal grid — skips
++   * fillText entirely (a space glyph draws nothing; decorations like
++   * underline have their own draws below and still run).
++   */
++  renderCellText(A, B, g, Q) {
+     var k;
+     const E = B * this.metrics.width, C = g * this.metrics.height, I = this.metrics.width * A.width;
+     if (A.flags & e.INVISIBLE)
        return;
-     const D = this.isInSelection(B, g);
-     let i = "";
+-    const D = this.isInSelection(B, g);
+-    let i = "";
 -    if (A.flags & e.ITALIC && (i += "italic "), A.flags & e.BOLD && (i += "bold "), this.ctx.font = `${i}${this.fontSize}px ${this.fontFamily}`, D)
-+    if (A.flags & e.ITALIC && (i += "italic "), A.flags & e.BOLD && (i += "bold "), this.ctx.font = `${i}${this.fontSize}px ${this.fontFamily}`, D && this.theme.selectionForeground)
+-      this.ctx.fillStyle = this.theme.selectionForeground;
++    if (Q === void 0 && (Q = this.isInSelection(B, g)), Q && this.theme.selectionForeground)
 +      // PHASR PATCH: only when the theme asks for inverse-video selection.
 +      // Unset, the glyph keeps its own colour under the wash, which is
 +      // the conventional behaviour. Upstream always took this branch, so selected text was
 +      // repainted in the default `selectionForeground` (#1e1e1e) — near
 +      // black on a dark terminal, i.e. selected output became unreadable.
-       this.ctx.fillStyle = this.theme.selectionForeground;
++      this.setCtxFill(this.theme.selectionForeground);
      else {
        let M = A.fg_r, a = A.fg_g, h = A.fg_b;
-@@ -1563,6 +1649,12 @@ class $ {
-     switch (this.ctx.fillStyle = this.theme.cursor, this.cursorStyle) {
+-      A.flags & e.INVERSE && (M = A.bg_r, a = A.bg_g, h = A.bg_b), this.ctx.fillStyle = this.rgbToCSS(M, a, h);
++      A.flags & e.INVERSE && (M = A.bg_r, a = A.bg_g, h = A.bg_b), this.setCtxFill(this.cssColor(M, a, h));
+     }
+-    A.flags & e.FAINT && (this.ctx.globalAlpha = 0.5);
+     const w = E, s = C + this.metrics.baseline;
+     let N;
+-    if (A.grapheme_len > 0 && ((k = this.currentBuffer) != null && k.getGraphemeString) ? N = this.currentBuffer.getGraphemeString(g, B) : N = String.fromCodePoint(A.codepoint || 32), this.ctx.fillText(N, w, s), A.flags & e.FAINT && (this.ctx.globalAlpha = 1), A.flags & e.UNDERLINE) {
++    if (A.grapheme_len > 0 && ((k = this.currentBuffer) != null && k.getGraphemeString) ? N = this.currentBuffer.getGraphemeString(g, B) : N = A.codepoint && A.codepoint !== 32 ? String.fromCodePoint(A.codepoint) : "", N && (this.setCtxFont(this.fontFor((A.flags & e.ITALIC ? 1 : 0) | (A.flags & e.BOLD ? 2 : 0))), A.flags & e.FAINT && (this.ctx.globalAlpha = 0.5), this.ctx.fillText(N, w, s), A.flags & e.FAINT && (this.ctx.globalAlpha = 1)), A.flags & e.UNDERLINE) {
+       const M = C + this.metrics.baseline + 2;
+       this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, M), this.ctx.lineTo(E + I, M), this.ctx.stroke();
+     }
+@@ -1560,9 +1706,15 @@ class $ {
+    */
+   renderCursor(A, B) {
+     const g = A * this.metrics.width, E = B * this.metrics.height;
+-    switch (this.ctx.fillStyle = this.theme.cursor, this.cursorStyle) {
++    switch (this.setCtxFill(this.theme.cursor), this.cursorStyle) {
        case "block":
          this.ctx.fillRect(g, E, this.metrics.width, this.metrics.height);
 +        // PHASR PATCH: repaint the character under the block. Upstream filled
@@ -232,7 +362,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
          break;
        case "underline":
          const C = Math.max(2, Math.floor(this.metrics.height * 0.15));
-@@ -1579,17 +1671,81 @@ class $ {
+@@ -1579,17 +1731,80 @@ class $ {
          break;
      }
    }
@@ -266,8 +396,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
 +      i = String.fromCodePoint(D.codepoint);
 +    if (!i)
 +      return;
-+    let w = "";
-+    D.flags & e.ITALIC && (w += "italic "), D.flags & e.BOLD && (w += "bold "), this.ctx.font = `${w}${this.fontSize}px ${this.fontFamily}`, this.ctx.fillStyle = this.theme.cursorAccent || this.theme.background, this.ctx.fillText(i, g, E + this.metrics.baseline);
++    this.setCtxFont(this.fontFor((D.flags & e.ITALIC ? 1 : 0) | (D.flags & e.BOLD ? 2 : 0))), this.setCtxFill(this.theme.cursorAccent || this.theme.background), this.ctx.fillText(i, g, E + this.metrics.baseline);
 +  }
    // ==========================================================================
    // Cursor Blinking
@@ -317,7 +446,32 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    // ==========================================================================
    // Public API
    // ==========================================================================
-@@ -1833,8 +1989,14 @@ const L = class Y {
+@@ -1650,12 +1865,12 @@ class $ {
+    */
+   renderScrollbar(A, B, g, E = 1) {
+     const C = this.ctx, I = this.canvas.height / this.devicePixelRatio, D = this.canvas.width / this.devicePixelRatio, i = 8, w = D - i - 4, s = 4, N = I - s * 2;
+-    if (C.fillStyle = this.theme.background, C.fillRect(w - 2, 0, i + 6, I), E <= 0 || B === 0)
++    if (this.setCtxFill(this.theme.background), C.fillRect(w - 2, 0, i + 6, I), E <= 0 || B === 0)
+       return;
+     const k = B + g, M = Math.max(20, g / k * N), a = A / B, h = s + (N - M) * (1 - a);
+-    C.fillStyle = `rgba(128, 128, 128, ${0.1 * E})`, C.fillRect(w, s, i, N);
++    this.setCtxFill(`rgba(128, 128, 128, ${0.1 * E})`), C.fillRect(w, s, i, N);
+     const U = A > 0 ? 0.5 : 0.3;
+-    C.fillStyle = `rgba(128, 128, 128, ${U * E})`, C.fillRect(w, h, i, M);
++    this.setCtxFill(`rgba(128, 128, 128, ${U * E})`), C.fillRect(w, h, i, M);
+   }
+   getMetrics() {
+     return { ...this.metrics };
+@@ -1712,7 +1927,7 @@ class $ {
+    * Clear entire canvas
+    */
+   clear() {
+-    this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
++    this.setCtxFill(this.theme.background), this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+   }
+   /**
+    * Cleanup resources
+@@ -1833,8 +2048,14 @@ const L = class Y {
      for (; I >= E.cols; )
        I -= E.cols, C++;
      C = Math.min(C, E.rows - 1);
@@ -334,7 +488,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Select entire lines from start to end
-@@ -1843,8 +2005,8 @@ const L = class Y {
+@@ -1843,8 +2064,8 @@ const L = class Y {
    selectLines(A, B) {
      const g = this.wasmTerm.getDimensions();
      A = Math.max(0, Math.min(A, g.rows - 1)), B = Math.max(0, Math.min(B, g.rows - 1)), A > B && ([A, B] = [B, A]);
@@ -345,7 +499,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Get selection position as buffer range
-@@ -1945,7 +2107,12 @@ const L = class Y {
+@@ -1945,7 +2166,12 @@ const L = class Y {
      }), this.boundMouseUpHandler = (B) => {
        if (this.isSelecting) {
          this.isSelecting = !1, this.stopAutoScroll();
@@ -359,7 +513,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
          g && (this.copyToClipboard(g), this.selectionChangedEmitter.fire());
        }
      }, document.addEventListener("mouseup", this.boundMouseUpHandler), A.addEventListener("dblclick", (B) => {
-@@ -2103,18 +2270,18 @@ class IA {
+@@ -2103,18 +2329,18 @@ class IA {
        get activeVersion() {
          return "15.1";
        }
@@ -381,7 +535,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
      }, this.handleMouseMove = (g) => {
        if (!(!this.canvas || !this.renderer || !this.wasmTerm)) {
          if (this.isDraggingScrollbar) {
-@@ -2341,11 +2508,18 @@ class IA {
+@@ -2341,11 +2567,18 @@ class IA {
          cursorStyle: this.options.cursorStyle,
          cursorBlink: this.options.cursorBlink,
          theme: this.options.theme
@@ -402,7 +556,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
          },
          () => {
            this.bellEmitter.fire();
-@@ -2364,13 +2538,22 @@ class IA {
+@@ -2364,13 +2597,22 @@ class IA {
          this.wasmTerm,
          this.textarea
        ), this.renderer.setSelectionManager(this.selectionManager), this.selectionManager.onSelectionChange(() => {
@@ -427,7 +581,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
      } catch (B) {
        throw this.isOpen = !1, this.cleanupComponents(), new Error(`Failed to open terminal: ${B}`);
      }
-@@ -2387,7 +2570,50 @@ class IA {
+@@ -2387,7 +2629,50 @@ class IA {
     */
    writeInternal(A, B) {
      var g;
@@ -479,7 +633,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Write data with newline
-@@ -2424,13 +2650,13 @@ class IA {
+@@ -2424,13 +2709,13 @@ class IA {
        return;
      this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
      const g = this.renderer.getMetrics();
@@ -495,7 +649,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Reset terminal state
-@@ -2438,7 +2664,7 @@ class IA {
+@@ -2438,7 +2723,7 @@ class IA {
    reset() {
      this.assertOpen(), this.wasmTerm && this.wasmTerm.free();
      const A = this.buildWasmConfig();
@@ -504,7 +658,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Focus terminal input
-@@ -2564,6 +2790,20 @@ class IA {
+@@ -2564,6 +2849,20 @@ class IA {
    // ==========================================================================
    // Phase 2: Scrolling Methods
    // ==========================================================================
@@ -525,7 +679,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    /**
     * Scroll viewport by a number of lines
     * @param amount Number of lines to scroll (positive = down, negative = up)
-@@ -2571,8 +2811,9 @@ class IA {
+@@ -2571,8 +2870,9 @@ class IA {
    scrollLines(A) {
      if (!this.wasmTerm)
        throw new Error("Terminal not open");
@@ -536,7 +690,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Scroll viewport by a number of pages
-@@ -2585,22 +2826,24 @@ class IA {
+@@ -2585,22 +2885,24 @@ class IA {
     * Scroll viewport to the top of the scrollback buffer
     */
    scrollToTop() {
@@ -564,7 +718,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Smoothly scroll to a target viewport position
-@@ -2611,7 +2854,7 @@ class IA {
+@@ -2611,7 +2913,7 @@ class IA {
        return;
      const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
      if ((this.options.smoothScrollDuration ?? 100) === 0) {
@@ -573,7 +727,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
        return;
      }
      this.targetViewportY = E, !this.scrollAnimationFrame && (this.scrollAnimationStartTime = Date.now(), this.scrollAnimationStartY = this.viewportY, this.animateScroll());
-@@ -2624,7 +2867,7 @@ class IA {
+@@ -2624,7 +2926,7 @@ class IA {
     */
    dispose() {
      if (!this.isDisposed) {
@@ -582,7 +736,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2877,258 @@ class IA {
+@@ -2634,17 +2936,258 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -848,7 +1002,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3148,7 @@ class IA {
+@@ -2664,7 +3207,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -857,7 +1011,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3181,7 @@ class IA {
+@@ -2697,7 +3240,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -866,7 +1020,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3197,9 @@ class IA {
+@@ -2713,7 +3256,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -877,7 +1031,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3409,84 @@ class DA {
+@@ -2923,6 +3468,84 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -962,7 +1116,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..864dbeb73e7bc50dbe044f2535460de1
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3512,9 @@ export {
+@@ -2948,6 +3571,9 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
