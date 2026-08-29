@@ -373,16 +373,32 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     emit: (event: string, payload: unknown) =>
       (listeners[event] ?? []).forEach((h) => h({ event, id: 1, payload })),
     pty: (key: string, msg: unknown) => channels[key]?.onmessage?.(msg),
-    // Raw PTY output. Since perf phase 4 a real channel delivers output as
-    // an ArrayBuffer with no envelope at all (`InvokeResponseBody::Raw`),
-    // so the mock delivers one too — otherwise every terminal spec would be
-    // exercising a shape the app no longer receives.
+    // PTY output, in whichever of the two shapes this chunk would really
+    // arrive in. Since perf phase 4 the backend picks by size
+    // (`commands/pty_stream.rs`): a chunk whose base64 envelope still fits
+    // tauri's 8192 B eval threshold keeps the envelope, and anything bigger
+    // crosses as raw bytes. Mirroring the rule here is what keeps small-chunk
+    // specs on the arm they would really take and the flood probes on theirs.
     //
     // `TextEncoder` gives the UTF-8 bytes of the text, which is what a PTY
     // would have produced for it; its result owns an exactly-sized buffer,
     // so `.buffer` is the chunk and nothing is copied.
-    ptyOut: (key: string, text: string) =>
-      channels[key]?.onmessage?.(new TextEncoder().encode(text).buffer),
+    ptyOut: (key: string, text: string) => {
+      const bytes = new TextEncoder().encode(text);
+      const envelope = 40 + key.length + 4 * Math.ceil(bytes.length / 3);
+      if (envelope >= 8192) {
+        channels[key]?.onmessage?.(bytes.buffer);
+        return;
+      }
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 1)
+        binary += String.fromCharCode(bytes[i]!);
+      channels[key]?.onmessage?.({
+        type: "output",
+        taskId: key,
+        chunk: btoa(binary),
+      });
+    },
     channelKeys: () => Object.keys(channels),
     setResponse: (cmd: string, val: unknown) => { overrides[cmd] = val; },
     clearCalls: () => { calls.length = 0; },

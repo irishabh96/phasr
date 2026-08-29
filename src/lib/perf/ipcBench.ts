@@ -9,10 +9,10 @@
  *
  * `main.tsx` dynamically imports this in DEV builds; the first invoke
  * returns `null` in a normal launch (or throws in a plain browser) and
- * nothing else happens. In bench mode it drives the four-cell matrix —
- * base64+JSON `PtyEvent` vs raw bytes, eval-path vs fetch-path sizes —
- * through a real `Channel`, measuring on the ONE clock that can see both
- * ends of the hop:
+ * nothing else happens. In bench mode it drives the matrix — base64+JSON
+ * `PtyEvent` vs raw bytes vs the shipping policy, at eval-path and
+ * fetch-path sizes — through a real `Channel`, measuring on the ONE clock
+ * that can see both ends of the hop:
  *
  *   - **one-shot**: invoke-start → the channel message's `onmessage`,
  *     minus the measured no-payload invoke RTT = net delivery cost of one
@@ -20,6 +20,12 @@
  *   - **stream**: 200 chunks sent back-to-back from Rust; first→last
  *     arrival span gives per-chunk pipeline cost and MB/s — the number
  *     that bounds flood.
+ *
+ * Each size is measured three ways: `json` (the pre-P4 wire), `raw` (bytes
+ * with no envelope) and `auto` (**what ships** — `pty_stream::output_body`,
+ * which picks between them by size). Run it on a RELEASE build: on a debug
+ * build serde is roughly 30x slower than it ships, which flatters `raw`
+ * enough to invert the conclusion.
  *
  * Results go back through `ipc_bench_report`, which prints `IPCBENCH`
  * lines on the launching terminal and exits the shell (unless
@@ -30,20 +36,38 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 interface BenchCase {
   label: string;
-  format: "json" | "raw";
+  format: "json" | "raw" | "auto";
   /** Raw chunk bytes. JSON envelope ≈ 40 + ceil(size/3)*4. */
   size: number;
 }
 
 /**
+ * Grouped by chunk size, so each size has a BEFORE (json), the pure-raw
+ * alternative, and what ships — the comparison phase 4's criterion 2 asks
+ * for, and the one an average would hide.
+ *
  * Thresholds verified in tauri 2.11.2 `src/ipc/channel.rs`: JSON flips
  * eval→fetch at 8192 B of serialized JSON, raw at 1024 B of payload.
+ *
+ * The 4 KiB pair is the awkward one and is here on purpose: base64+JSON of
+ * 4 KiB is ~5.5 KB and still takes `eval`, while 4 KiB of raw bytes is over
+ * the 1024 B raw threshold and takes `fetch`. That is the only cell where
+ * the raw move *changes transport path*, so it is the only cell where it
+ * could plausibly lose.
+ *
+ * 512 B matters more since the leading-edge flush: a keystroke echo is now
+ * its own small chunk rather than something coalesced into the next repaint.
  */
 const CASES: BenchCase[] = [
+  { label: "json   512B chunk (~723B JSON → eval)", format: "json", size: 512 },
+  { label: "raw    512B chunk (raw → eval)", format: "raw", size: 512 },
+  { label: "auto   512B chunk (SHIPPING)", format: "auto", size: 512 },
   { label: "json  4KiB chunk (~5.5KB JSON → eval)", format: "json", size: 4096 },
+  { label: "raw   4KiB chunk (raw → fetch)", format: "raw", size: 4096 },
+  { label: "auto  4KiB chunk (SHIPPING)", format: "auto", size: 4096 },
   { label: "json 32KiB chunk (~43.7KB JSON → fetch)", format: "json", size: 32768 },
-  { label: "raw   512B chunk (raw → eval)", format: "raw", size: 512 },
   { label: "raw  32KiB chunk (raw → fetch)", format: "raw", size: 32768 },
+  { label: "auto 32KiB chunk (SHIPPING)", format: "auto", size: 32768 },
 ];
 
 const ONESHOT_REPS = 30;

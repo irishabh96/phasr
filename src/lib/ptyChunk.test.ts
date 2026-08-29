@@ -28,8 +28,15 @@ beforeEach(() => {
 });
 
 describe("the wire shape", () => {
-  it("reads an ArrayBuffer as output and an object as control", () => {
+  // Output arrives in TWO shapes and the size decides which: a chunk whose
+  // base64 envelope still fits tauri's eval threshold keeps the envelope,
+  // anything bigger crosses raw. Both are output; neither is a control
+  // event.
+  it("reads both output shapes as output, and control events as control", () => {
     expect(isPtyOutput(new Uint8Array([1, 2, 3]).buffer)).toBe(true);
+    expect(
+      isPtyOutput({ type: "output", taskId: "t", chunk: "aGk=" }),
+    ).toBe(true);
     expect(
       isPtyOutput({ type: "exit", taskId: "t", exitCode: 0 } as PtyStreamMessage),
     ).toBe(false);
@@ -43,20 +50,42 @@ describe("the wire shape", () => {
   });
 
   it("hands the emulator a view of the buffer, not a copy of it", () => {
-    // The whole point of a raw payload: nothing between the IPC and the
-    // terminal touches these bytes. A copy here would put back a chunk of
-    // what deleting base64 just removed.
+    // The point of the raw arm: nothing between the IPC and the terminal
+    // touches these bytes.
     const buffer = new Uint8Array([0x1b, 0x5b, 0x32, 0x4b]).buffer;
     const bytes = ptyChunkBytes(buffer);
     expect(bytes.buffer).toBe(buffer);
     expect(bytes.byteOffset).toBe(0);
   });
 
-  it("carries bytes that are not valid UTF-8", () => {
-    // These are exactly what the old lossy-string wire destroyed, and what
-    // `atob` had to be introduced to carry. Raw bytes need neither.
+  it("decodes the base64 arm to the same bytes the raw arm would carry", () => {
+    // The two arms are the same stream framed differently, so a spec that
+    // exercises one must be able to trust the other.
+    const raw = new Uint8Array([0x1b, 0x5b, 0x32, 0x4b, 0x41]);
+    const viaBase64 = ptyChunkBytes({
+      type: "output",
+      taskId: "t",
+      chunk: btoa(String.fromCharCode(...raw)),
+    });
+    expect(Array.from(viaBase64)).toEqual(Array.from(raw));
+    expect(Array.from(ptyChunkBytes(raw.buffer))).toEqual(Array.from(raw));
+  });
+
+  it("carries bytes that are not valid UTF-8, on both arms", () => {
+    // These are exactly what the old lossy-string wire destroyed. Base64
+    // carries them because it is not text; raw carries them because it is
+    // not encoded at all.
     const raw = new Uint8Array([0x1b, 0xff, 0xfe, 0x80, 0x00, 0x41]);
     expect(Array.from(ptyChunkBytes(raw.buffer))).toEqual(Array.from(raw));
+    expect(
+      Array.from(
+        ptyChunkBytes({
+          type: "output",
+          taskId: "t",
+          chunk: btoa(String.fromCharCode(...raw)),
+        }),
+      ),
+    ).toEqual(Array.from(raw));
   });
 });
 

@@ -101,10 +101,20 @@ pub fn ipc_bench_config() -> Option<IpcBenchConfig> {
 }
 
 /// Send `count` chunks of `size` raw bytes through the channel in the
-/// given wire format ("json" = today's base64+JSON `PtyEvent`; "raw" =
-/// Phase 4's raw bytes). Returns the Rust-side send-loop wall time in ms —
-/// serialization plus handing off to the webview transport; delivery is
-/// measured on the JS side.
+/// given wire format. Three of them:
+///
+/// * `"json"` — the pre-P4 wire: base64 inside a JSON `PtyEvent`.
+/// * `"raw"` — bytes with no envelope, which P4 originally proposed for
+///   everything.
+/// * `"auto"` — **what actually ships**: `pty_stream::output_body`, which
+///   keeps a chunk in the JSON envelope while that envelope still fits
+///   tauri's `eval` threshold and goes raw above it. Measured through the
+///   same function the forwarder calls, so the bench cannot drift from the
+///   policy it is reporting on.
+///
+/// Returns the Rust-side send-loop wall time in ms — serialization plus
+/// handing off to the webview transport; delivery is measured on the JS
+/// side.
 #[tauri::command]
 pub fn ipc_bench_send(
     channel: Channel<InvokeResponseBody>,
@@ -132,6 +142,16 @@ pub fn ipc_bench_send(
             for _ in 0..count {
                 channel
                     .send(InvokeResponseBody::Raw(bytes.clone()))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        "auto" => {
+            for _ in 0..count {
+                channel
+                    .send(crate::commands::pty_stream::output_body(
+                        "bench",
+                        bytes::Bytes::copy_from_slice(&bytes),
+                    ))
                     .map_err(|e| e.to_string())?;
             }
         }

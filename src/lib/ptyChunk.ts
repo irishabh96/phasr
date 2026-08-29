@@ -19,28 +19,39 @@
  */
 
 import { tauri } from "@/lib/tauri";
-import type { PtyStreamMessage } from "@/lib/types";
+import type { PtyOutputMessage, PtyStreamMessage } from "@/lib/types";
 
 /**
  * Is this message the PTY's output rather than a control event?
  *
- * The `instanceof` is the discriminator the backend chose deliberately: raw
- * output has no envelope to put a tag in, and giving it one would put the
- * cost back. A type predicate rather than a nullable getter so the `else`
- * branch narrows to `PtyEvent` and the three handlers keep their exhaustive
+ * A type predicate rather than a nullable getter, so the `else` branch
+ * narrows to the control events and the three handlers keep an exhaustive
  * `type` switch.
  */
-export function isPtyOutput(message: PtyStreamMessage): message is ArrayBuffer {
-  return message instanceof ArrayBuffer;
+export function isPtyOutput(
+  message: PtyStreamMessage,
+): message is PtyOutputMessage {
+  return message instanceof ArrayBuffer || message.type === "output";
 }
 
 /**
- * The emulator's view of an output message. A `Uint8Array` over the buffer
- * is a view, not a copy — nothing rewrites these bytes between the IPC and
- * the terminal, which is the point of carrying them raw.
+ * The emulator's view of an output message, whichever shape it arrived in.
+ *
+ * The raw arm is free: a `Uint8Array` over the buffer is a view, not a copy,
+ * so nothing rewrites those bytes between the IPC and the terminal. The
+ * base64 arm is the small-chunk path, where the envelope is what keeps the
+ * message on tauri's cheap `eval` transport; `atob` plus a typed-array fill
+ * is the fast way to undo it (`Uint8Array.from(s, cb)` is several times
+ * slower, and it is why this was never a one-liner).
  */
-export function ptyChunkBytes(chunk: ArrayBuffer): Uint8Array {
-  return new Uint8Array(chunk);
+export function ptyChunkBytes(output: PtyOutputMessage): Uint8Array {
+  if (output instanceof ArrayBuffer) return new Uint8Array(output);
+  const binary = atob(output.chunk);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 /**

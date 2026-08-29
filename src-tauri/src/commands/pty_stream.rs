@@ -130,26 +130,97 @@ impl Drop for Registration {
     }
 }
 
-/// Put one event on the wire in the shape its kind deserves.
+/// tauri's `MAX_JSON_DIRECT_EXECUTE_THRESHOLD` (`ipc/channel.rs`, verified in
+/// 2.11.2). A JSON body **shorter than this** is handed to the webview by
+/// `webview.eval`. Anything else — and *every* raw payload over 1024 B — is
+/// parked in a global `Mutex<HashMap>` shared by every channel in the app and
+/// pulled back out by a `fetch` round trip.
+const JSON_EVAL_THRESHOLD: usize = 8192;
+
+/// Length of `{"type":"output","taskId":"…","chunk":"…"}` minus its two
+/// variable parts. Pinned by `the_envelope_arithmetic_matches_serde`, because
+/// guessing it wrong would put chunks on the wrong transport silently.
+const OUTPUT_ENVELOPE_BYTES: usize = 40;
+
+/// Would this chunk's JSON envelope still take tauri's cheap `eval` path?
 ///
-/// `Bytes` → `Vec<u8>` is the single remaining copy of a chunk in the whole
-/// pipeline: `InvokeResponseBody::Raw` owns its payload and tauri gives us no
-/// way to lend it one. Everything upstream of here shares.
+/// This is the whole framing decision, and it is about **transport, not
+/// encoding**. Measured on a release build through a real channel, a message
+/// costs ~0.025 ms on the eval path and ~0.15 ms on the fetch path almost
+/// regardless of size — so which path a chunk lands on dominates whatever is
+/// saved by not base64-ing it.
+fn json_takes_the_eval_path(task_id: &str, chunk_len: usize) -> bool {
+    json_envelope_len(task_id, chunk_len) < JSON_EVAL_THRESHOLD
+}
+
+/// Exact serialized length of an `Output` event, computed rather than built:
+/// base64 with padding is `4 * ceil(n / 3)`, and the envelope is fixed.
+fn json_envelope_len(task_id: &str, chunk_len: usize) -> usize {
+    OUTPUT_ENVELOPE_BYTES + task_id.len() + 4 * chunk_len.div_ceil(3)
+}
+
+/// Put one event on the wire in the shape that gets it there fastest.
+///
+/// **Size-aware, not raw-always.** Phase 4 set out to move all output to raw
+/// payloads; measuring it on a *release* build (the phase's 6.3× premise came
+/// from an unoptimized one, where serde is ~30× slower than it ships) said
+/// otherwise, per chunk size:
+///
+/// | chunk  | base64+JSON | raw    | why                                  |
+/// |--------|-------------|--------|--------------------------------------|
+/// | 512 B  | 16.3 MB/s   | 10.9   | both eval; raw < 1 KiB is sent as a  |
+/// |        |             |        | JSON **number array**, ~4 B per byte |
+/// | 4 KiB  | 156.3 MB/s  | 28.9   | JSON still fits eval; raw does not   |
+/// | 32 KiB | 168.9 MB/s  | 201.6  | both fetch; raw skips the encode     |
+///
+/// So: keep a chunk on the eval path while its envelope fits, and go raw the
+/// moment it does not. That is at least as fast as either pure strategy at
+/// every size measured, and it keeps small and mid-size chunks *out* of the
+/// global fetch mutex — which is the contention this phase set out to reduce
+/// in the first place, with eight hidden agents sharing it.
+///
+/// `Bytes` → `Vec<u8>` on the raw arm is the single remaining copy of a chunk
+/// in the whole pipeline: `InvokeResponseBody::Raw` owns its payload and
+/// tauri gives us no way to lend it one. Everything upstream of here shares.
 fn send_event(channel: &Channel<InvokeResponseBody>, event: PtyEvent) -> bool {
-    let body = match event {
-        PtyEvent::Output { chunk, .. } => InvokeResponseBody::Raw(chunk.to_vec()),
-        control => match serde_json::to_string(&control) {
+    let body = match &event {
+        PtyEvent::Output { task_id, chunk, .. }
+            if !json_takes_the_eval_path(task_id, chunk.len()) =>
+        {
+            InvokeResponseBody::Raw(chunk.to_vec())
+        }
+        // Everything else — small chunks, and every control event, which is
+        // named fields rather than bytes and always tiny.
+        _ => match serde_json::to_string(&event) {
             Ok(json) => InvokeResponseBody::Json(json),
-            // A control event that will not serialize is a bug in this
-            // process, not a transport failure — dropping it silently would
-            // leave the terminal waiting for an exit that never comes.
+            // An event that will not serialize is a bug in this process, not
+            // a transport failure — dropping it silently would leave the
+            // terminal waiting for an exit that never comes.
             Err(err) => {
-                eprintln!("[pty] dropping an unserializable control event: {err}");
+                eprintln!("[pty] dropping an unserializable event: {err}");
                 return true;
             }
         },
     };
     channel.send(body).is_ok()
+}
+
+/// The framing decision alone, for `ipcbench` — so the bench measures the
+/// policy that actually ships rather than a hand-copied imitation of it.
+/// Deliberately not `cfg`-gated: the numbers that matter come from a release
+/// build, which is exactly where a `debug_assertions` gate would remove it.
+pub fn output_body(task_id: &str, chunk: bytes::Bytes) -> InvokeResponseBody {
+    if json_takes_the_eval_path(task_id, chunk.len()) {
+        let event = PtyEvent::Output {
+            task_id: task_id.to_string(),
+            log_offset: 0,
+            chunk: chunk.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&event) {
+            return InvokeResponseBody::Json(json);
+        }
+    }
+    InvokeResponseBody::Raw(chunk.to_vec())
 }
 
 /// Spawn the forwarder for one attached terminal.
@@ -335,48 +406,100 @@ mod tests {
         let _ = second.kill();
     }
 
-    #[test]
-    fn output_goes_out_raw_and_control_events_go_out_as_json() {
-        // The wire contract of criterion 1, pinned in one place. A chunk is
-        // its bytes verbatim — no envelope, nothing to decode — and an exit
-        // is still a named JSON object.
+    /// Collect the bodies `send_event` produces for a scripted event list.
+    fn wire(events: Vec<PtyEvent>) -> Vec<InvokeResponseBody> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let channel: Channel<InvokeResponseBody> = Channel::new(move |body| {
             sink.lock().push(body);
             Ok(())
         });
+        for event in events {
+            send_event(&channel, event);
+        }
+        let bodies = seen.lock();
+        bodies.clone()
+    }
 
-        let raw = vec![0x1b, b'[', b'2', b'K', 0xff, 0x80];
-        send_event(
-            &channel,
-            PtyEvent::Output {
-                task_id: "t".into(),
-                log_offset: 4096,
-                chunk: bytes::Bytes::from(raw.clone()),
-            },
+    fn output(task_id: &str, chunk: Vec<u8>) -> PtyEvent {
+        PtyEvent::Output {
+            task_id: task_id.into(),
+            log_offset: 4096,
+            chunk: bytes::Bytes::from(chunk),
+        }
+    }
+
+    #[test]
+    fn the_envelope_arithmetic_matches_serde() {
+        // The framing decision is made from a computed length rather than a
+        // built string (building it would cost the base64 we are trying to
+        // avoid). If this arithmetic drifts from what serde actually emits,
+        // chunks land on the wrong transport and nothing says so.
+        for (task_id, chunk_len) in [("", 0usize), ("t", 1), ("ws-agent", 4095), (&"u".repeat(36), 32 * 1024)] {
+            let event = output(task_id, vec![b'x'; chunk_len]);
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(
+                json.len(),
+                json_envelope_len(task_id, chunk_len),
+                "envelope arithmetic is wrong for task `{task_id}` / {chunk_len} B"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chunk_goes_raw_exactly_when_its_envelope_would_leave_the_eval_path() {
+        // The boundary itself, from both sides. One byte either way changes
+        // which transport tauri picks, and the measured cost of that choice
+        // is ~6x per message.
+        let task = "ws-agent";
+        // Largest chunk whose envelope still fits under 8192.
+        let fits = (0..8192)
+            .rev()
+            .find(|n| json_takes_the_eval_path(task, *n))
+            .expect("some chunk size fits");
+        assert!(!json_takes_the_eval_path(task, fits + 1));
+
+        let bodies = wire(vec![
+            output(task, vec![b'x'; fits]),
+            output(task, vec![b'x'; fits + 1]),
+        ]);
+        assert!(
+            matches!(bodies[0], InvokeResponseBody::Json(_)),
+            "a chunk that still fits the eval path must keep the envelope"
         );
-        send_event(
-            &channel,
+        assert!(
+            matches!(bodies[1], InvokeResponseBody::Raw(_)),
+            "one byte over, and the envelope buys nothing — go raw"
+        );
+    }
+
+    #[test]
+    fn a_flood_chunk_goes_out_raw_and_control_events_go_out_as_json() {
+        // The wire contract, pinned in one place. A coalescer-sized chunk is
+        // its bytes verbatim — no envelope, nothing to decode — and exit and
+        // desync are still named JSON objects.
+        let raw = {
+            let mut v = vec![b'x'; 32 * 1024];
+            v.extend_from_slice(&[0x1b, b'[', b'2', b'K', 0xff, 0x80]);
+            v
+        };
+        let bodies = wire(vec![
+            output("t", raw.clone()),
             PtyEvent::Exit {
                 task_id: "t".into(),
                 exit_code: Some(0),
             },
-        );
-        send_event(
-            &channel,
             PtyEvent::Desync {
                 task_id: "t".into(),
                 missed_bytes: 4096,
             },
-        );
+        ]);
 
-        let bodies = seen.lock();
         match &bodies[0] {
             // Byte-identical to the PTY's output, including the bytes that
             // are not valid UTF-8 — which is why this is not a string.
             InvokeResponseBody::Raw(bytes) => assert_eq!(bytes, &raw),
-            other => panic!("output must go out raw, got {other:?}"),
+            other => panic!("a flood chunk must go out raw, got {other:?}"),
         }
         match &bodies[1] {
             InvokeResponseBody::Json(json) => {

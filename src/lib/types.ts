@@ -71,14 +71,23 @@ export interface UserSettings {
 }
 
 /**
- * The control plane of a terminal channel — everything that is *not* bytes.
+ * The JSON half of a terminal channel.
  *
- * Output is no longer a member of this union: since perf phase 4 it crosses
- * the IPC as a raw payload and arrives as an `ArrayBuffer` with no envelope
- * to put a `type` in (`PtyStreamMessage` below). These two stay JSON because
- * they are rare and carry named fields rather than a byte stream.
+ * Output is here **and** as a raw `ArrayBuffer` (see `PtyStreamMessage`),
+ * because which one arrives depends on the chunk's size. Phase 4 measured
+ * the two transports tauri picks between: a message costs ~0.025 ms when it
+ * fits `webview.eval` and ~0.15 ms when it has to go through the global
+ * fetch queue, almost regardless of payload size. So a chunk whose base64
+ * envelope still fits the eval threshold keeps the envelope, and everything
+ * bigger goes raw. Never hand-roll that test — use `isPtyOutput`.
  */
 export type PtyEvent =
+  /**
+   * `chunk` is **base64** of the PTY's raw bytes, not text. A terminal is a
+   * byte protocol; carrying it as a string forced a lossy UTF-8 decode that
+   * destroyed non-UTF-8 output and needed a split-codepoint carry in Rust.
+   */
+  | { type: "output"; taskId: string; chunk: string }
   | { type: "exit"; taskId: string; exitCode: number | null }
   /**
    * Bytes were dropped by the broadcast AND had already rotated off the end
@@ -91,13 +100,15 @@ export type PtyEvent =
   | { type: "desync"; taskId: string; missedBytes: number };
 
 /**
- * What a terminal `Channel` actually delivers.
- *
- * An `ArrayBuffer` is the PTY's raw output bytes; an object is a control
- * event. `ptyChunkBytes()` is the discriminator — do not hand-roll the
- * `instanceof` at call sites.
+ * What a terminal `Channel` actually delivers: either the PTY's raw output
+ * bytes with no envelope at all, or one of the JSON events above.
  */
 export type PtyStreamMessage = ArrayBuffer | PtyEvent;
+
+/** Output in either of the two shapes it can arrive in. */
+export type PtyOutputMessage =
+  | ArrayBuffer
+  | Extract<PtyEvent, { type: "output" }>;
 
 /**
  * Result of `start_task` — orchestrator-side vocabulary uses "task" but
