@@ -444,6 +444,160 @@ fn load_ramp_real_agents() {
     println!("\nload at end: {}", load_avg());
 }
 
+/// The unthrottled `bulk` step: flood a real PTY as fast as the kernel will
+/// take it and prove not one byte is lost.
+///
+/// The agent ramp above measures phasr's normal workload; it does not
+/// reliably produce a lagging subscriber, because agents are slow. This does,
+/// deterministically, and it is where criterion 3 is actually earned:
+///
+/// * The broadcast ring holds 2048 events ≈ 64 MiB. The subscriber is held
+///   still until the producer is **past** that, so `Lagged` is guaranteed —
+///   this is the exact condition that used to silently corrupt a terminal.
+/// * The flood is 80 MiB, comfortably inside the log's 96 MiB retained
+///   window, so every dropped byte is refillable. It also crosses two
+///   32 MiB rotation boundaries, so the segment walk is exercised too.
+/// * The payload carries no `\n` or `\t`, so the PTY's output post-processing
+///   (ONLCR, tab expansion) cannot rewrite it — the log is what `cat` wrote.
+///
+/// Needs no agent CLI and costs no quota; gated with the rest of the harness.
+#[test]
+#[ignore]
+fn bulk_flood_never_drops_a_byte() {
+    if std::env::var("PHASR_LOAD").ok().as_deref() != Some("1") {
+        eprintln!("skipped: set PHASR_LOAD=1");
+        return;
+    }
+    const FLOOD_BYTES: usize = 80 * 1024 * 1024;
+    /// Stall until the producer is this far past the broadcast's 64 MiB
+    /// ring. Measured, not slept: a fixed sleep is a bet on machine speed.
+    const STALL_UNTIL: u64 = 68 * 1024 * 1024;
+
+    let dir = tempfile::tempdir().unwrap();
+    let payload_path = dir.path().join("flood.bin");
+    {
+        use std::io::Write as _;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&payload_path).unwrap());
+        // 64 printable bytes, no newline, no tab.
+        let line: Vec<u8> = (0..64u8).map(|i| b'!' + (i % 90)).collect();
+        for _ in 0..(FLOOD_BYTES / line.len()) {
+            file.write_all(&line).unwrap();
+        }
+        file.flush().unwrap();
+    }
+
+    let runtime = TaskRuntime::new(dir.path().join("logs"));
+    let handle = runtime
+        .spawn(
+            "bulk".into(),
+            // `exec` so the shell is replaced and the PTY closes at EOF.
+            Some(format!("exec cat '{}'", payload_path.display())),
+            None,
+            dir.path().to_path_buf(),
+            40,
+            200,
+        )
+        .unwrap();
+
+    let (replay, mut rx) = handle.subscribe_with_replay();
+    let mut recovery = handle.recovery();
+    let log_index = handle.log_index();
+    let mut delivered = StreamDigest::new();
+    let mut first_offset: Option<u64> = None;
+    let absorb = |event: &PtyEvent, digest: &mut StreamDigest, first: &mut Option<u64>| {
+        if let PtyEvent::Output { chunk, log_offset, .. } = event {
+            first.get_or_insert(*log_offset);
+            digest.feed(chunk);
+        }
+    };
+    for event in replay {
+        absorb(&event, &mut delivered, &mut first_offset);
+    }
+
+    // Hold still while the flood runs past the ring. The coalescer keeps
+    // draining (a broadcast send never blocks), so the gap this opens is
+    // real and is exactly what a wedged webview would produce.
+    let t0 = Instant::now();
+    let stall_from = log_index.flushed_through();
+    while log_index.flushed_through() < stall_from + STALL_UNTIL {
+        assert!(
+            t0.elapsed() < Duration::from_secs(120),
+            "producer never reached {STALL_UNTIL} B; got {}",
+            log_index.flushed_through() - stall_from
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stalled_ms = t0.elapsed().as_millis();
+
+    let mut events = 0u64;
+    let mut lagged = 0u64;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if Instant::now() > deadline {
+            panic!("flood never finished");
+        }
+        match rx.try_recv() {
+            Ok(event) => {
+                recovery.recover_before(&event, |missed| {
+                    absorb(&missed, &mut delivered, &mut first_offset);
+                });
+                absorb(&event, &mut delivered, &mut first_offset);
+                match event {
+                    PtyEvent::Output { .. } => events += 1,
+                    PtyEvent::Desync { missed_bytes, .. } => {
+                        panic!("stream desynced: {missed_bytes} bytes unrecoverable")
+                    }
+                    PtyEvent::Exit { .. } => break,
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                lagged += n;
+                recovery.note_lag(n);
+            }
+            Err(_) => break,
+        }
+    }
+    recovery.recover_tail(|missed| absorb(&missed, &mut delivered, &mut first_offset));
+    let _ = handle.kill();
+
+    let stats = recovery.stats();
+    let from = first_offset.unwrap_or(0);
+    let to = recovery.delivered_through().unwrap_or(from);
+    let on_disk = digest_log_range(&log_index, from, to);
+    let wall = t0.elapsed().as_secs_f64();
+
+    println!("\n=== phasr bulk flood (unthrottled) ===");
+    println!("flood         {:.1} MiB", FLOOD_BYTES as f64 / 1_048_576.0);
+    println!("stalled for   {stalled_ms} ms before draining");
+    println!("wall          {wall:.1} s ({:.1} MB/s delivered)",
+        delivered.len as f64 / 1_048_576.0 / wall);
+    println!("events        {events}");
+    println!("lagged        {lagged} events");
+    println!("refilled      {} B from the log", stats.recovered_bytes);
+    println!("unrecovered   {} B", stats.unrecovered_bytes);
+    println!("delivered     {} B (hash {:x})", delivered.len, delivered.hash);
+    println!("log[{from}..{to}]  {} B (hash {:x})", on_disk.len, on_disk.hash);
+
+    assert!(
+        lagged > 0,
+        "the broadcast never lagged — this test proved nothing about recovery"
+    );
+    assert_eq!(stats.unrecovered_bytes, 0, "bytes were lost for good");
+    assert_eq!(stats.desyncs, 0, "the stream desynced");
+    assert_eq!(
+        delivered, on_disk,
+        "the reconstructed stream is not the log, byte for byte"
+    );
+    assert!(
+        delivered.len as usize >= FLOOD_BYTES,
+        "only {} of {FLOOD_BYTES} flood bytes were delivered",
+        delivered.len
+    );
+}
+
 /// Does `stop_task` actually stop the agent?
 ///
 /// `PtyHandle::kill()` signals the direct child, which is the login shell
