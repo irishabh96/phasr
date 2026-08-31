@@ -83,3 +83,12 @@ tokio = { version = "1", features = ["macros", "rt", "test-util"] }
 rsa = { version = "0.9", features = ["sha2"] }
 rand = "0.8"
 wiremock = "0.6"
+
+# Perf phase 5, criterion 2 (`specs/perf-p5-polish-parity-spec.md`): the
+# free build-level win. Thin LTO + one codegen unit let LLVM see across
+# crate and codegen-unit boundaries in the pipeline's hot loops (coalescer,
+# base64/serde framing, log writes). Debug builds are untouched — this
+# section only shapes what `tauri build` ships.
+[profile.release]
+lto = "thin"
+codegen-units = 1

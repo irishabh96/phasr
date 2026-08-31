@@ -162,6 +162,36 @@ describe("TerminalSurfaceCache", () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
+  it("onEvict fires AT eviction, before dispose — and never for an explicit dispose", () => {
+    // The hook perf phase 4's report asked for: the detach used to wait
+    // for the next chunk to notice the surface was gone. Order matters —
+    // the callback must see the entry while its surface is still alive,
+    // because the component reads its channel id off it.
+    localStorage.setItem("phasr.terminal.maxCached", "1");
+    const evicted: { id: string; disposedYet: boolean }[] = [];
+    const cache = new TerminalSurfaceCache<Entry>("t", (entry) =>
+      evicted.push({
+        id: entry.surface.id,
+        disposedYet: entry.surface.disposed,
+      }),
+    );
+    const a = entryFor("a");
+    cache.set("a", a);
+    parkSurface(a.surface);
+
+    // Explicit dispose: the caller owns the stream — no hook.
+    cache.dispose("a");
+    expect(evicted).toEqual([]);
+
+    const b = entryFor("b");
+    cache.set("b", b);
+    parkSurface(b.surface);
+    cache.set("c", entryFor("c"));
+
+    expect(evicted).toEqual([{ id: "b", disposedYet: false }]);
+    expect(b.surface.disposed).toBe(true);
+  });
+
   it("parking deactivates the surface and moves it to the park host", () => {
     const a = entryFor("a");
     mount(a);

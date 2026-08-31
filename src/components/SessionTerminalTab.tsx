@@ -82,7 +82,12 @@ interface CachedSession {
   exitStatus: { exitCode: number | null } | null;
 }
 
-const sessionSurfaceCache = new TerminalSurfaceCache<CachedSession>("shell");
+const sessionSurfaceCache = new TerminalSurfaceCache<CachedSession>(
+  "shell",
+  // Same exact-detach-on-eviction as Terminal.tsx: end the Rust forwarder
+  // the instant the LRU takes the surface, instead of one chunk later.
+  (entry) => detachTerminalStream(entry.channel.id),
+);
 
 /** Public teardown. Called when the user explicitly closes a terminal tab. */
 export function disposeSessionTerminal(tabId: string) {

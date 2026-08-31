@@ -79,6 +79,15 @@ export interface TerminalBridge {
    */
   stats(id: string): Record<string, unknown> | null;
   /**
+   * Inject a sequence as if typed — `TerminalSurface.input`, so it fires
+   * `onData` exactly like a real keystroke. Exists for the A2 fast-path
+   * gate (perf phase 4, criterion 5): the keystroke, the echo and the
+   * tick-counter reads must all happen inside ONE `page.evaluate`, or the
+   * Playwright round trip races the 100 ms keystroke window and the gate
+   * flakes on a loaded runner.
+   */
+  input(id: string, seq: string): void;
+  /**
    * Phase 0's `getScrollbackLine` throughput microbench (perf spec,
    * criterion 7). Loops inside the page so the Playwright boundary is
    * crossed once per RUN, not once per line. `null` when the backend has
@@ -131,6 +140,7 @@ function bridge(): TerminalBridge {
     repaint: (id) => live.get(id)?.repaint(),
     renderTick: (id) => live.get(id)?.renderTick() ?? null,
     stats: (id) => live.get(id)?.renderStats?.() ?? null,
+    input: (id, seq) => live.get(id)?.input(seq),
     scrollbackBench: (id, samples) =>
       benchable(live.get(id))?.benchScrollback(samples) ?? null,
   };

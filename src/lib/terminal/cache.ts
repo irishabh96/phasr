@@ -142,8 +142,21 @@ export function __resetSurfaceRecency(): void {
 export class TerminalSurfaceCache<T extends SurfaceCacheEntry> {
   private readonly entries = new Map<string, T>();
 
-  /** @param namespace disambiguates ids across caches in the global LRU. */
-  constructor(private readonly namespace: string) {}
+  /**
+   * @param namespace disambiguates ids across caches in the global LRU.
+   * @param onEvict fires at the moment the LRU evicts an entry, BEFORE the
+   *   surface is disposed — the hook perf phase 4's report asked for. The
+   *   detach-on-eviction path used to be noticed one chunk late ("a chunk
+   *   arrived for a surface that left the document"); this makes it exact:
+   *   the component hands over a callback that tears down the Rust
+   *   forwarder (`detachTerminalStream`) the instant the eviction happens.
+   *   Explicit `dispose()` paths do NOT fire it — every caller of those
+   *   already stops or owns the stream itself.
+   */
+  constructor(
+    private readonly namespace: string,
+    private readonly onEvict?: (entry: T) => void,
+  ) {}
 
   private globalKey(id: string): string {
     return `${this.namespace}:${id}`;
@@ -184,6 +197,7 @@ export class TerminalSurfaceCache<T extends SurfaceCacheEntry> {
       return false;
     }
     if (!isParked(entry.surface)) return false;
+    this.onEvict?.(entry);
     this.dispose(id);
     console.info(
       `[terminal] evicted ${this.globalKey(id)} (over ${maxCachedSurfaces()} cached); ` +

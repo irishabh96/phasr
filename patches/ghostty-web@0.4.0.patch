@@ -1,5 +1,5 @@
 diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
-index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0978b611c 100644
+index a4ca427b95288e70c782ce303013cd644893dcec..a892cbe485e82850918bf82129dd5c876797c1f3 100644
 --- a/dist/ghostty-web.js
 +++ b/dist/ghostty-web.js
 @@ -1310,11 +1310,17 @@ const f = {
@@ -799,7 +799,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
        for (const A of this.addons)
          A.dispose();
        this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
-@@ -2634,17 +2999,262 @@ class IA {
+@@ -2634,17 +2999,295 @@ class IA {
    // Private Methods
    // ==========================================================================
    /**
@@ -1019,6 +1019,39 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
 +    this.startRenderLoop();
 +  }
 +  /**
++   * PHASR PATCH (perf phase 4, amendment A2): paint the pending damage
++   * NOW, synchronously, out of band from the cadence chain — the
++   * keystroke-echo fast path. The scheduler deliberately lets a frame
++   * request ride the ~33 ms reduced-cadence timer ("the next frame is
++   * imminent either way"), which is the right trade for flood output and
++   * the wrong one for the byte a keystroke just echoed. The HOST decides
++   * when that trade flips — its write path knows the last keystroke time
++   * and the current throughput; this method is only the mechanism.
++   *
++   * A real frame, not a side channel: it stamps `renderTicks` and
++   * `lastFrameAt` and consumes `frameRequested`, so the liveness watchdog
++   * and the perf instrumentation observe it exactly like a scheduled
++   * frame — and the next scheduled tick finds nothing requested and does
++   * no render work. DEC 2026 synchronized-output suppression is honoured:
++   * painting mid-sync-window out of band would defeat the mode. Cadence
++   * timers and any queued animation frame are left untouched — the chain
++   * keeps its rhythm; this frame just refuses to wait for it.
++   */
++  paintNow() {
++    if (this.isDisposed || !this.isOpen || this.isPaused || !this.frameRequested || this.isFrameSynchronized())
++      return !1;
++    const A = performance.now();
++    this.renderTicks = (this.renderTicks ?? 0) + 1, this.lastFrameAt = A;
++    try {
++      this.frameRequested = !1, this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
++      const B = this.wasmTerm.getCursor();
++      B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire());
++    } catch (B) {
++      return this.frameRequested = !0, this.frameErrors = (this.frameErrors ?? 0) + 1, this.lastFrameError = B, !1;
++    }
++    return !0;
++  }
++  /**
 +   * PHASR PATCH: re-queue the chain at the cadence the policy picks (see
 +   * `nextCadence` for the deferred-decrease rule). The ~30 fps tier
 +   * re-queues through a short timeout — REDUCED_FRAME_MS is tuned so the
@@ -1069,7 +1102,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
    }
    /**
     * Get a line from native WASM scrollback buffer
-@@ -2664,7 +3274,7 @@ class IA {
+@@ -2664,7 +3307,7 @@ class IA {
     * Clean up components (called on dispose or error)
     */
    cleanupComponents() {
@@ -1078,7 +1111,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
    }
    /**
     * Assert terminal is open (throw if not)
-@@ -2697,7 +3307,7 @@ class IA {
+@@ -2697,7 +3340,7 @@ class IA {
        D = this.wasmTerm.getLine(C);
      D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);
      const s = this.renderer.hoveredHyperlinkId || 0;
@@ -1087,7 +1120,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
      const N = this.wasmTerm.getScrollbackLength();
      let k;
      const M = this.getViewportY(), a = Math.max(0, Math.floor(M));
-@@ -2713,7 +3323,9 @@ class IA {
+@@ -2713,7 +3356,9 @@ class IA {
      this.linkDetector.getLinkAt(g, k).then((h) => {
        var G, U, t, c;
        if (h !== this.currentHoveredLink && ((U = (G = this.currentHoveredLink) == null ? void 0 : G.hover) == null || U.call(G, !1), this.currentHoveredLink = h, (t = h == null ? void 0 : h.hover) == null || t.call(h, !0), this.element && (this.element.style.cursor = h ? "pointer" : "text"), this.renderer))
@@ -1098,7 +1131,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
            const F = ((c = this.wasmTerm) == null ? void 0 : c.getScrollbackLength()) || 0, S = this.getViewportY(), x = Math.max(0, Math.floor(S)), p = h.range.start.y - F + x, T = h.range.end.y - F + x;
            p < this.rows && T >= 0 ? this.renderer.setHoveredLinkRange({
              startX: h.range.start.x,
-@@ -2923,6 +3535,122 @@ class DA {
+@@ -2923,6 +3568,122 @@ class DA {
      }), this._resizeObserver.observe(this._terminal.element)));
    }
  }
@@ -1221,7 +1254,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
  let R = null;
  async function oA() {
    R || (R = await q.load());
-@@ -2948,6 +3676,10 @@ export {
+@@ -2948,6 +3709,10 @@ export {
    e as CellFlags,
    J as EventEmitter,
    DA as FitAddon,
@@ -1233,7 +1266,7 @@ index a4ca427b95288e70c782ce303013cd644893dcec..ad2484b93eea794b8c2be155d798d1a0
    W as GhosttyTerminal,
    P as InputHandler,
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..924d37ac3762db3bb1b46151f17677afa9923ff8 100644
+index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..a6fa9d56183190d2f5e0bf899d2d0a73c5689ee0 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -64,6 +64,13 @@ export declare class CanvasRenderer {
@@ -1303,7 +1336,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..924d37ac3762db3bb1b46151f17677af
      private addons;
      private customKeyEventHandler?;
      private currentTitle;
-@@ -1686,6 +1717,69 @@ export declare class Terminal implements ITerminalCore {
+@@ -1686,6 +1717,79 @@ export declare class Terminal implements ITerminalCore {
       * Dispose terminal and clean up resources
       */
      dispose(): void;
@@ -1359,6 +1392,16 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..924d37ac3762db3bb1b46151f17677af
 +     */
 +    scheduleFrame(): void;
 +    private requestFrameInternal;
++    /**
++     * PHASR PATCH (perf phase 4, amendment A2): paint the pending damage
++     * synchronously, out of band from the cadence chain — the
++     * keystroke-echo fast path. A real frame (`renderTicks`/`lastFrameAt`
++     * move, the pending request is consumed); DEC 2026 sync suppression
++     * is honoured; cadence timers are untouched. Returns whether a frame
++     * was actually painted. Policy — WHEN to bypass the cadence — is the
++     * host's; see the backend's write path.
++     */
++    paintNow(): boolean;
 +    private scheduleNext;
 +    private computeCadence;
 +    private clearCadenceTimers;
@@ -1373,7 +1416,7 @@ index 19c99f9caf2f6b006496c0db3b32ea4ea96496a6..924d37ac3762db3bb1b46151f17677af
      /**
       * Start the render loop
       */
-@@ -1839,4 +1933,70 @@ export declare class UrlRegexProvider implements ILinkProvider {
+@@ -1839,4 +1943,70 @@ export declare class UrlRegexProvider implements ILinkProvider {
      dispose(): void;
  }
  

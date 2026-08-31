@@ -19,6 +19,10 @@ mod perfbench;
 /// Multi-agent load harness. Test-only, and gated on PHASR_LOAD=1.
 #[cfg(test)]
 mod loadtest;
+/// CI perf gate (P5 Q4, tier 2): shipping-vs-raw throughput as a ratio.
+/// Test-only, and gated on PHASR_GATE=1.
+#[cfg(test)]
+mod perfgate;
 mod pty;
 mod store;
 mod sync;

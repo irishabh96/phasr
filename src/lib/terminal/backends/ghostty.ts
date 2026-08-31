@@ -39,6 +39,7 @@ import {
   terminalDiagnosticsEnabled,
 } from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
+import { HiddenWriteQueue } from "@/lib/terminal/hiddenWrites";
 import { STALL_DEADLINE_MS } from "@/lib/terminal/liveness";
 import {
   createSurfacePerf,
@@ -161,6 +162,33 @@ export function __resetGhosttyEngine(): void {
  * is the correct thing to do. See `graphemeTail.ts`.
  */
 const HELD_TAIL_MS = 50;
+
+/**
+ * The keystroke-echo fast path (perf phase 4, amendment A2). A write that
+ * reaches the engine within this window of the user's last keystroke —
+ * while output is otherwise quiet (below `FAST_PATH_QUIET_BPS`) — is
+ * painted synchronously via the engine's `paintNow()` instead of waiting
+ * for the cadence chain's next tick. The chain's scheduler deliberately
+ * lets a frame request ride the ~33 ms reduced-cadence timer, which is the
+ * right trade during flood and the wrong one for the byte an agent just
+ * echoed back; this is the mechanism behind "typing feels instant while
+ * `cat` stays cheap". Policy lives HERE (the engine only supplies the
+ * out-of-band frame): 100 ms is iTerm2's own recent-keystroke window, and
+ * 1024 B/s is far below any TUI redraw — a stream that busy repaints on
+ * the cadence anyway, so the fast path cannot double-paint a flood.
+ */
+const KEYSTROKE_FAST_PATH_MS = 100;
+const FAST_PATH_QUIET_BPS = 1024;
+
+/**
+ * Gap between two parse slices of a hidden surface's write backlog (A5,
+ * perf phase 4 criterion 9 — see `hiddenWrites.ts` for the policy). Wider
+ * than a 120 Hz frame, so between any two slices the visible terminal's
+ * rAF — and the rest of the app — gets the main thread back; still ~80
+ * budgeted slices a second (each up to 4 ms of parse), far more capacity
+ * than the widened 50 ms flush windows deliver.
+ */
+const HIDDEN_SLICE_GAP_MS = 8;
 
 const MIN_COLS = 2;
 const MIN_ROWS = 1;
@@ -332,6 +360,22 @@ export class GhosttySurface implements TerminalSurface {
   private stallCheckPending = false;
   /** The app-window occlusion/background signal — see `setBackgrounded`. */
   private backgrounded = false;
+  /** When the emulator last turned a key event into PTY bytes — the
+   *  trigger half of the A2 echo fast path. See `paintIfEcho`. */
+  private lastKeystrokeAt = Number.NEGATIVE_INFINITY;
+  /**
+   * A5 — chunks a hidden surface has accepted but not yet parsed, drained
+   * in ~4 ms slices so a streaming hidden agent cannot spend the visible
+   * terminal's frame budget. Flushed synchronously the moment the surface
+   * is revealed or its grid is read. See `hiddenWrites.ts`.
+   */
+  private readonly hiddenWrites = new HiddenWriteQueue({
+    write: (data) => this.writeLive(data),
+    schedule: (drain) => {
+      window.setTimeout(drain, HIDDEN_SLICE_GAP_MS);
+    },
+    now: () => performance.now(),
+  });
   /** Frame failures already reported. See `reportFrameErrors`. */
   private reportedFrameErrors = 0;
 
@@ -441,6 +485,14 @@ export class GhosttySurface implements TerminalSurface {
         host: this.element,
       });
     }
+    // The A2 trigger: `onData` fires the moment the emulator turns a key
+    // event into PTY bytes, which is the only "the user is typing" signal
+    // the surface has. Stamped before the app's own callbacks run, so the
+    // window opens before the IPC send — the echo can beat 100 ms only if
+    // the clock started before the round trip.
+    term.onData(() => {
+      this.lastKeystrokeAt = performance.now();
+    });
     for (const cb of this.dataCbs) term.onData(cb);
     for (const cb of this.resizeCbs) term.onResize(cb);
 
@@ -719,8 +771,10 @@ export class GhosttySurface implements TerminalSurface {
     term: GhosttyTerminal,
     target: { cols: number; rows: number },
   ): void {
-    // A grapheme continuation still being held is part of the stream, and
-    // the grid has to have seen it before the grid is read.
+    // Deferred hidden-parse slices and a grapheme continuation still being
+    // held are part of the stream, and the grid has to have seen both
+    // before the grid is read.
+    this.hiddenWrites.flush();
     this.flushHeldTail();
     const startedAt = import.meta.env.DEV ? performance.now() : 0;
 
@@ -1219,6 +1273,10 @@ export class GhosttySurface implements TerminalSurface {
     // so a genuinely unpatched build then went quiet for the rest of the
     // session.
     if (!term) return;
+    // Reveal: whatever the hidden slices had not parsed yet must be in the
+    // grid before the first frame paints — BEFORE the pause/resume feature
+    // test, so an unpatched engine still gets its bytes.
+    if (active) this.hiddenWrites.flush();
     // Runtime-guarded even though the patched `.d.ts` declares both: an
     // unapplied patch must degrade to "hot but correct", not to a crash.
     if (typeof term.pause !== "function" || typeof term.resume !== "function") {
@@ -1409,6 +1467,20 @@ export class GhosttySurface implements TerminalSurface {
       this.pendingWrites.push(data);
       return;
     }
+    // A5 — a hidden surface does not spend main-thread time it cannot show:
+    // its chunks queue and parse in budgeted slices between the visible
+    // terminal's frames. Everything below (stall healing, the grapheme
+    // tail, the engine write, the echo fast path) runs when the slice —
+    // or the reveal — drains the queue through `writeLive`.
+    if (!this.active) {
+      this.hiddenWrites.enqueue(data);
+      return;
+    }
+    this.writeLive(data);
+  }
+
+  /** The live half of `write()` — everything that touches the engine. */
+  private writeLive(data: string | Uint8Array): void {
     // Output arriving into a terminal whose loop stopped is the one signal
     // that needs no user present. See `healIfStalled`.
     this.healIfStalled();
@@ -1452,7 +1524,10 @@ export class GhosttySurface implements TerminalSurface {
   private backlogBytes(): number {
     let sum = this.heldTail?.length ?? 0;
     for (const data of this.pendingWrites) sum += data.length;
-    return sum;
+    // A5: bytes a hidden surface has deferred are backlog too — parked
+    // surfaces report to the HUD when perf is on, and "accepted but not
+    // parsed" is exactly what this number means.
+    return sum + this.hiddenWrites.bytes;
   }
 
   /** Write whatever is being held, now. */
@@ -1482,6 +1557,41 @@ export class GhosttySurface implements TerminalSurface {
     if (!term) return;
     this.written = true;
     term.write(data);
+    this.paintIfEcho(term);
+  }
+
+  /**
+   * A2 — the keystroke-echo fast path (perf phase 4, criterion 5).
+   *
+   * `term.write` above asked the scheduler for a frame; at the ACTIVE
+   * cadence or from the idle heartbeat that request is honoured within
+   * one animation frame, but on the ~30 fps tier it deliberately rides
+   * the cadence timer for up to ~33 ms. When the write is plausibly the
+   * echo of something the user just typed — inside the keystroke window,
+   * with throughput too low to be a flood — the wait is pure latency, so
+   * the pending damage is painted NOW, synchronously, out of band
+   * (`paintNow()` is a real frame: ticks move, the perf instrumentation
+   * and the liveness watchdog see it, and the next scheduled tick finds
+   * nothing left to draw). Runtime-guarded like `pause`/`resume`: an
+   * unpatched engine simply keeps the cadence behaviour.
+   *
+   * The throughput reading is the engine's OWN estimator — the number the
+   * cadence decision uses — so the fast path and the scheduler cannot
+   * disagree about what "quiet" means.
+   */
+  private paintIfEcho(term: GhosttyTerminal): void {
+    if (!this.active || this.backgrounded) return;
+    const now = performance.now();
+    if (now - this.lastKeystrokeAt > KEYSTROKE_FAST_PATH_MS) return;
+    if (typeof term.paintNow !== "function") return;
+    const throughput = (
+      term as unknown as {
+        throughput?: { bytesPerSecond(nowMs: number): number };
+      }
+    ).throughput;
+    const bps = throughput?.bytesPerSecond(now);
+    if (bps === undefined || bps >= FAST_PATH_QUIET_BPS) return;
+    term.paintNow();
   }
 
   private clearHeldTimer(): void {
@@ -1595,6 +1705,9 @@ export class GhosttySurface implements TerminalSurface {
   /** @param row 0-based absolute buffer row (scrollback included). */
   readLine(row: number): string | null {
     if (this.disposed || !this.term) return null;
+    // A hidden surface may still owe the grid its deferred chunks (A5);
+    // a read must never see a grid behind the stream. Free when empty.
+    this.hiddenWrites.flush();
     const line = this.term.buffer.active.getLine(row);
     return line ? lineToText(line).trimEnd() : null;
   }
@@ -1602,6 +1715,7 @@ export class GhosttySurface implements TerminalSurface {
   readViewport(): { offset: number; scrollback: number } {
     const term = this.term;
     if (this.disposed || !term) return { offset: 0, scrollback: 0 };
+    this.hiddenWrites.flush();
     // `getViewportY()` is fractional mid-smooth-scroll; the renderer floors
     // it before using it as a row offset, so report what the renderer sees.
     return {
@@ -1905,6 +2019,10 @@ export class GhosttySurface implements TerminalSurface {
     this.cancelRebuildRetry();
     this.clearHeldTimer();
     this.heldTail = null;
+    // Unparsed hidden chunks die with the surface: an evicted terminal is
+    // rebuilt from replay/log on its next mount, so parsing them into a
+    // grid that is being destroyed would be pure waste.
+    this.hiddenWrites.clear();
     this.perf?.dispose();
     this.perf = null;
     if (this.diag) diagDispose(this.id);

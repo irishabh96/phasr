@@ -86,7 +86,15 @@ interface CachedMain {
   channelId: number | null;
 }
 
-const mainSurfaceCache = new TerminalSurfaceCache<CachedMain>("agent");
+const mainSurfaceCache = new TerminalSurfaceCache<CachedMain>(
+  "agent",
+  // Eviction tears down the Rust forwarder AT the eviction (perf phase 4,
+  // criterion 7 made exact). The in-handler `element.isConnected` check
+  // below stays as the backstop for a chunk already in flight.
+  (entry) => {
+    if (entry.channelId != null) detachTerminalStream(entry.channelId);
+  },
+);
 
 /** Public teardown. Called by explicit close paths only. */
 export function disposeMainTerminal(workspaceId: string) {
