@@ -432,6 +432,47 @@ describe("installGhosttyMouse", () => {
     install.dispose();
   });
 
+  /**
+   * Shift is read at PRESS time. Handing the moves back mid-drag would let
+   * the selection layer paint underneath the app.
+   */
+  it("keeps a drag it owns when shift goes down mid-gesture", () => {
+    const { element, sent, install } = harness();
+    const later = vi.fn();
+    document.addEventListener("mousemove", later);
+    element.dispatchEvent(mouse("mousedown", { button: 0, buttons: 1 }));
+    window.dispatchEvent(
+      mouse("mousemove", {
+        buttons: 1,
+        clientX: 5,
+        clientY: 1,
+        shiftKey: true,
+      }),
+    );
+    expect(sent).toEqual(["\x1b[<0;1;1M", "\x1b[<32;6;2M"]);
+    expect(later).not.toHaveBeenCalled();
+    document.removeEventListener("mousemove", later);
+    install.dispose();
+  });
+
+  /**
+   * A drag that wanders into the padding or over the scrollbar is still the
+   * app's — handing those moves to the selection layer half way through
+   * would paint a selection under the drag.
+   */
+  it("keeps a drag it owns when the pointer leaves the grid", () => {
+    const { element, install } = harness();
+    const later = vi.fn();
+    document.addEventListener("mousemove", later);
+    element.dispatchEvent(mouse("mousedown", { button: 0, buttons: 1 }));
+    window.dispatchEvent(
+      mouse("mousemove", { buttons: 1, clientX: -1, clientY: 1 }),
+    );
+    expect(later).not.toHaveBeenCalled();
+    document.removeEventListener("mousemove", later);
+    install.dispose();
+  });
+
   it("stops listening once disposed", () => {
     const { element, sent, install } = harness();
     install.dispose();

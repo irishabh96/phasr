@@ -84,13 +84,17 @@ export interface GhosttySelectionOptions {
   /** Copy-on-select, to match what a drag already does. */
   copy: (text: string) => void;
   /**
-   * False while a program owns the mouse (`mouse.ts`). A double-click is
-   * then the app's gesture — Claude Code and vim both use it — and turning
-   * it into a word selection here would fight the reports going to the PTY.
-   * Gated rather than suppressed by propagation because a press must stay
+   * False for a press `mouse.ts` claims for the running program — a
+   * double-click is then the app's gesture (Claude Code and vim both use
+   * it) and turning it into a word selection here would fight the reports
+   * going to the PTY. Asked per event, not per terminal: a shift-held or
+   * off-grid press is NOT claimed, so word and line selection keep working
+   * through the escape hatch even while an app owns the mouse.
+   *
+   * Gated rather than suppressed by propagation because a press must keep
    * propagating for phasr's own menus to close; see `mouse.ts`.
    */
-  enabled?: () => boolean;
+  enabled?: (event: MouseEvent) => boolean;
 }
 
 /** 0-based cell in VIEWPORT coordinates. */
@@ -108,7 +112,7 @@ export function installGhosttySelection(
     // Left button only, and only the 2nd click onwards: a plain click is
     // ghostty-web's own drag-select anchor and must reach it untouched.
     if (event.button !== 0 || event.detail < 2) return;
-    if (enabled && !enabled()) return;
+    if (enabled && !enabled(event)) return;
 
     // preventDefault BEFORE the cell lookup, not after: `Terminal.open()`
     // sets contenteditable="true" on this element, so a double-click here
@@ -145,8 +149,11 @@ export function installGhosttySelection(
   // recompute the word from the wrong row and overwrite it. preventDefault
   // too: the dblclick DEFAULT is WebKit's own word selection on the
   // contenteditable host, which stopPropagation alone does not suppress.
+  // Never gated: upstream's dblclick selects AND copies a word, so letting
+  // it through under a mouse-aware app would paint a selection on top of
+  // the gesture the app just received. The app gets that gesture from the
+  // two reported presses; nobody needs upstream's version of it.
   const swallowDblClick = (event: MouseEvent) => {
-    if (enabled && !enabled()) return;
     event.preventDefault();
     event.stopPropagation();
   };
