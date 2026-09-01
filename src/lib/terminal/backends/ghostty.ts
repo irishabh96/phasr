@@ -24,10 +24,17 @@ import {
 } from "@/lib/terminal/backends/ghostty/osc8Provider";
 import {
   DEC_APPLICATION_CURSOR,
-  DEC_SGR_MOUSE,
   WheelAccumulator,
   wheelOutcome,
 } from "@/lib/terminal/backends/ghostty/wheel";
+import {
+  DEC_MOUSE_ANY,
+  DEC_MOUSE_DRAG,
+  DEC_MOUSE_X10,
+  DEC_SGR_MOUSE,
+  installGhosttyMouse,
+  type MouseModes,
+} from "@/lib/terminal/backends/ghostty/mouse";
 import { reportP0Error } from "@/lib/sentry";
 import {
   diagAttach,
@@ -310,6 +317,7 @@ export class GhosttySurface implements TerminalSurface {
   private clipboardWanted = false;
   private clipboard: SurfaceDisposable | null = null;
   private selection: SurfaceDisposable | null = null;
+  private mouse: SurfaceDisposable | null = null;
   private active = true;
   private pausedWarned = false;
   /** Throttles the write-path restart. See `healIfStalled`. */
@@ -418,6 +426,7 @@ export class GhosttySurface implements TerminalSurface {
     if (this.linkSource) this.wireLinks(term, this.linkSource);
     if (this.keymap) this.wireKeymap(term, this.keymap);
     this.wireWheel(term);
+    this.wireMouse(term);
     this.wireSelection(term);
     if (this.clipboardWanted && !this.clipboard) {
       this.clipboard = installGhosttyClipboard(
@@ -639,7 +648,9 @@ export class GhosttySurface implements TerminalSurface {
       // Already retried once and failed again. Stop: retrying a rebuild
       // against a damaged page list forever would burn the frame budget and
       // never succeed.
-      console.error("[terminal] grid rebuild failed twice; giving up on this width");
+      console.error(
+        "[terminal] grid rebuild failed twice; giving up on this width",
+      );
       if (this.diag) diagNote(this.id, "rebuild gave up");
       return;
     }
@@ -721,7 +732,6 @@ export class GhosttySurface implements TerminalSurface {
         `rebuild ${target.cols}x${target.rows} (${primary.history.length}h+${primary.screen.length}s${alternate ? "+alt" : ""})`,
       );
 
-
     // The transaction, with attempts: build the replacement, write into
     // it, and only then retire the old grid. A trap parks the damaged
     // replacement (its pages are allocator poison — see
@@ -755,7 +765,10 @@ export class GhosttySurface implements TerminalSurface {
           const now = this.readCursor(term);
           const scrolled = now.scrollback - mark.scrollback;
           term.write(
-            restoreCursorSequence(Math.max(0, now.y - (mark.y - scrolled)), mark.x),
+            restoreCursorSequence(
+              Math.max(0, now.y - (mark.y - scrolled)),
+              mark.x,
+            ),
           );
         }
 
@@ -795,7 +808,10 @@ export class GhosttySurface implements TerminalSurface {
           `[terminal] rebuild attempt ${attempt}/${MAX_REBUILD_ATTEMPTS} trapped; damaged grid quarantined (${quarantinedGrids.length} total)`,
         );
         if (this.diag)
-          diagNote(this.id, `rebuild attempt ${attempt} trapped: ${String(err)}`);
+          diagNote(
+            this.id,
+            `rebuild attempt ${attempt} trapped: ${String(err)}`,
+          );
         continue;
       }
       break;
@@ -1261,7 +1277,10 @@ export class GhosttySurface implements TerminalSurface {
       term.pause?.();
       term.resume();
     } catch (err) {
-      console.error(`[terminal] ${this.id}: could not restart the render loop`, err);
+      console.error(
+        `[terminal] ${this.id}: could not restart the render loop`,
+        err,
+      );
       return;
     }
     // The loop paints on its NEXT frame; this is what puts the current
@@ -1295,7 +1314,10 @@ export class GhosttySurface implements TerminalSurface {
     // A hidden page stops delivering frames legitimately, and a burst of
     // output would otherwise kick once per chunk for as long as it stays
     // hidden. The watchdog's `visible` trigger covers the way back.
-    if (typeof document !== "undefined" && document.visibilityState !== "visible")
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState !== "visible"
+    )
       return;
     if (now - this.lastKickAt < STALL_MS) return;
     console.warn(
@@ -1479,7 +1501,13 @@ export class GhosttySurface implements TerminalSurface {
     // setTheme only swaps the palette; nothing redraws until something
     // marks a row dirty, so a flip on an idle terminal would land only on
     // the next byte of output without this.
-    renderer.render(this.term.wasmTerm, true, this.term.getViewportY(), this.term, 0);
+    renderer.render(
+      this.term.wasmTerm,
+      true,
+      this.term.getViewportY(),
+      this.term,
+      0,
+    );
   }
 
   // -------------------------------------------------------------------
@@ -1638,6 +1666,28 @@ export class GhosttySurface implements TerminalSurface {
   }
 
   /**
+   * Report mouse buttons and motion to the PTY.
+   *
+   * The counterpart to `wireWheel`: ghostty-web reports no mouse event of
+   * any kind, so before this a click inside a mouse-aware TUI reached it
+   * as nothing at all. See `backends/ghostty/mouse.ts` for the protocol
+   * and for what the policy deliberately leaves to phasr.
+   *
+   * Installed before `wireSelection` only for readability — it listens on
+   * the window in capture phase, which is ahead of every element listener
+   * (ghostty-web's own included) no matter what order they registered in.
+   */
+  private wireMouse(term: GhosttyTerminal): void {
+    this.mouse?.dispose();
+    this.mouse = installGhosttyMouse(this.element, {
+      modes: () => readMouseModes(term),
+      cellAt: (event) => this.cellAt(event),
+      send: (seq) => term.input(seq, true),
+      focus: () => term.focus(),
+    });
+  }
+
+  /**
    * Double-click = word, triple-click = logical line — phasr's, not
    * ghostty-web's.
    *
@@ -1697,6 +1747,8 @@ export class GhosttySurface implements TerminalSurface {
     this.clipboard = null;
     this.selection?.dispose();
     this.selection = null;
+    this.mouse?.dispose();
+    this.mouse = null;
     this.dataCbs.clear();
     this.resizeCbs.clear();
     this.pendingWrites.length = 0;
@@ -1714,6 +1766,26 @@ export class GhosttySurface implements TerminalSurface {
     this.term = null;
     this.element.parentNode?.removeChild(this.element);
   }
+}
+
+/**
+ * The mouse modes, read fresh on every pointer event.
+ *
+ * `hasMouseTracking()` is the engine's own "any of 9 / 1000 / 1002 / 1003"
+ * aggregate; the individual modes come from `getMode` because the policy
+ * has to tell hover (1003) from drag (1002) from press-only (1000/9).
+ * Null while the engine is still loading — every caller then does nothing.
+ */
+function readMouseModes(term: GhosttyTerminal): MouseModes | null {
+  const wasmTerm = term.wasmTerm;
+  if (!wasmTerm) return null;
+  return {
+    mouseTracking: wasmTerm.hasMouseTracking(),
+    x10: wasmTerm.getMode(DEC_MOUSE_X10, false),
+    dragTracking: wasmTerm.getMode(DEC_MOUSE_DRAG, false),
+    anyMotion: wasmTerm.getMode(DEC_MOUSE_ANY, false),
+    sgrMouse: wasmTerm.getMode(DEC_SGR_MOUSE, false),
+  };
 }
 
 /**
@@ -1741,7 +1813,9 @@ export class GhosttySurface implements TerminalSurface {
  */
 function swallowsAppChord(event: KeyboardEvent): boolean {
   if (!event.metaKey) return false;
-  return event.code !== "KeyC" && event.code !== "KeyV" && event.code !== "KeyX";
+  return (
+    event.code !== "KeyC" && event.code !== "KeyV" && event.code !== "KeyX"
+  );
 }
 
 /**
