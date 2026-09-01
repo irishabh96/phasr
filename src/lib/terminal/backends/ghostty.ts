@@ -29,6 +29,7 @@ import {
 } from "@/lib/terminal/backends/ghostty/wheel";
 import {
   DEC_MOUSE_ANY,
+  DEC_MOUSE_BUTTON,
   DEC_MOUSE_DRAG,
   DEC_MOUSE_X10,
   DEC_SGR_MOUSE,
@@ -290,6 +291,12 @@ const SCROLLBAR_WIDTH = 15;
 const STALL_MS = 1000;
 
 let surfaceSeq = 0;
+
+/**
+ * Width of ghostty-web's overlay scrollbar plus its right margin
+ * (`handleMouseDown`: `s = 8`, `k = 4`). Presses there are the thumb's.
+ */
+const SCROLLBAR_STRIP = 12;
 
 export class GhosttySurface implements TerminalSurface {
   readonly kind = "ghostty" as const;
@@ -1681,7 +1688,7 @@ export class GhosttySurface implements TerminalSurface {
     this.mouse?.dispose();
     this.mouse = installGhosttyMouse(this.element, {
       modes: () => readMouseModes(term),
-      cellAt: (event) => this.cellAt(event),
+      cellAt: (event) => this.gridCellAt(event),
       send: (seq) => term.input(seq, true),
       focus: () => term.focus(),
     });
@@ -1700,7 +1707,13 @@ export class GhosttySurface implements TerminalSurface {
     this.selection = installGhosttySelection(
       this.element,
       term as unknown as GhosttySelectionTerminal,
-      { copy: (text) => copySelectionText(text, term.textarea) },
+      {
+        copy: (text) => copySelectionText(text, term.textarea),
+        // A double-click under a mouse-aware app is the app's, not a word
+        // selection. `wireMouse` reports the press without stopping it —
+        // see `mouse.ts` for why it cannot — so the gate is here.
+        enabled: () => !(readMouseModes(term)?.mouseTracking ?? false),
+      },
     );
   }
 
@@ -1721,6 +1734,37 @@ export class GhosttySurface implements TerminalSurface {
       col: clamp((event.clientX - rect.left) / width, this.cols - 1),
       row: clamp((event.clientY - rect.top) / height, this.rows - 1),
     };
+  }
+
+  /**
+   * The cell under a pointer, or null when the point is not one.
+   *
+   * `cellAt` CLAMPS, which is what a wheel wants (a tick in the padding
+   * still scrolls). A button must not: clamping would report a press in
+   * the padding, or on ghostty-web's overlay scrollbar, as a press on the
+   * nearest edge cell — and would take the scrollbar thumb away from the
+   * drag that owns it. The reserved strip mirrors ghostty-web's own
+   * geometry (`handleMouseDown`: 8px wide, 4px from the right edge), and
+   * only exists while there is scrollback to scroll.
+   */
+  private gridCellAt(event: MouseEvent): { col: number; row: number } | null {
+    const renderer = this.term?.renderer;
+    const wasm = this.term?.wasmTerm;
+    if (!renderer || !wasm) return null;
+    const width = renderer.charWidth;
+    const height = renderer.charHeight;
+    if (width <= 0 || height <= 0) return null;
+    const rect = renderer.getCanvas().getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return null;
+    if (wasm.getScrollbackLength() > 0 && x >= rect.width - SCROLLBAR_STRIP) {
+      return null;
+    }
+    const col = Math.floor(x / width);
+    const row = Math.floor(y / height);
+    if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) return null;
+    return { col, row };
   }
 
   installClipboard(): SurfaceDisposable {
@@ -1779,11 +1823,20 @@ export class GhosttySurface implements TerminalSurface {
 function readMouseModes(term: GhosttyTerminal): MouseModes | null {
   const wasmTerm = term.wasmTerm;
   if (!wasmTerm) return null;
+  const button = wasmTerm.getMode(DEC_MOUSE_BUTTON, false);
+  const dragTracking = wasmTerm.getMode(DEC_MOUSE_DRAG, false);
+  const anyMotion = wasmTerm.getMode(DEC_MOUSE_ANY, false);
   return {
     mouseTracking: wasmTerm.hasMouseTracking(),
-    x10: wasmTerm.getMode(DEC_MOUSE_X10, false),
-    dragTracking: wasmTerm.getMode(DEC_MOUSE_DRAG, false),
-    anyMotion: wasmTerm.getMode(DEC_MOUSE_ANY, false),
+    // These are four independent DEC modes but ONE protocol, and an app
+    // that moves from 9 to 1000 does not always reset 9. Treating DECSET 9
+    // as authoritative whenever it is set would then keep suppressing the
+    // releases 1000 asks for, so it only wins when nothing richer is on.
+    x10:
+      wasmTerm.getMode(DEC_MOUSE_X10, false) &&
+      !(button || dragTracking || anyMotion),
+    dragTracking,
+    anyMotion,
     sgrMouse: wasmTerm.getMode(DEC_SGR_MOUSE, false),
   };
 }

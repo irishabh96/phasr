@@ -136,14 +136,28 @@ test("a drag under a tracking app reports motion instead of selecting text", asy
 
   await page.mouse.move(box.x + 40, box.y + 30);
   await page.mouse.down();
-  await page.mouse.move(box.x + 240, box.y + 30, { steps: 8 });
+  // Many small steps, so the report count is governed by cells crossed and
+  // not by how many `mousemove`s Playwright chose to dispatch.
+  await page.mouse.move(box.x + 240, box.y + 30, { steps: 40 });
   await page.mouse.up();
   await page.waitForTimeout(300);
 
   const sent = await ptyInput(page);
   console.log(`DRAG claude-modes -> ${JSON.stringify(sent)}`);
-  // Motion reports carry bit 5 (button 32 = left button held, moving).
-  expect(sent.some((s) => /^\x1b\[<32;\d+;\d+M$/.test(s))).toBe(true);
-  // One report per cell crossed, not one per pixel of pointer travel.
-  expect(sent.length).toBeLessThan(60);
+
+  // Motion carries bit 5 (32 = left button held, moving).
+  const motion = sent.filter((s) => /^\x1b\[<32;\d+;\d+M$/.test(s));
+  expect(motion.length).toBeGreaterThan(1);
+
+  // One report per cell, and never two for the same cell: 40 dispatched
+  // moves across ~200px collapse to the number of columns actually crossed,
+  // which is what "per cell" means and what an upper bound alone cannot show.
+  const columns = motion.map((s) => s.split(";")[1]);
+  expect(new Set(columns).size).toBe(columns.length);
+  expect(motion.length).toBeLessThan(40);
+
+  // The drag never became a text selection.
+  expect(
+    await page.evaluate(() => window.getSelection()?.toString() ?? ""),
+  ).toBe("");
 });
