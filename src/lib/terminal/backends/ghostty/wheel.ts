@@ -34,9 +34,10 @@
  * `attachCustomWheelEventHandler` hook rather than another dist patch.
  */
 
+import { encodeMouse } from "@/lib/terminal/backends/ghostty/mouse";
+
 /** DEC private modes this policy reads. */
 export const DEC_APPLICATION_CURSOR = 1;
-export const DEC_SGR_MOUSE = 1006;
 
 /** What the wheel should do, given the terminal's mode state. */
 export type WheelOutcome =
@@ -69,10 +70,6 @@ export interface WheelContext {
 /** Wheel-up / wheel-down as the SGR/X10 protocol numbers them (bit 6 set). */
 const BUTTON_WHEEL_UP = 64;
 const BUTTON_WHEEL_DOWN = 65;
-
-const MOD_SHIFT = 4;
-const MOD_ALT = 8;
-const MOD_CTRL = 16;
 
 /**
  * The whole policy, as a pure function of mode state — so it is testable
@@ -113,27 +110,17 @@ export function wheelOutcome(ctx: WheelContext): WheelOutcome {
   return { kind: "scrollback" };
 }
 
-/**
- * SGR (DECSET 1006) or X10 mouse encoding.
- *
- * SGR: `CSI < Cb ; Cx ; Cy M`, 1-based coordinates, unbounded.
- * X10: `CSI M` then `Cb+32`, `Cx+32`, `Cy+32` as single bytes, which caps
- * coordinates at 223 — the reason SGR exists. Apps that never request 1006
- * are old enough to expect exactly that clamp.
- */
+/** Wheel report for the cell under the pointer. Encoding lives in `mouse.ts`. */
 export function mouseSequence(ctx: WheelContext): string {
-  let button = ctx.lines < 0 ? BUTTON_WHEEL_UP : BUTTON_WHEEL_DOWN;
-  if (ctx.shift) button += MOD_SHIFT;
-  if (ctx.alt) button += MOD_ALT;
-  if (ctx.ctrl) button += MOD_CTRL;
-
-  const col = Math.max(0, ctx.col) + 1;
-  const row = Math.max(0, ctx.row) + 1;
-
-  if (ctx.sgrMouse) return `\x1b[<${button};${col};${row}M`;
-
-  const clamp = (v: number) => String.fromCharCode(32 + Math.min(v, 223));
-  return `\x1b[M${clamp(button)}${clamp(col)}${clamp(row)}`;
+  return encodeMouse({
+    button: ctx.lines < 0 ? BUTTON_WHEEL_UP : BUTTON_WHEEL_DOWN,
+    col: ctx.col,
+    row: ctx.row,
+    sgr: ctx.sgrMouse,
+    shift: ctx.shift,
+    alt: ctx.alt,
+    ctrl: ctx.ctrl,
+  });
 }
 
 /**
