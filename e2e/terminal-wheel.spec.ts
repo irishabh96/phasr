@@ -42,6 +42,18 @@ async function ptyInput(page: Page): Promise<string[]> {
     .map((c) => String(c.args?.data ?? ""));
 }
 
+/**
+ * Wheel reports only (buttons 64/65).
+ *
+ * Since `mouse.ts`, positioning the pointer over the terminal is itself
+ * reportable: these modes include 1003, so the pointer move that precedes
+ * a wheel tick emits one motion report (button 35). The wheel contract is
+ * about wheel reports, so it is asserted on those.
+ */
+function wheelReports(sent: string[]): string[] {
+  return sent.filter((seq) => /^\x1b\[<6[45];\d+;\d+M$/.test(seq));
+}
+
 async function boot(page: Page, modes: string) {
   await bootApp(page, makeFixtures());
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
@@ -76,15 +88,17 @@ test("an alt-screen app that asked for mouse events gets mouse events, never arr
   expect(sent.join("")).not.toContain("\x1b[A");
   expect(sent.join("")).not.toContain("\x1b[B");
   // SGR wheel-up (button 64) with 1-based coordinates, one per tick.
-  expect(sent).toHaveLength(3);
-  for (const seq of sent) expect(seq).toMatch(/^\x1b\[<64;\d+;\d+M$/);
+  expect(wheelReports(sent)).toHaveLength(3);
+  for (const seq of wheelReports(sent))
+    expect(seq).toMatch(/^\x1b\[<64;\d+;\d+M$/);
 
   await clearCalls(page);
   await wheel(page, 2, 120);
   const down = await ptyInput(page);
   console.log(`WHEEL claude-modes down x2 -> ${JSON.stringify(down)}`);
-  expect(down).toHaveLength(2);
-  for (const seq of down) expect(seq).toMatch(/^\x1b\[<65;\d+;\d+M$/);
+  expect(wheelReports(down)).toHaveLength(2);
+  for (const seq of wheelReports(down))
+    expect(seq).toMatch(/^\x1b\[<65;\d+;\d+M$/);
 });
 
 test("an alt-screen app WITHOUT mouse tracking gets exactly one arrow per tick", async ({
