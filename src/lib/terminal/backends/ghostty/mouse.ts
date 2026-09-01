@@ -133,6 +133,12 @@ export interface MouseContext {
    * motion on cell change.
    */
   cellChanged: boolean;
+  /**
+   * Release only: did we report this button's press? A release is owed to
+   * the app whenever its press was reported, even if the user has since
+   * pressed shift.
+   */
+  wasReported?: boolean;
   shift: boolean;
   alt: boolean;
   ctrl: boolean;
@@ -143,8 +149,15 @@ export interface MouseContext {
  * canvas, a wasm instance or a DOM event.
  */
 export function mouseOutcome(ctx: MouseContext): MouseOutcome {
-  // No app asked for the mouse, or the user asked for the escape hatch.
-  if (!ctx.mouseTracking || ctx.shift) return { kind: "passthrough" };
+  if (!ctx.mouseTracking) return { kind: "passthrough" };
+
+  // Shift is the escape hatch — but only for a press. A release whose press
+  // we already reported is owed to the app whatever the user is holding
+  // now: dropping it leaves the app believing the button is still down for
+  // the rest of the session.
+  if (ctx.shift && !(ctx.type === "up" && ctx.wasReported)) {
+    return { kind: "passthrough" };
+  }
 
   if (ctx.type === "move") return motionOutcome(ctx);
 
@@ -238,8 +251,13 @@ export interface MouseModes {
 export interface GhosttyMouseHost {
   /** Null while the engine is still loading. */
   modes(): MouseModes | null;
-  /** 0-based cell under the pointer, clamped to the grid. */
-  cellAt(event: MouseEvent): { col: number; row: number };
+  /**
+   * 0-based cell under the pointer, or null when the point is not a cell of
+   * this terminal's grid — the surface padding, the strip below the last
+   * row, or ghostty-web's overlay scrollbar. Those belong to whatever draws
+   * them, not to the app.
+   */
+  cellAt(event: MouseEvent): { col: number; row: number } | null;
   send(seq: string): void;
   focus(): void;
 }
@@ -247,30 +265,39 @@ export interface GhosttyMouseHost {
 /**
  * Report buttons and motion to the PTY whenever a program asked for them.
  *
- * ## Why every listener is on the window, in capture phase
+ * ## Where the listeners live, and what each one is allowed to stop
  *
- * `Terminal.open()` already registered ghostty-web's own
- * `handleMouseDown` on this very element with `{ capture: true }`
- * (`dist/ghostty-web.js`; its `dispose()` removes it from `this.element`,
- * which is how we know it is the element and not the canvas). Anything we
- * register on the element afterwards therefore runs SECOND — too late to
- * stop it from anchoring a drag-selection under a click we are about to
- * report. Capture on the window runs before capture on any element, so
- * that is where a claimed press has to be intercepted.
+ * All three are on the WINDOW in capture phase, which runs before every
+ * element listener whatever the registration order — and a drag has to be
+ * followed off the canvas anyway, or a release outside it never arrives and
+ * the app believes the button is held for the rest of the session.
  *
- * It is also what a drag needs: a drag that leaves the canvas still has to
- * report, and a release outside it still has to arrive, or the app
- * believes the button is held for the rest of the session (ghostty-web
- * puts its own `mouseup` on the document for the same reason).
+ * What they may STOP is the delicate part, because three different parties
+ * listen for the same press (all verified in `dist/ghostty-web.js`):
  *
- * Being on the window means being disciplined about what is ours: an event
- * inside the element with no button held, or any event at all while we are
- * holding a press we reported. A drag that began somewhere else — a
- * scrollbar, some future splitter — keeps its own `mousemove` stream even
- * when the pointer crosses the terminal.
+ * - ghostty-web's `handleMouseDown`, element capture — the overlay
+ *   SCROLLBAR only. It returns immediately unless the point is in the 8px
+ *   strip at the right edge, and not at all when there is no scrollback.
+ * - ghostty-web's drag-selection, on the DOCUMENT: `mousedown` anchors,
+ *   `mousemove` extends, `mouseup` finalises and copies.
+ * - phasr's own menus (`WorkspaceActionsMenu`, `OpenInMenu`, `SyncButton`,
+ *   `RunCommandPicker`), also `document` `mousedown` — which is how they
+ *   close when you click outside them.
  *
- * `click` is deliberately untouched. `preventDefault()` on a mousedown
- * does not suppress the later `click`, so the pane's own
+ * The last two are indistinguishable by phase, so stopping a PRESS to
+ * suppress the selection would also wedge every open menu the moment you
+ * clicked into a terminal. A press is therefore never stopped, only
+ * `preventDefault()`ed — which the contenteditable host needs regardless.
+ * An anchor with no extension and no finalise paints nothing and copies
+ * nothing, so suppressing the DRAG is enough: `mousemove` and `mouseup` are
+ * stopped, and only while we hold a press we reported.
+ *
+ * `installGhosttySelection` is gated on the same condition rather than by
+ * propagation, so a double-click under a tracking app goes to the app
+ * instead of selecting a word.
+ *
+ * `click` is deliberately untouched. `preventDefault()` on a mousedown does
+ * not suppress the later `click`, so the pane's own
  * `onClick={() => surface.focus()}` and ghostty-web's link activation both
  * still fire.
  */
@@ -278,14 +305,19 @@ export function installGhosttyMouse(
   element: HTMLElement,
   host: GhosttyMouseHost,
 ): SurfaceDisposable {
-  /** Protocol button of a press we reported, so we report its release. */
-  let pressed: number | null = null;
+  /**
+   * Protocol buttons whose press we reported, so we report their release.
+   * A set, not a slot: a second button pressed while the first is held
+   * would otherwise overwrite it, and the first release would go missing.
+   */
+  const pressed = new Set<number>();
   let lastCell: { col: number; row: number } | null = null;
 
   const decide = (
     event: MouseEvent,
     type: MouseEventKind,
     cell: { col: number; row: number },
+    wasReported = false,
   ): MouseOutcome | null => {
     const modes = host.modes();
     if (!modes) return null;
@@ -300,6 +332,7 @@ export function installGhosttyMouse(
         lastCell === null ||
         lastCell.col !== cell.col ||
         lastCell.row !== cell.row,
+      wasReported,
       shift: event.shiftKey,
       alt: event.altKey,
       ctrl: event.ctrlKey,
@@ -309,41 +342,40 @@ export function installGhosttyMouse(
   /**
    * `Terminal.open()` sets contenteditable="true" on this element, so the
    * default action of a mousedown here is WebKit caret placement and the
-   * start of a text drag on a div whose only content is a canvas. The
-   * state that leaves behind eats keystrokes until the surface is
-   * remounted — the same trap `selection.ts` documents.
+   * start of a text drag on a div whose only content is a canvas. The state
+   * that leaves behind eats keystrokes until the surface is remounted — the
+   * same trap `selection.ts` documents.
    */
-  const claim = (event: MouseEvent) => {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  };
-
   const onMouseDown = (event: MouseEvent) => {
     if (!isInside(element, event)) return;
     const cell = host.cellAt(event);
+    if (!cell) return;
     const outcome = decide(event, "down", cell);
     if (!outcome || outcome.kind === "passthrough") return;
-    claim(event);
-    // ghostty-web's own mousedown is what normally focuses the terminal,
-    // and we just stopped it from running.
+    event.preventDefault();
     host.focus();
     if (outcome.kind === "send") {
       host.send(outcome.seq);
-      pressed = protocolButton(event.button);
+      const button = protocolButton(event.button);
+      if (button !== null) pressed.add(button);
       lastCell = cell;
     }
   };
 
   const onMouseMove = (event: MouseEvent) => {
     // Hover is ours only with nothing held: a button already down that we
-    // did not report belongs to whoever did claim that press.
-    const ours =
-      pressed !== null || (event.buttons === 0 && isInside(element, event));
-    if (!ours) return;
+    // did not report belongs to whoever claimed that press — the scrollbar
+    // thumb, some future splitter — and its drag keeps its own stream even
+    // while the pointer crosses the terminal.
+    const dragging = pressed.size > 0;
+    if (!dragging && !(event.buttons === 0 && isInside(element, event))) return;
     const cell = host.cellAt(event);
+    if (!cell) return;
     const outcome = decide(event, "move", cell);
     if (!outcome || outcome.kind === "passthrough") return;
-    claim(event);
+    event.preventDefault();
+    // Only a drag we own may be taken away from the selection layer.
+    if (dragging) event.stopImmediatePropagation();
     if (outcome.kind === "send") {
       host.send(outcome.seq);
       lastCell = cell;
@@ -351,16 +383,18 @@ export function installGhosttyMouse(
   };
 
   const onMouseUp = (event: MouseEvent) => {
-    // A press we passed through (right-click, or shift-held) must have its
-    // release passed through too, or the app sees a release it never got a
-    // press for.
-    if (pressed === null) return;
-    if (protocolButton(event.button) !== pressed) return;
-    pressed = null;
-    const cell = host.cellAt(event);
-    const outcome = decide(event, "up", cell);
+    const button = protocolButton(event.button);
+    // A press we passed through — right-click, shift-held, off-grid — must
+    // have its release passed through too, or the app sees a release for a
+    // press it never got.
+    if (button === null || !pressed.delete(button)) return;
+    // A release outside the grid still belongs to the app: report it
+    // against the last cell the pointer was reported at.
+    const cell = host.cellAt(event) ?? lastCell ?? { col: 0, row: 0 };
+    const outcome = decide(event, "up", cell, true);
     if (!outcome || outcome.kind === "passthrough") return;
-    claim(event);
+    event.preventDefault();
+    event.stopImmediatePropagation();
     if (outcome.kind === "send") host.send(outcome.seq);
   };
 

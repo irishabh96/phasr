@@ -83,6 +83,14 @@ export interface GhosttySelectionTerminal {
 export interface GhosttySelectionOptions {
   /** Copy-on-select, to match what a drag already does. */
   copy: (text: string) => void;
+  /**
+   * False while a program owns the mouse (`mouse.ts`). A double-click is
+   * then the app's gesture — Claude Code and vim both use it — and turning
+   * it into a word selection here would fight the reports going to the PTY.
+   * Gated rather than suppressed by propagation because a press must stay
+   * propagating for phasr's own menus to close; see `mouse.ts`.
+   */
+  enabled?: () => boolean;
 }
 
 /** 0-based cell in VIEWPORT coordinates. */
@@ -94,12 +102,13 @@ interface ViewportCell {
 export function installGhosttySelection(
   element: HTMLElement,
   term: GhosttySelectionTerminal,
-  { copy }: GhosttySelectionOptions,
+  { copy, enabled }: GhosttySelectionOptions,
 ): SurfaceDisposable {
   const onMouseDown = (event: MouseEvent) => {
     // Left button only, and only the 2nd click onwards: a plain click is
     // ghostty-web's own drag-select anchor and must reach it untouched.
     if (event.button !== 0 || event.detail < 2) return;
+    if (enabled && !enabled()) return;
 
     // preventDefault BEFORE the cell lookup, not after: `Terminal.open()`
     // sets contenteditable="true" on this element, so a double-click here
@@ -124,7 +133,9 @@ export function installGhosttySelection(
     if (!cell) return;
 
     const selected =
-      event.detail === 2 ? selectWord(term, cell) : selectLogicalLine(term, cell);
+      event.detail === 2
+        ? selectWord(term, cell)
+        : selectLogicalLine(term, cell);
     if (!selected) return;
     const text = term.getSelection();
     if (text) copy(text);
@@ -135,6 +146,7 @@ export function installGhosttySelection(
   // too: the dblclick DEFAULT is WebKit's own word selection on the
   // contenteditable host, which stopPropagation alone does not suppress.
   const swallowDblClick = (event: MouseEvent) => {
+    if (enabled && !enabled()) return;
     event.preventDefault();
     event.stopPropagation();
   };
@@ -219,7 +231,10 @@ function readViewportRow(
 ): string[] | null {
   const wasm = term.wasmTerm;
   if (!wasm) return null;
-  const cells = readAbsoluteRow(wasm, absoluteRow(wasm, term.getViewportY(), row));
+  const cells = readAbsoluteRow(
+    wasm,
+    absoluteRow(wasm, term.getViewportY(), row),
+  );
   if (!cells) return null;
   const { cols } = wasm.getDimensions();
   const chars: string[] = [];

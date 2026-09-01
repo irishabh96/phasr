@@ -226,7 +226,8 @@ describe("installGhosttyMouse", () => {
         sgrMouse: true,
         ...over,
       }),
-      cellAt: (event) => ({ col: event.clientX, row: event.clientY }),
+      cellAt: (event) =>
+        event.clientX < 0 ? null : { col: event.clientX, row: event.clientY },
       send: (seq) => sent.push(seq),
       focus,
     });
@@ -247,18 +248,102 @@ describe("installGhosttyMouse", () => {
   });
 
   /**
-   * `installGhosttySelection` listens capture-phase on the same element,
-   * and ghostty-web's canvas mousedown anchors its own drag-select. A
-   * reported press must reach neither.
+   * phasr's menus close on a `document` mousedown, and so does ghostty-web's
+   * selection anchor — same node, same phase, indistinguishable. Stopping a
+   * press to suppress the anchor would wedge every open menu, so a press is
+   * only ever `preventDefault()`ed. See the module header.
    */
-  it("stops a reported press from also anchoring a selection", () => {
+  it("never stops a press, so outside-click handlers still run", () => {
     const { element, install } = harness();
-    const later = vi.fn();
-    element.addEventListener("mousedown", later, { capture: true });
+    const outside = vi.fn();
+    document.addEventListener("mousedown", outside);
     const event = mouse("mousedown", { button: 0, buttons: 1 });
     element.dispatchEvent(event);
-    expect(later).not.toHaveBeenCalled();
+    expect(outside).toHaveBeenCalledOnce();
     expect(event.defaultPrevented).toBe(true);
+    document.removeEventListener("mousedown", outside);
+    install.dispose();
+  });
+
+  /**
+   * The drag is what paints a selection and copies it, and that IS stopped —
+   * an anchor with nothing extending it paints nothing.
+   */
+  it("stops the drag it owns from reaching the selection layer", () => {
+    const { element, install } = harness();
+    const later = vi.fn();
+    document.addEventListener("mousemove", later);
+    document.addEventListener("mouseup", later);
+    element.dispatchEvent(mouse("mousedown", { button: 0, buttons: 1 }));
+    window.dispatchEvent(
+      mouse("mousemove", { buttons: 1, clientX: 6, clientY: 1 }),
+    );
+    window.dispatchEvent(mouse("mouseup", { button: 0, buttons: 0 }));
+    expect(later).not.toHaveBeenCalled();
+    document.removeEventListener("mousemove", later);
+    document.removeEventListener("mouseup", later);
+    install.dispose();
+  });
+
+  /** Hover is not a drag, and must not take document listeners away. */
+  it("does not stop a hover report", () => {
+    const { element, install } = harness({ anyMotion: true });
+    const later = vi.fn();
+    document.addEventListener("mousemove", later);
+    element.dispatchEvent(
+      mouse("mousemove", { buttons: 0, clientX: 2, clientY: 2 }),
+    );
+    expect(later).toHaveBeenCalledOnce();
+    document.removeEventListener("mousemove", later);
+    install.dispose();
+  });
+
+  /**
+   * Shift is the escape hatch for a PRESS. A release whose press was
+   * reported is owed to the app whatever the user is holding by then —
+   * dropping it leaves the app believing the button is still down.
+   */
+  it("reports a release even when shift went down mid-click", () => {
+    const { element, sent, install } = harness();
+    element.dispatchEvent(mouse("mousedown", { button: 0, buttons: 1 }));
+    window.dispatchEvent(
+      mouse("mouseup", { button: 0, buttons: 0, shiftKey: true }),
+    );
+    expect(sent).toEqual(["\x1b[<0;1;1M", "\x1b[<0;1;1m"]);
+    install.dispose();
+  });
+
+  /** Two buttons at once: the first release must not go missing. */
+  it("tracks each reported button independently", () => {
+    const { element, sent, install } = harness();
+    element.dispatchEvent(mouse("mousedown", { button: 0, buttons: 1 }));
+    element.dispatchEvent(mouse("mousedown", { button: 1, buttons: 5 }));
+    window.dispatchEvent(mouse("mouseup", { button: 0, buttons: 4 }));
+    window.dispatchEvent(mouse("mouseup", { button: 1, buttons: 0 }));
+    expect(sent).toEqual([
+      "\x1b[<0;1;1M",
+      "\x1b[<1;1;1M",
+      "\x1b[<0;1;1m",
+      "\x1b[<1;1;1m",
+    ]);
+    install.dispose();
+  });
+
+  /**
+   * The padding, the strip below the last row and ghostty-web's overlay
+   * scrollbar are not cells: the host declines them, and the control that
+   * owns them keeps its press.
+   */
+  it("passes through a press the host does not call a cell", () => {
+    const { element, sent, install } = harness();
+    const later = vi.fn();
+    document.addEventListener("mousedown", later);
+    const event = mouse("mousedown", { button: 0, buttons: 1, clientX: -1 });
+    element.dispatchEvent(event);
+    expect(sent).toEqual([]);
+    expect(event.defaultPrevented).toBe(false);
+    expect(later).toHaveBeenCalledOnce();
+    document.removeEventListener("mousedown", later);
     install.dispose();
   });
 
