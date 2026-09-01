@@ -1711,8 +1711,13 @@ export class GhosttySurface implements TerminalSurface {
         copy: (text) => copySelectionText(text, term.textarea),
         // A double-click under a mouse-aware app is the app's, not a word
         // selection. `wireMouse` reports the press without stopping it —
-        // see `mouse.ts` for why it cannot — so the gate is here.
-        enabled: () => !(readMouseModes(term)?.mouseTracking ?? false),
+        // see `mouse.ts` for why it cannot — so the gate is here, and it
+        // mirrors the reporter's own claim exactly: shift-held and
+        // off-grid presses are never claimed, so selection still owns them.
+        enabled: (event) =>
+          !(readMouseModes(term)?.mouseTracking ?? false) ||
+          event.shiftKey ||
+          this.gridCellAt(event) === null,
       },
     );
   }

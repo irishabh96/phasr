@@ -134,9 +134,8 @@ export interface MouseContext {
    */
   cellChanged: boolean;
   /**
-   * Release only: did we report this button's press? A release is owed to
-   * the app whenever its press was reported, even if the user has since
-   * pressed shift.
+   * Move and release only: is this part of a gesture whose press we
+   * reported? Such a gesture stays ours to the end, shift or no shift.
    */
   wasReported?: boolean;
   shift: boolean;
@@ -151,13 +150,12 @@ export interface MouseContext {
 export function mouseOutcome(ctx: MouseContext): MouseOutcome {
   if (!ctx.mouseTracking) return { kind: "passthrough" };
 
-  // Shift is the escape hatch — but only for a press. A release whose press
-  // we already reported is owed to the app whatever the user is holding
-  // now: dropping it leaves the app believing the button is still down for
-  // the rest of the session.
-  if (ctx.shift && !(ctx.type === "up" && ctx.wasReported)) {
-    return { kind: "passthrough" };
-  }
+  // Shift is the escape hatch, and it is read at PRESS time only. Once a
+  // gesture is ours the whole of it is ours: a shift pressed mid-drag that
+  // handed the moves back would let the selection layer paint underneath
+  // the app, and a shift held at release would drop a release the app is
+  // owed, leaving it believing the button is still down.
+  if (ctx.shift && !ctx.wasReported) return { kind: "passthrough" };
 
   if (ctx.type === "move") return motionOutcome(ctx);
 
@@ -369,9 +367,12 @@ export function installGhosttyMouse(
     // while the pointer crosses the terminal.
     const dragging = pressed.size > 0;
     if (!dragging && !(event.buttons === 0 && isInside(element, event))) return;
-    const cell = host.cellAt(event);
+    // A drag we own that wanders into the padding or over the scrollbar is
+    // still ours: fall back to the last reported cell rather than handing
+    // the move to the selection layer half way through.
+    const cell = host.cellAt(event) ?? (dragging ? lastCell : null);
     if (!cell) return;
-    const outcome = decide(event, "move", cell);
+    const outcome = decide(event, "move", cell, dragging);
     if (!outcome || outcome.kind === "passthrough") return;
     event.preventDefault();
     // Only a drag we own may be taken away from the selection layer.
