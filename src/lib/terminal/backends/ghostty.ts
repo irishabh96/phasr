@@ -388,6 +388,9 @@ export class GhosttySurface implements TerminalSurface {
 
     this.element = document.createElement("div");
     this.element.className = "h-full w-full";
+    // Ghostty focuses this editable host around the canvas. Hide its native
+    // caret, which WebKit can stretch to the canvas height; Ghostty draws its own.
+    this.element.style.caretColor = "transparent";
 
     void preloadGhosttyEngine().then(
       (engine) => this.attach(engine),
