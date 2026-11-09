@@ -4,7 +4,7 @@ import { AGENT_META } from "@/components/ui/AgentMark";
 import { tauri } from "@/lib/tauri";
 import type { Agent } from "@/lib/types";
 import { showToast } from "@/lib/toast";
-import { humanizeError } from "@/lib/humanizeError";
+import { humanizeError, isAwaitingAnswerError } from "@/lib/humanizeError";
 
 /**
  * Reply box under the agent's terminal (A-Workspace "Composer"). Sends via
@@ -19,10 +19,18 @@ export function Composer({
   taskId,
   agent,
   disabled,
+  awaitingAnswer = false,
 }: {
   taskId: string;
   agent: Agent | null;
   disabled?: boolean;
+  /**
+   * The agent is paused on a permission dialog. Its Enter would pick the
+   * highlighted option ("Yes"), so a message — even the "Continue" chip —
+   * would approve the command. The box keeps its height (the terminal
+   * above must not resize) but only points at the request.
+   */
+  awaitingAnswer?: boolean;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -41,9 +49,11 @@ export function Composer({
       setText("");
     } catch (err) {
       showToast(
-        String(err).includes("agent not running")
-          ? { intent: "warning", title: `${name} isn't running`, message: "Open the agent tab to resume it." }
-          : { intent: "error", title: `Couldn't send to ${name}`, message: humanizeError(err) },
+        isAwaitingAnswerError(err)
+          ? { intent: "info", title: `${name} is waiting for your answer`, message: "Answer the request above, then send your message." }
+          : String(err).includes("agent not running")
+            ? { intent: "warning", title: `${name} isn't running`, message: "Open the agent tab to resume it." }
+            : { intent: "error", title: `Couldn't send to ${name}`, message: humanizeError(err) },
       );
     } finally {
       setSending(false);
@@ -57,6 +67,19 @@ export function Composer({
       void send(text);
     }
   };
+
+  if (awaitingAnswer) {
+    return (
+      <div className="shrink-0 px-[18px] pb-3.5 pt-2">
+        <div
+          role="status"
+          className="flex h-[84px] items-center justify-center rounded-(--radius-card) border border-dashed border-(--color-border-default) px-3 text-[12px] text-(--color-text-muted)"
+        >
+          Answer the request above to continue messaging {name}.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="shrink-0 px-[18px] pb-3.5 pt-2">

@@ -13,6 +13,7 @@ import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { ConfirmDialog, ErrorDialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { useGitBranchStatus } from "@/lib/hooks/useGit";
+import { mergeTargetBranch } from "@/lib/mergeTarget";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import {
   useArchiveWorkspace,
@@ -82,12 +83,14 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const canArchive = !isLocalWorkspace && workspace.status !== "archived";
   const canMergeToMain =
     !isLocalWorkspace && !!workspace.branch && !!repository?.localPath;
+  // Merges go into the task's base branch, not the repository default.
+  const mergeTarget = mergeTargetBranch(branchStatus, workspace, repository);
   const mergeBlocked = !branchStatus
     ? null
     : branchStatus.aheadOfTarget === 0
       ? "Nothing to merge"
       : branchStatus.behindOfTarget > 0
-        ? `Branch is behind ${repository?.defaultBranch ?? "main"} — sync first`
+        ? `Branch is behind ${mergeTarget} — sync first`
         : null;
 
   // Raw error is humanized inside ErrorDialog (never shown raw).
@@ -182,7 +185,7 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
               {canMergeToMain && (
                 <MenuItem
                   icon={<GitMerge size={12} />}
-                  label={`Merge to ${repository?.defaultBranch ?? "main"}`}
+                  label={`Merge into ${mergeTarget}`}
                   onClick={() => {
                     setOpen(false);
                     setMergeOpen(true);

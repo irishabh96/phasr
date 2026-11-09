@@ -76,6 +76,9 @@ export function useUpdateUserSettings() {
     onSuccess: (settings) => {
       if (isLastUpdate())
         queryClient.setQueryData(settingsKeys.current, settings);
+      // Saving trusts any synced value the user changed here; the
+      // SyncedSettingsBanner list (`unconfirmedSettingsKey`) is stale now.
+      void queryClient.invalidateQueries({ queryKey: ["settings", "unconfirmed"] });
     },
   });
 }

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BoardPage } from "@/components/board/BoardPage";
 import { FirstRunPage } from "@/components/firstrun/FirstRunPage";
+import { keepSettingsSearch } from "@/components/settings/useSettingsRoute";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
@@ -33,6 +34,8 @@ function Home() {
       void navigate({
         to: "/repositories/$repositoryId/workspaces/$workspaceId",
         params: { repositoryId: lastWs.repositoryId, workspaceId: lastWs.id },
+        // A deep link into Settings (`/?settings=…`) must survive the hop.
+        search: ((prev: Record<string, unknown>) => keepSettingsSearch(prev)) as never,
         replace: true,
       });
     }

@@ -13,7 +13,7 @@ import { ApprovalCard } from "@/components/session/ApprovalCard";
 import { useSettingsRoute } from "@/components/settings/useSettingsRoute";
 import { useRespondToAttention, useTaskAgentState } from "@/lib/hooks/useAgentSignals";
 import { useRunningCommands } from "@/lib/hooks/useReview";
-import { runTabsForTask } from "@/lib/runTabs";
+import { activeRunTabFor, runTabsForTask, runTarget } from "@/lib/runScope";
 import { Composer } from "@/components/session/Composer";
 import { FilesPane } from "@/components/session/FilesPane";
 import { Inspector } from "@/components/session/Inspector";
@@ -32,6 +32,7 @@ import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { humanizeError } from "@/lib/humanizeError";
+import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { originFromWorkspace } from "@/lib/noteProvenance";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
@@ -74,7 +75,13 @@ function WorkspaceDetail() {
   const runPanel = useUiStore((s) => s.runPanel);
   const [stopOpen, setStopOpen] = useState(false);
   const inspectorCollapsed = useUiStore((s) => s.rightPanelCollapsed);
-  const { data: runningHere } = useRunningCommands(workspaceQuery.data?.worktreePath ? workspaceId : null);
+  const target = runTarget(workspaceQuery.data);
+  const { data: runningHere } = useRunningCommands(target);
+  // This task's run tabs only: opened here, or running in its worktree.
+  const runTabs = runTabsForTask(runPanel.openTabs, runPanel.shown, runningHere, workspaceId, target).filter(
+    (id) => runCommands?.some((rc) => rc.id === id),
+  );
+  const activeRunTab = activeRunTabFor(runPanel.activeTab, runTabs);
   const [changesView, setChangesView] = useState<"review" | "stage">("review");
   const agentState = useTaskAgentState(workspaceId);
   const respond = useRespondToAttention();
@@ -100,16 +107,27 @@ function WorkspaceDetail() {
       setVisited((v) => ({ ...v, [pane]: true }));
     }
   }, [pane, visited]);
-  // A run tab opened from anywhere (inspector, palette, ⌘1–9) comes forward.
-  const runActive = runPanel.activeTab;
+  // `openTab` brings the run pane forward in the task it opened in. Here,
+  // keep the global `activeTab` on one of THIS task's tabs while its run
+  // pane shows (so ⌘W / the pane bar act on what's visible), and fall back
+  // to the terminal tabs once this task has no run tab left.
+  const runReady = !!workspaceQuery.data && runningHere !== undefined && runCommands !== undefined;
   useEffect(() => {
-    if (runActive && runCommands?.some((rc) => rc.id === runActive)) setPane(workspaceId, "run");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runActive]);
+    if (pane !== "run") return;
+    if (activeRunTab) {
+      if (activeRunTab !== useUiStore.getState().runPanel.activeTab) {
+        useUiStore.getState().runPanel.setActiveTab(activeRunTab);
+      }
+      return;
+    }
+    if (runReady) setPane(workspaceId, "tabs");
+  }, [pane, activeRunTab, runReady, workspaceId, setPane]);
 
-  // Session shortcuts: ⌘⇧R review, ⌘. stop, ⌘⌥1–9 focus pane N.
+  // Session shortcuts: ⌘⇧R review, ⌘. stop, ⌘⌥1–9 focus pane N. None of
+  // them act on the task while a dialog or the Settings sheet covers it.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || isOverlayOpen()) return;
       if (matchShortcut(e, SHORTCUTS.reviewChanges)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -165,17 +183,18 @@ function WorkspaceDetail() {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return; // ⌘⌥N focuses panes
       if (e.key < "1" || e.key > "9") return;
+      if (isOverlayOpen()) return;
       const pinned = [...(runCommands ?? [])]
         .filter((c) => c.pinned)
         .sort((a, b) => a.sortOrder - b.sortOrder);
-      const target = pinned[Number(e.key) - 1];
-      if (!target) return;
+      const command = pinned[Number(e.key) - 1];
+      if (!command) return;
       e.preventDefault();
-      useUiStore.getState().runPanel.openTab(target.id);
+      useUiStore.getState().runPanel.openTab(command.id, workspaceId);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [runCommands]);
+  }, [runCommands, workspaceId]);
 
   const refresh = useCallback(() => {
     queryClient.invalidateQueries({
@@ -250,12 +269,6 @@ function WorkspaceDetail() {
   const activeInner = innerState?.tabs.find((t) => t.id === innerState.activeTabId) ?? null;
   const showComposer =
     isAgent && pane === "tabs" && activeInner?.kind === "main" && workspace.status === "running";
-  const openedRunTabs = runTabsForTask(
-    runPanel.openTabs,
-    runPanel.shown,
-    runningHere,
-    workspace.worktreePath ? workspaceId : null,
-  ).filter((id) => runCommands?.some((rc) => rc.id === id));
 
   return (
     <div className="flex h-full min-h-0">
@@ -264,7 +277,7 @@ function WorkspaceDetail() {
           workspace={workspace}
           actions={
             <>
-              <RunCommandPicker repositoryId={repositoryId} />
+              <RunCommandPicker repositoryId={repositoryId} taskId={workspaceId} />
               {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
               {isAgent && workspace.status === "running" ? (
                 <Button variant="danger" size="sm" className="h-[26px]" onClick={() => setStopOpen(true)}>
@@ -284,15 +297,16 @@ function WorkspaceDetail() {
               suspended={pane !== "tabs"}
             />
           </div>
-          {openedRunTabs.map((id) => (
+          {runTabs.map((id) => (
             <div
               key={id}
-              className={cn("absolute inset-0", !(pane === "run" && runPanel.activeTab === id) && "invisible")}
+              className={cn("absolute inset-0", !(pane === "run" && activeRunTab === id) && "invisible")}
             >
               <RunCommandTerminal
                 runCommandId={id}
-                workspaceId={workspace.worktreePath ? workspaceId : null}
-                visible={pane === "run" && runPanel.activeTab === id}
+                taskId={workspaceId}
+                workspaceId={target}
+                visible={pane === "run" && activeRunTab === id}
               />
             </div>
           ))}
@@ -369,7 +383,16 @@ function WorkspaceDetail() {
             onChangeDefault={() => openSettings("agents", { row: "permission-mode" })}
           />
         ) : null}
-        {showComposer ? <Composer taskId={workspaceId} agent={workspace.agent} /> : null}
+        {showComposer ? (
+          <Composer
+            taskId={workspaceId}
+            agent={workspace.agent}
+            // `status` stays "running" while the agent is paused on a
+            // permission dialog, where a sent message's Enter would pick
+            // "Yes". Answer the card instead.
+            awaitingAnswer={agentState?.state === "needs-you"}
+          />
+        ) : null}
       </div>
       {isAgent && pane === "changes" && changesView === "review" && !inspectorCollapsed ? (
         <ReviewInspector workspace={workspace} />

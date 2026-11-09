@@ -378,6 +378,7 @@ export function Terminal({
     <div
       onClick={() => mainSurfaceCache.get(workspaceId)?.surface.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="agent"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
       className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"

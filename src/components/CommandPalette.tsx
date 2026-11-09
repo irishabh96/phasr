@@ -222,7 +222,9 @@ export function CommandPalette() {
         },
       );
     }
-    for (const rc of runCommands ?? []) {
+    // Run commands open as a tab in the task on screen; the board has no
+    // run pane, so they're offered only inside a task.
+    for (const rc of ctx ? (runCommands ?? []) : []) {
       out.push({
         id: `run:${rc.id}`,
         group: "Actions",
@@ -230,7 +232,7 @@ export function CommandPalette() {
         keywords: rc.command,
         icon: <Play className="size-3.5 text-(--color-success)" fill="currentColor" aria-hidden />,
         meta: <span className="font-mono text-[11px] text-(--color-text-muted)">{rc.command}</span>,
-        run: () => useUiStore.getState().runPanel.openTab(rc.id),
+        run: () => useUiStore.getState().runPanel.openTab(rc.id, ctx?.workspaceId ?? null),
       });
     }
     out.push(

@@ -8,12 +8,14 @@ const startTask = vi.fn();
 const listAgents = vi.fn();
 const getRepository = vi.fn();
 const listLocalBranches = vi.fn();
+const getRepositoryConfig = vi.fn();
 
 vi.mock("@/lib/tauri", () => ({
   tauri: {
     startTask: (...args: unknown[]) => startTask(...args),
     listAgents: () => listAgents(),
     getRepository: (id: string) => getRepository(id),
+    getRepositoryConfig: (id: string) => getRepositoryConfig(id),
     listLocalBranches: (path: string) => listLocalBranches(path),
   },
 }));
@@ -92,6 +94,8 @@ beforeEach(() => {
     }),
   ]);
   getRepository.mockResolvedValue(makeRepository());
+  getRepositoryConfig.mockReset();
+  getRepositoryConfig.mockResolvedValue({ repositoryId: "repo-1", defaultBaseBranch: null });
 });
 
 afterEach(() => {
@@ -114,6 +118,21 @@ describe("NewTaskForm", () => {
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
     const baseInput = await screen.findByDisplayValue("trunk");
     expect(baseInput).toBeInTheDocument();
+  });
+
+  it("prefers the repository's \"Default base branch\" rule and sends it", async () => {
+    getRepositoryConfig.mockResolvedValue({ repositoryId: "repo-1", defaultBaseBranch: "develop" });
+    startTask.mockResolvedValue({
+      taskId: "task-1",
+      workspace: makeWorkspace(),
+    } satisfies StartedTask);
+    renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    expect(await screen.findByDisplayValue("develop")).toBeInTheDocument();
+    await screen.findByText("claude --dangerously-skip-permissions");
+    fireEvent.change(screen.getByPlaceholderText(/fix login redirect bug/), { target: { value: "fix it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => expect(startTask).toHaveBeenCalledTimes(1));
+    expect(startTask.mock.calls[0]?.[0]).toMatchObject({ baseBranch: "develop" });
   });
 
   it("calls start_task with the form values and fires onCreated", async () => {

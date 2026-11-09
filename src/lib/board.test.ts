@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveTaskLane, formatAgo, formatElapsed, isToday } from "./board";
+import { deriveTaskLane, formatAgo, formatElapsed, isToday, visibleBoardTasks } from "./board";
 import type { Workspace } from "./types";
 
 const ws = (over: Partial<Workspace>): Workspace => ({
@@ -68,5 +68,40 @@ describe("formatAgo / isToday", () => {
   it("isToday compares calendar days", () => {
     expect(isToday("2026-11-09T01:00:00Z", t0)).toBe(true);
     expect(isToday(null, t0)).toBe(false);
+  });
+});
+
+describe("visibleBoardTasks", () => {
+  const now = Date.parse("2026-11-09T12:00:00");
+  const task = (id: string, lane: string, finishedAt: string | null, agent: Workspace["agent"] = "claude") => ({
+    id,
+    lane,
+    workspace: { agent, archivedAt: null, finishedAt, updatedAt: "2020-01-01T00:00:00Z" },
+  });
+  const old = "2026-10-01T10:00:00";
+  const today = "2026-11-09T09:00:00";
+
+  it("keeps every non-done task and today's done ones", () => {
+    const tasks = [task("r", "running", null), ...Array.from({ length: 7 }, (_, i) => task(`d${i}`, "done", old)), task("t", "done", today)];
+    const ids = visibleBoardTasks(tasks, null, now).map((t) => t.id);
+    expect(ids).toContain("r");
+    expect(ids).toContain("t");
+  });
+
+  it("keeps only the first five older done tasks, in board order", () => {
+    const tasks = Array.from({ length: 8 }, (_, i) => task(`d${i}`, "done", old));
+    expect(visibleBoardTasks(tasks, null, now).map((t) => t.id)).toEqual(["d0", "d1", "d2", "d3", "d4"]);
+  });
+
+  it("applies the agent filter", () => {
+    const tasks = [task("a", "running", null, "claude"), task("b", "running", null, "codex")];
+    expect(visibleBoardTasks(tasks, "codex", now).map((t) => t.id)).toEqual(["b"]);
+  });
+
+  it("stays fast with thousands of done tasks (no per-task indexOf scan)", () => {
+    const tasks = Array.from({ length: 20_000 }, (_, i) => task(`d${i}`, "done", old));
+    const t = performance.now();
+    expect(visibleBoardTasks(tasks, null, now)).toHaveLength(5);
+    expect(performance.now() - t).toBeLessThan(500);
   });
 });

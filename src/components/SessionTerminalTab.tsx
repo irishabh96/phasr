@@ -355,6 +355,7 @@ export function SessionTerminalTab({
     <div
       onClick={() => sessionSurfaceCache.get(tabId)?.surface.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="shell"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
       style={{

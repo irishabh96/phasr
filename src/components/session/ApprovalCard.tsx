@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { Kbd } from "@/components/ui/Kbd";
 import { formatElapsed } from "@/lib/board";
 import { useNow } from "@/lib/hooks/useNow";
+import { approvalKeyAllowed, isOverlayOpen } from "@/lib/keyboardGuards";
+import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import type { Agent, Attention, AttentionResponse } from "@/lib/types";
 
 type ApprovalAttention = Attention;
@@ -55,27 +57,24 @@ export function ApprovalCard({
   const isTrust = (attention.kind as string) === "trust";
 
   // ⌘Y allow once, ⌘⌫ deny. ⌘ only (Ctrl+Y is readline yank in a shell),
-  // never auto-repeat, never while a response is in flight, and never from
-  // a text field or the editor — only the page or a terminal surface, where
-  // ⌘ shortcuts are the app's (A: "shortcuts never fire in a terminal
-  // unless they include ⌘").
+  // never auto-repeat, never while a response is in flight, never behind a
+  // dialog or the Settings sheet. ⌘Y fires from the page or the agent's own
+  // terminal; ⌘⌫ only from the page — in any terminal it is kill-line, and
+  // in a field it deletes the line (see `approvalKeyAllowed`).
   useEffect(() => {
     if (!attention.canRespond) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.repeat || busy) return;
-      const t = e.target as HTMLElement | null;
-      const inTerminal = !!t?.closest("[data-testid='terminal-surface']");
-      const editable = !inTerminal && !!t?.closest("input, textarea, select, [contenteditable='true'], [contenteditable=''], .cm-editor");
-      if (editable) return;
-      if (e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        onRespond("allow-once");
-      } else if (e.key === "Backspace") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        onRespond("deny");
-      }
+      if (e.altKey || e.repeat || busy) return;
+      const action = matchShortcut(e, SHORTCUTS.approveAgent)
+        ? "allow"
+        : matchShortcut(e, SHORTCUTS.denyAgent)
+          ? "deny"
+          : null;
+      if (!action) return;
+      if (isOverlayOpen() || !approvalKeyAllowed(action, e.target)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onRespond(action === "allow" ? "allow-once" : "deny");
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });

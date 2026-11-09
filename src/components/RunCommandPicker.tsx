@@ -8,9 +8,11 @@ import { useUiStore } from "@/lib/store";
 
 interface RunCommandPickerProps {
   repositoryId: string;
+  /** The task the picked command opens (and runs) in. */
+  taskId: string;
 }
 
-export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
+export function RunCommandPicker({ repositoryId, taskId }: RunCommandPickerProps) {
   const { data: runCommands } = useRunCommands(repositoryId);
   const runPanel = useUiStore((s) => s.runPanel);
   const settingsRoute = useSettingsRoute();
@@ -35,7 +37,7 @@ export function RunCommandPicker({ repositoryId }: RunCommandPickerProps) {
   }, [open]);
 
   const handlePick = (id: string) => {
-    runPanel.openTab(id);
+    runPanel.openTab(id, taskId);
     setOpen(false);
   };
 

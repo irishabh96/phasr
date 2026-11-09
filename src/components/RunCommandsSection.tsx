@@ -1,3 +1,4 @@
+import { useNavigate } from "@tanstack/react-router";
 import { Pencil, Pin, PinOff, Play, Plus, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -31,10 +32,24 @@ export function RunCommandsSection({
   const deleteRC = useDeleteRunCommand(repositoryId);
   const runPanel = useUiStore((s) => s.runPanel);
   const navigateToRepoEntry = useNavigateToRepoEntry();
+  const navigate = useNavigate();
 
-  const runHere = (id: string) => {
-    runPanel.openTab(id);
-    void navigateToRepoEntry(repositoryId);
+  // Run it in a task of this repository: the one on screen if it belongs
+  // here, else the one the repo entry lands on — never a task of another
+  // repository, and never "no task" (nothing would show it).
+  const runHere = async (id: string) => {
+    const ctx = useUiStore.getState().activeWorkspaceContext;
+    if (ctx?.repositoryId === repositoryId) {
+      runPanel.openTab(id, ctx.workspaceId);
+      // Back to that task, which also closes the Settings sheet.
+      await navigate({
+        to: "/repositories/$repositoryId/workspaces/$workspaceId",
+        params: { repositoryId, workspaceId: ctx.workspaceId },
+      }).catch(() => {});
+      return;
+    }
+    const landed = await navigateToRepoEntry(repositoryId).catch(() => null);
+    if (landed) useUiStore.getState().runPanel.openTab(id, landed);
   };
 
   const isControlled = onToggleAdd !== undefined;
@@ -229,7 +244,7 @@ export function RunCommandsSection({
                         <GlassButton
                           variant="ghost"
                           size="sm"
-                          onClick={() => runHere(rc.id)}
+                          onClick={() => void runHere(rc.id)}
                           title="Run"
                         >
                           <Play

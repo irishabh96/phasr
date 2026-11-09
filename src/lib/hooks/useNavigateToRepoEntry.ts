@@ -19,7 +19,8 @@ export function useNavigateToRepoEntry() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  return async (repositoryId: string) => {
+  /** Resolves to the workspace id it landed on, or null for the repo home. */
+  return async (repositoryId: string): Promise<string | null> => {
     let workspaces = queryClient.getQueryData<Workspace[]>(
       workspaceKeys.byRepository(repositoryId),
     );
@@ -39,11 +40,12 @@ export function useNavigateToRepoEntry() {
         to: "/repositories/$repositoryId/workspaces/$workspaceId",
         params: { repositoryId, workspaceId: first.id },
       });
-    } else {
-      await navigate({
-        to: "/repositories/$repositoryId",
-        params: { repositoryId },
-      });
+      return first.id;
     }
+    await navigate({
+      to: "/repositories/$repositoryId",
+      params: { repositoryId },
+    });
+    return null;
   };
 }

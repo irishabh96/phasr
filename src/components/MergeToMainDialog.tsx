@@ -10,6 +10,7 @@ import {
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { humanizeError } from "@/lib/humanizeError";
+import { mergeTargetBranch } from "@/lib/mergeTarget";
 import { cn } from "@/lib/utils";
 import type { MergeStrategy, Workspace } from "@/lib/types";
 
@@ -68,10 +69,11 @@ export function MergeToMainDialog({
 
   // Gate on ahead/behind-of-TARGET, not upstream. The upstream is
   // usually `origin/<this-branch>` which is in sync after a push;
-  // what matters here is the relationship to the merge target.
+  // what matters here is the relationship to the merge target — the
+  // task's BASE branch, which is what the backend merges into.
   const ahead = status?.aheadOfTarget ?? 0;
   const behind = status?.behindOfTarget ?? 0;
-  const targetBranch = repository?.defaultBranch ?? "main";
+  const targetBranch = mergeTargetBranch(status, workspace, repository);
   const sourceBranch = workspace.branch ?? "(no branch)";
   const blockedReason = !workspace.branch
     ? "Workspace has no branch yet."
@@ -112,7 +114,7 @@ export function MergeToMainDialog({
       open={open}
       onOpenChange={(o) => !o && onClose()}
       size="480px"
-      title={`Merge to ${targetBranch}`}
+      title={`Merge into ${targetBranch}`}
       description={
         <div className="rounded-md border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-3 py-2 text-[12px] leading-relaxed text-(--color-text-secondary)">
           Merge{" "}

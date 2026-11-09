@@ -8,6 +8,7 @@ import {
   TASK_CARDS_CHANGED_EVENT,
 } from "@/lib/events";
 import { taskCardKeys } from "@/lib/hooks/useTaskCards";
+import { runningIn } from "@/lib/runScope";
 import {
   tauri,
   type ApproveInput,
@@ -286,7 +287,12 @@ export function useRefreshPrStates() {
 
 // ── run commands per task ────────────────────────────────────────────
 
-/** Run commands running (or exited this session) — one task, or all when `null`. */
+/**
+ * Run commands running (or exited this session) in exactly one run target:
+ * a task's worktree id, or `null` = the repository checkout. The backend
+ * answers `null` with EVERY scope, so the result is narrowed here — a
+ * worktree-less task never lists another task's commands as its own.
+ */
 export function useRunningCommands(workspaceId: string | null) {
   const queryClient = useQueryClient();
   useTauriListeners(
@@ -305,6 +311,7 @@ export function useRunningCommands(workspaceId: string | null) {
   return useQuery({
     queryKey: reviewKeys.running(workspaceId),
     queryFn: () => tauri.listRunningCommands(workspaceId),
+    select: (rows) => runningIn(rows, workspaceId),
     staleTime: Infinity,
   });
 }

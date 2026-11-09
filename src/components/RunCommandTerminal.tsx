@@ -2,7 +2,8 @@ import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
-import { runKey, useUiStore } from "@/lib/store";
+import { runKey } from "@/lib/runScope";
+import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import { canTakeTerminalFocus } from "@/lib/terminal/cache";
@@ -29,7 +30,13 @@ type TermStatus =
 interface RunCommandTerminalProps {
   /** Run command id (NOT a workspace id). */
   runCommandId: string;
-  /** Run inside this task's worktree (keyed per task); omitted = the repo checkout. */
+  /**
+   * The task view this tab belongs to — whose run intent may start it.
+   * Not the run target: a worktree-less task runs in the checkout
+   * (`workspaceId` null) yet only consumes its OWN intents.
+   */
+  taskId: string;
+  /** Run target (`runTarget(task)`): the task's worktree, or null = the repo checkout. */
   workspaceId?: string | null;
   visible: boolean;
   onExit?: (exitCode: number | null) => void;
@@ -47,6 +54,7 @@ interface RunCommandTerminalProps {
  */
 export function RunCommandTerminal({
   runCommandId,
+  taskId,
   workspaceId = null,
   visible,
   onExit,
@@ -128,12 +136,15 @@ export function RunCommandTerminal({
         // back after an exec command exited — never runs it again by itself.
         let attached = false;
         if (mode === "initial") {
+          const key = runKey(runCommandId, taskId);
           try {
             await tauri.attachRunCommand(runCommandId, channel, surface.rows, surface.cols, workspaceId);
             attached = true;
+            // Already running: the "run it" is satisfied. Left in place it
+            // would restart the command by itself on a later remount.
+            useUiStore.getState().runPanel.consumeIntent(key);
           } catch (err) {
             if (String(err) !== "not running") throw err;
-            const key = runKey(runCommandId, workspaceId);
             if (!useUiStore.getState().runPanel.consumeIntent(key)) {
               if (cancelled) return;
               setStatus({ state: "exited", exitCode: null });
@@ -186,7 +197,7 @@ export function RunCommandTerminal({
       surface.dispose();
       surfaceRef.current = null;
     };
-  }, [runCommandId, workspaceId]);
+  }, [runCommandId, taskId, workspaceId]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -218,6 +229,7 @@ export function RunCommandTerminal({
     <div
       onClick={() => surfaceRef.current?.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="run"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
       style={{

@@ -1,8 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChevronsRight, CircleCheck, CircleDashed, CircleX, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
+import { approveOptions, NO_APPROVE_FLAGS, withApproveFlags, type ApproveFlags } from "@/lib/approveFlags";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -19,7 +20,8 @@ import {
   useRunChecks,
   useSendReviewComments,
 } from "@/lib/hooks/useReview";
-import { humanizeError } from "@/lib/humanizeError";
+import { humanizeError, isAwaitingAnswerError } from "@/lib/humanizeError";
+import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { useUiStore } from "@/lib/store";
 import { showToast } from "@/lib/toast";
 import type { CheckRun, Workspace } from "@/lib/types";
@@ -78,11 +80,17 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
   const required = new Set(checks?.required ?? []);
   const gated = !!checks && checks.required.length > 0 && !checks.requiredSatisfied;
 
-  const doApprove = (overrideChecks = false, commitDirty = false) =>
+  // Confirmations given in this approve attempt. The Approve button starts
+  // a fresh attempt; each gate dialog ADDS its confirmation, so a retry
+  // after the second gate still carries the first (no dialog loop).
+  const approveFlags = useRef<ApproveFlags>(NO_APPROVE_FLAGS);
+  const doApprove = (add: Partial<ApproveFlags> | "fresh") => {
+    approveFlags.current = add === "fresh" ? NO_APPROVE_FLAGS : withApproveFlags(approveFlags.current, add);
     approve.mutate(
-      { ...(overrideChecks ? { overrideChecks: true } : {}), ...(commitDirty ? { commitDirty: true } : {}) },
+      approveOptions(approveFlags.current),
       {
         onSuccess: (pr) => {
+          approveFlags.current = NO_APPROVE_FLAGS;
           if (pr.viaGh) {
             showToast({
               intent: "success",
@@ -101,6 +109,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         },
       },
     );
+  };
 
   // ⌘⇧↵ approves while reviewing (the Stage & commit view binds it to
   // commit & push instead; the two never mount together).
@@ -108,9 +117,9 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.key !== "Enter") return;
       if ((e.target as HTMLElement | null)?.closest("textarea, input")) return;
-      if (approve.isPending || workspace.outcome != null) return;
+      if (approve.isPending || workspace.outcome != null || isOverlayOpen()) return;
       e.preventDefault();
-      doApprove(false);
+      doApprove("fresh");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -118,9 +127,11 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
 
   const sendError = (err: unknown) =>
     showToast(
-      String(err).includes("agent not running")
-        ? { intent: "warning", title: `${agent} isn't running`, message: "Open the agent tab to resume it, then send again." }
-        : { intent: "error", title: "Couldn't send to the agent", message: humanizeError(err) },
+      isAwaitingAnswerError(err)
+        ? { intent: "info", title: `${agent} is waiting for your answer`, message: "Answer its request in the terminal, then send again." }
+        : String(err).includes("agent not running")
+          ? { intent: "warning", title: `${agent} isn't running`, message: "Open the agent tab to resume it, then send again." }
+          : { intent: "error", title: "Couldn't send to the agent", message: humanizeError(err) },
     );
 
   return (
@@ -249,7 +260,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
           shortcut="⌘⇧↵"
           disabled={approve.isPending || workspace.outcome != null}
           title={gated ? "Required checks aren't passing yet" : undefined}
-          onClick={() => doApprove(false)}
+          onClick={() => doApprove("fresh")}
         >
           {approve.isPending ? "Creating PR…" : workspace.prNumber ? `PR #${workspace.prNumber} open` : "Approve & create PR"}
         </Button>
@@ -297,7 +308,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         confirmLabel="Commit & push"
         onConfirm={() => {
           setDirtyOpen(false);
-          doApprove(false, true);
+          doApprove({ commitDirty: true });
         }}
       />
       <ConfirmDialog
@@ -308,7 +319,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         confirmLabel="Create PR anyway"
         onConfirm={() => {
           setOverrideOpen(false);
-          doApprove(true);
+          doApprove({ overrideChecks: true });
         }}
       />
     </aside>

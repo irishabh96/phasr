@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
+import { runKey } from "./runScope";
 import {
   applyAccent,
   applyDensity,
@@ -89,10 +90,14 @@ interface RunPanelState {
   openTabs: string[];
   /** which tab is in focus; null if the panel is closed */
   activeTab: string | null;
-  /** open the run-command tab (and focus it) */
-  openTab(id: string): void;
-  /** close one tab (also moves focus or hides the pane) */
-  closeTab(id: string): void;
+  /**
+   * Open the run-command tab in a task (and focus it) — an explicit "run it
+   * here". `taskId` defaults to the task on screen; with no task (the
+   * board) there is nowhere to show it, so nothing is recorded.
+   */
+  openTab(id: string, taskId?: string | null): void;
+  /** Close one task's tab (also moves focus or hides the pane). `taskId` as in `openTab`. */
+  closeTab(id: string, taskId?: string | null): void;
   /** focus an already-open tab */
   setActiveTab(id: string): void;
   /** hide the panel without losing tabs */
@@ -100,19 +105,16 @@ interface RunPanelState {
   /** show the panel and focus the first tab if none is active */
   showPanel(): void;
   /**
-   * `${runCommandId}@${workspaceId|"repo"}` keys. `intents`: the user asked
-   * to RUN it there (consumed by the terminal's first start). `shown`: the
-   * tab belongs to that task's pane bar. Mounting a run tab only ever
-   * ATTACHES; it spawns only with an intent, so visiting another task never
-   * starts a command there.
+   * `runKey(runCommandId, taskId)` keys — the TASK the tab was opened in,
+   * never the backend run target (see `lib/runScope.ts`). `intents`: the
+   * user asked to RUN it there (consumed by the terminal's first start).
+   * `shown`: the tab belongs to that task's pane bar. Mounting a run tab
+   * only ever ATTACHES; it spawns only with an intent, so visiting another
+   * task never starts a command there.
    */
   intents: Record<string, true>;
   shown: Record<string, true>;
   consumeIntent(key: string): boolean;
-}
-
-export function runKey(runCommandId: string, workspaceId: string | null | undefined): string {
-  return `${runCommandId}@${workspaceId ?? "repo"}`;
 }
 
 // ---------- Files pane editor buffers ----------
@@ -905,7 +907,28 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   resetForAccountSwitch: () => {
-    set({ innerTabs: {}, repoInnerTabs: {}, activeWorkspaceContext: null });
+    const { runPanel } = get();
+    set({
+      innerTabs: {},
+      repoInnerTabs: {},
+      activeWorkspaceContext: null,
+      // Per-task view state is keyed by the previous account's task ids;
+      // a pending run intent must never fire for the next account.
+      sessionPane: {},
+      sessionFile: {},
+      runPanel: { ...runPanel, openTabs: [], activeTab: null, intents: {}, shown: {} },
+      // Ids of the previous account's repositories / tasks: a stale repo
+      // filter empties the board, a pending modal would act on a row the
+      // new account can't see.
+      repoFilter: null,
+      fileSearchTarget: null,
+      pendingGitInitRepoId: null,
+      pendingNewWorkspaceRepoId: null,
+      pendingRenameWorkspaceId: null,
+      // Unsaved editor buffers belong to the previous account's worktrees.
+      openFiles: {},
+      fileBuffers: {},
+    });
   },
   setActiveInnerTab: (workspaceId, tabId) => {
     // Any tab activation brings the tab stack back in front of an overlay
@@ -941,14 +964,21 @@ export const useUiStore = create<UiState>((set, get) => ({
   runPanel: {
     openTabs: [],
     activeTab: null,
-    openTab: (id) => {
+    openTab: (id, taskId) => {
       const { runPanel, activeWorkspaceContext } = get();
+      const task = taskId === undefined ? (activeWorkspaceContext?.workspaceId ?? null) : taskId;
+      // No task on screen (the board): there is no pane bar to show the tab
+      // in, and an intent recorded here must never be picked up by whatever
+      // task (e.g. a worktree-less draft) mounts next.
+      if (!task) return;
       const existing = runPanel.openTabs.includes(id)
         ? runPanel.openTabs
         : [...runPanel.openTabs, id];
-      // Opening a run tab is an explicit "run it here".
-      const key = runKey(id, activeWorkspaceContext?.workspaceId);
-      set({
+      // Opening a run tab is an explicit "run it here", and brings that
+      // task's run pane forward.
+      const key = runKey(id, task);
+      set((st) => ({
+        sessionPane: { ...st.sessionPane, [task]: "run" },
         runPanel: {
           ...runPanel,
           openTabs: existing,
@@ -956,7 +986,7 @@ export const useUiStore = create<UiState>((set, get) => ({
           intents: { ...runPanel.intents, [key]: true },
           shown: { ...runPanel.shown, [key]: true },
         },
-      });
+      }));
     },
     intents: {},
     shown: {},
@@ -967,19 +997,28 @@ export const useUiStore = create<UiState>((set, get) => ({
       set({ runPanel: { ...runPanel, intents: rest } });
       return true;
     },
-    closeTab: (id) => {
-      const { runPanel } = get();
-      const remaining = runPanel.openTabs.filter((tab) => tab !== id);
-      const ctxWs = get().activeWorkspaceContext?.workspaceId;
-      const { [runKey(id, ctxWs)]: _gone, ...shownRest } = runPanel.shown;
+    closeTab: (id, taskId) => {
+      const { runPanel, activeWorkspaceContext } = get();
+      const task = taskId === undefined ? (activeWorkspaceContext?.workspaceId ?? null) : taskId;
+      const key = runKey(id, task);
+      const { [key]: _gone, ...shown } = runPanel.shown;
+      const { [key]: _unused, ...intents } = runPanel.intents;
+      // The tab stays open in any other task that still shows it.
+      const prefix = `${id}@`;
+      const elsewhere = Object.keys(shown).some((k) => k.startsWith(prefix));
+      const openTabs = elsewhere ? runPanel.openTabs : runPanel.openTabs.filter((tab) => tab !== id);
+      // Focus moves to another of THIS task's tabs, never to one that only
+      // exists in a different task.
+      const sameTask = openTabs.filter((tab) => tab !== id && shown[runKey(tab, task)]);
       set({
         runPanel: {
           ...runPanel,
-          shown: shownRest,
-          openTabs: remaining,
+          shown,
+          intents,
+          openTabs,
           activeTab:
             runPanel.activeTab === id
-              ? (remaining[remaining.length - 1] ?? null)
+              ? (sameTask[sameTask.length - 1] ?? null)
               : runPanel.activeTab,
         },
       });

@@ -32,18 +32,35 @@ export function prependNotification(
   return limit !== null && next.length > limit ? next.slice(0, limit) : next;
 }
 
+type CreatedListener = (n: AppNotification) => void;
+const createdListeners = new Set<CreatedListener>();
+
 /**
- * Listen for new entries for the caller's lifetime: cached lists get the
- * entry prepended (idempotent by id, so mounting this twice is harmless),
- * the unread count refetches, and `onCreated` (if given) is called — the
- * hook point for banners / sounds. Give `onCreated` to ONE mounted
- * instance, or each will deliver.
+ * Be told about each new entry (banners / sounds) without opening another
+ * Tauri subscription — the one `useInboxEvents` (in `useAppEvents`) fans
+ * out to these. Mount it once per delivery path, or each will deliver.
  */
-export function useInboxEvents(onCreated?: (n: AppNotification) => void) {
-  const queryClient = useQueryClient();
+export function useOnInboxCreated(onCreated: CreatedListener) {
   // Latest callback without re-subscribing on every render.
-  const onCreatedRef = useRef(onCreated);
-  onCreatedRef.current = onCreated;
+  const ref = useRef(onCreated);
+  ref.current = onCreated;
+  useEffect(() => {
+    const listener: CreatedListener = (n) => ref.current(n);
+    createdListeners.add(listener);
+    return () => {
+      createdListeners.delete(listener);
+    };
+  }, []);
+}
+
+/**
+ * The inbox's one Tauri subscription, mounted ONCE in the app shell via
+ * `useAppEvents`: cached lists get the entry prepended (idempotent by id),
+ * the unread count refetches, and every `useOnInboxCreated` listener runs.
+ * The query hooks below only read the cache.
+ */
+export function useInboxEvents() {
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     let cancelled = false;
@@ -58,10 +75,9 @@ export function useInboxEvents(onCreated?: (n: AppNotification) => void) {
           prependNotification(prev, n, limit === "all" ? null : limit),
         );
       }
-      // Refetch rather than +1: this listener may be mounted more than
-      // once (bell + popover), and a count bumped per listener would drift.
+      // Refetch rather than +1: the backend's count is the truth.
       void queryClient.invalidateQueries({ queryKey: inboxKeys.unread() });
-      onCreatedRef.current?.(n);
+      for (const listener of createdListeners) listener(n);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -75,7 +91,6 @@ export function useInboxEvents(onCreated?: (n: AppNotification) => void) {
 
 /** The inbox, newest first. */
 export function useNotifications(input: ListNotificationsInput = {}) {
-  useInboxEvents();
   const unreadOnly = input.unreadOnly ?? false;
   const limit = input.limit ?? null;
   return useQuery({
@@ -91,7 +106,6 @@ export function useNotifications(input: ListNotificationsInput = {}) {
 
 /** The bell's badge count. */
 export function useUnreadCount() {
-  useInboxEvents();
   return useQuery({
     queryKey: inboxKeys.unread(),
     queryFn: tauri.unreadNotificationCount,
