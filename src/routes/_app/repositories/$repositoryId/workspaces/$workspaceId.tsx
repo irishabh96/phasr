@@ -3,8 +3,6 @@ import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { NotesPanel } from "@/components/NotesPanel";
-import { OpenInMenu } from "@/components/OpenInMenu";
-import { RunCommandPicker } from "@/components/RunCommandPicker";
 import { RunCommandTerminal } from "@/components/RunCommandTerminal";
 import { ChangesPane } from "@/components/session/ChangesPane";
 import { ReviewPane } from "@/components/review/ReviewPane";
@@ -17,14 +15,14 @@ import { activeRunTabFor, runTabsForTask, runTarget } from "@/lib/runScope";
 import { Composer } from "@/components/session/Composer";
 import { FilesPane } from "@/components/session/FilesPane";
 import { Inspector } from "@/components/session/Inspector";
-import { SessionPaneBar } from "@/components/session/SessionPaneBar";
+import { InspectorToggle, SessionPaneBar } from "@/components/session/SessionPaneBar";
+import { SessionOpenInMenu } from "@/components/session/SessionOpenInMenu";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { ConfirmDialog } from "@/components/ui/Dialog";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { PanelState } from "@/components/ui/PanelState";
-import { WorkspaceActionsMenu } from "@/components/WorkspaceActionsMenu";
 import { WorkspaceTabContent } from "@/components/WorkspaceTabContent";
 import { useWatchWorkspaceGit } from "@/lib/hooks/useGit";
 import { useNavigateToRepoEntry } from "@/lib/hooks/useNavigateToRepoEntry";
@@ -279,30 +277,46 @@ function WorkspaceDetail() {
           workspace={workspace}
           actions={
             <>
-              <RunCommandPicker repositoryId={repositoryId} taskId={workspaceId} />
-              {workspace.worktreePath && <OpenInMenu path={workspace.worktreePath} />}
+              {/* "Run ▾" moved into the `+` menu and the inspector's Run
+                  section; the "…" actions moved into Open in ▾. */}
+              <SessionOpenInMenu workspace={workspace} />
               {isAgent && workspace.status === "running" ? (
-                <Button variant="danger" size="sm" className="h-[26px]" onClick={() => setStopOpen(true)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-[28px] px-[10px]"
+                  aria-keyshortcuts="Meta+."
+                  title={`Stop the agent (${SHORTCUTS.stopAgent.display.join("")})`}
+                  onClick={() => setStopOpen(true)}
+                >
                   Stop
                 </Button>
               ) : null}
-              <WorkspaceActionsMenu workspace={workspace} />
+              <InspectorToggle />
             </>
           }
         />
         <div className="relative min-h-0 flex-1 bg-(--color-bg-base)">
-          <div className={cn("absolute inset-0 flex flex-col", pane !== "tabs" && "invisible")}>
-            <WorkspaceTabContent
-              workspaceId={workspaceId}
-              workspace={workspace}
-              onMainExit={refresh}
-              suspended={pane !== "tabs"}
-            />
+          {/* Terminals sit on the bg tone (D3): the gutter plus the
+              terminal's own 8/16px padding lands its text ~20px from the
+              top and 24px from the left, as A-Workspace's transcript. */}
+          <div className={cn("absolute inset-0 flex flex-col px-[8px] pb-[8px] pt-[12px]", pane !== "tabs" && "invisible")}>
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--radius-control)">
+              <WorkspaceTabContent
+                workspaceId={workspaceId}
+                workspace={workspace}
+                onMainExit={refresh}
+                suspended={pane !== "tabs"}
+              />
+            </div>
           </div>
           {runTabs.map((id) => (
             <div
               key={id}
-              className={cn("absolute inset-0", !(pane === "run" && activeRunTab === id) && "invisible")}
+              className={cn(
+                "absolute inset-0 px-[8px] pb-[8px] pt-[12px] [&>*]:rounded-(--radius-control)",
+                !(pane === "run" && activeRunTab === id) && "invisible",
+              )}
             >
               <RunCommandTerminal
                 runCommandId={id}

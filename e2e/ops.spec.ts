@@ -256,24 +256,55 @@ test.describe("Git / diff / changes", () => {
     expect(realErrors(errors)).toEqual([]);
   });
 
-  test("workspace actions ⋯ menu → Merge opens the merge dialog", async ({ page }) => {
+  // A-Workspace folded the "…" task-actions menu into "Open in ▾".
+  const openInMenu = async (page: Page) => {
+    const btn = page.getByRole("button", { name: /^Open in/ });
+    await expect(btn).toBeVisible({ timeout: 8000 });
+    await btn.click();
+    return page.getByRole("menu");
+  };
+
+  test("Open in ▾ → Merge into main opens the merge dialog", async ({ page }) => {
     await bootApp(page);
-    const menuBtn = page.getByRole("button", { name: /workspace actions/i }).first();
-    await expect(menuBtn).toBeVisible({ timeout: 8000 });
-    await menuBtn.click();
-    const merge = page.getByText(/merge (to|into) main/i).first();
-    if (await merge.count()) {
-      await merge.click();
-      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5000 });
-    }
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await expect.poll(() => fired(page, "git_branch_status")).toBe(true);
+    const menu = await openInMenu(page);
+    await menu.getByRole("menuitem", { name: /merge into main/i }).click();
+    await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5000 });
   });
 
-  test("local workspace shows NO actions menu / remove button (intentional)", async ({ page }) => {
+  test("Open in ▾ keeps every moved action: launchers, copy path, PR, archive, delete", async ({ page }) => {
+    await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    const menu = await openInMenu(page);
+    for (const name of [/copy worktree path/i, /open pull request/i, /merge into main/i, /^archive$/i, /delete workspace/i]) {
+      await expect(menu.getByRole("menuitem", { name })).toBeVisible();
+    }
+    // Delete still confirms before doing anything.
+    await menu.getByRole("menuitem", { name: /delete workspace/i }).click();
+    await expect(page.getByRole("alertdialog").or(page.getByRole("dialog")).first()).toContainText(/delete workspace/i);
+    expect(await fired(page, "delete_workspace")).toBe(false);
+  });
+
+  test("the + menu runs a repository command (Run ▾ moved there)", async ({ page }) => {
+    await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await page.getByRole("button", { name: "New pane" }).click();
+    await page.getByRole("menuitem", { name: /^test/ }).click();
+    await expect(
+      page.getByRole("tablist", { name: "Workspace tabs" }).getByRole("tab", { name: /^test/ }),
+    ).toHaveAttribute("aria-selected", "true", { timeout: 5000 });
+  });
+
+  test("local workspace's Open in ▾ has no task actions / remove (intentional)", async ({ page }) => {
     await bootApp(page);
     await page.goto("/repositories/repo-1/workspaces/ws-local");
     await expect(page).toHaveURL(/ws-local/, { timeout: 8000 });
-    await page.waitForTimeout(500);
-    expect(await page.getByRole("button", { name: /workspace actions/i }).count()).toBe(0);
+    const menu = await openInMenu(page);
+    await expect(menu.getByRole("menuitem", { name: /copy path/i })).toBeVisible();
+    for (const name of [/merge/i, /pull request/i, /archive/i, /delete/i, /remove from phasr/i]) {
+      expect(await menu.getByRole("menuitem", { name }).count()).toBe(0);
+    }
     expect(await page.getByRole("button", { name: /remove from phasr/i }).count()).toBe(0);
   });
 });
