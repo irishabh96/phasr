@@ -22,7 +22,9 @@ use crate::domain::{RunCommand, RunWhen};
 use crate::pty::{PtyEvent, TaskRuntime};
 use crate::run_commands::scripts::{self, DetectedScript};
 use crate::run_commands::{pty_key, RunCommandRuntime, RunTarget, RunningCommand};
-use crate::store::{AppMetaRepo, RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError, WorkspaceRepo};
+use crate::store::{
+    AppMetaRepo, RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError, WorkspaceRepo,
+};
 use crate::sync::CloudSyncState;
 
 use super::require_user;
@@ -202,7 +204,9 @@ pub async fn detect_package_scripts(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<DetectedScript>, RunCommandError> {
     let current = require_user(&session)?;
-    let repository = repositories.get_for_user(&repository_id, &current.user_id).await?;
+    let repository = repositories
+        .get_for_user(&repository_id, &current.user_id)
+        .await?;
     let Some(root) = repository.local_path.as_deref().map(PathBuf::from) else {
         return Ok(Vec::new());
     };
@@ -212,9 +216,11 @@ pub async fn detect_package_scripts(
         .into_iter()
         .map(|rc| rc.command)
         .collect();
-    Ok(tokio::task::spawn_blocking(move || scripts::detect(&root, &existing))
-        .await
-        .unwrap_or_default())
+    Ok(
+        tokio::task::spawn_blocking(move || scripts::detect(&root, &existing))
+            .await
+            .unwrap_or_default(),
+    )
 }
 
 // ── Runtime ─────────────────────────────────────────────────────────
@@ -225,6 +231,11 @@ pub async fn detect_package_scripts(
 /// calls this on mount; only an explicit Run calls `start_run_command`, so
 /// visiting a task (or returning after an exec command exited) can never
 /// start a command by itself.
+///
+/// A command that exited this session is NOT rejected: its final output and
+/// then an `exit` event are sent on `on_event` (already queued when this
+/// resolves). Only a command never started (or deleted) here rejects, with
+/// exactly "not running".
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn attach_run_command(
@@ -242,14 +253,26 @@ pub async fn attach_run_command(
     // Ownership of both halves of the key before handing out its output.
     let rc = run_commands.get_for_user(&id, &current.user_id).await?;
     if let Some(workspace_id) = workspace_id.as_deref() {
-        let workspace = workspaces.get_for_user(workspace_id, &current.user_id).await?;
+        let workspace = workspaces
+            .get_for_user(workspace_id, &current.user_id)
+            .await?;
         if workspace.repository_id != rc.repository_id {
             return Err(RunCommandError::WrongRepository);
         }
     }
-    let handle = runs
-        .attachable(&pty_key(&id, workspace_id.as_deref()))
-        .ok_or(RunCommandError::NotAttached)?;
+    let key = pty_key(&id, workspace_id.as_deref());
+    let Some(handle) = runs.attachable(&key) else {
+        // Exited this session: replay its output, then its `Exit` (the
+        // pane shows the result and the Run button). Never ran: "not
+        // running". Neither path spawns anything.
+        let events = runs
+            .exited_replay(&key)
+            .ok_or(RunCommandError::NotAttached)?;
+        for event in events {
+            let _ = on_event.send(event);
+        }
+        return Ok(());
+    };
     if let (Some(rows), Some(cols)) = (rows, cols) {
         // Best effort: the viewer's size, so the replay reflows correctly.
         let _ = handle.resize(rows, cols);
@@ -293,7 +316,9 @@ pub async fn start_run_command(
 
     let cwd = match workspace_id.as_deref() {
         Some(workspace_id) => {
-            let workspace = workspaces.get_for_user(workspace_id, &current.user_id).await?;
+            let workspace = workspaces
+                .get_for_user(workspace_id, &current.user_id)
+                .await?;
             if workspace.repository_id != rc.repository_id {
                 return Err(RunCommandError::WrongRepository);
             }

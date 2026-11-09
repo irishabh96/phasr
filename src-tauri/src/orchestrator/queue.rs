@@ -13,17 +13,24 @@
 //! A pass is idempotent: `TaskOrchestrator::launch` re-reads the row under
 //! the repo lock and returns an already-launched task untouched, so two
 //! passes — or a pass racing "Start now" — never start a task twice.
+//!
+//! A task that fails to start backs off exponentially (in memory, per
+//! task): passes fire on every agent-state event, and each attempt can
+//! spend up to a minute fetching. After `MAX_START_FAILURES` it leaves the
+//! queue as `failed` — which raises the "task failed" notification — with
+//! the error in its log; "Start now" retries it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use parking_lot::Mutex;
 use tokio::sync::{broadcast, Notify};
 
 use crate::agent_signals::AgentSignalEvent;
 use crate::domain::board::dependency_satisfied;
 use crate::store::{StoreError, WorkspaceRepo};
 
-use super::board::TaskBoard;
 use super::service::{TaskOrchestrator, TaskStatusEvent};
 
 /// Events arrive in bursts (a turn ending is several); one pass after
@@ -31,26 +38,84 @@ use super::service::{TaskOrchestrator, TaskStatusEvent};
 const PASS_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Backstop for transitions no event reports (e.g. sign-in after boot).
 const PASS_TICK: Duration = Duration::from_secs(30);
+/// Wait after a task's first failed start; doubles per further failure.
+const RETRY_BASE: Duration = Duration::from_secs(30);
+/// Longest wait between two attempts.
+const RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+/// Failed starts before a task leaves the queue as `failed`.
+const MAX_START_FAILURES: u32 = 5;
+
+/// One queued task's failed starts.
+#[derive(Debug, Clone, Copy)]
+struct Backoff {
+    failures: u32,
+    next_attempt: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetryPolicy {
+    base: Duration,
+    max: Duration,
+    max_failures: u32,
+}
+
+impl RetryPolicy {
+    /// `base × 2^(failures − 1)`, capped at `max`.
+    fn delay(&self, failures: u32) -> Duration {
+        let factor = 2u32.saturating_pow(failures.saturating_sub(1).min(16));
+        self.base.saturating_mul(factor).min(self.max)
+    }
+}
 
 #[derive(Clone)]
 pub struct QueueScheduler {
     orchestrator: TaskOrchestrator,
-    board: TaskBoard,
     workspaces: WorkspaceRepo,
     kick: Arc<Notify>,
     /// One pass at a time.
     pass_lock: Arc<tokio::sync::Mutex<()>>,
+    backoff: Arc<Mutex<HashMap<String, Backoff>>>,
+    retry: RetryPolicy,
 }
 
 impl QueueScheduler {
-    pub fn new(orchestrator: TaskOrchestrator, board: TaskBoard, workspaces: WorkspaceRepo) -> Self {
+    pub fn new(orchestrator: TaskOrchestrator, workspaces: WorkspaceRepo) -> Self {
         Self {
             orchestrator,
-            board,
             workspaces,
             kick: Arc::new(Notify::new()),
             pass_lock: Arc::new(tokio::sync::Mutex::new(())),
+            backoff: Arc::new(Mutex::new(HashMap::new())),
+            retry: RetryPolicy {
+                base: RETRY_BASE,
+                max: RETRY_MAX,
+                max_failures: MAX_START_FAILURES,
+            },
         }
+    }
+
+    /// Whether `task_id` is waiting out a backoff right now.
+    fn backing_off(&self, task_id: &str, now: Instant) -> bool {
+        self.backoff
+            .lock()
+            .get(task_id)
+            .is_some_and(|b| b.next_attempt > now)
+    }
+
+    /// Count a failed start. `true` once the task should leave the queue.
+    fn record_failure(&self, task_id: &str, now: Instant) -> bool {
+        let mut backoff = self.backoff.lock();
+        let entry = backoff.entry(task_id.to_string()).or_insert(Backoff {
+            failures: 0,
+            next_attempt: now,
+        });
+        entry.failures += 1;
+        entry.next_attempt = now + self.retry.delay(entry.failures);
+        if entry.failures >= self.retry.max_failures {
+            backoff.remove(task_id);
+            return true;
+        }
+        false
     }
 
     /// Ask for a pass soon (a task was just queued).
@@ -64,6 +129,9 @@ impl QueueScheduler {
         let _pass = self.pass_lock.lock().await;
         let mut started = Vec::new();
         for task in self.workspaces.list_queued(user_id).await? {
+            if self.backing_off(&task.id, Instant::now()) {
+                continue;
+            }
             let ready = match task.depends_on_workspace_id.as_deref() {
                 None => true,
                 Some(dependency_id) => {
@@ -73,8 +141,8 @@ impl QueueScheduler {
                     };
                     match dependency {
                         Ok(dependency) => {
-                            let lane = self.board.lane_of(&dependency).await;
-                            dependency_satisfied(&dependency, lane)
+                            let agent = self.orchestrator.agent_phase(&dependency.id);
+                            dependency_satisfied(&dependency, agent)
                         }
                         Err(StoreError::NotFound) => true,
                         Err(err) => return Err(err),
@@ -84,12 +152,36 @@ impl QueueScheduler {
             if !ready {
                 continue;
             }
-            match self.orchestrator.launch(&task.id, user_id, None, None).await {
-                Ok(_) => started.push(task.id),
+            match self
+                .orchestrator
+                .launch(&task.id, user_id, None, None)
+                .await
+            {
+                // `launch` returns the row untouched when "Start now" is
+                // already starting it: that start isn't this pass's.
+                Ok(launched) => {
+                    self.backoff.lock().remove(&task.id);
+                    if !launched.workspace.is_unlaunched() {
+                        started.push(task.id);
+                    }
+                }
                 // One task that can't start (its repository moved, a git
                 // error) must not hold up the rest of the queue. It stays
-                // queued and is retried on the next pass.
-                Err(err) => eprintln!("[queue] failed to start queued task {}: {err}", task.id),
+                // queued and is retried after a backoff — until it has
+                // failed too often, then it leaves the queue as failed.
+                Err(err) => {
+                    eprintln!("[queue] failed to start queued task {}: {err}", task.id);
+                    if self.record_failure(&task.id, Instant::now()) {
+                        let reason = err.to_string();
+                        if let Err(err) = self.orchestrator.fail_unlaunched(&task.id, &reason).await
+                        {
+                            eprintln!(
+                                "[queue] failed to give up on queued task {}: {err}",
+                                task.id
+                            );
+                        }
+                    }
+                }
             }
         }
         Ok(started)
@@ -116,7 +208,10 @@ impl QueueScheduler {
                 // The first tick fires immediately: the startup pass.
                 let signal = async {
                     match signals.as_mut() {
-                        Some(rx) => rx.recv().await.map(|e| matches!(e, AgentSignalEvent::State(_))),
+                        Some(rx) => rx
+                            .recv()
+                            .await
+                            .map(|e| matches!(e, AgentSignalEvent::State(_))),
                         None => std::future::pending().await,
                     }
                 };
@@ -160,10 +255,10 @@ impl QueueScheduler {
 mod tests {
     use super::*;
     use crate::domain::{Agent, Repository, Workspace, WorkspaceStatus};
-    use crate::orchestrator::{RepoLockRegistry, StartTaskRequest, TaskRow};
     use crate::orchestrator::launch::RunIn;
+    use crate::orchestrator::{RepoLockRegistry, StartTaskRequest, TaskRow};
     use crate::pty::TaskRuntime;
-    use crate::store::{init_pool, RepositoryRepo, TaskUsageRepo};
+    use crate::store::{init_pool, RepositoryRepo};
     use std::path::Path;
     use std::process::Command;
 
@@ -176,8 +271,16 @@ mod tests {
     }
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     async fn fixture() -> Fixture {
@@ -193,7 +296,11 @@ mod tests {
         std::fs::write(repo_dir.join("README.md"), "hi").unwrap();
         git(&repo_dir, &["add", "-A"]);
         git(&repo_dir, &["commit", "-qm", "init"]);
-        let mut repo = Repository::new("r".into(), Some(repo_dir.to_string_lossy().into_owned()), None);
+        let mut repo = Repository::new(
+            "r".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
         repo.default_branch = "main".into();
         repositories.insert(&repo).await.unwrap();
         let orchestrator = TaskOrchestrator::new(
@@ -202,8 +309,7 @@ mod tests {
             Arc::new(TaskRuntime::new(dir.path().join("logs"))),
             Arc::new(RepoLockRegistry::new()),
         );
-        let board = TaskBoard::new(workspaces.clone(), repositories, TaskUsageRepo::new(pool), None);
-        let scheduler = QueueScheduler::new(orchestrator.clone(), board, workspaces.clone());
+        let scheduler = QueueScheduler::new(orchestrator.clone(), workspaces.clone());
         Fixture {
             orchestrator,
             scheduler,
@@ -246,7 +352,10 @@ mod tests {
             .current_dir(repo.local_path.as_deref().unwrap())
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).count()
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
     }
 
     /// Concurrent passes and a concurrent "Start now" all race one queued
@@ -254,8 +363,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_queued_task_starts_exactly_once_under_racing_passes() {
         let f = fixture().await;
-        let queued = f.orchestrator.create_row(row(&f, "q", true, None), None).await.unwrap();
-        let draft = f.orchestrator.create_row(row(&f, "d", false, None), None).await.unwrap();
+        let queued = f
+            .orchestrator
+            .create_row(row(&f, "q", true, None), None)
+            .await
+            .unwrap();
+        let draft = f
+            .orchestrator
+            .create_row(row(&f, "d", false, None), None)
+            .await
+            .unwrap();
         assert!(queued.is_queued() && draft.is_draft());
 
         let (a, b, c) = tokio::join!(
@@ -280,18 +397,20 @@ mod tests {
         teardown(&f, &[&queued.id]).await;
     }
 
-    /// B waits on A: not while A is running with nothing to review; yes
-    /// once A has stopped with changes (needs review).
+    /// B waits on A: not while A runs, not when A is stopped with changes
+    /// and a turn ended (Stop, like an app quit, isn't a finish) — yes once
+    /// A exits cleanly (how agents with no turn-end signal release).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_dependent_task_starts_when_its_dependency_reaches_review() {
+    async fn a_dependent_task_starts_only_when_its_dependency_really_finished() {
         let f = fixture().await;
         let a = f
             .orchestrator
             .start_task(StartTaskRequest {
                 repository_id: f.repo.id.clone(),
                 user_id: None,
-                agent: Agent::Claude,
-                command: "sleep 30".into(),
+                agent: Agent::Gemini,
+                // A stand-in agent that exits 0 once told to.
+                command: "while [ ! -f GO ]; do sleep 0.1; done; exit 0".into(),
                 name: "a".into(),
                 prompt: None,
                 base_branch: None,
@@ -312,17 +431,124 @@ mod tests {
         assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
         assert!(f.workspaces.get(&b.id).await.unwrap().is_queued());
 
-        // A produces work and stops → needs review. Stopped alone (what
-        // startup recovery also produces) isn't finished: B still waits.
+        // A produces work and a turn ends, but A is then stopped — what
+        // startup recovery also produces. Not finished: B still waits.
         let a_path = a.workspace.worktree_path.clone().unwrap();
         std::fs::write(Path::new(&a_path).join("work.txt"), "done\n").unwrap();
-        f.orchestrator.stop_task(&a.task_id).await.unwrap();
+        f.workspaces
+            .set_last_turn_ended_at(&a.task_id, chrono::Utc::now())
+            .await
+            .unwrap();
+        let resumed = {
+            f.orchestrator.stop_task(&a.task_id).await.unwrap();
+            assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
+            assert!(f.workspaces.get(&b.id).await.unwrap().is_queued());
+            // Resume A (a fresh run: the old turn end predates it).
+            f.orchestrator
+                .open_terminal(&a.task_id, 24, 80)
+                .await
+                .unwrap()
+        };
         assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
-        // A's agent had ended its turn (the Stop hook's stamp) → B goes.
-        f.workspaces.set_last_turn_ended_at(&a.task_id, chrono::Utc::now()).await.unwrap();
-        assert_eq!(f.scheduler.run_pass(None).await.unwrap(), vec![b.id.clone()]);
-        assert_eq!(f.workspaces.get(&b.id).await.unwrap().status, WorkspaceStatus::Running);
+
+        // A exits cleanly → completed → B goes.
+        std::fs::write(Path::new(&a_path).join("GO"), "").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while f.workspaces.get(&a.task_id).await.unwrap().status != WorkspaceStatus::Completed {
+            assert!(std::time::Instant::now() < deadline, "A never completed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        drop(resumed);
+        assert_eq!(
+            f.scheduler.run_pass(None).await.unwrap(),
+            vec![b.id.clone()]
+        );
+        assert_eq!(
+            f.workspaces.get(&b.id).await.unwrap().status,
+            WorkspaceStatus::Running
+        );
         teardown(&f, &[&a.task_id, &b.id]).await;
+    }
+
+    #[test]
+    fn retry_delay_doubles_and_is_capped() {
+        let policy = RetryPolicy {
+            base: Duration::from_secs(30),
+            max: Duration::from_secs(15 * 60),
+            max_failures: 5,
+        };
+        assert_eq!(policy.delay(1), Duration::from_secs(30));
+        assert_eq!(policy.delay(2), Duration::from_secs(60));
+        assert_eq!(policy.delay(3), Duration::from_secs(120));
+        assert_eq!(policy.delay(10), Duration::from_secs(15 * 60));
+        assert_eq!(policy.delay(u32::MAX), Duration::from_secs(15 * 60));
+    }
+
+    /// A queued task that can't start isn't retried on every pass; after
+    /// `max_failures` it leaves the queue as failed (a notification
+    /// follows from the status event) and "Start now" may retry it.
+    #[tokio::test]
+    async fn a_failing_queued_task_backs_off_then_leaves_the_queue_as_failed() {
+        let mut f = fixture().await;
+        let task = f
+            .orchestrator
+            .create_row(row(&f, "broken", true, None), None)
+            .await
+            .unwrap();
+        // Its repository's checkout disappears: every start fails.
+        let repo_path = f.repo.local_path.clone().unwrap();
+        let moved = format!("{repo_path}-moved");
+        std::fs::rename(&repo_path, &moved).unwrap();
+        let mut status = f.orchestrator.subscribe_status();
+
+        assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
+        assert_eq!(f.scheduler.backoff.lock()[&task.id].failures, 1);
+        // The next pass (an agent-state event, say) is inside the backoff:
+        // no attempt at all.
+        assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
+        assert_eq!(f.scheduler.backoff.lock()[&task.id].failures, 1);
+
+        // Out of patience: no wait between attempts, give up after 3.
+        f.scheduler.retry = RetryPolicy {
+            base: Duration::ZERO,
+            max: Duration::ZERO,
+            max_failures: 3,
+        };
+        f.scheduler
+            .backoff
+            .lock()
+            .get_mut(&task.id)
+            .unwrap()
+            .next_attempt = Instant::now();
+        f.scheduler.run_pass(None).await.unwrap();
+        assert!(
+            f.workspaces.get(&task.id).await.unwrap().is_queued(),
+            "2 failures: still queued"
+        );
+        f.scheduler.run_pass(None).await.unwrap();
+        let failed = f.workspaces.get(&task.id).await.unwrap();
+        assert_eq!(failed.status, WorkspaceStatus::Failed);
+        assert!(failed.queued_at.is_none(), "out of the queue");
+        assert!(!f.scheduler.backoff.lock().contains_key(&task.id));
+        let mut saw_failed = false;
+        while let Ok(event) = status.try_recv() {
+            saw_failed |= event.task_id == task.id && event.status == WorkspaceStatus::Failed;
+        }
+        assert!(saw_failed, "the failure is announced (→ notification)");
+        let log = f.orchestrator.read_task_log(&task.id).await.unwrap();
+        assert!(log.contains("couldn't start"), "{log}");
+        // Later passes leave it alone.
+        assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
+
+        // "Start now" retries it: with the checkout back, it launches.
+        std::fs::rename(&moved, &repo_path).unwrap();
+        let started = f
+            .orchestrator
+            .launch(&task.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        teardown(&f, &[&task.id]).await;
     }
 
     /// A row queued on ANOTHER machine arrives through sync (its own SQL,
@@ -331,7 +557,11 @@ mod tests {
     #[tokio::test]
     async fn a_task_queued_on_another_machine_never_auto_starts_here() {
         let f = fixture().await;
-        let mut synced = Workspace::new(f.repo.id.clone(), "from-elsewhere".into(), "sleep 30".into());
+        let mut synced = Workspace::new(
+            f.repo.id.clone(),
+            "from-elsewhere".into(),
+            "sleep 30".into(),
+        );
         synced.agent = Some(Agent::Claude);
         synced.queued_at = Some(chrono::Utc::now());
         f.workspaces.insert(&synced).await.unwrap();
@@ -341,7 +571,10 @@ mod tests {
             .execute(f.workspaces.pool())
             .await
             .unwrap();
-        assert!(f.workspaces.get(&synced.id).await.unwrap().is_queued(), "still shows as queued");
+        assert!(
+            f.workspaces.get(&synced.id).await.unwrap().is_queued(),
+            "still shows as queued"
+        );
         assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
         assert_eq!(phasr_branches(&f.repo), 0);
 
@@ -357,14 +590,21 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(f.scheduler.run_pass(None).await.unwrap(), vec![synced.id.clone()]);
+        assert_eq!(
+            f.scheduler.run_pass(None).await.unwrap(),
+            vec![synced.id.clone()]
+        );
         teardown(&f, &[&synced.id]).await;
     }
 
     #[tokio::test]
     async fn a_missing_dependency_does_not_block_and_cycles_are_refused() {
         let f = fixture().await;
-        let a = f.orchestrator.create_row(row(&f, "a", false, None), None).await.unwrap();
+        let a = f
+            .orchestrator
+            .create_row(row(&f, "a", false, None), None)
+            .await
+            .unwrap();
         let b = f
             .orchestrator
             .create_row(row(&f, "b", false, Some(a.id.clone())), None)
@@ -384,10 +624,15 @@ mod tests {
                 )
                 .await
                 .unwrap_err();
-            assert!(matches!(err, crate::orchestrator::OrchestratorError::InvalidDependency(_)));
+            assert!(matches!(
+                err,
+                crate::orchestrator::OrchestratorError::InvalidDependency(_)
+            ));
         }
         assert!(matches!(
-            f.orchestrator.create_row(row(&f, "c", true, Some("nope".into())), None).await,
+            f.orchestrator
+                .create_row(row(&f, "c", true, Some("nope".into())), None)
+                .await,
             Err(crate::orchestrator::OrchestratorError::InvalidDependency(_))
         ));
         // The dependency disappears: the queue doesn't wait forever.
@@ -405,7 +650,10 @@ mod tests {
             .unwrap();
         assert!(queued.is_queued());
         f.workspaces.delete(&a.id).await.unwrap();
-        assert_eq!(f.scheduler.run_pass(None).await.unwrap(), vec![b.id.clone()]);
+        assert_eq!(
+            f.scheduler.run_pass(None).await.unwrap(),
+            vec![b.id.clone()]
+        );
         // Started tasks reject draft edits.
         assert!(matches!(
             f.orchestrator

@@ -18,6 +18,8 @@ use crate::store::SettingsRepo;
 
 /// Distinct from `run:` and bare workspace UUIDs so the keys never collide.
 const SESSION_PTY_PREFIX: &str = "session:";
+/// Per step of the SIGHUP → SIGTERM → SIGKILL escalation on stop.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn pty_id(session_id: &str) -> String {
     format!("{SESSION_PTY_PREFIX}{session_id}")
@@ -58,7 +60,9 @@ pub async fn start_session_terminal(
     // machine lacks mean the login shell, never a failed terminal.
     // A synced shell not confirmed on this machine isn't used either.
     let shell = match settings.get_or_default().await {
-        Ok(s) => usable_shell_override(&crate::settings_trust::usable(&meta, s).await.terminal_shell),
+        Ok(s) => {
+            usable_shell_override(&crate::settings_trust::usable(&meta, s).await.terminal_shell)
+        }
         Err(_) => None,
     };
 
@@ -131,7 +135,10 @@ pub async fn stop_session_terminal(
     session.require()?;
     let key = pty_id(&session_id);
     if let Some(handle) = runtime.get(&key) {
-        let _ = handle.kill();
+        // The terminal's whole session: a `pnpm dev` (or any job) started
+        // in this tab runs in its own process group and outlived a kill of
+        // the shell alone, holding its port.
+        handle.terminate(STOP_GRACE);
         runtime.drop_task(&key);
     }
     Ok(())

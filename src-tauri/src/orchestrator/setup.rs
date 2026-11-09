@@ -89,7 +89,13 @@ impl TaskSetup {
 
     /// The task's branch: template → sanitised → unique in the repository.
     /// Blocking (`git show-ref`).
-    pub fn branch_for(&self, repository_path: &Path, task_name: &str, task_id: &str, agent: Option<Agent>) -> String {
+    pub fn branch_for(
+        &self,
+        repository_path: &Path,
+        task_name: &str,
+        task_id: &str,
+        agent: Option<Agent>,
+    ) -> String {
         let short = git::short_id(task_id);
         let rendered = git::render_branch_name(
             self.branch_template(),
@@ -113,7 +119,11 @@ pub struct TaskConfig {
 }
 
 impl TaskConfig {
-    pub fn new(configs: RepositoryConfigRepo, settings: SettingsRepo, api_keys: Option<ApiKeys>) -> Self {
+    pub fn new(
+        configs: RepositoryConfigRepo,
+        settings: SettingsRepo,
+        api_keys: Option<ApiKeys>,
+    ) -> Self {
         Self {
             configs,
             settings,
@@ -125,6 +135,12 @@ impl TaskConfig {
     pub fn with_trust(mut self, meta: crate::store::AppMetaRepo) -> Self {
         self.trust = Some(meta);
         self
+    }
+
+    /// The per-machine trust store, when launches are gated by it (always
+    /// in the app; `None` in tests, which run stored commands as is).
+    pub fn trust(&self) -> Option<&crate::store::AppMetaRepo> {
+        self.trust.as_ref()
     }
 
     /// Never fails a launch: an unreadable row means the built-in behaviour.
@@ -224,20 +240,25 @@ pub async fn fetch_base(repository_path: &Path, base: &str, log: &mut SetupLog) 
         Ok(out) if out.status.success() => {}
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            log.push(format!("phasr: fetching {base} failed, starting from the local branch: {stderr}"));
+            log.push(format!(
+                "phasr: fetching {base} failed, starting from the local branch: {stderr}"
+            ));
             return local;
         }
         Err(err) => {
-            log.push(format!("phasr: fetching {base} failed, starting from the local branch: {err}"));
+            log.push(format!(
+                "phasr: fetching {base} failed, starting from the local branch: {err}"
+            ));
             return local;
         }
     }
     let remote = format!("origin/{base}");
     let path = repository_path.to_path_buf();
     let (base_owned, remote_owned) = (base.to_string(), remote.clone());
-    let pick = tokio::task::spawn_blocking(move || pick_start_point(&path, &base_owned, &remote_owned))
-        .await
-        .unwrap_or(None);
+    let pick =
+        tokio::task::spawn_blocking(move || pick_start_point(&path, &base_owned, &remote_owned))
+            .await
+            .unwrap_or(None);
     match pick {
         Some(start) => {
             log.push(format!("phasr: fetched {base}; starting from {start}"));
@@ -258,10 +279,20 @@ fn pick_start_point(repo: &Path, base: &str, remote: &str) -> Option<String> {
             .map(|o| o.status.success())
             .unwrap_or(false)
     };
-    if !git_ok(&["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}")]) {
+    if !git_ok(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("refs/remotes/{remote}"),
+    ]) {
         return None;
     }
-    let local_exists = git_ok(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")]);
+    let local_exists = git_ok(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("refs/heads/{base}"),
+    ]);
     if !local_exists || git_ok(&["merge-base", "--is-ancestor", "--", base, remote]) {
         Some(remote.to_string())
     } else {
@@ -280,7 +311,11 @@ fn pick_start_point(repo: &Path, base: &str, remote: &str) -> Option<String> {
 pub fn copy_untracked(repository_path: &Path, worktree: &Path, globs: &[String]) -> Vec<String> {
     let specs: Vec<String> = globs
         .iter()
-        .filter_map(|g| crate::domain::repository_config::normalize_glob(g).ok().flatten())
+        .filter_map(|g| {
+            crate::domain::repository_config::normalize_glob(g)
+                .ok()
+                .flatten()
+        })
         .map(|g| format!(":(glob){g}"))
         .collect();
     if specs.is_empty() {
@@ -297,13 +332,18 @@ pub fn copy_untracked(repository_path: &Path, worktree: &Path, globs: &[String])
         _ => return Vec::new(),
     };
     let mut copied = Vec::new();
-    for rel in listed.split('\0').filter(|p| !p.is_empty() && !p.ends_with('/')) {
+    for rel in listed
+        .split('\0')
+        .filter(|p| !p.is_empty() && !p.ends_with('/'))
+    {
         if !is_clean_relative(rel) {
             continue;
         }
         let src = repository_path.join(rel);
         let dest = worktree.join(rel);
-        let Ok(meta) = std::fs::symlink_metadata(&src) else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(&src) else {
+            continue;
+        };
         if !meta.is_file() || std::fs::symlink_metadata(&dest).is_ok() {
             continue;
         }
@@ -315,7 +355,10 @@ pub fn copy_untracked(repository_path: &Path, worktree: &Path, globs: &[String])
                 // `create_new` closes the check-then-write race: if anything
                 // appeared at `dest` meanwhile, this fails instead of
                 // clobbering it.
-                let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&dest)?;
+                let mut out = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dest)?;
                 let mut input = std::fs::File::open(&src)?;
                 std::io::copy(&mut input, &mut out)?;
                 out.set_permissions(meta.permissions())
@@ -341,11 +384,21 @@ fn is_clean_relative(rel: &str) -> bool {
 /// output captured into `log`. Non-zero exit or timeout is logged and the
 /// task continues — a broken `pnpm install` shouldn't make the agent
 /// un-startable; the agent (and the user, in the log) see the state.
-pub async fn run_after_create_hook(worktree: &Path, hook: &str, shell: Option<&str>, log: &mut SetupLog) {
-    let shell = shell.map(str::to_string).unwrap_or_else(|| "/bin/sh".to_string());
+pub async fn run_after_create_hook(
+    worktree: &Path,
+    hook: &str,
+    shell: Option<&str>,
+    log: &mut SetupLog,
+) {
+    let shell = shell
+        .map(str::to_string)
+        .unwrap_or_else(|| "/bin/sh".to_string());
     let path = crate::pty::login_path().await;
     log.push(format!("phasr: running after-create hook: {hook}"));
-    let env = vec![("PATH".to_string(), path), ("CI".to_string(), "1".to_string())];
+    let env = vec![
+        ("PATH".to_string(), path),
+        ("CI".to_string(), "1".to_string()),
+    ];
     match run_with_timeout(&shell, &["-c", hook], Some(worktree), &env, HOOK_TIMEOUT).await {
         Ok(out) => {
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -364,11 +417,14 @@ pub async fn run_after_create_hook(worktree: &Path, hook: &str, shell: Option<&s
                 Some(0) => log.push("phasr: after-create hook finished"),
                 code => log.push(format!(
                     "phasr: after-create hook exited with {}; starting the agent anyway",
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "a signal".into())
+                    code.map(|c| c.to_string())
+                        .unwrap_or_else(|| "a signal".into())
                 )),
             }
         }
-        Err(err) => log.push(format!("phasr: after-create hook failed: {err}; starting the agent anyway")),
+        Err(err) => log.push(format!(
+            "phasr: after-create hook failed: {err}; starting the agent anyway"
+        )),
     }
 }
 
@@ -378,8 +434,16 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
@@ -423,15 +487,27 @@ mod tests {
         ];
         let mut copied = copy_untracked(p, wt.path(), &globs);
         copied.sort();
-        assert_eq!(copied, vec![".env".to_string(), "config/dev.local".to_string()]);
-        assert_eq!(std::fs::read_to_string(wt.path().join(".env")).unwrap(), "SECRET=1\n");
+        assert_eq!(
+            copied,
+            vec![".env".to_string(), "config/dev.local".to_string()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.path().join(".env")).unwrap(),
+            "SECRET=1\n"
+        );
         assert_eq!(
             std::fs::read_to_string(wt.path().join("config/keep.local")).unwrap(),
             "already here\n",
             "existing file is never overwritten"
         );
-        assert_eq!(std::fs::read_to_string(wt.path().join("tracked.txt")).unwrap(), "tracked\n");
-        assert!(!wt.path().join("node_modules").exists(), "`.env` is top-level only");
+        assert_eq!(
+            std::fs::read_to_string(wt.path().join("tracked.txt")).unwrap(),
+            "tracked\n"
+        );
+        assert!(
+            !wt.path().join("node_modules").exists(),
+            "`.env` is top-level only"
+        );
         assert!(!wt.path().join("unrelated.tmp").exists());
 
         // `**/` reaches nested files.
@@ -451,12 +527,36 @@ mod tests {
 
         let repo = repo();
         setup.settings.branch_prefix_template = "me/{{slug}}".into();
-        assert_eq!(setup.branch_for(repo.path(), "Fix the bug", "abcd1234-ef", Some(Agent::Claude)), "me/fix-the-bug");
+        assert_eq!(
+            setup.branch_for(
+                repo.path(),
+                "Fix the bug",
+                "abcd1234-ef",
+                Some(Agent::Claude)
+            ),
+            "me/fix-the-bug"
+        );
         setup.config.branch_prefix_template = Some("{{agent}}/{{slug}}".into());
-        assert_eq!(setup.branch_for(repo.path(), "Fix the bug", "abcd1234-ef", Some(Agent::Codex)), "codex/fix-the-bug");
+        assert_eq!(
+            setup.branch_for(
+                repo.path(),
+                "Fix the bug",
+                "abcd1234-ef",
+                Some(Agent::Codex)
+            ),
+            "codex/fix-the-bug"
+        );
         // Unique against existing branches.
         git(repo.path(), &["branch", "codex/fix-the-bug"]);
-        assert_eq!(setup.branch_for(repo.path(), "Fix the bug", "abcd1234-ef", Some(Agent::Codex)), "codex/fix-the-bug-2");
+        assert_eq!(
+            setup.branch_for(
+                repo.path(),
+                "Fix the bug",
+                "abcd1234-ef",
+                Some(Agent::Codex)
+            ),
+            "codex/fix-the-bug-2"
+        );
     }
 
     #[test]
@@ -469,7 +569,11 @@ mod tests {
         assert_eq!(setup.worktree_base(), PathBuf::from("/repo/wt"));
         assert_eq!(
             setup.known_worktree_bases(),
-            vec![PathBuf::from("/repo/wt"), PathBuf::from("/user/wt"), git::default_worktree_base_path()]
+            vec![
+                PathBuf::from("/repo/wt"),
+                PathBuf::from("/user/wt"),
+                git::default_worktree_base_path()
+            ]
         );
     }
 
@@ -479,7 +583,10 @@ mod tests {
         let upstream = repo();
         let clone_dir = tempfile::tempdir().unwrap();
         let clone = clone_dir.path().join("c");
-        git(clone_dir.path(), &["clone", "-q", &upstream.path().to_string_lossy(), "c"]);
+        git(
+            clone_dir.path(),
+            &["clone", "-q", &upstream.path().to_string_lossy(), "c"],
+        );
         std::fs::write(upstream.path().join("new.txt"), "n\n").unwrap();
         git(upstream.path(), &["add", "-A"]);
         git(upstream.path(), &["commit", "-qm", "upstream moves"]);
@@ -513,11 +620,20 @@ mod tests {
         let wt = tempfile::tempdir().unwrap();
         let logs = tempfile::tempdir().unwrap();
         let mut log = SetupLog::default();
-        run_after_create_hook(wt.path(), "echo hello from hook; touch made-by-hook; exit 3", None, &mut log).await;
+        run_after_create_hook(
+            wt.path(),
+            "echo hello from hook; touch made-by-hook; exit 3",
+            None,
+            &mut log,
+        )
+        .await;
         log.flush(logs.path(), "task-1");
         let written = std::fs::read_to_string(logs.path().join("task-1.log")).unwrap();
         assert!(written.contains("hello from hook\r\n"), "{written}");
         assert!(written.contains("exited with 3"), "{written}");
-        assert!(wt.path().join("made-by-hook").exists(), "ran in the worktree");
+        assert!(
+            wt.path().join("made-by-hook").exists(),
+            "ran in the worktree"
+        );
     }
 }

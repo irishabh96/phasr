@@ -400,8 +400,10 @@ impl PtyHandle {
         // receiver is listening.
         let handle_for_writes = handle.clone();
         let readiness_rx = tx.subscribe();
+        let task_id_for_writes = task_id.clone();
         std::thread::spawn(move || {
             run_initial_writes(
+                &task_id_for_writes,
                 handle_for_writes,
                 readiness_rx,
                 initial_command,
@@ -534,7 +536,7 @@ impl PtyHandle {
     /// back in the foreground: the agent exited, and a pasted message plus
     /// Enter would run as a shell command (backticks and all).
     pub async fn send_message(self: &Arc<Self>, text: &str, submit: bool) -> Result<(), PtyError> {
-        if self.interactive && self.shell_in_foreground() == Some(true) {
+        if self.shell_owns_terminal() {
             return Err(PtyError::AgentNotRunning);
         }
         let body = frame_message(text, self.bracketed_paste_enabled());
@@ -577,6 +579,13 @@ impl PtyHandle {
         {
             None
         }
+    }
+
+    /// An interactive PTY whose own shell has the terminal: nothing typed
+    /// into it (the agent) is running, so keystrokes would reach the shell.
+    /// `false` in `Exec` mode, and when the platform can't tell.
+    fn shell_owns_terminal(&self) -> bool {
+        self.interactive && self.shell_in_foreground() == Some(true)
     }
 
     pub fn subscribe_with_replay(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
@@ -733,7 +742,11 @@ fn terminate_session(shell: u32, tty: Option<&str>, grace: Duration) {
         return;
     };
     let mut seen = terminal_members(shell, tty);
-    for (signal, then_wait) in [(libc::SIGHUP, true), (libc::SIGTERM, true), (libc::SIGKILL, false)] {
+    for (signal, then_wait) in [
+        (libc::SIGHUP, true),
+        (libc::SIGTERM, true),
+        (libc::SIGKILL, false),
+    ] {
         for pid in terminal_members(shell, tty) {
             if !seen.contains(&pid) {
                 seen.push(pid);
@@ -769,7 +782,11 @@ fn is_zombie(pid: libc::pid_t) -> bool {
     std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim_start()
+                .starts_with('Z')
+        })
         .unwrap_or(false)
 }
 
@@ -874,7 +891,15 @@ fn frame_message(text: &str, bracketed_paste: bool) -> Vec<u8> {
 /// when it takes the terminal over, type, and then require the typed
 /// text to ECHO back before pressing Enter — echo is what separates a
 /// real composer from a first-run dialog that silently eats input.
+///
+/// Before EVERY write of the prompt (or its Enter) the shell must not own
+/// the terminal: if the agent never started (binary missing, crashed at
+/// boot, quit at a dialog), the prompt would otherwise be typed — and
+/// Entered — as a shell command, in the task's worktree or, for an in-place
+/// task, the user's own checkout. It is then left unsent (the task keeps
+/// it) rather than delivered.
 fn run_initial_writes(
+    task_id: &str,
     handle: Arc<PtyHandle>,
     mut events: broadcast::Receiver<PtyEvent>,
     initial_command: Option<String>,
@@ -892,10 +917,20 @@ fn run_initial_writes(
     let Some(prompt) = initial_prompt else {
         return;
     };
+    // The same inertness as a composer message: a prompt is user (or
+    // synced) text and must not carry control keys or escape sequences.
+    let prompt = sanitize_message(&prompt);
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
         return;
     }
+    let agent_gone = || {
+        let gone = handle.shell_owns_terminal();
+        if gone {
+            eprintln!("[pty] {task_id}: the agent isn't running (the shell has the terminal); initial prompt not sent");
+        }
+        gone
+    };
 
     match wait_for_tui(&mut events, TUI_WAIT_DEADLINE) {
         // PTY is gone. Typing now would at best be lost, at worst land
@@ -905,7 +940,7 @@ fn run_initial_writes(
         // any. Fall back to typing blind, which is exactly what the
         // fixed delay always did.
         TuiWait::TimedOut => {
-            if pass_gate(&handle, gate.as_ref(), &mut events) {
+            if pass_gate(&handle, gate.as_ref(), &mut events) && !agent_gone() {
                 type_prompt_blind(&handle, trimmed);
             }
             return;
@@ -929,11 +964,18 @@ fn run_initial_writes(
             return;
         }
         std::thread::sleep(TUI_SETTLE);
+        if agent_gone() {
+            return;
+        }
         let _ = handle.write(trimmed.as_bytes());
         match watch_after_typing(&mut events, &needle, ECHO_DEADLINE) {
-            // The text is visibly in a composer — safe to submit.
+            // The text is visibly in a composer — safe to submit. (A shell
+            // echoes too: the agent may have died since the text went out.)
             TypeOutcome::Echoed => {
                 std::thread::sleep(ENTER_GAP);
+                if agent_gone() {
+                    return;
+                }
                 let _ = handle.write(b"\r");
                 return;
             }
@@ -954,8 +996,9 @@ fn run_initial_writes(
     }
     // Out of attempts — the echo check may be wrong (an exotic
     // composer that doesn't echo plainly). Take the blind path rather
-    // than dropping the prompt — unless the gate holds it.
-    if pass_gate(&handle, gate.as_ref(), &mut events) {
+    // than dropping the prompt — unless the gate holds it, or nothing but
+    // the shell is there to receive it.
+    if pass_gate(&handle, gate.as_ref(), &mut events) && !agent_gone() {
         type_prompt_blind(&handle, trimmed);
     }
 }
@@ -1006,6 +1049,10 @@ fn pass_gate(
 fn type_prompt_blind(handle: &PtyHandle, trimmed: &str) {
     let _ = handle.write(trimmed.as_bytes());
     std::thread::sleep(ENTER_GAP);
+    // The agent can die in the gap; its Enter must not reach the shell.
+    if handle.shell_owns_terminal() {
+        return;
+    }
     let _ = handle.write(b"\r");
 }
 
@@ -1689,7 +1736,9 @@ mod tests {
     fn coalescer_merges_many_small_reads_into_one_event() {
         // 40 reads that would have been 40 separate IPC messages + 40
         // synchronous emulator writes.
-        let reads: Vec<Vec<u8>> = (0..40).map(|i| format!("line {i}\r\n").into_bytes()).collect();
+        let reads: Vec<Vec<u8>> = (0..40)
+            .map(|i| format!("line {i}\r\n").into_bytes())
+            .collect();
         let expected: Vec<u8> = (0..40)
             .map(|i| format!("line {i}\r\n"))
             .collect::<String>()
@@ -1778,10 +1827,7 @@ mod tests {
             chunk: vec![0x1b, b'[', b'2', b'K', 0xff],
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"output","taskId":"t","chunk":"G1syS/8="}"#
-        );
+        assert_eq!(json, r#"{"type":"output","taskId":"t","chunk":"G1syS/8="}"#);
     }
 
     #[test]

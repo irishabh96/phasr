@@ -7,7 +7,6 @@ use crate::auth::{AuthError, SessionState};
 use crate::domain::{Repository, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::git::{self, GitError};
 use crate::orchestrator::TaskOrchestrator;
-use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError, WorkspaceRepo};
 use crate::sync::CloudSyncState;
 
@@ -93,8 +92,13 @@ pub async fn create_repository(
             .and_then(|p| crate::git::get_remote_url(std::path::Path::new(p)))
     });
 
-    if let Some(existing) =
-        resolve_existing_repository(&repo, &current_session.user_id, &input, resolved_remote_url.as_deref()).await?
+    if let Some(existing) = resolve_existing_repository(
+        &repo,
+        &current_session.user_id,
+        &input,
+        resolved_remote_url.as_deref(),
+    )
+    .await?
     {
         // Re-running this for a plain (a)-case hit is deliberate: after a
         // wiped DB the repo row may exist while its local workspace row
@@ -252,7 +256,6 @@ pub async fn delete_repository(
     repo: State<'_, RepositoryRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     orchestrator: State<'_, TaskOrchestrator>,
-    runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RepositoryCmdError> {
@@ -270,11 +273,11 @@ pub async fn delete_repository(
     //    we still have their ids + worktree paths.
     let owned_workspaces = workspaces.list_by_repository(&id).await?;
     for ws in &owned_workspaces {
-        // Silently ignore NotRunning. The task may already have exited.
-        let _ = orchestrator.stop_task(&ws.id).await;
-        if let Some(handle) = runtime.get(&ws.id) {
-            let _ = handle.kill();
-        }
+        // Row to `stopped` first (no false "agent failed"), then the PTY's
+        // whole session — the agent and any dev server started in it, not
+        // only the shell — and its signals state. A no-op for a task with
+        // no live PTY.
+        orchestrator.quiesce_task(&ws.id).await;
     }
 
     // 2. Remove worktree directories. `git::remove_worktree` runs

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 
@@ -10,42 +10,60 @@ use super::handle::{PtyError, PtyHandle, SpawnSpec};
 pub struct TaskRuntime {
     /// Where per-task log files are written. Defaults to `<data_dir>/logs/`.
     pub log_dir: PathBuf,
-    running: Mutex<HashMap<String, Arc<PtyHandle>>>,
+    slots: Mutex<Slots>,
+}
+
+#[derive(Default)]
+struct Slots {
+    running: HashMap<String, Arc<PtyHandle>>,
+    /// Keys whose PTY is being spawned right now. Claimed under the lock
+    /// BEFORE the (slow) spawn: checking `running`, unlocking to spawn and
+    /// inserting afterwards let two concurrent opens both spawn, and the
+    /// second insert orphaned the first PTY — unreachable by Stop or quit.
+    reserved: HashSet<String>,
+    /// PTYs taken out of the map by `retire` while still shutting down. A
+    /// reopen spawns fresh instead of attaching to them, but app quit must
+    /// still reach them.
+    retiring: Vec<Weak<PtyHandle>>,
 }
 
 impl TaskRuntime {
     pub fn new(log_dir: PathBuf) -> Self {
         Self {
             log_dir,
-            running: Mutex::new(HashMap::new()),
+            slots: Mutex::new(Slots::default()),
         }
     }
 
     pub fn spawn(&self, spec: SpawnSpec) -> Result<Arc<PtyHandle>, PtyError> {
+        let task_id = spec.task_id.clone();
         {
-            let running = self.running.lock();
-            if running.contains_key(&spec.task_id) {
+            let mut slots = self.slots.lock();
+            if slots.running.contains_key(&task_id) || !slots.reserved.insert(task_id.clone()) {
                 return Err(PtyError::AlreadyRunning);
             }
         }
 
-        let task_id = spec.task_id.clone();
         let log_path = self.log_dir.join(format!("{task_id}.log"));
-        let handle = PtyHandle::spawn(spec, log_path)?;
+        let spawned = PtyHandle::spawn(spec, log_path);
 
-        self.running.lock().insert(task_id, handle.clone());
+        let mut slots = self.slots.lock();
+        slots.reserved.remove(&task_id);
+        let handle = spawned?;
+        slots.running.insert(task_id, handle.clone());
         Ok(handle)
     }
 
     pub fn get(&self, task_id: &str) -> Option<Arc<PtyHandle>> {
-        self.running.lock().get(task_id).cloned()
+        self.slots.lock().running.get(task_id).cloned()
     }
 
     /// Snapshot of `(task_id, last-output wall-clock ms)` for every live
     /// PTY. Tasks with no live PTY are simply absent.
     pub fn activity(&self) -> Vec<(String, i64)> {
-        self.running
+        self.slots
             .lock()
+            .running
             .iter()
             .map(|(id, handle)| (id.clone(), handle.last_output_ms()))
             .collect()
@@ -54,14 +72,34 @@ impl TaskRuntime {
     /// Forget a task after it has exited. Doesn't kill — call `kill` on
     /// the handle first if needed.
     pub fn drop_task(&self, task_id: &str) {
-        self.running.lock().remove(task_id);
+        self.slots.lock().running.remove(task_id);
+    }
+
+    /// Take `task_id`'s PTY out of the map while it is still shutting down
+    /// (Stop's SIGINT grace), so a reopen during that window spawns a fresh
+    /// session instead of attaching to the dying one. Still covered by
+    /// `terminate_all_blocking` until it is gone.
+    pub fn retire(&self, task_id: &str) -> Option<Arc<PtyHandle>> {
+        let mut slots = self.slots.lock();
+        let handle = slots.running.remove(task_id)?;
+        slots.retiring.retain(|w| w.strong_count() > 0);
+        slots.retiring.push(Arc::downgrade(&handle));
+        Some(handle)
     }
 
     /// App quit: take down every PTY's whole session (agents, dev servers,
     /// background jobs), in parallel, bounded by about `2 × grace`. Without
     /// this, jobs started in phasr terminals outlived the app.
     pub fn terminate_all_blocking(&self, grace: std::time::Duration) {
-        let handles: Vec<Arc<PtyHandle>> = self.running.lock().values().cloned().collect();
+        let handles: Vec<Arc<PtyHandle>> = {
+            let slots = self.slots.lock();
+            slots
+                .running
+                .values()
+                .cloned()
+                .chain(slots.retiring.iter().filter_map(Weak::upgrade))
+                .collect()
+        };
         let threads: Vec<_> = handles
             .into_iter()
             .map(|h| std::thread::spawn(move || h.terminate_blocking(grace)))
@@ -139,12 +177,15 @@ mod tests {
         // then reads one line — the prompt, which the writer thread must
         // only type AFTER the escape — and echoes it back transformed.
         // The `got-` prefix is what proves the prompt was submitted with
-        // Enter, not just echoed by the terminal while being typed.
+        // Enter, not just echoed by the terminal while being typed. A child
+        // process, like a real agent: a shell builtin `read` would leave
+        // the shell itself in the foreground, which is exactly the "agent
+        // isn't running" state the writer refuses to type into.
         let handle = runtime
             .spawn(
                 SpawnSpec::new("p1", cwd)
                     .with_initial_command(Some(
-                        r#"printf '\033[?1049h'; read line; echo "got-$line"; exit"#.into(),
+                        r#"sh -c 'printf "\033[?1049h"; read line; echo "got-$line"'; exit"#.into(),
                     ))
                     .with_initial_prompt(Some("hello-prompt".into())),
             )
@@ -189,6 +230,189 @@ mod tests {
         runtime.spawn(SpawnSpec::new("dupe", cwd.clone())).unwrap();
         let result = runtime.spawn(SpawnSpec::new("dupe", cwd));
         assert!(matches!(result, Err(PtyError::AlreadyRunning)));
+    }
+
+    /// Collect output for `window`; the prompt must never have run as a
+    /// shell command (`$((6*7))` only becomes `42` if a shell evaluated it).
+    #[cfg(unix)]
+    fn assert_prompt_never_ran(handle: &PtyHandle, window: Duration) -> String {
+        let mut rx = handle.subscribe();
+        let mut combined = String::new();
+        let until = std::time::Instant::now() + window;
+        while std::time::Instant::now() < until {
+            match rx.try_recv() {
+                Ok(super::super::PtyEvent::Output { chunk, .. }) => {
+                    combined.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(
+            !combined.contains("PWNED-42"),
+            "prompt ran in the shell: {combined:?}"
+        );
+        combined
+    }
+
+    /// The agent drew its TUI and then died back to the shell: the typed
+    /// attempts must not put the prompt (and its Enter) into the shell.
+    #[cfg(unix)]
+    #[test]
+    fn initial_prompt_is_not_typed_into_the_shell_after_the_agent_dies() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("died", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_initial_command(Some(r#"sh -c 'printf "\033[?1049h"'"#.into()))
+                    .with_initial_prompt(Some("echo PWNED-$((6*7))".into())),
+            )
+            .unwrap();
+        let output = assert_prompt_never_ran(&handle, Duration::from_secs(5));
+        assert!(!output.contains("PWNED"), "not even typed: {output:?}");
+        handle.kill().unwrap();
+    }
+
+    /// No agent ever started (no TUI marker; the blind TimedOut fallback):
+    /// the shell has the terminal, so the prompt is left unsent.
+    #[cfg(unix)]
+    #[test]
+    fn initial_prompt_is_not_typed_blind_into_a_bare_shell() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("bare", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_initial_command(Some("no-such-agent-binary-phasr".into()))
+                    .with_initial_prompt(Some("echo PWNED-$((6*7))".into())),
+            )
+            .unwrap();
+        // Past the TUI wait (10 s), the blind write and its Enter gap.
+        let output = assert_prompt_never_ran(&handle, Duration::from_secs(12));
+        assert!(!output.contains("PWNED"), "not even typed: {output:?}");
+        handle.kill().unwrap();
+    }
+
+    /// A non-TUI agent still gets its prompt on the blind path while it is
+    /// running (the guard is "shell in the foreground", not "no TUI").
+    #[cfg(unix)]
+    #[test]
+    fn blind_prompt_still_reaches_a_running_non_tui_agent() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("plain", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_initial_command(Some(r#"sh -c 'read line; echo "got-$line"'"#.into()))
+                    .with_initial_prompt(Some("plain-prompt".into())),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+        let mut output = String::new();
+        // Typed on the blind path, after the 10 s TUI wait.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !output.contains("got-plain-prompt") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never submitted: {output:?}"
+            );
+            match rx.try_recv() {
+                Ok(super::super::PtyEvent::Output { chunk, .. }) => {
+                    output.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        handle.kill().unwrap();
+    }
+
+    /// The initial prompt is inert text: control bytes and escape
+    /// sequences in it are stripped before it is typed.
+    #[cfg(unix)]
+    #[test]
+    fn initial_prompt_is_sanitised_before_it_is_typed() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("sanitise", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_initial_command(Some(
+                        r#"sh -c 'printf "\033[?1049h"; read line; printf "got[%s]" "$line" | od -c | tr -d " \n"; echo'"#.into(),
+                    ))
+                    .with_initial_prompt(Some("ab\x03\x1b[201~cd\x15ef".into())),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+        let mut output = String::new();
+        // `od -c` prints control bytes as escapes (`003`, `033`, `025`);
+        // only the clean text may arrive.
+        drain_until(&mut rx, &mut output, "got[abcdef]");
+        handle.kill().unwrap();
+    }
+
+    /// Concurrent opens of one task: exactly one PTY is spawned and it is
+    /// the one the map holds — none is left running unreachable.
+    #[test]
+    fn concurrent_spawns_of_one_key_start_exactly_one_pty() {
+        let (runtime, _dir) = fresh_runtime();
+        let runtime = Arc::new(runtime);
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let runtime = runtime.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    runtime.spawn(
+                        SpawnSpec::new("race", std::env::temp_dir())
+                            .with_shell(Some("/bin/sh".into())),
+                    )
+                })
+            })
+            .collect();
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let won: Vec<&Arc<PtyHandle>> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+        assert_eq!(won.len(), 1, "exactly one spawn wins");
+        assert!(results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| matches!(e, PtyError::AlreadyRunning)));
+        let held = runtime.get("race").unwrap();
+        assert!(
+            Arc::ptr_eq(&held, won[0]),
+            "the map holds the PTY that was spawned"
+        );
+        held.kill().unwrap();
+    }
+
+    /// A retired PTY is gone from the map (a reopen spawns fresh) but app
+    /// quit still terminates it.
+    #[cfg(unix)]
+    #[test]
+    fn retired_pty_frees_its_key_but_is_still_terminated_on_quit() {
+        let (runtime, _dir) = fresh_runtime();
+        let old = runtime
+            .spawn(SpawnSpec::new("r", std::env::temp_dir()).with_shell(Some("/bin/sh".into())))
+            .unwrap();
+        let retired = runtime.retire("r").unwrap();
+        assert!(Arc::ptr_eq(&old, &retired));
+        assert!(runtime.get("r").is_none());
+        let fresh = runtime
+            .spawn(SpawnSpec::new("r", std::env::temp_dir()).with_shell(Some("/bin/sh".into())))
+            .unwrap();
+        assert!(!Arc::ptr_eq(&old, &fresh));
+
+        let mut rx = old.subscribe();
+        runtime.terminate_all_blocking(Duration::from_millis(200));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while old.exit_code().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retired PTY survived quit"
+            );
+            let _ = rx.try_recv();
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Real end-to-end against the actual Claude CLI: the production
@@ -468,11 +692,17 @@ mod tests {
     async fn send_message_refuses_when_the_shell_is_back_in_the_foreground() {
         let (runtime, _dir) = fresh_runtime();
         let handle = runtime
-            .spawn(SpawnSpec::new("bare-shell", std::env::temp_dir()).with_shell(Some("/bin/sh".into())))
+            .spawn(
+                SpawnSpec::new("bare-shell", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into())),
+            )
             .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while handle.shell_in_foreground() != Some(true) {
-            assert!(std::time::Instant::now() < deadline, "shell never took the foreground");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell never took the foreground"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let err = handle.send_message("echo `id`", true).await.unwrap_err();
@@ -496,7 +726,10 @@ mod tests {
         let mut combined = String::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            assert!(std::time::Instant::now() < deadline, "no exit; output: {combined:?}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no exit; output: {combined:?}"
+            );
             match rx.try_recv() {
                 Ok(super::super::PtyEvent::Output { chunk, .. }) => {
                     combined.push_str(&String::from_utf8_lossy(&chunk))
@@ -511,7 +744,10 @@ mod tests {
                 Err(e) => panic!("unexpected recv error: {e:?}"),
             }
         }
-        assert!(combined.contains("summary-tail"), "output before Exit: {combined:?}");
+        assert!(
+            combined.contains("summary-tail"),
+            "output before Exit: {combined:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -522,7 +758,11 @@ mod tests {
             && !std::process::Command::new("ps")
                 .args(["-o", "stat=", "-p", &pid.to_string()])
                 .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim_start()
+                        .starts_with('Z')
+                })
                 .unwrap_or(false)
     }
 
@@ -563,7 +803,11 @@ mod tests {
         handle.terminate_blocking(Duration::from_millis(400));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while jobs.iter().any(|p| alive(*p)) {
-            assert!(std::time::Instant::now() < deadline, "survivors: {:?}", jobs.iter().filter(|p| alive(**p)).collect::<Vec<_>>());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "survivors: {:?}",
+                jobs.iter().filter(|p| alive(**p)).collect::<Vec<_>>()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
