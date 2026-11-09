@@ -19,7 +19,7 @@ import {
   useRunChecks,
   useSendReviewComments,
 } from "@/lib/hooks/useReview";
-import { humanizeError } from "@/lib/humanizeError";
+import { humanizeError, isAwaitingAnswerError } from "@/lib/humanizeError";
 import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { useUiStore } from "@/lib/store";
 import { showToast } from "@/lib/toast";
@@ -119,9 +119,11 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
 
   const sendError = (err: unknown) =>
     showToast(
-      String(err).includes("agent not running")
-        ? { intent: "warning", title: `${agent} isn't running`, message: "Open the agent tab to resume it, then send again." }
-        : { intent: "error", title: "Couldn't send to the agent", message: humanizeError(err) },
+      isAwaitingAnswerError(err)
+        ? { intent: "info", title: `${agent} is waiting for your answer`, message: "Answer its request in the terminal, then send again." }
+        : String(err).includes("agent not running")
+          ? { intent: "warning", title: `${agent} isn't running`, message: "Open the agent tab to resume it, then send again." }
+          : { intent: "error", title: "Couldn't send to the agent", message: humanizeError(err) },
     );
 
   return (

@@ -373,7 +373,16 @@ function WorkspaceDetail() {
             onChangeDefault={() => openSettings("agents", { row: "permission-mode" })}
           />
         ) : null}
-        {showComposer ? <Composer taskId={workspaceId} agent={workspace.agent} /> : null}
+        {showComposer ? (
+          <Composer
+            taskId={workspaceId}
+            agent={workspace.agent}
+            // `status` stays "running" while the agent is paused on a
+            // permission dialog, where a sent message's Enter would pick
+            // "Yes". Answer the card instead.
+            awaitingAnswer={agentState?.state === "needs-you"}
+          />
+        ) : null}
       </div>
       {isAgent && pane === "changes" && changesView === "review" && !inspectorCollapsed ? (
         <ReviewInspector workspace={workspace} />
