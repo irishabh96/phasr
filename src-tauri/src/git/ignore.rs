@@ -65,8 +65,16 @@ mod tests {
     use super::*;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]
@@ -78,15 +86,30 @@ mod tests {
         std::fs::create_dir_all(p.join("out/deep")).unwrap();
         let ignored = check_ignored(
             p,
-            &["out/deep/a.js", "x.log", "keep.log", "src/a.rs", "out", "weird name\nwith newline.log"],
+            &[
+                "out/deep/a.js",
+                "x.log",
+                "keep.log",
+                "src/a.rs",
+                "out",
+                "weird name\nwith newline.log",
+            ],
         )
         .unwrap();
-        let expected: HashSet<String> = ["out/deep/a.js", "x.log", "out", "weird name\nwith newline.log"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let expected: HashSet<String> = [
+            "out/deep/a.js",
+            "x.log",
+            "out",
+            "weird name\nwith newline.log",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         assert_eq!(ignored, expected);
-        assert!(check_ignored(p, &["src/a.rs"]).unwrap().is_empty(), "exit 1 is not an error");
+        assert!(
+            check_ignored(p, &["src/a.rs"]).unwrap().is_empty(),
+            "exit 1 is not an error"
+        );
         assert!(check_ignored(p, &[]).unwrap().is_empty());
     }
 
@@ -97,7 +120,9 @@ mod tests {
         let p = dir.path();
         git(p, &["init", "-q"]);
         std::fs::write(p.join(".gitignore"), "gen/\n").unwrap();
-        let paths: Vec<String> = (0..20_000).map(|i| format!("gen/some/long/directory/name/file-{i}.js")).collect();
+        let paths: Vec<String> = (0..20_000)
+            .map(|i| format!("gen/some/long/directory/name/file-{i}.js"))
+            .collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         assert_eq!(check_ignored(p, &refs).unwrap().len(), 20_000);
     }

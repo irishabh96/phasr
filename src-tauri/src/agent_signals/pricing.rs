@@ -209,7 +209,10 @@ mod tests {
             cache_write_1h: 1_000_000,
             ..Default::default()
         };
-        assert_eq!(cost_micros("claude-sonnet-5", &t), Some(200_000 + 2_500_000 + 4_000_000));
+        assert_eq!(
+            cost_micros("claude-sonnet-5", &t),
+            Some(200_000 + 2_500_000 + 4_000_000)
+        );
     }
 
     /// Every rate of the rows added from the 2026-11-10 price page.
@@ -227,16 +230,86 @@ mod tests {
         let hit = one_mtok(|t| t.cache_read = 1_000_000);
         // (model, input, output, 5m write, 1h write, cache hit) in µ$/MTok.
         let rows = [
-            ("claude-opus-5-5", 4_000_000, 20_000_000, 5_000_000, 8_000_000, 200_000),
-            ("claude-sonnet-5-5", 2_000_000, 10_000_000, 2_500_000, 4_000_000, 100_000),
-            ("claude-haiku-5-5", 100_000, 500_000, 125_000, 200_000, 10_000),
-            ("claude-fable-5-2", 8_000_000, 40_000_000, 10_000_000, 16_000_000, 200_000),
-            ("claude-fable-5-1", 10_000_000, 50_000_000, 12_500_000, 20_000_000, 250_000),
-            ("claude-fable-5", 10_000_000, 50_000_000, 12_500_000, 20_000_000, 1_000_000),
-            ("claude-opus-4-8", 5_000_000, 25_000_000, 6_250_000, 10_000_000, 500_000),
-            ("claude-opus-4-7", 5_000_000, 25_000_000, 6_250_000, 10_000_000, 500_000),
-            ("claude-opus-4-6", 5_000_000, 25_000_000, 6_250_000, 10_000_000, 500_000),
-            ("claude-sonnet-4-6", 3_000_000, 15_000_000, 3_750_000, 6_000_000, 300_000),
+            (
+                "claude-opus-5-5",
+                4_000_000,
+                20_000_000,
+                5_000_000,
+                8_000_000,
+                200_000,
+            ),
+            (
+                "claude-sonnet-5-5",
+                2_000_000,
+                10_000_000,
+                2_500_000,
+                4_000_000,
+                100_000,
+            ),
+            (
+                "claude-haiku-5-5",
+                100_000,
+                500_000,
+                125_000,
+                200_000,
+                10_000,
+            ),
+            (
+                "claude-fable-5-2",
+                8_000_000,
+                40_000_000,
+                10_000_000,
+                16_000_000,
+                200_000,
+            ),
+            (
+                "claude-fable-5-1",
+                10_000_000,
+                50_000_000,
+                12_500_000,
+                20_000_000,
+                250_000,
+            ),
+            (
+                "claude-fable-5",
+                10_000_000,
+                50_000_000,
+                12_500_000,
+                20_000_000,
+                1_000_000,
+            ),
+            (
+                "claude-opus-4-8",
+                5_000_000,
+                25_000_000,
+                6_250_000,
+                10_000_000,
+                500_000,
+            ),
+            (
+                "claude-opus-4-7",
+                5_000_000,
+                25_000_000,
+                6_250_000,
+                10_000_000,
+                500_000,
+            ),
+            (
+                "claude-opus-4-6",
+                5_000_000,
+                25_000_000,
+                6_250_000,
+                10_000_000,
+                500_000,
+            ),
+            (
+                "claude-sonnet-4-6",
+                3_000_000,
+                15_000_000,
+                3_750_000,
+                6_000_000,
+                300_000,
+            ),
         ];
         for (model, i, o, c5, c1, h) in rows {
             assert_eq!(cost_micros(model, &input), Some(i), "{model} input");
@@ -259,13 +332,21 @@ mod tests {
         assert_eq!(sum.total(), (Some(2_000_000), false));
         sum.add(Some("claude-opus-9"), &t);
         sum.add(None, &t);
-        assert_eq!(sum.total(), (Some(2_000_000), true), "priced part kept, flagged partial");
+        assert_eq!(
+            sum.total(),
+            (Some(2_000_000), true),
+            "priced part kept, flagged partial"
+        );
         sum.add_micros(500);
         assert_eq!(sum.total(), (Some(2_000_500), true));
 
         let mut all_unpriced = CostSum::default();
         all_unpriced.add(Some("claude-opus-9"), &t);
-        assert_eq!(all_unpriced.total(), (None, false), "nothing priced: no figure");
+        assert_eq!(
+            all_unpriced.total(),
+            (None, false),
+            "nothing priced: no figure"
+        );
         // An empty part on an unknown model doesn't make anything partial.
         let mut empty = CostSum::default();
         empty.add(Some("claude-opus-9"), &TokenCounts::default());

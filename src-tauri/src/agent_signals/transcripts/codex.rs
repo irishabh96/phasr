@@ -285,7 +285,9 @@ impl CodexReader {
                     .map(|blocks| {
                         blocks
                             .iter()
-                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("output_text"))
+                            .filter(|b| {
+                                b.get("type").and_then(Value::as_str) == Some("output_text")
+                            })
                             .filter_map(|b| b.get("text").and_then(Value::as_str))
                             .collect()
                     })
@@ -328,9 +330,11 @@ impl CodexReader {
             let Some((tokens, sum)) = &file.last_total else {
                 continue;
             };
-            let entry = best
-                .entry(file.session_id.as_str())
-                .or_insert((tokens, *sum, file.model.as_deref()));
+            let entry = best.entry(file.session_id.as_str()).or_insert((
+                tokens,
+                *sum,
+                file.model.as_deref(),
+            ));
             if *sum > entry.1 {
                 *entry = (tokens, *sum, file.model.as_deref());
             }
@@ -458,7 +462,10 @@ mod tests {
             json!({"timestamp":"2026-11-09T10:00:02Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Patched lib.rs."}}).to_string(),
         ];
         std::fs::write(day.join("rollout-a.jsonl"), mine.join("\n") + "\n").unwrap();
-        let other = [meta("s2", "/elsewhere"), token_count(9_999_999, 0, 9_999_999)];
+        let other = [
+            meta("s2", "/elsewhere"),
+            token_count(9_999_999, 0, 9_999_999),
+        ];
         std::fs::write(day.join("rollout-b.jsonl"), other.join("\n") + "\n").unwrap();
 
         let mut reader = CodexReader::new(target("/w/task"), root);
@@ -512,7 +519,11 @@ mod tests {
         let mut reader = CodexReader::new(target("/w/x"), root);
         reader.refresh();
         assert!(reader.usage(Utc::now()).is_none());
-        std::fs::write(&path, meta("s", "/w/x") + "\n" + &token_count(10, 0, 1) + "\n").unwrap();
+        std::fs::write(
+            &path,
+            meta("s", "/w/x") + "\n" + &token_count(10, 0, 1) + "\n",
+        )
+        .unwrap();
         reader.refresh();
         assert_eq!(reader.usage(Utc::now()).unwrap().output_tokens, 1);
     }
@@ -530,7 +541,13 @@ mod tests {
         .unwrap();
         std::fs::write(
             day.join("rollout-2.jsonl"),
-            [meta("b", "/w/p"), model("gpt-6-astra"), token_count(1000, 0, 0)].join("\n") + "\n",
+            [
+                meta("b", "/w/p"),
+                model("gpt-6-astra"),
+                token_count(1000, 0, 0),
+            ]
+            .join("\n")
+                + "\n",
         )
         .unwrap();
         let mut reader = CodexReader::new(target("/w/p"), root);
@@ -570,16 +587,25 @@ mod tests {
         reader.discover();
         assert!(reader.files.contains_key(&old.join("rollout-old.jsonl")));
         assert!(!reader.files.contains_key(&late));
-        assert_eq!(reader.closed_through, Some(Local::now().date_naive() - Duration::days(2)));
+        assert_eq!(
+            reader.closed_through,
+            Some(Local::now().date_naive() - Duration::days(2))
+        );
 
         // A file that appears in a closed day isn't listed again…
-        std::fs::write(old.join("rollout-stray.jsonl"), meta("stray", "/w/d") + "\n").unwrap();
+        std::fs::write(
+            old.join("rollout-stray.jsonl"),
+            meta("stray", "/w/d") + "\n",
+        )
+        .unwrap();
         // …while today's dir and the late header are.
         let today = day_dir(&root);
         std::fs::write(today.join("rollout-new.jsonl"), meta("new", "/w/d") + "\n").unwrap();
         std::fs::write(&late, meta("late", "/w/d") + "\n").unwrap();
         reader.discover();
-        assert!(!reader.classified.contains_key(&old.join("rollout-stray.jsonl")));
+        assert!(!reader
+            .classified
+            .contains_key(&old.join("rollout-stray.jsonl")));
         assert!(reader.files.contains_key(&today.join("rollout-new.jsonl")));
         assert!(reader.files.contains_key(&late));
         assert!(reader.pending_headers.is_empty());
@@ -589,7 +615,9 @@ mod tests {
     #[test]
     fn patch_paths_parse() {
         assert_eq!(
-            patch_paths("*** Begin Patch\n*** Add File: a.txt\n+x\n*** Delete File: b.txt\n*** End Patch"),
+            patch_paths(
+                "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Delete File: b.txt\n*** End Patch"
+            ),
             vec!["a.txt".to_string(), "b.txt".to_string()]
         );
     }

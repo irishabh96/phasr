@@ -73,7 +73,9 @@ pub struct TranscriptRoots {
 
 impl TranscriptRoots {
     pub fn from_env() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
         let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".claude"));
@@ -310,7 +312,9 @@ mod tests {
         let mut cursor = LineCursor::default();
         let read = |cursor: &mut LineCursor| {
             let mut lines = Vec::new();
-            let NewLines::Read(n) = read_new_lines(&path, cursor, |l| lines.push(l.to_string())).unwrap() else {
+            let NewLines::Read(n) =
+                read_new_lines(&path, cursor, |l| lines.push(l.to_string())).unwrap()
+            else {
                 panic!()
             };
             assert_eq!(n, lines.len());

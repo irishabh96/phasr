@@ -195,7 +195,10 @@ pub struct WorktreeKey {
 /// `git rev-parse HEAD`.
 pub fn worktree_key(worktree: &Path) -> Result<WorktreeKey, GitError> {
     let dirs = git_dirs(worktree);
-    let head = match dirs.as_ref().and_then(|(gitdir, common)| read_head(gitdir, common)) {
+    let head = match dirs
+        .as_ref()
+        .and_then(|(gitdir, common)| read_head(gitdir, common))
+    {
         Some(head) => head,
         None => head_sha(worktree)?,
     };
@@ -215,7 +218,9 @@ const GIT_META_READ_CAP: u64 = 8 * 1024 * 1024;
 fn read_git_meta(path: &Path) -> Option<String> {
     let file = open_regular_untracked(path)?;
     let mut text = String::new();
-    file.take(GIT_META_READ_CAP).read_to_string(&mut text).ok()?;
+    file.take(GIT_META_READ_CAP)
+        .read_to_string(&mut text)
+        .ok()?;
     Some(text)
 }
 
@@ -248,7 +253,9 @@ fn read_head(gitdir: &Path, common: &Path) -> Option<String> {
     };
     // Branch names only: nothing that could walk out of the git dir.
     let safe = name.starts_with("refs/heads/")
-        && !name.split('/').any(|part| part.is_empty() || part == "." || part == "..");
+        && !name
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..");
     if !safe {
         return None;
     }
@@ -322,7 +329,12 @@ impl DiffStatCache {
         self.slots.lock().retain(|id, _| keep.contains(id.as_str()));
     }
 
-    fn fresh(&self, task_id: &str, key: &WorktreeKey, max_age: Duration) -> Option<Option<DiffStats>> {
+    fn fresh(
+        &self,
+        task_id: &str,
+        key: &WorktreeKey,
+        max_age: Duration,
+    ) -> Option<Option<DiffStats>> {
         let slots = self.slots.lock();
         let slot = slots.get(task_id)?;
         let c = slot.cached.as_ref()?;
@@ -547,7 +559,13 @@ mod tests {
             cache.invalidate("t");
             Some(DiffStats::default())
         });
-        let again = cache.get_or_compute("t", dir.path(), LONG, || Some(DiffStats { adds: 1, removes: 0, files: 1 }));
+        let again = cache.get_or_compute("t", dir.path(), LONG, || {
+            Some(DiffStats {
+                adds: 1,
+                removes: 0,
+                files: 1,
+            })
+        });
         assert_eq!(again.unwrap().files, 1);
     }
 
@@ -559,7 +577,8 @@ mod tests {
         let computed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let threads: Vec<_> = (0..6)
             .map(|_| {
-                let (cache, computed, path) = (cache.clone(), computed.clone(), dir.path().to_path_buf());
+                let (cache, computed, path) =
+                    (cache.clone(), computed.clone(), dir.path().to_path_buf());
                 std::thread::spawn(move || {
                     cache.get_or_compute("t", &path, LONG, || {
                         computed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -583,14 +602,23 @@ mod tests {
         let p = dir.path();
         let agrees = |wt: &Path| {
             let (gitdir, common) = git_dirs(wt).expect("git dirs");
-            assert_eq!(read_head(&gitdir, &common), Some(head_sha(wt).unwrap()), "{}", wt.display());
+            assert_eq!(
+                read_head(&gitdir, &common),
+                Some(head_sha(wt).unwrap()),
+                "{}",
+                wt.display()
+            );
             assert_eq!(worktree_key(wt).unwrap().head, head_sha(wt).unwrap());
         };
         agrees(p);
         let linked = p.join("linked");
-        git(p, &["worktree", "add", "-q", "-b", "side", linked.to_str().unwrap(), "main"]);
+        let path = linked.to_str().unwrap();
+        git(p, &["worktree", "add", "-q", "-b", "side", path, "main"]);
         agrees(&linked);
-        assert!(worktree_key(&linked).unwrap().index.is_some(), "a linked worktree's own index");
+        assert!(
+            worktree_key(&linked).unwrap().index.is_some(),
+            "a linked worktree's own index"
+        );
         git(p, &["pack-refs", "--all"]);
         assert!(!p.join(".git/refs/heads/side").exists());
         agrees(&linked);

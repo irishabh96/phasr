@@ -149,7 +149,11 @@ impl TaskBoard {
     ) -> Result<Vec<TaskCard>, StoreError> {
         let workspaces = &self.inner.workspaces;
         let tasks = match (all_finished, user_id) {
-            (true, Some(user_id)) => workspaces.list_tasks_for_user(user_id, repository_id).await?,
+            (true, Some(user_id)) => {
+                workspaces
+                    .list_tasks_for_user(user_id, repository_id)
+                    .await?
+            }
             (true, None) => workspaces.list_tasks(repository_id).await?,
             (false, user_id) => {
                 let since = Utc::now() - chrono::Duration::days(FINISHED_DAYS);
@@ -174,23 +178,37 @@ impl TaskBoard {
             .inner
             .signals
             .as_ref()
-            .map(|s| s.states().into_iter().map(|st| (st.task_id.clone(), st)).collect())
+            .map(|s| {
+                s.states()
+                    .into_iter()
+                    .map(|st| (st.task_id.clone(), st))
+                    .collect()
+            })
             .unwrap_or_default();
         let diffs = self.diffs_for(&tasks).await;
-        let names: HashMap<&str, &str> = tasks.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect();
+        let names: HashMap<&str, &str> = tasks
+            .iter()
+            .map(|t| (t.id.as_str(), t.name.as_str()))
+            .collect();
         let usage_ids: Vec<&str> = tasks
             .iter()
             .filter(|t| t.agent.is_some_and(|a| a.usage_supported()) && t.branch.is_some())
             .map(|t| t.id.as_str())
             .collect();
         // One query for the whole board; a failed read just hides usage.
-        let mut usage = self.inner.usage.get_many(&usage_ids).await.unwrap_or_default();
+        let mut usage = self
+            .inner
+            .usage
+            .get_many(&usage_ids)
+            .await
+            .unwrap_or_default();
 
         let mut cards = Vec::with_capacity(tasks.len());
         for task in &tasks {
             let state = states.get(&task.id).cloned();
             let diff = diffs.get(&task.id).copied();
-            let Some(lane) = derive_lane(task, state.as_ref().map(|s| s.state.into()), diff.as_ref())
+            let Some(lane) =
+                derive_lane(task, state.as_ref().map(|s| s.state.into()), diff.as_ref())
             else {
                 continue;
             };
@@ -223,7 +241,10 @@ impl TaskBoard {
                 .find(|st| st.task_id == task.id)
                 .map(|st| st.state.into())
         });
-        let diff = self.diffs_for(std::slice::from_ref(task)).await.remove(&task.id);
+        let diff = self
+            .diffs_for(std::slice::from_ref(task))
+            .await
+            .remove(&task.id);
         derive_lane(task, phase, diff.as_ref())
     }
 
@@ -254,7 +275,8 @@ impl TaskBoard {
                 None => match bases.get(&task.repository_id) {
                     Some(base) => base.clone(),
                     None => {
-                        let Ok(repo) = self.inner.repositories.get(&task.repository_id).await else {
+                        let Ok(repo) = self.inner.repositories.get(&task.repository_id).await
+                        else {
                             continue;
                         };
                         bases.insert(task.repository_id.clone(), repo.default_branch.clone());
@@ -280,13 +302,22 @@ impl TaskBoard {
                     if !path.exists() {
                         return None;
                     }
-                    let stats = board.inner.diffs.get_or_compute(&task_id, &path, max_age, || {
-                        // A base that only exists on the remote (never
-                        // checked out locally) still has a merge-base there.
-                        crate::git::diff_stats_vs_base(&path, &base)
-                            .or_else(|_| crate::git::diff_stats_vs_base(&path, &format!("origin/{base}")))
-                            .ok()
-                    })?;
+                    let stats =
+                        board
+                            .inner
+                            .diffs
+                            .get_or_compute(&task_id, &path, max_age, || {
+                                // A base that only exists on the remote (never
+                                // checked out locally) still has a merge-base there.
+                                crate::git::diff_stats_vs_base(&path, &base)
+                                    .or_else(|_| {
+                                        crate::git::diff_stats_vs_base(
+                                            &path,
+                                            &format!("origin/{base}"),
+                                        )
+                                    })
+                                    .ok()
+                            })?;
                     Some((task_id, stats))
                 })
                 .await
@@ -322,7 +353,12 @@ impl TaskBoard {
             }
         }
         let tasks = match user_id {
-            Some(user_id) => self.inner.workspaces.list_tasks_for_user(user_id, None).await?,
+            Some(user_id) => {
+                self.inner
+                    .workspaces
+                    .list_tasks_for_user(user_id, None)
+                    .await?
+            }
             None => self.inner.workspaces.list_tasks(None).await?,
         };
         let worktrees = tasks
@@ -385,8 +421,14 @@ impl TaskBoard {
             })
             .collect();
         events.sort_by(|a, b| {
-            let (BoardEvent::CardsChanged { repository_id: a, .. }, BoardEvent::CardsChanged { repository_id: b, .. }) =
-                (a, b);
+            let (
+                BoardEvent::CardsChanged {
+                    repository_id: a, ..
+                },
+                BoardEvent::CardsChanged {
+                    repository_id: b, ..
+                },
+            ) = (a, b);
             a.cmp(b)
         });
         events
@@ -434,7 +476,10 @@ impl TaskBoard {
                     self.notify_task_changed(&state.repository_id, &state.task_id);
                 }
             }
-            AgentSignalEvent::ToolFinished { task_id, repository_id } => {
+            AgentSignalEvent::ToolFinished {
+                task_id,
+                repository_id,
+            } => {
                 self.inner.diffs.invalidate(task_id);
                 self.notify_task_changed(repository_id, task_id);
             }
@@ -490,8 +535,15 @@ impl TaskBoard {
 /// When a finished card stopped working. Outcome first (merged/closed),
 /// then the row's own finish, then the agent's last turn end (a running
 /// agent idle at its prompt "finished" its work then), then archiving.
-fn finished_at(task: &Workspace, lane: Lane, state: Option<&TaskAgentState>) -> Option<DateTime<Utc>> {
-    if !matches!(lane, Lane::NeedsReview | Lane::Done | Lane::Failed | Lane::Archived) {
+fn finished_at(
+    task: &Workspace,
+    lane: Lane,
+    state: Option<&TaskAgentState>,
+) -> Option<DateTime<Utc>> {
+    if !matches!(
+        lane,
+        Lane::NeedsReview | Lane::Done | Lane::Failed | Lane::Archived
+    ) {
         return None;
     }
     let row_finished = (task.status != WorkspaceStatus::Running)
@@ -513,8 +565,16 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     struct Fixture {
@@ -562,7 +622,12 @@ mod tests {
         p
     }
 
-    async fn task(f: &Fixture, name: &str, status: WorkspaceStatus, worktree: Option<&Path>) -> Workspace {
+    async fn task(
+        f: &Fixture,
+        name: &str,
+        status: WorkspaceStatus,
+        worktree: Option<&Path>,
+    ) -> Workspace {
         let mut w = Workspace::new(f.repo.id.clone(), name.into(), "claude".into());
         w.agent = Some(crate::domain::Agent::Claude);
         w.status = status;
@@ -606,7 +671,14 @@ mod tests {
         assert_eq!(cards.len(), 5, "local workspaces are not cards");
         let r = by_name("review me");
         assert_eq!(r.lane, Lane::NeedsReview);
-        assert_eq!(r.diff, Some(DiffStats { adds: 4, removes: 0, files: 2 }));
+        assert_eq!(
+            r.diff,
+            Some(DiffStats {
+                adds: 4,
+                removes: 0,
+                files: 2
+            })
+        );
         assert_eq!(by_name("nothing").lane, Lane::Done);
         assert_eq!(by_name("nothing").diff, Some(DiffStats::default()));
         let m = by_name("merged");
@@ -623,7 +695,15 @@ mod tests {
 
         // Wire shape the frontend reads.
         let json = serde_json::to_value(r).unwrap();
-        for key in ["workspace", "lane", "diff", "agentState", "usage", "finishedAt", "dependsOnName"] {
+        for key in [
+            "workspace",
+            "lane",
+            "diff",
+            "agentState",
+            "usage",
+            "finishedAt",
+            "dependsOnName",
+        ] {
             assert!(json.get(key).is_some(), "{key} missing: {json}");
         }
         assert_eq!(json["lane"], "needs-review");
@@ -644,7 +724,10 @@ mod tests {
         // …until the file signal lands.
         f.board.invalidate_diff(&t.id);
         assert_eq!(cards(&f).await[0].diff.unwrap().files, 2);
-        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             event,
             BoardEvent::CardsChanged {
@@ -714,8 +797,20 @@ mod tests {
     #[tokio::test]
     async fn usage_comes_from_one_batched_read() {
         let f = fixture().await;
-        let a = task(&f, "a", WorkspaceStatus::Stopped, Some(Path::new("/nowhere/a"))).await;
-        let b = task(&f, "b", WorkspaceStatus::Stopped, Some(Path::new("/nowhere/b"))).await;
+        let a = task(
+            &f,
+            "a",
+            WorkspaceStatus::Stopped,
+            Some(Path::new("/nowhere/a")),
+        )
+        .await;
+        let b = task(
+            &f,
+            "b",
+            WorkspaceStatus::Stopped,
+            Some(Path::new("/nowhere/b")),
+        )
+        .await;
         // A draft (no branch) never shows usage, even with a stray row.
         let draft = task(&f, "draft", WorkspaceStatus::Pending, None).await;
         let usage = |n: i64| TaskUsage {
@@ -792,13 +887,26 @@ mod tests {
             last_activity: Some(activity.into()),
             last_turn_ended_at: None,
         };
-        f.board.on_agent_signal(&AgentSignalEvent::State(state(AgentStateKind::Working, "Reading a")));
-        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.is_ok());
+        f.board.on_agent_signal(&AgentSignalEvent::State(state(
+            AgentStateKind::Working,
+            "Reading a",
+        )));
+        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .is_ok());
         // Same state, new activity line: no card can move.
-        f.board.on_agent_signal(&AgentSignalEvent::State(state(AgentStateKind::Working, "Reading b")));
-        assert!(tokio::time::timeout(Duration::from_millis(700), rx.recv()).await.is_err());
-        f.board.on_agent_signal(&AgentSignalEvent::State(state(AgentStateKind::Idle, "")));
-        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.is_ok());
+        f.board.on_agent_signal(&AgentSignalEvent::State(state(
+            AgentStateKind::Working,
+            "Reading b",
+        )));
+        assert!(tokio::time::timeout(Duration::from_millis(700), rx.recv())
+            .await
+            .is_err());
+        f.board
+            .on_agent_signal(&AgentSignalEvent::State(state(AgentStateKind::Idle, "")));
+        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .is_ok());
     }
 
     /// A burst of causes is one event per repository, naming its tasks; a
@@ -841,7 +949,10 @@ mod tests {
             task_id: "t".into(),
             repository_id: "r1".into(),
         });
-        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             event,
             BoardEvent::CardsChanged {
@@ -849,6 +960,8 @@ mod tests {
                 task_ids: Some(vec!["t".into()]),
             }
         );
-        assert!(tokio::time::timeout(Duration::from_millis(700), rx.recv()).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(700), rx.recv())
+            .await
+            .is_err());
     }
 }

@@ -49,7 +49,8 @@ fn is_ignored(rel: &Path) -> bool {
     rel.components().enumerate().any(|(i, c)| match c {
         Component::Normal(os) => {
             let name = os.to_string_lossy();
-            IGNORED_DIRS.contains(&name.as_ref()) || (i == 0 && IGNORED_ROOT_DIRS.contains(&name.as_ref()))
+            IGNORED_DIRS.contains(&name.as_ref())
+                || (i == 0 && IGNORED_ROOT_DIRS.contains(&name.as_ref()))
         }
         _ => false,
     })
@@ -85,7 +86,10 @@ impl IgnoreFilter {
     /// repository, git missing), everything is kept: a spurious refresh is
     /// cheaper than a missed one.
     fn retain_relevant(&mut self, changed: BTreeSet<String>) -> BTreeSet<String> {
-        if changed.iter().any(|p| p == ".gitignore" || p.ends_with("/.gitignore")) {
+        if changed
+            .iter()
+            .any(|p| p == ".gitignore" || p.ends_with("/.gitignore"))
+        {
             self.memo.clear();
         }
         let unknown: Vec<&str> = changed
@@ -253,7 +257,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git").args(args).current_dir(p).status().unwrap().success())
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .status()
+                .unwrap()
+                .success())
         };
         git(&["init", "-q"]);
         std::fs::write(p.join(".gitignore"), ".svelte-kit/\n*.log\n").unwrap();
@@ -268,7 +277,8 @@ mod tests {
 
         // A .gitignore edit forgets every answer.
         std::fs::write(p.join(".gitignore"), "*.log\n").unwrap();
-        let out = filter.retain_relevant(set(&[".gitignore", ".svelte-kit/output/a.js", "debug.log"]));
+        let out =
+            filter.retain_relevant(set(&[".gitignore", ".svelte-kit/output/a.js", "debug.log"]));
         assert_eq!(out, set(&[".gitignore", ".svelte-kit/output/a.js"]));
         assert_eq!(filter.checks, 2);
     }

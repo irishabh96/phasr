@@ -143,7 +143,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let repo = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert(&repo).await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert(&repo)
+            .await
+            .unwrap();
         let ws = Workspace::new(repo.id.clone(), "w".into(), "claude".into());
         WorkspaceRepo::new(pool.clone()).insert(&ws).await.unwrap();
 
@@ -182,7 +185,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let repo = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert(&repo).await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert(&repo)
+            .await
+            .unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let usage_repo = TaskUsageRepo::new(pool.clone());
         let mut ids = Vec::new();
@@ -216,7 +222,10 @@ mod tests {
         assert_eq!(got[&ids[2]].cost_usd_micros, Some(20));
         assert!(got[&ids[2]].cost_partial);
         // Same rows `get` reads.
-        assert_eq!(got[&ids[1]], usage_repo.get(&ids[1]).await.unwrap().unwrap());
+        assert_eq!(
+            got[&ids[1]],
+            usage_repo.get(&ids[1]).await.unwrap().unwrap()
+        );
     }
 
     #[tokio::test]
@@ -224,7 +233,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let repo = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert(&repo).await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert(&repo)
+            .await
+            .unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let ws = Workspace::new(repo.id.clone(), "w".into(), "claude".into());
         workspaces.insert(&ws).await.unwrap();
@@ -234,9 +246,16 @@ mod tests {
             .unwrap();
         let before = workspaces.get(&ws.id).await.unwrap().updated_at;
 
-        workspaces.set_agent_session_id(&ws.id, "sess-1").await.unwrap();
+        workspaces
+            .set_agent_session_id(&ws.id, "sess-1")
+            .await
+            .unwrap();
         assert_eq!(
-            workspaces.get_agent_session_id(&ws.id).await.unwrap().as_deref(),
+            workspaces
+                .get_agent_session_id(&ws.id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("sess-1")
         );
         let (dirty,): (i64,) = sqlx::query_as("SELECT dirty FROM workspaces WHERE id = ?")
