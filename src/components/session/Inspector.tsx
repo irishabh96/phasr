@@ -1,13 +1,13 @@
 import { ChevronsLeft, ChevronsRight, Play, Plus, Square } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { SyncButton } from "@/components/SyncButton";
+import { SlidePanel } from "@/components/shell/SlidePanel";
 import { AgentMark } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { DiffCount } from "@/components/ui/Chip";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { GroupHeader } from "@/components/ui/GroupHeader";
 import { Kbd } from "@/components/ui/Kbd";
-import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { formatElapsed } from "@/lib/board";
 import { useGitBranchStatus, useGitStatus } from "@/lib/hooks/useGit";
 import { useNotes } from "@/lib/hooks/useNotes";
@@ -80,62 +80,51 @@ export function Inspector({
   const toggle = useUiStore((s) => s.toggleRightPanel);
   const width = useUiStore((s) => s.rightPanelWidth);
   const setWidth = useUiStore((s) => s.setRightPanelWidth);
-  const [resizing, setResizing] = useState(false);
   const hasWorktree = !!workspace.worktreePath;
   const { data: changes } = useGitStatus(hasWorktree ? workspace.id : null);
   const adds = changes?.reduce((n, f) => n + (f.adds ?? 0), 0) ?? 0;
   const removes = changes?.reduce((n, f) => n + (f.removes ?? 0), 0) ?? 0;
 
-  if (collapsed) {
-    return (
-      <aside
-        aria-label="Inspector"
-        className="flex w-(--layout-rail-right) shrink-0 flex-col items-center gap-3 border-l border-(--color-border-subtle) bg-(--color-bg-sidebar) py-3"
-      >
-        <GlassTooltip content={`Show inspector (${SHORTCUTS.toggleRightPanel.display.join("")})`} side="left">
+  // Collapse mechanics (spec P1): the panel slides inside a clipped box and
+  // the rail cross-fades in; see SlidePanel.
+  const rail = (
+    <div className="flex flex-1 flex-col items-center gap-3 py-3">
+      <GlassTooltip content={`Show inspector (${SHORTCUTS.toggleRightPanel.display.join("")})`} side="left">
+        <button
+          type="button"
+          aria-label="Show inspector"
+          onClick={toggle}
+          className="grid size-[28px] place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+        >
+          <ChevronsLeft className="size-3.5" aria-hidden />
+        </button>
+      </GlassTooltip>
+      {changes && changes.length > 0 ? (
+        <GlassTooltip content="Review changes" side="left">
           <button
             type="button"
-            aria-label="Show inspector"
-            onClick={toggle}
-            className="grid size-6 place-items-center rounded-(--radius-chip) border border-(--color-border-default) text-(--color-text-muted) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+            onClick={onReview}
+            aria-label={`${changes.length} changed files — review`}
+            className="flex flex-col items-center gap-0.5 font-mono text-[10px] text-(--color-text-muted) [writing-mode:vertical-rl]"
           >
-            <ChevronsLeft className="size-3.5" aria-hidden />
+            <DiffCount adds={adds} removes={removes} className="text-[10px]" />
           </button>
         </GlassTooltip>
-        {changes && changes.length > 0 ? (
-          <GlassTooltip content="Review changes" side="left">
-            <button
-              type="button"
-              onClick={onReview}
-              aria-label={`${changes.length} changed files — review`}
-              className="flex flex-col items-center gap-0.5 font-mono text-[10px] text-(--color-text-muted) [writing-mode:vertical-rl]"
-            >
-              <DiffCount adds={adds} removes={removes} className="text-[10px]" />
-            </button>
-          </GlassTooltip>
-        ) : null}
-      </aside>
-    );
-  }
+      ) : null}
+    </div>
+  );
 
   return (
-    <aside
-      aria-label="Inspector"
-      style={{ width }}
-      className={cn(
-        "relative flex shrink-0 flex-col overflow-y-auto border-l border-(--color-border-subtle) bg-(--color-bg-sidebar)",
-        !resizing && "transition-[width] duration-200 [transition-timing-function:var(--ease-glass)]",
-      )}
+    <SlidePanel
+      side="right"
+      label="Inspector"
+      open={!collapsed}
+      width={width}
+      railWidth="var(--layout-rail-right)"
+      rail={rail}
+      panelClassName="flex flex-col overflow-y-auto"
+      resize={{ min: RIGHT_PANEL_WIDTH_MIN, max: RIGHT_PANEL_WIDTH_MAX, onResize: setWidth }}
     >
-      <ResizeHandle
-        edge="left"
-        width={width}
-        min={RIGHT_PANEL_WIDTH_MIN}
-        max={RIGHT_PANEL_WIDTH_MAX}
-        onResize={setWidth}
-        onResizeStart={() => setResizing(true)}
-        onResizeEnd={() => setResizing(false)}
-      />
       <NeedsYouBanner workspace={workspace} />
       <TaskSection workspace={workspace} onCollapse={toggle} />
       {hasWorktree ? (
@@ -180,7 +169,7 @@ export function Inspector({
       ) : null}
       <RunCommandsSection repositoryId={workspace.repositoryId} taskId={workspace.id} target={runTarget(workspace)} />
       <NotesSection repositoryId={workspace.repositoryId} onOpenNotes={onOpenNotes} />
-    </aside>
+    </SlidePanel>
   );
 }
 

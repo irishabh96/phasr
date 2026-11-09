@@ -171,16 +171,19 @@ const MIN_ROWS = 1;
 /**
  * How long the container must hold still before a width change is applied.
  *
- * Both side panels animate their width over 220 ms and the `ResizeObserver`
- * fires on every frame of it, so this is what turns a gesture into ONE
- * event: one grid rebuild and — because the rebuild is where `onResize`
- * fires — one `resize_task`, in place of the thirteen a single panel toggle
- * used to send in 220 ms (ADR-002). A live window drag collapses the same
- * way, however long it lasts.
+ * Side panels no longer cause a stream of widths: they slide with a
+ * transform and the centre column changes width once, while the terminal
+ * holds its refits and fits exactly once when the slide settles (spec P1,
+ * `lib/panelMotion.ts`, `lib/terminal/refit.ts`). What still sends a stream
+ * is a live window drag or a sidebar resize-by-drag: the `ResizeObserver`
+ * fires every frame (coalesced to one fit per frame), and this debounce is
+ * what turns that gesture into ONE event: one grid rebuild and — because
+ * the rebuild is where `onResize` fires — one `resize_task`, however long
+ * the drag lasts (ADR-002).
  *
  * Same number as `settle.ts`'s quiet period, for the same reason: it has to
  * outlast a dropped frame without outlasting the user's patience. Too short
- * and a stutter mid-animation buys a second rebuild; too long and the grid
+ * and a stutter mid-drag buys a second rebuild; too long and the grid
  * visibly lags the pane.
  */
 const REBUILD_QUIET_MS = 120;

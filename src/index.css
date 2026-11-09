@@ -195,8 +195,8 @@
   --radius-full: 999px;
 
   /* Layout (A-Workspace). */
-  --layout-sidebar-width: 264px;
-  --layout-inspector-width: 300px;
+  --layout-sidebar-width: 248px;
+  --layout-inspector-width: 280px;
   --layout-rail-left: 48px;
   --layout-rail-right: 40px;
   --layout-header-height: 44px;
@@ -730,6 +730,32 @@ body {
     opacity: 0.6;
   }
   50% {
+    opacity: 1;
+  }
+}
+
+/* Side-panel collapse (A-Polish, spec P1): the sidebar and inspector slide
+   with translateX inside a clipped container (<SlidePanel>); the centre
+   column's width changes once, never per frame. The icon rail cross-fades
+   in 60ms after the slide starts. `will-change` is set inline only while a
+   panel animates. Under reduced motion SlidePanel skips the slide. */
+.panel-slide {
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.panel-rail {
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+
+.panel-rail-in {
+  animation: panel-rail-in var(--dur-2) var(--ease-out) 60ms backwards;
+}
+
+@keyframes panel-rail-in {
+  from {
+    opacity: 0;
+  }
+  to {
     opacity: 1;
   }
 }

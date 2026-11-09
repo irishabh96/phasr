@@ -157,10 +157,10 @@ const LAST_WORKSPACE_KEY = "phasr.lastWorkspace";
 
 export const SIDEBAR_WIDTH_MIN = 220;
 export const SIDEBAR_WIDTH_MAX = 420;
-export const SIDEBAR_WIDTH_DEFAULT = 264;
+export const SIDEBAR_WIDTH_DEFAULT = 248;
 export const RIGHT_PANEL_WIDTH_MIN = 260;
 export const RIGHT_PANEL_WIDTH_MAX = 480;
-export const RIGHT_PANEL_WIDTH_DEFAULT = 300;
+export const RIGHT_PANEL_WIDTH_DEFAULT = 280;
 
 function clampWidth(value: number, min: number, max: number, fallback: number) {
   return Number.isFinite(value)

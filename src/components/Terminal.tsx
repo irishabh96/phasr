@@ -19,6 +19,7 @@ import type {
   TerminalBackendKind,
   TerminalSurface,
 } from "@/lib/terminal/surface";
+import { fitSurfaceNow, watchSurfaceSize } from "@/lib/terminal/refit";
 import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
@@ -287,14 +288,14 @@ export function Terminal({
       }
     }
 
-    const refit = () => {
-      // Skip when hidden — see isSurfaceVisible.
-      if (!isSurfaceVisible(surface.element)) return;
-      // Anchored, not `fit()`: a width change here is a panel toggle, a
-      // window drag or a font-size step, and reflowing for any of them
-      // walks the content down the screen. See lib/terminal/reflow.ts.
-      surface.fitAnchored();
-    };
+    // Anchored, not `fit()`: a width change here is a panel toggle, a
+    // window drag or a font-size step, and reflowing for any of them walks
+    // the content down the screen. See lib/terminal/reflow.ts. The
+    // refitter skips hidden surfaces (isSurfaceVisible), coalesces observer
+    // bursts into one frame and holds still while a side panel animates
+    // (spec P1/P2) — the panels-settled signal refits once at the end.
+    const refitter = watchSurfaceSize(surface, surface.element);
+    const refit = () => refitter.now({ force: true });
     // One-shot full redraw after a re-parent; see TerminalSurface.repaint.
     // NOT inside refit (which fires on every resize tick).
     const forceRepaint = () => {
@@ -320,17 +321,11 @@ export function Terminal({
       window.setTimeout(refit, 600),
     ];
 
-    const onWindowResize = () => refit();
-    window.addEventListener("resize", onWindowResize);
-
-    const resizeObserver = new ResizeObserver(refit);
-    resizeObserver.observe(surface.element);
 
     return () => {
       cancelAnimationFrame(rafId);
       for (const t of settleTimers) window.clearTimeout(t);
-      window.removeEventListener("resize", onWindowResize);
-      resizeObserver.disconnect();
+      refitter.dispose();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
       // Stop routing channel updates to this (unmounting) instance — a
@@ -350,7 +345,7 @@ export function Terminal({
     entry.surface.applySettings(settings);
     // A font-size change changes the column count, so it goes through the
     // same anchored path a panel toggle does.
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
   }, [settings, workspaceId]);
 
   // Colours come from CSS custom properties read at call time, so a theme
@@ -382,7 +377,7 @@ export function Terminal({
     // Revealing a tab into a same-width slot is a rows-only change at
     // most, which `fitAnchored` applies synchronously — so this is still
     // the flicker-free path it was.
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();
