@@ -20,7 +20,7 @@ import type {
 
 /**
  * Board (M7): task cards in backend-derived lanes, drafts, the queue, and
- * the status bar's system counts.
+ * the system counts (sync state for the account menu and bell).
  *
  * Freshness without polling:
  * - `phasr://task-cards-changed` (coalesced by the backend whenever a lane
@@ -90,7 +90,7 @@ export function useTaskCardEvents() {
 
     // A status change also reaches the board as task-cards-changed (after
     // the backend's 300 ms coalescing, with the fresh diff), so only the
-    // status bar counts are refreshed here; refetching the card list too
+    // system counts are refreshed here; refetching the card list too
     // made every status change cost two full board loads.
     void listen<TaskStatusPayload>(TASK_STATUS_EVENT, () => {
       queryClient.invalidateQueries({ queryKey: taskCardKeys.systemStatus() });

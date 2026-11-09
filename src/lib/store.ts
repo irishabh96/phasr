@@ -243,9 +243,9 @@ interface UiState {
   /** Title-bar repository switcher: null = all repositories. */
   repoFilter: string | null;
   setRepoFilter: (repositoryId: string | null) => void;
-  /** Cloud sync worker health, fed by useCloudSync (status bar). */
-  cloudSync: { state: "unknown" | "ok" | "error"; at: number | null };
-  setCloudSync: (state: "ok" | "error") => void;
+  /** Cloud sync worker health, fed by useCloudSync (account menu, bell). */
+  cloudSync: { state: "unknown" | "ok" | "error"; at: number | null; reason: string | null };
+  setCloudSync: (state: "ok" | "error", reason?: string | null) => void;
   density: Density;
   setDensity: (density: Density) => void;
 
@@ -472,8 +472,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     }),
   repoFilter: null,
   setRepoFilter: (repoFilter) => set({ repoFilter }),
-  cloudSync: { state: "unknown", at: null },
-  setCloudSync: (state) => set({ cloudSync: { state, at: Date.now() } }),
+  cloudSync: { state: "unknown", at: null, reason: null },
+  setCloudSync: (state, reason = null) => set({ cloudSync: { state, at: Date.now(), reason } }),
   density: readStoredDensity(),
   setDensity: (density) => {
     writeStoredDensity(density);

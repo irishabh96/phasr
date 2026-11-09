@@ -201,7 +201,6 @@
   --layout-rail-right: 40px;
   --layout-header-height: 44px;
   --layout-panetabs-height: 36px;
-  --layout-statusbar-height: 28px;
   --layout-toolbar-height: 52px;
 
   /* Row heights; [data-density="comfortable"] relaxes them. */

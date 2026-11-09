@@ -3,7 +3,6 @@ import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-
 import { useEffect } from "react";
 import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal";
 import { TaskSidebar } from "@/components/shell/TaskSidebar";
-import { StatusBar } from "@/components/shell/StatusBar";
 import { CommandPalette } from "@/components/CommandPalette";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -262,7 +261,6 @@ function AppShell() {
           <div className="relative min-h-0 flex-1 overflow-hidden">
             <Outlet />
           </div>
-          <StatusBar />
         </main>
       </div>
       <CommandPalette />

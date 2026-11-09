@@ -5,6 +5,7 @@ import { formatAgo } from "@/lib/board";
 import { useClearNotifications, useMarkRead, useNotifications, useUnreadCount } from "@/lib/hooks/useInbox";
 import { useNow } from "@/lib/hooks/useNow";
 import { useRemoveWorktrees } from "@/lib/hooks/useRepositoryConfig";
+import type { SyncState } from "@/lib/hooks/useSyncState";
 import type { AppNotification, NotificationKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -16,8 +17,12 @@ const KIND_COLOR: Record<NotificationKind, string> = {
   run_command_failed: "var(--color-status-danger)",
 };
 
-/** Title-bar bell (A Main): unread dot + the recent inbox in a popover. */
-export function InboxBell() {
+/**
+ * Title-bar bell (A Main): unread dot + the recent inbox in a popover.
+ * With the status bar gone (spec D1) it also carries a cloud-sync error —
+ * a red dot and a line at the top of the popover — only while one exists.
+ */
+export function InboxBell({ sync, className }: { sync: SyncState; className?: string }) {
   const { data: unread } = useUnreadCount();
   const { data: items } = useNotifications({ limit: 40 });
   const markRead = useMarkRead();
@@ -25,6 +30,14 @@ export function InboxBell() {
   const navigate = useNavigate();
   const now = useNow(false);
   const count = typeof unread === "number" ? unread : 0;
+  const syncError = sync.phase === "error";
+  const label = [
+    "Notifications",
+    count > 0 ? `${count} unread` : null,
+    syncError ? "sync paused" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   const open = (n: AppNotification) => {
     if (!n.readAt) markRead.mutate([n.id]);
@@ -44,12 +57,18 @@ export function InboxBell() {
       <Popover.Trigger asChild>
         <button
           type="button"
-          aria-label={count > 0 ? `Notifications, ${count} unread` : "Notifications"}
-          className="relative grid size-7 place-items-center rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-surface) text-(--color-text-muted) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus) data-[state=open]:border-(--color-border-strong)"
+          aria-label={label}
+          className={className}
         >
-          <Bell className="size-3.5" aria-hidden />
-          {count > 0 ? (
-            <span aria-hidden className="absolute right-[5px] top-[5px] size-1.5 rounded-full bg-(--color-warning)" />
+          <Bell className="size-[15px]" aria-hidden />
+          {count > 0 || syncError ? (
+            <span
+              aria-hidden
+              className={cn(
+                "absolute right-[7px] top-[6px] size-[5px] rounded-full",
+                syncError ? "bg-(--color-danger)" : "bg-(--color-warning)",
+              )}
+            />
           ) : null}
         </button>
       </Popover.Trigger>
@@ -80,6 +99,18 @@ export function InboxBell() {
               Clear
             </button>
           </header>
+          {syncError ? (
+            <p
+              role="status"
+              className="m-0 flex items-start gap-2.5 border-b border-(--color-border-subtle) px-3 py-2.5 text-[12px] text-(--color-text-secondary)"
+            >
+              <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-(--color-danger)" />
+              <span className="min-w-0 flex-1">
+                {sync.label}
+                <span className="block text-[11px] text-(--color-text-muted)">Phasr keeps retrying in the background.</span>
+              </span>
+            </p>
+          ) : null}
           <ul className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-1">
             {!items || items.length === 0 ? (
               <li className="px-3 py-6 text-center text-[12px] text-(--color-text-muted)">
