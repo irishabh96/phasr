@@ -70,6 +70,9 @@ export default defineConfig({
           if (id.includes("@sentry")) return "sentry";
           if (id.includes("@supabase")) return "supabase";
           if (id.includes("@clerk")) return "clerk";
+          // Grammars stay out of the shared "shiki" chunk: each is its own
+          // dynamic import in lib/diff/shiki.ts, loaded per language.
+          if (id.includes("@shikijs/langs")) return undefined;
           if (id.includes("shiki") || id.includes("@shikijs")) return "shiki";
           return undefined;
         },
