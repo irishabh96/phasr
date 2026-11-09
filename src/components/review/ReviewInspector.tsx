@@ -1,8 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChevronsRight, CircleCheck, CircleDashed, CircleX, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
+import { approveOptions, NO_APPROVE_FLAGS, withApproveFlags, type ApproveFlags } from "@/lib/approveFlags";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -79,11 +80,17 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
   const required = new Set(checks?.required ?? []);
   const gated = !!checks && checks.required.length > 0 && !checks.requiredSatisfied;
 
-  const doApprove = (overrideChecks = false, commitDirty = false) =>
+  // Confirmations given in this approve attempt. The Approve button starts
+  // a fresh attempt; each gate dialog ADDS its confirmation, so a retry
+  // after the second gate still carries the first (no dialog loop).
+  const approveFlags = useRef<ApproveFlags>(NO_APPROVE_FLAGS);
+  const doApprove = (add: Partial<ApproveFlags> | "fresh") => {
+    approveFlags.current = add === "fresh" ? NO_APPROVE_FLAGS : withApproveFlags(approveFlags.current, add);
     approve.mutate(
-      { ...(overrideChecks ? { overrideChecks: true } : {}), ...(commitDirty ? { commitDirty: true } : {}) },
+      approveOptions(approveFlags.current),
       {
         onSuccess: (pr) => {
+          approveFlags.current = NO_APPROVE_FLAGS;
           if (pr.viaGh) {
             showToast({
               intent: "success",
@@ -102,6 +109,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         },
       },
     );
+  };
 
   // ⌘⇧↵ approves while reviewing (the Stage & commit view binds it to
   // commit & push instead; the two never mount together).
@@ -111,7 +119,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
       if ((e.target as HTMLElement | null)?.closest("textarea, input")) return;
       if (approve.isPending || workspace.outcome != null || isOverlayOpen()) return;
       e.preventDefault();
-      doApprove(false);
+      doApprove("fresh");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -252,7 +260,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
           shortcut="⌘⇧↵"
           disabled={approve.isPending || workspace.outcome != null}
           title={gated ? "Required checks aren't passing yet" : undefined}
-          onClick={() => doApprove(false)}
+          onClick={() => doApprove("fresh")}
         >
           {approve.isPending ? "Creating PR…" : workspace.prNumber ? `PR #${workspace.prNumber} open` : "Approve & create PR"}
         </Button>
@@ -300,7 +308,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         confirmLabel="Commit & push"
         onConfirm={() => {
           setDirtyOpen(false);
-          doApprove(false, true);
+          doApprove({ commitDirty: true });
         }}
       />
       <ConfirmDialog
@@ -311,7 +319,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         confirmLabel="Create PR anyway"
         onConfirm={() => {
           setOverrideOpen(false);
-          doApprove(true);
+          doApprove({ overrideChecks: true });
         }}
       />
     </aside>
