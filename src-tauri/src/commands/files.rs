@@ -91,26 +91,61 @@ pub async fn read_text_file(
     let current = require_user(&session)?;
     let roots = registered_roots(&repositories, &workspaces, &current.user_id).await?;
     let path_buf = PathBuf::from(&path);
-    if !git::is_within_roots(&path_buf, &roots) {
-        return Err(FilePreviewError::OutsideRoots);
-    }
-    tokio::task::spawn_blocking(move || read_preview(&path_buf))
+    tokio::task::spawn_blocking(move || read_preview(&path_buf, &roots))
         .await
         .map_err(|e| FilePreviewError::Io(std::io::Error::other(e.to_string())))?
 }
 
-fn read_preview(path: &Path) -> Result<String, FilePreviewError> {
-    if !path.exists() {
-        return Err(FilePreviewError::Missing);
+/// Resolve `path` once, check THAT path against `roots`, then open it once
+/// and judge (type, size) and read the same open file.
+///
+/// The old code checked the canonical path but stat-ed and read the path
+/// as given, three separate lookups: a symlink swapped in between could
+/// get around both the roots check and the size cap. Now the only path
+/// ever opened is the canonical, checked one — with `O_NOFOLLOW` so a
+/// final component replaced by a symlink since is refused — and the size
+/// comes from the open descriptor, with the read itself capped.
+fn read_preview(path: &Path, roots: &[PathBuf]) -> Result<String, FilePreviewError> {
+    use std::io::Read;
+
+    if !git::is_within_roots(path, roots) {
+        return Err(FilePreviewError::OutsideRoots);
     }
-    let metadata = std::fs::metadata(path)?;
+    let canonical = match std::fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(FilePreviewError::Missing),
+        Err(e) => return Err(e.into()),
+    };
+    if !git::is_within_roots(&canonical, roots) {
+        return Err(FilePreviewError::OutsideRoots);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // NONBLOCK: opening a FIFO must not wait for a writer (it's then
+        // refused as not a file below).
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = match options.open(&canonical) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(FilePreviewError::Missing),
+        Err(e) => return Err(e.into()),
+    };
+    let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(FilePreviewError::NotAFile);
     }
     if metadata.len() > MAX_PREVIEW_BYTES {
         return Err(FilePreviewError::TooLarge(metadata.len()));
     }
-    let bytes = std::fs::read(path)?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    // The file may grow after the fstat: never read past the cap.
+    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(FilePreviewError::TooLarge(bytes.len() as u64));
+    }
     String::from_utf8(bytes).map_err(|_| FilePreviewError::NotText)
 }
 
@@ -322,14 +357,19 @@ pub async fn write_workspace_file(
 }
 
 /// Undo one hunk in the working tree. The diff is recomputed here and the
-/// hunk picked by its exact header; a header that no longer exists rejects
-/// with `"hunk no longer matches"` and touches nothing. `scope`: `"Head"`
-/// (uncommitted) or `"Base"` (vs the task's base, committed work too).
+/// hunk picked by its exact header AND checked against `hunkBody` — the
+/// hunk's lines as the user saw them (with or without the `@@` line). A
+/// header that no longer exists, or a hunk whose lines changed since,
+/// rejects with `"hunk no longer matches"` and touches nothing. `scope`:
+/// `"Head"` (uncommitted) or `"Base"` (vs the task's base, committed work
+/// too).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn revert_hunk(
     workspace_id: String,
     path: String,
     hunk_header: String,
+    hunk_body: String,
     scope: DiffScope,
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
@@ -357,7 +397,7 @@ pub async fn revert_hunk(
         }),
         _ => None,
     };
-    blocking(move || git::revert_hunk(&root, &path, &hunk_header, scope, base.as_deref())).await?;
+    blocking(move || git::revert_hunk(&root, &path, &hunk_header, &hunk_body, scope, base.as_deref())).await?;
     board.invalidate_diff(&workspace.id);
     board.notify_changed(&workspace.repository_id);
     Ok(())
@@ -366,6 +406,39 @@ pub async fn revert_hunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The preview reads exactly the canonical path it checked, with one
+    /// open: a symlink pointing out of the roots (or at a FIFO / device) is
+    /// refused rather than followed.
+    #[cfg(unix)]
+    #[test]
+    fn read_preview_only_reads_the_checked_path() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![root.path().to_path_buf()];
+        std::fs::write(root.path().join("ok.txt"), "hello").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.path().join("link.txt")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", root.path().join("zero")).unwrap();
+        let fifo = root.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        std::fs::write(root.path().join("big.txt"), vec![b'a'; (MAX_PREVIEW_BYTES + 1) as usize]).unwrap();
+
+        assert_eq!(read_preview(&root.path().join("ok.txt"), &roots).unwrap(), "hello");
+        assert!(matches!(
+            read_preview(&root.path().join("link.txt"), &roots),
+            Err(FilePreviewError::OutsideRoots)
+        ));
+        assert!(matches!(
+            read_preview(&outside.path().join("secret.txt"), &roots),
+            Err(FilePreviewError::OutsideRoots)
+        ));
+        assert!(read_preview(&root.path().join("zero"), &roots).is_err());
+        assert!(matches!(read_preview(&fifo, &roots), Err(FilePreviewError::NotAFile)), "no hang on a FIFO");
+        assert!(matches!(read_preview(&root.path().join("big.txt"), &roots), Err(FilePreviewError::TooLarge(_))));
+        assert!(matches!(read_preview(&root.path().join("nope.txt"), &roots), Err(FilePreviewError::Missing)));
+    }
 
     #[test]
     fn last_edit_matches_relative_and_absolute_paths_and_takes_the_newest() {
