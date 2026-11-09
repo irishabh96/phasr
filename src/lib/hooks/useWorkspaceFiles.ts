@@ -169,6 +169,8 @@ export interface RevertHunkArgs {
   path: string;
   /** The hunk's `@@ -a,b +c,d @@ …` line, exactly as rendered. */
   hunkHeader: string;
+  /** The hunk's lines as rendered (`+`/`-`/` ` prefixed, newline-joined). */
+  hunkBody: string;
   scope: RevertHunkScope;
 }
 
@@ -179,8 +181,8 @@ export interface RevertHunkArgs {
 export function useRevertHunk(workspaceId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ path, hunkHeader, scope }: RevertHunkArgs) =>
-      tauri.revertHunk(workspaceId, path, hunkHeader, scope),
+    mutationFn: ({ path, hunkHeader, hunkBody, scope }: RevertHunkArgs) =>
+      tauri.revertHunk(workspaceId, path, hunkHeader, hunkBody, scope),
     onSettled: (_data, _err, { path }) => {
       // Success or a stale hunk: either way the diff on screen is outdated.
       void queryClient.invalidateQueries({ queryKey: workspaceFileKeys.file(workspaceId, path) });

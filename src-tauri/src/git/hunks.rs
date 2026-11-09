@@ -139,7 +139,13 @@ fn body_without_header(body: &str) -> &str {
 /// A hunk's lines for comparison: line endings stripped, trailing empty
 /// lines dropped (a client may or may not end with a newline).
 fn hunk_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
-    let mut out: Vec<&str> = lines.map(|l| l.trim_end_matches(['\n', '\r'])).collect();
+    // `\ No newline at end of file` markers are dropped on both sides: the
+    // UI's diff parser doesn't keep them, and they never change what the
+    // hunk's +/-/context lines say.
+    let mut out: Vec<&str> = lines
+        .map(|l| l.trim_end_matches(['\n', '\r']))
+        .filter(|l| !l.starts_with('\\'))
+        .collect();
     while out.last().is_some_and(|l| l.is_empty()) {
         out.pop();
     }

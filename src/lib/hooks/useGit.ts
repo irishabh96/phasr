@@ -236,8 +236,19 @@ export function useGitSyncWithMain(workspaceId: string) {
 export function useGitMergeToMain(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (strategy: MergeStrategy) =>
-      tauri.gitMergeToMain(workspaceId, strategy),
+    mutationFn: ({
+      strategy,
+      overrideChecks,
+      commitDirty,
+    }: {
+      strategy: MergeStrategy;
+      overrideChecks?: boolean;
+      commitDirty?: boolean;
+    }) =>
+      tauri.gitMergeToMain(workspaceId, strategy, {
+        ...(overrideChecks ? { overrideChecks: true } : {}),
+        ...(commitDirty ? { commitDirty: true } : {}),
+      }),
     onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
   });
 }

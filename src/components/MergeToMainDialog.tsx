@@ -47,6 +47,12 @@ export function MergeToMainDialog({
   // Merge can't help — the user must resolve in the terminal — so the
   // primary action stays disabled until the dialog is reopened.
   const [hadConflict, setHadConflict] = useState(false);
+  // Merge is gated like Approve (required checks, uncommitted work). A
+  // confirmation adds its flag; flags add up within this dialog session so
+  // confirming one gate and then the other doesn't loop.
+  type Gates = { overrideChecks?: boolean; commitDirty?: boolean };
+  const [gates, setGates] = useState<Gates>({});
+  const [gate, setGate] = useState<{ kind: "checks" | "dirty"; message: string } | null>(null);
 
   // Reset state every time we open afresh.
   useEffect(() => {
@@ -55,6 +61,8 @@ export function MergeToMainDialog({
     setConflictNote(null);
     setClosing(false);
     setHadConflict(false);
+    setGates({});
+    setGate(null);
     const candidate = settings?.defaultMergeStrategy;
     if (
       candidate === "merge" ||
@@ -87,11 +95,14 @@ export function MergeToMainDialog({
   // in flight or the dialog is closing after a clean merge.
   const busy = merge.isPending || closing;
 
-  const handleMerge = async () => {
+  const handleMerge = async (add: Gates = {}) => {
     setError(null);
     setConflictNote(null);
+    setGate(null);
+    const next = { ...gates, ...add };
+    setGates(next);
     try {
-      const outcome = await merge.mutateAsync(strategy);
+      const outcome = await merge.mutateAsync({ strategy, ...next });
       if (outcome.kind === "clean") {
         // Close after a brief moment so the success state registers.
         // Flag `closing` so the button stays disabled through the delay.
@@ -105,7 +116,14 @@ export function MergeToMainDialog({
         );
       }
     } catch (err) {
-      setError(humanizeError(err));
+      const message = String(err);
+      if (message.startsWith("required checks not passing")) setGate({ kind: "checks", message });
+      else if (message === "worktree has uncommitted changes")
+        setGate({
+          kind: "dirty",
+          message: `The worktree has uncommitted changes. They'd be left out of the merge. Commit everything as “${workspace.name}” first?`,
+        });
+      else setError(humanizeError(err));
     }
   };
 
@@ -141,7 +159,7 @@ export function MergeToMainDialog({
           <GlassButton
             variant="primary"
             size="sm"
-            onClick={handleMerge}
+            onClick={() => void handleMerge()}
             disabled={!canMerge || busy || hadConflict}
           >
             {merge.isPending ? (
@@ -228,6 +246,24 @@ export function MergeToMainDialog({
           </fieldset>
         )}
 
+        {gate && (
+          <div
+            role="alert"
+            className="space-y-2 rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2.5"
+          >
+            <p className="text-[12px] text-(--color-text-primary)">{gate.message}</p>
+            <GlassButton
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void handleMerge(gate.kind === "checks" ? { overrideChecks: true } : { commitDirty: true })
+              }
+            >
+              {gate.kind === "checks" ? "Merge without passing checks" : "Commit everything and merge"}
+            </GlassButton>
+          </div>
+        )}
         {error && (
           <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11px] text-(--color-danger)">
             {error}

@@ -129,9 +129,9 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
           <div className="h-full overflow-auto p-3">
             <DiffAnnotationsContext.Provider
               value={{
-                onRevertHunk: (header) =>
+                onRevertHunk: (header, body) =>
                   revert.mutate(
-                    { path, hunkHeader: header, scope: "Base" },
+                    { path, hunkHeader: header, hunkBody: body, scope: "Base" },
                     {
                       onError: (err) =>
                         showToast(

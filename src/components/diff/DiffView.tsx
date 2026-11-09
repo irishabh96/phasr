@@ -292,7 +292,8 @@ export interface DiffAnnotations {
   /** Rendered as a full-width row under the line (threads, composer). */
   renderAfter?: (line: DiffLine, side: "old" | "new") => ReactNode;
   /** "Revert hunk" on each hunk header (the editor's Diff view). */
-  onRevertHunk?: (hunkHeader: string) => void;
+  /** `hunkBody`: the hunk's lines as rendered — see {@link hunkBody}. */
+  onRevertHunk?: (hunkHeader: string, hunkBody: string) => void;
 }
 
 export const DiffAnnotationsContext = createContext<DiffAnnotations | null>(null);
@@ -412,6 +413,18 @@ function DiffMessage({
   );
 }
 
+/**
+ * The hunk's lines back in unified-diff form, for revert's "is this still
+ * the hunk you saw" check (the backend compares the whole body, not just
+ * the `@@` header, so an edit that keeps the line counts isn't reverted).
+ */
+export function hunkBody(hunk: DiffHunk): string {
+  return hunk.lines
+    .filter((l) => l.kind !== "meta")
+    .map((l) => (l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ") + l.content)
+    .join("\n");
+}
+
 function HunkHeader({ hunk }: { hunk: DiffHunk }) {
   const ann = useContext(DiffAnnotationsContext);
   return (
@@ -423,7 +436,7 @@ function HunkHeader({ hunk }: { hunk: DiffHunk }) {
       {ann?.onRevertHunk ? (
         <button
           type="button"
-          onClick={() => ann.onRevertHunk!(hunk.header)}
+          onClick={() => ann.onRevertHunk!(hunk.header, hunkBody(hunk))}
           className="ml-auto shrink-0 rounded-(--radius-chip) px-1.5 py-0.5 font-sans text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-danger-text) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
         >
           Revert hunk

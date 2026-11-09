@@ -395,8 +395,16 @@ export const tauri = {
   gitFetch: (workspaceId: string) => invoke<void>("git_fetch", { workspaceId }),
   gitSyncWithMain: (workspaceId: string, strategy: MergeStrategy) =>
     invoke<MergeOutcome>("git_sync_with_main", { workspaceId, strategy }),
-  gitMergeToMain: (workspaceId: string, strategy: MergeStrategy) =>
-    invoke<MergeOutcome>("git_merge_to_main", { workspaceId, strategy }),
+  /**
+   * Merge the task into its base in the main checkout. Gated like Approve:
+   * rejects "required checks not passing: …" / "worktree has uncommitted
+   * changes" unless `overrideChecks` / `commitDirty` (both may be sent).
+   */
+  gitMergeToMain: (
+    workspaceId: string,
+    strategy: MergeStrategy,
+    gates: { overrideChecks?: boolean; commitDirty?: boolean } = {},
+  ) => invoke<MergeOutcome>("git_merge_to_main", { workspaceId, strategy, ...gates }),
   gitMergeInProgress: (workspaceId: string) =>
     invoke<InProgress>("git_merge_in_progress", { workspaceId }),
   gitAbortMerge: (workspaceId: string) =>
@@ -439,13 +447,17 @@ export const tauri = {
       contents,
       expectedHash,
     }),
-  /** Reverse-apply the hunk with this exact header; rejects "hunk no longer matches". */
+  /**
+   * Reverse-apply the hunk with this exact header AND body (its +/-/context
+   * lines as rendered); rejects "hunk no longer matches" when either moved.
+   */
   revertHunk: (
     workspaceId: string,
     path: string,
     hunkHeader: string,
+    hunkBody: string,
     scope: RevertHunkScope,
-  ) => invoke<void>("revert_hunk", { workspaceId, path, hunkHeader, scope }),
+  ) => invoke<void>("revert_hunk", { workspaceId, path, hunkHeader, hunkBody, scope }),
 
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>
