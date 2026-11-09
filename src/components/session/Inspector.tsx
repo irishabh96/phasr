@@ -21,6 +21,7 @@ export function portOf(running: RunningCommand[] | undefined | null, runCommandI
 import { useNow } from "@/lib/hooks/useNow";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
+import { runTabsForTask, runTarget } from "@/lib/runScope";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { RIGHT_PANEL_WIDTH_MAX, RIGHT_PANEL_WIDTH_MIN, useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -176,7 +177,7 @@ export function Inspector({
           </Button>
         </Section>
       ) : null}
-      <RunCommandsSection repositoryId={workspace.repositoryId} runScope={workspace.worktreePath ? workspace.id : null} />
+      <RunCommandsSection repositoryId={workspace.repositoryId} taskId={workspace.id} target={runTarget(workspace)} />
       <NotesSection repositoryId={workspace.repositoryId} onOpenNotes={onOpenNotes} />
     </aside>
   );
@@ -319,18 +320,20 @@ function TaskSection({ workspace, onCollapse }: { workspace: Workspace; onCollap
   );
 }
 
-function RunCommandsSection({ repositoryId, runScope }: { repositoryId: string; runScope: string | null }) {
+function RunCommandsSection({ repositoryId, taskId, target }: { repositoryId: string; taskId: string; target: string | null }) {
   const { data: commands } = useRunCommands(repositoryId);
-  const { data: running } = useRunningCommands(runScope);
+  const { data: running } = useRunningCommands(target);
   const runPanel = useUiStore((s) => s.runPanel);
   if (!commands || commands.length === 0) return null;
+  // Open = in THIS task's pane bar, not open in some other task.
+  const openHere = new Set(runTabsForTask(runPanel.openTabs, runPanel.shown, running, taskId, target));
   return (
     <Section title="Run commands">
       <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {[...commands]
           .sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortOrder - b.sortOrder)
           .map((rc) => {
-            const open = runPanel.openTabs.includes(rc.id);
+            const open = openHere.has(rc.id);
             return (
               <li
                 key={rc.id}
@@ -345,26 +348,28 @@ function RunCommandsSection({ repositoryId, runScope }: { repositoryId: string; 
                 />
                 <button
                   type="button"
-                  onClick={() => runPanel.openTab(rc.id)}
+                  onClick={() => runPanel.openTab(rc.id, taskId)}
                   className="min-w-0 flex-1 truncate text-left text-[12px] focus-visible:outline-none focus-visible:underline"
                 >
                   {rc.name}
                 </button>
-                <span className="truncate font-mono text-[11px] text-(--color-text-muted) group-hover/rc:hidden">
+                <span className="truncate font-mono text-[11px] text-(--color-text-muted) group-hover/rc:hidden group-focus-within/rc:hidden">
                   {portOf(running, rc.id) ? `:${portOf(running, rc.id)}` : rc.command}
                 </span>
+                {/* Always in the tab order (never display:none): revealed on
+                    hover, on keyboard focus, or while the row has focus. */}
                 <button
                   type="button"
                   aria-label={open ? `Stop ${rc.name}` : `Run ${rc.name}`}
                   onClick={() => {
                     if (open) {
-                      void tauri.stopRunCommand(rc.id, runScope).catch(() => {});
-                      runPanel.closeTab(rc.id);
+                      void tauri.stopRunCommand(rc.id, target).catch(() => {});
+                      runPanel.closeTab(rc.id, taskId);
                     } else {
-                      runPanel.openTab(rc.id);
+                      runPanel.openTab(rc.id, taskId);
                     }
                   }}
-                  className="hidden size-5 place-items-center rounded-(--radius-chip) text-(--color-text-muted) hover:text-(--color-text-primary) group-hover/rc:grid focus-visible:grid focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+                  className="grid size-5 shrink-0 place-items-center rounded-(--radius-chip) text-(--color-text-muted) opacity-0 hover:text-(--color-text-primary) group-hover/rc:opacity-100 group-focus-within/rc:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
                 >
                   {open ? <Square className="size-2.5" fill="currentColor" aria-hidden /> : <Play className="size-3" fill="currentColor" aria-hidden />}
                 </button>

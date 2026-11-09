@@ -12,7 +12,7 @@ import { useGitStatus } from "@/lib/hooks/useGit";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useRunningCommands } from "@/lib/hooks/useReview";
 import { portOf } from "./Inspector";
-import { runTabsForTask } from "@/lib/runTabs";
+import { activeRunTabFor, runTabsForTask, runTarget } from "@/lib/runScope";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore, type InnerTab, type SessionPane } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -36,11 +36,15 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
   const { data: runCommands } = useRunCommands(workspace.repositoryId);
   const { data: changes } = useGitStatus(workspace.worktreePath ? workspaceId : null);
   const { data: agents } = useAgents();
-  const { data: running } = useRunningCommands(workspace.worktreePath ? workspaceId : null);
+  const target = runTarget(workspace);
+  const { data: running } = useRunningCommands(target);
 
   const tabs = state?.tabs ?? [];
-  const runScope = workspace.worktreePath ? workspaceId : null;
-  const runTabs = runTabsForTask(runPanel.openTabs, runPanel.shown, running, runScope)
+  const runTabIds = runTabsForTask(runPanel.openTabs, runPanel.shown, running, workspaceId, target).filter((id) =>
+    runCommands?.some((rc) => rc.id === id),
+  );
+  const activeRunTab = activeRunTabFor(runPanel.activeTab, runTabIds);
+  const runTabs = runTabIds
     .map((id) => runCommands?.find((rc) => rc.id === id))
     .filter((rc): rc is NonNullable<typeof rc> => !!rc);
   const adds = changes?.reduce((n, f) => n + (f.adds ?? 0), 0) ?? 0;
@@ -73,7 +77,7 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
   };
 
   const isActive = (p: SessionPane, id?: string) =>
-    pane === p && (p !== "tabs" || id === state?.activeTabId) && (p !== "run" || id === runPanel.activeTab);
+    pane === p && (p !== "tabs" || id === state?.activeTabId) && (p !== "run" || id === activeRunTab);
 
   return (
     <div className="flex h-(--layout-panetabs-height) shrink-0 items-stretch gap-0.5 border-b border-(--color-border-subtle) bg-(--color-bg-sidebar) px-2 pt-1">
@@ -147,8 +151,8 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
                   aria-label={`Close ${rc.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    void tauri.stopRunCommand(rc.id, workspace.worktreePath ? workspaceId : null).catch(() => {});
-                    runPanel.closeTab(rc.id);
+                    void tauri.stopRunCommand(rc.id, target).catch(() => {});
+                    runPanel.closeTab(rc.id, workspaceId);
                     if (active) setPane(workspaceId, "tabs");
                   }}
                   className="-mr-1 grid size-4 place-items-center rounded-(--radius-chip) text-(--color-text-muted) opacity-0 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) group-hover/pane-tab:opacity-100"
@@ -230,10 +234,7 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
                 <MenuItem
                   key={rc.id}
                   icon={<TerminalIcon className="size-3.5" />}
-                  onSelect={() => {
-                    runPanel.openTab(rc.id);
-                    setPane(workspaceId, "run");
-                  }}
+                  onSelect={() => runPanel.openTab(rc.id, workspaceId)}
                 >
                   {rc.name}
                 </MenuItem>

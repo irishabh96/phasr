@@ -25,13 +25,15 @@ import { useFileDrop } from "@/lib/hooks/useFileDrop";
 import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
 import { useMacTextEditingKeys } from "@/lib/hooks/useMacTextEditingKeys";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
+import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { runTarget } from "@/lib/runScope";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
 import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { useRustSession } from "@/lib/use-rust-session";
 import { tauri } from "@/lib/tauri";
-import type { Repository } from "@/lib/types";
+import type { Repository, Workspace } from "@/lib/types";
 
 const TASK_SHORTCUTS = [
   SHORTCUTS.openNotes,
@@ -207,10 +209,14 @@ function AppShell() {
         const pane = state.sessionPane[ctx.workspaceId] ?? "tabs";
         if (pane !== "tabs") {
           e.preventDefault();
+          // The task route keeps `activeTab` on this task's visible run tab.
           if (pane === "run" && state.runPanel.activeTab) {
             const id = state.runPanel.activeTab;
-            void tauri.stopRunCommand(id, ctx.workspaceId).catch(() => {});
-            state.runPanel.closeTab(id);
+            const ws = queryClient.getQueryData<Workspace>(workspaceKeys.detail(ctx.workspaceId));
+            // Stop it where it runs: the worktree, or the repo checkout
+            // for a worktree-less task.
+            if (ws) void tauri.stopRunCommand(id, runTarget(ws)).catch(() => {});
+            state.runPanel.closeTab(id, ctx.workspaceId);
           }
           state.setSessionPane(ctx.workspaceId, "tabs");
           return;
