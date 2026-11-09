@@ -361,7 +361,8 @@ async fn initialize_database_state(
     let api_keys = secrets::ApiKeys::new(
         Arc::new(secrets::KeychainStore::default()),
         app_meta.clone(),
-    );
+    )
+    .with_current_user(Arc::new(current_user_fn(&handle)));
     let orchestrator = TaskOrchestrator::new(
         workspace_repo.clone(),
         repository_repo.clone(),
