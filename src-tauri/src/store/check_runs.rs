@@ -153,18 +153,25 @@ impl CheckRunRepo {
     /// adds rows, and nothing else ever removed them. Returns the deleted
     /// runs' log paths for the caller to remove. Active runs are never
     /// touched.
+    ///
+    /// One statement: the startup prune (every workspace) runs before the
+    /// window appears, and a DELETE per row there cost one round trip and
+    /// one write transaction per stale run.
     pub async fn prune(&self, keep: i64, workspace_id: Option<&str>) -> Result<Vec<String>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, log_path FROM (
-                SELECT id, log_path, status,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY workspace_id, COALESCE(run_command_id, name)
-                           ORDER BY created_at DESC, rowid DESC
-                       ) AS rn
-                FROM check_runs
-                WHERE (? IS NULL OR workspace_id = ?)
+            "DELETE FROM check_runs WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, status,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, COALESCE(run_command_id, name)
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS rn
+                    FROM check_runs
+                    WHERE (? IS NULL OR workspace_id = ?)
+                )
+                WHERE rn > ? AND status NOT IN ('queued', 'running')
              )
-             WHERE rn > ? AND status NOT IN ('queued', 'running')",
+             RETURNING log_path",
         )
         .bind(workspace_id)
         .bind(workspace_id)
@@ -173,11 +180,6 @@ impl CheckRunRepo {
         .await?;
         let mut logs = Vec::new();
         for row in &rows {
-            let id: String = row.try_get("id")?;
-            sqlx::query("DELETE FROM check_runs WHERE id = ?")
-                .bind(&id)
-                .execute(&self.db)
-                .await?;
             if let Some(path) = row.try_get::<Option<String>, _>("log_path")? {
                 logs.push(path);
             }
