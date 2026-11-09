@@ -385,7 +385,7 @@ async fn initialize_database_state(
     );
     board.start(orchestrator.subscribe_status(), Some(agent_signals.subscribe()));
     commands::events::spawn_board_bridge(&board, handle.clone());
-    let scheduler = QueueScheduler::new(orchestrator.clone(), board.clone(), workspace_repo.clone());
+    let scheduler = QueueScheduler::new(orchestrator.clone(), workspace_repo.clone());
     scheduler.start(
         orchestrator.subscribe_status(),
         Some(agent_signals.subscribe()),

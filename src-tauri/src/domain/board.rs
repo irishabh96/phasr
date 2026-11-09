@@ -73,8 +73,12 @@ impl DiffStats {
 ///    non-empty diff → NeedsReview; otherwise Running;
 /// 6. stopped/completed: empty diff → Done; otherwise NeedsReview — an
 ///    unknown diff counts as "maybe changes", so work is never hidden;
-/// 7. a launched row still `pending` (mid-start, or a legacy pre-created
-///    workspace never opened) → Draft unless its agent is already live.
+/// 7. a launched row still `pending` → Draft unless its agent is live. A
+///    row being set up right now (fetch / after-create hook) reports a
+///    working agent (`AgentSignals::mark_starting`), so it shows as
+///    Running — never as a Draft offering "Start now" a second time. Left
+///    as Draft: a legacy pre-created workspace, or a setup an app quit
+///    interrupted; "Start now" (`launch`) finishes starting those.
 pub fn derive_lane(
     ws: &Workspace,
     agent: Option<AgentPhase>,
@@ -111,31 +115,39 @@ pub fn derive_lane(
     })
 }
 
-/// Whether a queued task waiting on `dependency` may start: the dependency
-/// FINISHED — an outcome (merged/closed), a clean exit (`completed`), the
-/// user archived it, or its agent ended a turn during its latest run and it
-/// now sits in review/done. A failed or still-running dependency keeps it
-/// waiting (the user can always "Start now").
+/// Whether a queued task waiting on `dependency` may start. Only a REAL
+/// finish counts:
 ///
-/// "Stopped" alone is NOT finished: startup recovery turns every task that
-/// was `running` when the app quit into `stopped`, and a stopped task with
-/// (or with unknown) changes lands in NeedsReview — accepting that started
-/// dependents on top of half-finished work on every relaunch. The turn end
-/// must postdate `started_at` (bumped on every launch/resume), so an old
-/// turn from a previous run doesn't count either.
-pub fn dependency_satisfied(dependency: &Workspace, lane: Option<Lane>) -> bool {
+/// - an outcome (merged / closed);
+/// - a clean exit: `completed` is only ever written for exit code 0. This
+///   is how agents with no turn-end signal (Gemini, Copilot, OpenCode)
+///   release their dependents;
+/// - a turn end: its agent ended a turn during THIS run (`started_at` is
+///   bumped on every launch/resume, so an old turn doesn't count) and is
+///   alive and idle at its prompt right now (`agent`, as tracked here);
+/// - archived — the user put it away; like a deleted dependency, there is
+///   nothing left to wait for.
+///
+/// Everything else keeps the dependent waiting (the user can always "Start
+/// now"): running, needs-you, failed — and `stopped`. Startup recovery
+/// turns every task that was `running` at quit into `stopped`, and Stop
+/// can interrupt a turn; with the live agent gone nothing says whether its
+/// last turn was the end of the work, so a turn that ended earlier in the
+/// run (before a follow-up the user typed) must not release the queue.
+pub fn dependency_satisfied(dependency: &Workspace, agent: Option<AgentPhase>) -> bool {
     if dependency.outcome.is_some()
         || dependency.status == WorkspaceStatus::Completed
         || dependency.status == WorkspaceStatus::Archived
     {
         return true;
     }
-    let finished_a_turn = match (dependency.last_turn_ended_at, dependency.started_at) {
+    let turn_ended_this_run = match (dependency.last_turn_ended_at, dependency.started_at) {
         (Some(ended), Some(started)) => ended >= started,
-        (Some(_), None) => true,
-        (None, _) => false,
+        _ => false,
     };
-    finished_a_turn && matches!(lane, Some(Lane::NeedsReview | Lane::Done))
+    turn_ended_this_run
+        && dependency.status == WorkspaceStatus::Running
+        && agent == Some(AgentPhase::Idle)
 }
 
 #[cfg(test)]
@@ -226,39 +238,57 @@ mod tests {
         assert_eq!(derive_lane(&local, Some(AgentPhase::Idle), Some(&CHANGES)), None);
     }
 
-    /// The relaunch case: the app quit mid-turn, startup recovery marked
-    /// the dependency `stopped`, and its half-finished diff puts it in
-    /// NeedsReview. That is not "finished" — no turn ended in this run.
+    /// Stopped by an app quit (startup recovery) or by Stop: not finished,
+    /// even with changes, and even if a turn ended earlier in the run —
+    /// the user may have sent a follow-up that was mid-flight.
     #[test]
-    fn a_dependency_stopped_by_recovery_is_not_finished() {
+    fn a_stopped_dependency_is_not_finished() {
         let started = Utc::now() - chrono::Duration::minutes(10);
         let mut recovered = ws(WorkspaceStatus::Stopped);
         recovered.started_at = Some(started);
         assert_eq!(derive_lane(&recovered, None, Some(&CHANGES)), Some(Lane::NeedsReview));
-        assert!(!dependency_satisfied(&recovered, Some(Lane::NeedsReview)));
-        assert!(!dependency_satisfied(&recovered, Some(Lane::Done)));
-        // A turn from a PREVIOUS run (before this run's start) doesn't count.
-        recovered.last_turn_ended_at = Some(started - chrono::Duration::minutes(1));
-        assert!(!dependency_satisfied(&recovered, Some(Lane::NeedsReview)));
-        // Its agent finished a turn in this run → finished.
+        assert!(!dependency_satisfied(&recovered, None));
         recovered.last_turn_ended_at = Some(started + chrono::Duration::minutes(5));
-        assert!(dependency_satisfied(&recovered, Some(Lane::NeedsReview)));
+        assert!(!dependency_satisfied(&recovered, None), "turn ended, then a follow-up was stopped");
+        assert!(!dependency_satisfied(&recovered, Some(AgentPhase::Exited)), "Stop marks it exited");
     }
 
     #[test]
-    fn dependency_is_satisfied_at_review_or_later() {
+    fn a_turn_end_counts_only_while_the_agent_is_idle_in_this_run() {
+        use AgentPhase::*;
+        let started = Utc::now() - chrono::Duration::minutes(10);
         let mut running = ws(WorkspaceStatus::Running);
-        assert!(!dependency_satisfied(&running, Some(Lane::Running)));
-        assert!(!dependency_satisfied(&running, Some(Lane::NeedsYou)));
-        assert!(!dependency_satisfied(&running, Some(Lane::NeedsReview)), "no turn ended yet");
-        running.started_at = Some(Utc::now() - chrono::Duration::minutes(1));
-        running.last_turn_ended_at = Some(Utc::now());
-        assert!(dependency_satisfied(&running, Some(Lane::NeedsReview)));
-        assert!(!dependency_satisfied(&ws(WorkspaceStatus::Failed), Some(Lane::Failed)));
-        assert!(dependency_satisfied(&ws(WorkspaceStatus::Completed), Some(Lane::Running)));
+        running.started_at = Some(started);
+        assert!(!dependency_satisfied(&running, Some(Idle)), "no turn ended yet");
+        // A turn from a PREVIOUS run (before this run's start) doesn't count.
+        running.last_turn_ended_at = Some(started - chrono::Duration::minutes(1));
+        assert!(!dependency_satisfied(&running, Some(Idle)));
+        running.last_turn_ended_at = Some(started + chrono::Duration::minutes(5));
+        assert!(dependency_satisfied(&running, Some(Idle)));
+        // Working on a follow-up, blocked on a dialog, quit, or untracked.
+        for phase in [Some(Working), Some(NeedsYou), Some(Exited), None] {
+            assert!(!dependency_satisfied(&running, phase), "{phase:?}");
+        }
+        // A turn end that arrived through sync, for a run that never
+        // started on this machine.
+        let mut synced = ws(WorkspaceStatus::Running);
+        synced.last_turn_ended_at = Some(Utc::now());
+        assert!(!dependency_satisfied(&synced, Some(Idle)));
+    }
+
+    /// Clean exit (how agents with no turn-end signal — Gemini, Copilot,
+    /// OpenCode — release), an outcome, or archived; never failed/queued.
+    #[test]
+    fn clean_exit_outcome_and_archive_release_dependents() {
+        let mut gemini = ws(WorkspaceStatus::Completed);
+        gemini.agent = Some(crate::domain::Agent::Gemini);
+        gemini.exit_code = Some(0);
+        assert!(dependency_satisfied(&gemini, None));
+        assert!(dependency_satisfied(&gemini, Some(AgentPhase::Exited)));
         assert!(dependency_satisfied(&with_outcome(ws(WorkspaceStatus::Stopped)), None));
-        assert!(dependency_satisfied(&ws(WorkspaceStatus::Archived), Some(Lane::Archived)));
-        assert!(!dependency_satisfied(&queued(), Some(Lane::Queued)));
+        assert!(dependency_satisfied(&ws(WorkspaceStatus::Archived), None));
+        assert!(!dependency_satisfied(&ws(WorkspaceStatus::Failed), Some(AgentPhase::Exited)));
+        assert!(!dependency_satisfied(&queued(), None));
     }
 
     #[test]
