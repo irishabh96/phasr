@@ -5,6 +5,7 @@ import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
+import { isNotStartedError } from "@/lib/terminalErrors";
 import {
   canTakeTerminalFocus,
   isSurfaceVisible,
@@ -46,6 +47,7 @@ type TermStatus =
   | { state: "starting" | "retrying" | "restarting" }
   | { state: "failed"; error: string }
   | { state: "exited"; exitCode: number | null }
+  | { state: "not-started" }
   | null;
 
 /**
@@ -71,6 +73,10 @@ interface CachedMain {
   setStatus: ((s: TermStatus) => void) | null;
   /** Set when the PTY exits so a later remount can restore the overlay. */
   exitStatus: { exitCode: number | null } | null;
+  /** Set when the backend refused to start an unlaunched draft, so a
+   *  remount restores the calm overlay instead of wiring input to a PTY
+   *  that doesn't exist. */
+  notStarted: boolean;
   /** Read at click time by the link layer — kept fresh across remounts
    *  (the surface and its link closures outlive component instances). */
   linkContext: { cwd: string | null; editorId: string | null };
@@ -141,6 +147,7 @@ export function Terminal({
         onExit,
         setStatus: null,
         exitStatus: null,
+        notStarted: false,
         linkContext: { cwd: null, editorId: null },
       };
       const created = entry;
@@ -188,6 +195,7 @@ export function Terminal({
 
     const startOrAttach = async (mode: StartMode = "initial") => {
       entry!.exitStatus = null;
+      entry!.notStarted = false;
       entry!.setStatus?.(
         mode === "retry"
           ? { state: "retrying" }
@@ -225,6 +233,13 @@ export function Terminal({
           .resizeTask(workspaceId, surface.rows, surface.cols)
           .catch(() => {});
       } catch (err) {
+        if (isNotStartedError(err)) {
+          // A draft synced from a newer build — refused on purpose, not
+          // broken. Show the calm state, not "Couldn't start".
+          entry!.notStarted = true;
+          entry!.setStatus?.({ state: "not-started" });
+          return;
+        }
         entry!.setStatus?.({ state: "failed", error: String(err) });
       }
     };
@@ -260,7 +275,9 @@ export function Terminal({
       // ended while this workspace was away; otherwise re-wire input.
       retryStartRef.current = () => void startOrAttach("retry");
       restartRef.current = () => void startOrAttach("restart");
-      if (entry.exitStatus) {
+      if (entry.notStarted) {
+        setTermStatus({ state: "not-started" });
+      } else if (entry.exitStatus) {
         setTermStatus({ state: "exited", exitCode: entry.exitStatus.exitCode });
       } else {
         wireInteractive();

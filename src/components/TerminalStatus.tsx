@@ -1,6 +1,7 @@
 import {
   CircleAlert,
   CircleCheck,
+  CircleDashed,
   Loader2,
   type LucideIcon,
 } from "lucide-react";
@@ -13,7 +14,8 @@ export type TerminalStatusState =
   | "retrying"
   | "restarting"
   | "failed"
-  | "exited";
+  | "exited"
+  | "not-started";
 
 interface TerminalStatusProps {
   state: TerminalStatusState;
@@ -90,6 +92,20 @@ function resolve(
           disabled: false,
           ...(onRetry ? { onClick: onRetry } : {}),
         },
+      };
+    case "not-started":
+      // A draft/queued task synced from a newer build. Not an error: the
+      // backend refused on purpose (no worktree to run in), so no alarm
+      // colour and no Retry — retrying can't change the answer.
+      return {
+        Icon: CircleDashed,
+        iconColor: "text-(--color-text-muted)",
+        spin: false,
+        title: "Not started on this Mac",
+        support:
+          "This task was created on another Mac and hasn't been started yet. Start it there, or update phasr on this Mac to start it here.",
+        role: "status",
+        button: null,
       };
     case "exited": {
       const restart = {
