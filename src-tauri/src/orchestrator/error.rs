@@ -47,6 +47,15 @@ pub enum OrchestratorError {
     AlreadyLaunched,
     #[error("this task hasn't started yet; start it first")]
     NotStarted,
+    /// Its launch is still setting it up (fetch, worktree, after-create
+    /// hook); the agent starts when that's done.
+    #[error("this task is still being set up; its agent starts when setup finishes")]
+    Starting,
+    /// A message while the agent waits on a dialog would answer it (its
+    /// Enter picks the highlighted option). The frontend matches this
+    /// exact string.
+    #[error("the agent is waiting for your answer")]
+    AwaitingAnswer,
     /// Missing, another account's, itself, or a cycle.
     #[error("can't wait on task `{0}`: it doesn't exist or would wait on itself")]
     InvalidDependency(String),

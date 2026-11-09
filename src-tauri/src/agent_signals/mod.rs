@@ -203,7 +203,15 @@ struct Inner {
     workspaces: WorkspaceRepo,
     usage_repo: TaskUsageRepo,
     next_generation: std::sync::atomic::AtomicU64,
+    /// `task_id → repository_id` for tasks whose worktree is being set up
+    /// (fetch, copy, after-create hook — up to minutes) before the agent
+    /// spawns. Reported as a working state so the board derives Running,
+    /// not Draft-with-"Start now", for a task that is already starting.
+    starting: Mutex<HashMap<String, String>>,
 }
+
+/// The activity line of a task that is still being set up.
+pub const STARTING_ACTIVITY: &str = "Setting up the worktree\u{2026}";
 
 #[derive(Clone)]
 pub struct AgentSignals {
@@ -226,6 +234,7 @@ impl AgentSignals {
                 workspaces,
                 usage_repo,
                 next_generation: std::sync::atomic::AtomicU64::new(1),
+                starting: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -378,6 +387,71 @@ impl AgentSignals {
         };
         let rx = handle.subscribe();
         tokio::spawn(self.clone().run_detector(task_id.to_string(), generation, agent, tail, usage_dirty, rx));
+    }
+
+    /// `task_id` is being set up to launch (see `Inner::starting`). Until
+    /// its agent registers, `states()` reports it as working.
+    pub fn mark_starting(&self, task_id: &str, repository_id: &str) {
+        self.inner
+            .starting
+            .lock()
+            .insert(task_id.to_string(), repository_id.to_string());
+        if let Some(wire) = self.starting_state(task_id) {
+            self.emit(AgentSignalEvent::State(wire));
+        }
+    }
+
+    /// Setup ended. If no agent registered (the start failed), say it is
+    /// not running so no "working" state lingers for the task.
+    pub fn clear_starting(&self, task_id: &str) {
+        let Some(repository_id) = self.inner.starting.lock().remove(task_id) else {
+            return;
+        };
+        if self.inner.tasks.lock().contains_key(task_id) {
+            return;
+        }
+        self.emit(AgentSignalEvent::State(TaskAgentState {
+            task_id: task_id.to_string(),
+            repository_id,
+            state: AgentStateKind::Exited,
+            attention: None,
+            last_activity: None,
+            last_turn_ended_at: None,
+        }));
+    }
+
+    /// The synthetic "setting up" state, unless a live agent is registered.
+    fn starting_state(&self, task_id: &str) -> Option<TaskAgentState> {
+        let repository_id = self.inner.starting.lock().get(task_id).cloned()?;
+        let live = self
+            .inner
+            .tasks
+            .lock()
+            .get(task_id)
+            .is_some_and(|e| e.state.kind != AgentStateKind::Exited);
+        (!live).then(|| TaskAgentState {
+            task_id: task_id.to_string(),
+            repository_id,
+            state: AgentStateKind::Working,
+            attention: None,
+            last_activity: Some(STARTING_ACTIVITY.to_string()),
+            last_turn_ended_at: None,
+        })
+    }
+
+    /// Whether `task_id`'s agent is blocked on a dialog right now. A
+    /// message typed then (ending in Enter) would answer it.
+    pub fn awaiting_answer(&self, task_id: &str) -> bool {
+        self.inner
+            .tasks
+            .lock()
+            .get(task_id)
+            .is_some_and(|e| e.state.kind == AgentStateKind::NeedsYou)
+    }
+
+    /// What `task_id`'s agent is doing, as the board's domain sees it.
+    pub fn phase(&self, task_id: &str) -> Option<crate::domain::board::AgentPhase> {
+        self.inner.tasks.lock().get(task_id).map(|e| e.state.kind.into())
     }
 
     /// The agent's PTY exited (or was killed).
@@ -574,13 +648,20 @@ impl AgentSignals {
     }
 
     pub fn states(&self) -> Vec<TaskAgentState> {
+        let starting: Vec<String> = self.inner.starting.lock().keys().cloned().collect();
         let mut out: Vec<TaskAgentState> = self
             .inner
             .tasks
             .lock()
             .values()
+            .filter(|e| !starting.contains(&e.state.task_id) || e.state.kind != AgentStateKind::Exited)
             .map(|e| e.state.to_wire())
             .collect();
+        for task_id in &starting {
+            if let Some(wire) = self.starting_state(task_id) {
+                out.push(wire);
+            }
+        }
         out.sort_by(|a, b| a.task_id.cmp(&b.task_id));
         out
     }

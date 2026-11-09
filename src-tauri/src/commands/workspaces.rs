@@ -189,6 +189,9 @@ pub async fn create_workspace(
     workspaces
         .insert_for_user(&workspace, &current_session.user_id)
         .await?;
+    // Created here: its mode is this machine's choice (see
+    // `launch::effective_mode`).
+    launch::trust_task_mode(&meta, &workspace.id, mode).await?;
     sync_state.request_sync();
     Ok(workspace)
 }
@@ -264,6 +267,10 @@ pub async fn update_workspace(
         ..Default::default()
     };
     let workspace = repo.update(&id, patch).await?;
+    // A mode explicitly picked here is this machine's choice.
+    if let (Some(_), Some(mode)) = (input.permission_mode, workspace.permission_mode) {
+        launch::trust_task_mode(&meta, &workspace.id, mode).await?;
+    }
     sync_state.request_sync();
     Ok(workspace)
 }

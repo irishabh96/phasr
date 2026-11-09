@@ -127,6 +127,12 @@ impl TaskConfig {
         self
     }
 
+    /// The per-machine trust store, when launches are gated by it (always
+    /// in the app; `None` in tests, which run stored commands as is).
+    pub fn trust(&self) -> Option<&crate::store::AppMetaRepo> {
+        self.trust.as_ref()
+    }
+
     /// Never fails a launch: an unreadable row means the built-in behaviour.
     pub async fn setup_for(&self, repository_id: &str) -> TaskSetup {
         let config = self.configs.get(repository_id).await.unwrap_or_else(|err| {
