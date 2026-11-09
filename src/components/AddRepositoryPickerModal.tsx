@@ -34,9 +34,9 @@ export function AddRepositoryPickerModal() {
         <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <Dialog.Content className="fixed left-1/2 top-[16vh] z-[190] w-[min(520px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal animate-modal-in overflow-hidden">
-            <header className="flex h-12 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+            <header className="flex h-12 shrink-0 items-center gap-2 px-4">
               <Dialog.Title asChild>
-                <h2 className="text-[13px] font-semibold leading-none">
+                <h2 className="text-[13px] font-medium leading-none">
                   Add a repository
                 </h2>
               </Dialog.Title>
