@@ -73,10 +73,11 @@ export function SettingsSheet() {
         >
           <nav
             aria-label="Settings sections"
-            className="flex w-[208px] shrink-0 flex-col gap-0.5 border-r border-(--color-border-subtle) bg-(--color-bg-sidebar) px-2.5 py-3.5"
+            // Nav on bg, content on the sheet's surface: tone separates them.
+            className="flex w-[208px] shrink-0 flex-col gap-0.5 bg-(--color-bg-sidebar) px-2.5 py-3.5"
           >
-            <RadixDialog.Title className="m-0 px-2 pb-2.5 pt-1 text-[13px] font-semibold">Settings</RadixDialog.Title>
-            <label className="mb-2 flex h-7 items-center gap-1.5 rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-base) px-2 text-(--color-text-muted) focus-within:border-(--color-focus-ring)">
+            <RadixDialog.Title className="m-0 px-2 pb-2.5 pt-1 text-[14px] font-medium">Settings</RadixDialog.Title>
+            <label className="mb-2 flex h-7 shrink-0 items-center gap-1.5 rounded-(--radius-control) bg-(--color-bg-input) px-2 text-(--color-text-muted) shadow-(--ring-input) transition-shadow duration-(--dur-1) focus-within:shadow-(--ring-input-focus)">
               <Search className="size-3 shrink-0" aria-hidden />
               <input
                 aria-label="Search settings"
@@ -100,7 +101,7 @@ export function SettingsSheet() {
                       key={`${s.id}:${r.id}`}
                       type="button"
                       onClick={() => go(s.id, r.id)}
-                      className="truncate rounded-(--radius-control) px-2 py-1 text-left text-[11px] text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
+                      className="truncate rounded-(--radius-control) px-2 py-1 text-left text-[12px] text-(--color-text-muted) hover:bg-(--color-bg-elevated)/60 hover:text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
                     >
                       {s.label} › {r.label}
                     </button>
@@ -108,7 +109,7 @@ export function SettingsSheet() {
               : null}
             {repoSections.length > 0 ? (
               <>
-                <div className="my-2 h-px bg-(--color-border-subtle)" />
+                <div aria-hidden className="h-3 shrink-0" />
                 <RepoPicker
                   repositoryId={repositoryId}
                   onPick={(id) => open(section ?? "worktrees", { repositoryId: id })}
@@ -126,24 +127,24 @@ export function SettingsSheet() {
             ) : null}
             <div className="flex-1" />
             {APP_VERSION ? (
-              <span className="px-2 font-mono text-[11px] text-(--color-text-faint)">Phasr {APP_VERSION}</span>
+              <span className="px-2 text-[12px] tabular-nums text-(--color-text-muted)">Phasr {APP_VERSION}</span>
             ) : null}
           </nav>
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="flex h-12 shrink-0 items-center gap-2.5 border-b border-(--color-border-subtle) px-5">
-              <h2 className="m-0 text-[13px] font-semibold">{meta?.label}</h2>
+            <header className="flex h-12 shrink-0 items-center gap-2.5 px-5">
+              <h2 className="m-0 text-[14px] font-medium">{meta?.label}</h2>
               {meta?.scope === "repo" && repository ? (
                 <span className="text-[12px] text-(--color-text-muted)">repository · {repository.name}</span>
               ) : null}
               <RadixDialog.Close
                 aria-label="Close settings"
-                className="ml-auto grid size-[26px] place-items-center rounded-(--radius-control) text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+                className="ml-auto grid size-[26px] place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
               >
                 <X className="size-3.5" aria-hidden />
               </RadixDialog.Close>
             </header>
-            <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 pt-1">
               {section === "account" && <AccountSection />}
               {section === "appearance" && <AppearanceSection />}
               {section === "terminal" && <TerminalSection />}
@@ -154,7 +155,7 @@ export function SettingsSheet() {
               {section === "worktrees" && <WorktreesSettings repositoryId={repositoryId} />}
               {section === "branch-rules" && <BranchRulesSettings repositoryId={repositoryId} />}
             </div>
-            <footer className="flex h-11 shrink-0 items-center gap-2 border-t border-(--color-border-subtle) bg-(--color-bg-sidebar) px-5 text-[11px] text-(--color-text-muted)">
+            <footer className="flex h-11 shrink-0 items-center gap-2 bg-(--color-bg-sidebar) px-5 text-[12px] text-(--color-text-muted)">
               <span aria-hidden className="size-1.5 rounded-full bg-(--color-success)" />
               Changes save instantly
               <span className="flex-1" />
@@ -174,11 +175,13 @@ function NavItem({ active, onClick, children }: { active: boolean; onClick: () =
       aria-current={active ? "page" : undefined}
       onClick={onClick}
       className={cn(
-        "flex h-[30px] items-center rounded-(--radius-control) px-2 text-left text-[13px] transition-colors duration-100",
+        "flex h-[30px] shrink-0 items-center rounded-(--radius-control) px-2 text-left text-[13px]",
+        "transition-colors duration-(--dur-1) ease-(--ease-out)",
         "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
+        // Selected = a background step, never an outline.
         active
           ? "bg-(--color-bg-elevated) font-medium text-(--color-text-primary)"
-          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+          : "text-(--color-text-secondary) hover:bg-(--color-bg-elevated)/60 hover:text-(--color-text-primary)",
       )}
     >
       {children}

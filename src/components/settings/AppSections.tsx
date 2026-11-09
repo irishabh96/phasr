@@ -66,7 +66,7 @@ export function AccountSection() {
             <img
               src={session.profile.imageUrl}
               alt=""
-              className="size-9 rounded-full border border-(--color-border-default) object-cover"
+              className="size-9 rounded-full object-cover shadow-(--shadow-card)"
             />
           ) : (
             <span className="grid size-9 place-items-center rounded-full bg-(--color-success) text-[13px] font-semibold text-white">
@@ -77,7 +77,7 @@ export function AccountSection() {
             <div className="truncate text-[13px] font-medium">
               {session.profile.name ?? session.profile.email ?? "Signed in"}
             </div>
-            <div className="truncate text-[11px] text-(--color-text-muted)">
+            <div className="truncate text-[12px] text-(--color-text-muted)">
               {session.profile.email ?? "Email not provided"} · verified desktop session
             </div>
           </div>
@@ -122,8 +122,11 @@ function ThemePreview({ theme }: { theme: Theme }) {
     return (
       <span
         aria-hidden
-        className="block h-14 rounded-[5px] border border-(--color-border-default)"
-        style={{ background: "linear-gradient(110deg, #0C0C0E 50%, #F6F5F2 50%)" }}
+        className="block h-14 rounded-[5px]"
+        style={{
+          background: "linear-gradient(110deg, #0C0C0E 50%, #F6F5F2 50%)",
+          boxShadow: "0 0 0 1px var(--color-border-hairline)",
+        }}
       />
     );
   }
@@ -131,13 +134,11 @@ function ThemePreview({ theme }: { theme: Theme }) {
   return (
     <span
       aria-hidden
-      className="flex h-14 overflow-hidden rounded-[5px] border"
-      style={{ background: dark ? "#0C0C0E" : "#F6F5F2", borderColor: dark ? "#26262C" : "#D9D4CB" }}
+      className="flex h-14 overflow-hidden rounded-[5px]"
+      style={{ background: dark ? "#0C0C0E" : "#F6F5F2", boxShadow: `0 0 0 1px ${dark ? "#26262C" : "#D9D4CB"}` }}
     >
-      <span
-        className="w-[28%] border-r"
-        style={{ background: dark ? "#141417" : "#ECE8E1", borderColor: dark ? "#1A1A1F" : "#D9D4CB" }}
-      />
+      {/* Sidebar strip: a tone step, no line (A-Polish 01). */}
+      <span className="w-[28%]" style={{ background: dark ? "#141417" : "#ECE8E1" }} />
     </span>
   );
 }
@@ -174,11 +175,11 @@ export function AppearanceSection() {
                 aria-checked={active}
                 onClick={() => setTheme(t.value)}
                 className={cn(
-                  "flex flex-col gap-2 rounded-(--radius-card) border p-2 text-left transition-colors duration-100",
+                  "flex flex-col gap-2 rounded-(--radius-card) p-2 text-left shadow-(--shadow-card)",
+                  "transition-colors duration-(--dur-1) ease-(--ease-out)",
                   "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
-                  active
-                    ? "border-(--color-accent-500) bg-(--color-accent-950)"
-                    : "border-(--color-border-default) bg-(--color-bg-surface) hover:border-(--color-border-strong)",
+                  // Selected = a background step, never a coloured outline.
+                  active ? "bg-(--color-bg-hover)" : "bg-(--color-bg-surface) hover:bg-(--color-bg-elevated)",
                 )}
               >
                 <ThemePreview theme={t.value} />
@@ -314,17 +315,17 @@ export function TerminalSection() {
           </>
         }
       >
-        <div className="flex items-center overflow-hidden rounded-(--radius-control) border border-(--color-border-default)">
+        <div className="flex items-center overflow-hidden rounded-(--radius-control) bg-(--color-bg-input) shadow-(--ring-input)">
           <button
             type="button"
             aria-label={SHORTCUTS.decreaseFontSize.label}
             disabled={size === null || size <= TERMINAL_FONT_SIZE.min}
             onClick={() => adjust(-1)}
-            className="grid size-7 place-items-center bg-(--color-bg-surface) hover:bg-(--color-bg-elevated) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)"
+            className="grid size-7 place-items-center text-(--color-text-secondary) transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)"
           >
             <Minus className="size-3" aria-hidden />
           </button>
-          <span role="status" aria-atomic="true" className="w-[52px] text-center font-mono text-[12px] tabular-nums">
+          <span role="status" aria-atomic="true" className="w-[52px] text-center text-[12px] tabular-nums">
             {size === null ? "—" : `${size} px`}
           </span>
           <button
@@ -332,7 +333,7 @@ export function TerminalSection() {
             aria-label={SHORTCUTS.increaseFontSize.label}
             disabled={size === null || size >= TERMINAL_FONT_SIZE.max}
             onClick={() => adjust(1)}
-            className="grid size-7 place-items-center bg-(--color-bg-surface) hover:bg-(--color-bg-elevated) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)"
+            className="grid size-7 place-items-center text-(--color-text-secondary) transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)"
           >
             <Plus className="size-3" aria-hidden />
           </button>
@@ -425,12 +426,12 @@ export function AgentsSection() {
         <div
           data-settings-row
           id="settings-row-agents"
-          className="grid grid-cols-[140px_minmax(0,1fr)_110px] items-center gap-3 bg-(--color-bg-sidebar) px-3.5 py-2"
+          className="grid grid-cols-[140px_minmax(0,1fr)_110px] items-center gap-3 px-3.5 py-2"
         >
           <span className="group-header">Agent</span>
           <span className="group-header">Command</span>
           <span className="flex items-center justify-end">
-            <Button size="sm" className="h-6" disabled={redetecting} onClick={() => void redetect()}>
+            <Button variant="ghost" size="sm" className="-mr-2 h-6" disabled={redetecting} onClick={() => void redetect()}>
               {redetecting ? "Detecting…" : "Re-detect"}
             </Button>
           </span>
@@ -450,7 +451,7 @@ export function AgentsSection() {
             >
               <span className="flex items-center gap-2 text-[12px] font-medium">
                 <AgentMark agent={a.agent} size="md" withLabel />
-                {a.isDefault ? <span className="text-[11px] font-normal text-(--color-text-muted)">default</span> : null}
+                {a.isDefault ? <span className="text-[12px] font-normal text-(--color-text-muted)">default</span> : null}
               </span>
               <code className="truncate font-mono text-[11px] text-(--color-text-secondary)" title={a.template ?? a.command}>
                 {a.template ?? a.command}
@@ -524,7 +525,7 @@ function ApiKeysCard() {
         <div key={k.name} data-settings-row id={`settings-row-${k.name}`} className="flex items-center gap-3 px-3.5 py-2.5">
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="font-mono text-[12px]">{k.name}</span>
-            <span className="text-[11px] text-(--color-text-muted)">
+            <span className="text-[12px] text-(--color-text-muted)">
               {k.isSet ? `${KEY_AGENT[k.name]} uses this key (API billing)` : `not set · ${KEY_AGENT[k.name]} uses its own login`}
             </span>
           </span>
@@ -555,14 +556,14 @@ function ApiKeysCard() {
               <Button size="sm" type="submit" variant="primary" disabled={!value.trim() || setKey.isPending}>
                 Save
               </Button>
-              <Button size="sm" type="button" onClick={() => setEditing(null)}>
+              <Button variant="ghost" size="sm" type="button" onClick={() => setEditing(null)}>
                 Cancel
               </Button>
             </form>
           ) : (
             <>
               {k.isSet ? <span className="font-mono text-[11px] text-(--color-text-muted)">••••••••{k.hint ?? ""}</span> : null}
-              <Button size="sm" onClick={() => setEditing(k.name)}>
+              <Button variant="ghost" size="sm" onClick={() => setEditing(k.name)}>
                 {k.isSet ? "Replace" : "+ Add"}
               </Button>
               {k.isSet ? (
@@ -642,7 +643,7 @@ export function KeyboardSection() {
           })}
         </SettingsCard>
       ))}
-      <p className="m-0 text-[11px] text-(--color-text-muted)">
+      <p className="m-0 text-[12px] text-(--color-text-muted)">
         Shortcuts never fire while a terminal pane has focus unless they include ⌘ — so agent TUIs keep their own keys.
       </p>
     </div>
@@ -694,7 +695,7 @@ export function NotificationsSection() {
           >
             <span className="flex flex-col gap-0.5">
               <span className="text-[12px] font-medium">{row.label}</span>
-              {row.help ? <span className="text-[11px] text-(--color-text-muted)">{row.help}</span> : null}
+              {row.help ? <span className="text-[12px] text-(--color-text-muted)">{row.help}</span> : null}
             </span>
             {(["badge", "system", "sound"] as const).map((ch) => (
               <span key={ch} className="flex justify-center">
@@ -740,7 +741,7 @@ export function NotificationsSection() {
           value={prefs.quietHours.start}
           disabled={!settings || !prefs.quietHours.enabled}
           onChange={(e) => save({ ...prefs, quietHours: { ...prefs.quietHours, start: e.target.value } })}
-          className="h-7 w-[96px] px-2 py-0 font-mono text-[12px] disabled:opacity-40"
+          className="h-7 w-[96px] px-2 py-0 text-[12px] tabular-nums disabled:opacity-40"
         />
         <span className="text-(--color-text-muted)">–</span>
         <input
@@ -749,7 +750,7 @@ export function NotificationsSection() {
           value={prefs.quietHours.end}
           disabled={!settings || !prefs.quietHours.enabled}
           onChange={(e) => save({ ...prefs, quietHours: { ...prefs.quietHours, end: e.target.value } })}
-          className="h-7 w-[96px] px-2 py-0 font-mono text-[12px] disabled:opacity-40"
+          className="h-7 w-[96px] px-2 py-0 text-[12px] tabular-nums disabled:opacity-40"
         />
       </SettingsRow>
     </SettingsCard>

@@ -135,7 +135,7 @@ export function RunCommandsSection({
           <div className="group-header">
             Commands
           </div>
-          <GlassButton variant="outline" size="sm" onClick={toggleAdd}>
+          <GlassButton variant="ghost" size="sm" onClick={toggleAdd}>
             <Plus size={12} />
             Add
           </GlassButton>
@@ -145,7 +145,7 @@ export function RunCommandsSection({
       {showAdd && (
         <form
           onSubmit={handleCreate}
-          className="space-y-2.5 rounded-(--radius-card) border border-(--color-border-subtle) bg-(--color-bg-surface) p-4"
+          className="card space-y-2.5 p-4"
         >
           <GlassInput
             value={name}
@@ -184,11 +184,11 @@ export function RunCommandsSection({
       )}
 
       {sorted.length > 0 && (
-        <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-(--radius-card) border border-(--color-border-subtle) bg-(--color-bg-surface)">
+        <ul className="card overflow-hidden py-1">
           {sorted.map((rc) => {
             const isEditing = editingId === rc.id;
             return (
-              <li key={rc.id} className="px-4 py-3">
+              <li key={rc.id} className="px-3.5 py-2.5">
                 <div className="flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     {isEditing ? (
@@ -206,10 +206,10 @@ export function RunCommandsSection({
                       </div>
                     ) : (
                       <>
-                        <span className="block truncate text-sm font-medium">
+                        <span className="block truncate text-[12px] font-medium">
                           {rc.name}
                         </span>
-                        <code className="block truncate text-[12px] text-(--color-text-muted)">
+                        <code className="block truncate font-mono text-[11px] text-(--color-text-muted)">
                           {rc.command}
                         </code>
                       </>

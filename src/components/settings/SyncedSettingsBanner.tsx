@@ -75,7 +75,7 @@ export function SyncedSettingsBanner({ scope }: { scope: SyncedSettingsScope }) 
     <div
       role="status"
       aria-label="Settings from another device"
-      className="flex flex-col gap-2 rounded-(--radius-card) border border-(--color-warning) bg-(--color-warning-tint) px-3.5 py-2.5 text-[12px]"
+      className="flex flex-col gap-2 rounded-(--radius-card) bg-(--color-warning-tint) px-3.5 py-2.5 text-[12px]"
     >
       <span className="text-(--color-text-secondary)">
         {pending.length === 1 ? "This setting" : "These settings"} came from another device and{" "}
@@ -121,9 +121,9 @@ function SettingRow({
   const value = displayValue(setting);
   const long = value.length > 60 || value.includes("\n");
   return (
-    <li className="flex items-start gap-2 rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-base) px-2.5 py-1.5">
+    <li className="flex items-start gap-2 rounded-(--radius-control) bg-(--color-bg-input) px-2.5 py-1.5">
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-[11px] text-(--color-text-muted)">{settingLabel(setting.key)}</span>
+        <span className="text-[12px] text-(--color-text-muted)">{settingLabel(setting.key)}</span>
         <code
           title={expanded ? undefined : value}
           className={
@@ -139,7 +139,7 @@ function SettingRow({
             type="button"
             aria-expanded={expanded}
             onClick={() => setExpanded((v) => !v)}
-            className="self-start text-[11px] text-(--color-text-muted) underline-offset-2 hover:text-(--color-text-secondary) hover:underline focus-visible:outline-none focus-visible:underline"
+            className="self-start text-[12px] text-(--color-text-muted) underline-offset-2 hover:text-(--color-text-secondary) hover:underline focus-visible:outline-none focus-visible:underline"
           >
             {expanded ? "Show less" : "Show full value"}
           </button>
