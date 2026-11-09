@@ -22,7 +22,7 @@ const COLOR: Record<Status, string> = {
   failed: "var(--color-danger)",
   stopped: "var(--color-text-muted)",
   archived: "var(--color-text-muted)",
-  pending: "var(--color-warning)",
+  pending: "var(--color-status-queued)",
 };
 
 export function StatusDot({

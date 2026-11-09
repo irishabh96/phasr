@@ -2,13 +2,27 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   Agent,
+  AgentDetection,
+  AgentFileEdit,
+  AgentSummary,
+  ApiKeyName,
+  ApiKeyStatus,
+  CleanupAfterMerge,
   AgentOption,
+  AppNotification,
+  AttentionResponse,
   BranchStatus,
+  CheckRun,
+  CheckSummary,
   Commit,
   CommitFileChange,
   CommitOutput,
   ConflictSide,
+  CommentSide,
+  CommentStatus,
+  DetectedScript,
   DiffScope,
+  EnvironmentCheck,
   FileChange,
   GitPushOutcome,
   InProgress,
@@ -20,16 +34,36 @@ import type {
   NoteOriginKind,
   OpenPullRequestOutcome,
   PathValidation,
+  PermissionMode,
+  PrMode,
   PtyEvent,
+  PushPolicy,
+  PullRequestOutcome,
   Repository,
+  RepositoryConfig,
+  RepositoryWorktree,
+  RevertHunkScope,
+  ReviewComment,
   RunCommand,
+  RunIn,
+  RunningCommand,
+  RunWhen,
+  SendCommentsOutcome,
   RunningTaskInfo,
   StartedTask,
+  SystemStatus,
   TaskActivity,
+  TaskAgentState,
+  TaskCard,
+  TaskUsage,
   UserSettings,
   Workspace,
   WorkspaceDeleteCheck,
+  WorkspaceFile,
   WorkspaceStatus,
+  WorkspaceTree,
+  WorktreeSize,
+  WriteWorkspaceFileResult,
 } from "./types";
 
 interface CreateRepositoryInput {
@@ -61,6 +95,9 @@ interface UpdateWorkspaceInput {
   branch?: string;
   worktreePath?: string;
   exitCode?: number;
+  /** Takes effect the next time the task starts/resumes. */
+  permissionMode?: PermissionMode;
+  notifyOnAttention?: boolean;
 }
 
 interface StartTaskInput {
@@ -71,6 +108,93 @@ interface StartTaskInput {
   baseBranch?: string;
   rows?: number;
   cols?: number;
+  /** Omitted → the user's `defaultPermissionMode`. */
+  permissionMode?: PermissionMode;
+  /** Omitted → true. */
+  notifyOnAttention?: boolean;
+  /** Omitted → "worktree". "in-place" runs in the repo's local workspace. */
+  runIn?: RunIn;
+}
+
+export interface CreateTaskDraftInput {
+  repositoryId: string;
+  name: string;
+  prompt?: string;
+  agent: Agent;
+  /** Omitted → the user's `defaultPermissionMode`. */
+  permissionMode?: PermissionMode;
+  /** Omitted → the repository's default branch, read when it starts. */
+  baseBranch?: string;
+  /** `true` → queued (starts when `dependsOn` reaches review); `false` → draft. */
+  queue: boolean;
+  /** Task id to wait for. */
+  dependsOn?: string;
+  /** Omitted → true. */
+  notifyOnAttention?: boolean;
+}
+
+/**
+ * Edits to a draft / queued task. Omitted = unchanged; `null` clears
+ * `prompt` / `baseBranch` / `dependsOn`. Rejected once the task started.
+ */
+export interface UpdateTaskDraftInput {
+  name?: string;
+  prompt?: string | null;
+  agent?: Agent;
+  permissionMode?: PermissionMode;
+  baseBranch?: string | null;
+  dependsOn?: string | null;
+  notifyOnAttention?: boolean;
+}
+
+export interface CreateReviewCommentInput {
+  workspaceId: string;
+  path: string;
+  line: number;
+  /** Omitted → "new". */
+  side?: CommentSide;
+  /** The commented line's text, quoted to the agent. */
+  anchorText?: string;
+  body: string;
+}
+
+export interface UpdateReviewCommentInput {
+  body?: string;
+  status?: CommentStatus;
+}
+
+export interface ApproveInput {
+  draft?: boolean;
+  /** Omitted → the task name. */
+  title?: string;
+  /** Omitted → the agent's summary + check results. */
+  body?: string;
+  /** Open the PR although required checks aren't passing. */
+  overrideChecks?: boolean;
+}
+
+export interface ListNotificationsInput {
+  unreadOnly?: boolean;
+  /** Newest first; capped at 500 by the backend. */
+  limit?: number;
+}
+
+/**
+ * Edits to a repository's rules. Omitted = unchanged; `null` (or `""`)
+ * clears the text fields back to their default.
+ */
+export interface UpdateRepositoryConfigInput {
+  defaultBaseBranch?: string | null;
+  fetchBaseBeforeTask?: boolean;
+  agentsMayPush?: PushPolicy;
+  prMode?: PrMode;
+  protectedPaths?: string[];
+  copyUntrackedGlobs?: string[];
+  cleanupAfterMerge?: CleanupAfterMerge;
+  /** "After creating" hook. */
+  preTaskHook?: string | null;
+  branchPrefixTemplate?: string | null;
+  worktreeBasePath?: string | null;
 }
 
 interface StartCloudSyncInput {
@@ -120,6 +244,7 @@ export const tauri = {
     invoke<string[]>("list_repo_files", { path }),
   listLocalBranches: (path: string) =>
     invoke<string[]>("list_local_branches", { path }),
+  /** Absolute path inside one of your repositories / worktrees; else rejects. */
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
 
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
@@ -181,11 +306,44 @@ export const tauri = {
 
   // ── agents ───────────────────────────────────────────────────────────
   listAgents: () => invoke<AgentOption[]>("list_agents"),
+  detectAgents: (force = false) =>
+    invoke<AgentDetection[]>("detect_agents", { force }),
+  checkEnvironment: (force = false) =>
+    invoke<EnvironmentCheck>("check_environment", { force }),
+  previewAgentCommand: (agent: Agent, mode: PermissionMode) =>
+    invoke<string>("preview_agent_command", { agent, mode }),
 
   // ── settings ─────────────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),
   updateUserSettings: (settings: UserSettings) =>
     invoke<UserSettings>("update_user_settings", { settings }),
+  /** Shells from `/etc/shells` present on this machine. */
+  listShells: () => invoke<string[]>("list_shells"),
+
+  // ── repository rules + worktrees (M11) ──────────────────────────────
+  getRepositoryConfig: (repositoryId: string) =>
+    invoke<RepositoryConfig>("get_repository_config", { repositoryId }),
+  updateRepositoryConfig: (repositoryId: string, input: UpdateRepositoryConfigInput) =>
+    invoke<RepositoryConfig>("update_repository_config", { repositoryId, input }),
+  /** The repository's worktrees (main checkout excluded) with task + lane. */
+  listRepositoryWorktrees: (repositoryId: string) =>
+    invoke<RepositoryWorktree[]>("list_repository_worktrees", { repositoryId }),
+  /** `du` per worktree (slow on big trees — fetch on demand). */
+  computeWorktreeSizes: (repositoryId: string) =>
+    invoke<WorktreeSize[]>("compute_worktree_sizes", { repositoryId }),
+  /**
+   * Remove worktrees (branches kept). All-or-nothing: rejects the batch for
+   * the main checkout, a path outside phasr's worktree folders, or one with
+   * a running agent. Resolves to the removed paths.
+   */
+  removeWorktrees: (repositoryId: string, paths: string[]) =>
+    invoke<string[]>("remove_worktrees", { repositoryId, paths }),
+
+  // ── API keys (Keychain; values never come back) ──────────────────────
+  listApiKeys: () => invoke<ApiKeyStatus[]>("list_api_keys"),
+  setApiKey: (name: ApiKeyName, value: string) =>
+    invoke<ApiKeyStatus>("set_api_key", { name, value }),
+  deleteApiKey: (name: ApiKeyName) => invoke<void>("delete_api_key", { name }),
 
   // ── git ──────────────────────────────────────────────────────────────
   gitStatus: (workspaceId: string) =>
@@ -230,6 +388,37 @@ export const tauri = {
       ...(path ? { path } : {}),
     }),
 
+  // ── Files tab (M9) ───────────────────────────────────────────────────
+  /** Tracked + untracked files of the worktree with git badges (≤ 50k). */
+  listWorkspaceTree: (workspaceId: string) =>
+    invoke<WorkspaceTree>("list_workspace_tree", { workspaceId }),
+  /** ≤ 1 MB UTF-8; `path` is worktree-relative (no `..`, `.git/`, absolute). */
+  readWorkspaceFile: (workspaceId: string, path: string) =>
+    invoke<WorkspaceFile>("read_workspace_file", { workspaceId, path }),
+  /**
+   * Atomic save. Rejects with "file changed on disk" when the file no
+   * longer matches `expectedHash`; `null` writes unconditionally.
+   */
+  writeWorkspaceFile: (
+    workspaceId: string,
+    path: string,
+    contents: string,
+    expectedHash: string | null,
+  ) =>
+    invoke<WriteWorkspaceFileResult>("write_workspace_file", {
+      workspaceId,
+      path,
+      contents,
+      expectedHash,
+    }),
+  /** Reverse-apply the hunk with this exact header; rejects "hunk no longer matches". */
+  revertHunk: (
+    workspaceId: string,
+    path: string,
+    hunkHeader: string,
+    scope: RevertHunkScope,
+  ) => invoke<void>("revert_hunk", { workspaceId, path, hunkHeader, scope }),
+
   // ── localfs ──────────────────────────────────────────────────────────
   validateRepositoryPath: (path: string) =>
     invoke<PathValidation>("validate_workspace_path", { path }),
@@ -242,13 +431,18 @@ export const tauri = {
   // ── run commands ─────────────────────────────────────────────────────
   listRunCommands: (repositoryId: string) =>
     invoke<RunCommand[]>("list_run_commands", { repositoryId }),
+  /** Created here = trusted to auto-run on this machine. */
   createRunCommand: (input: {
     repositoryId: string;
     name: string;
     command: string;
     shortcut?: string;
     pinned?: boolean;
+    runWhen?: RunWhen;
+    detectPort?: boolean;
+    requiredForApprove?: boolean;
   }) => invoke<RunCommand>("create_run_command", { input }),
+  /** Editing `command` here re-trusts it; toggling `runWhen` alone does not. */
   updateRunCommand: (
     id: string,
     input: {
@@ -257,9 +451,20 @@ export const tauri = {
       shortcut?: string;
       pinned?: boolean;
       sortOrder?: number;
+      runWhen?: RunWhen;
+      detectPort?: boolean;
+      requiredForApprove?: boolean;
     },
   ) => invoke<RunCommand>("update_run_command", { id, input }),
   deleteRunCommand: (id: string) => invoke<void>("delete_run_command", { id }),
+  /** "Allow on this machine": a synced command's text may auto-run here. */
+  confirmRunCommand: (id: string) => invoke<RunCommand>("confirm_run_command", { id }),
+  /** Running / exited-this-session run commands, one task or all. */
+  listRunningCommands: (workspaceId?: string | null) =>
+    invoke<RunningCommand[]>("list_running_commands", { workspaceId: workspaceId ?? null }),
+  /** `package.json` scripts as run-command suggestions. */
+  detectPackageScripts: (repositoryId: string) =>
+    invoke<DetectedScript[]>("detect_package_scripts", { repositoryId }),
 
   // ── notes ────────────────────────────────────────────────────────────
   listNotesForRepository: (repositoryId: string) =>
@@ -283,17 +488,31 @@ export const tauri = {
   setNoteDone: (id: string, done: boolean) =>
     invoke<Note>("set_note_done", { id, done }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
+  /**
+   * Start (or re-attach to) a run command. With `workspaceId` it runs in
+   * that task's worktree (one process per task); without, in the
+   * repository's checkout. Pass the same `workspaceId` to stop/input/resize.
+   */
   startRunCommand: (
     id: string,
     onEvent: Channel<PtyEvent>,
     rows = 24,
     cols = 80,
-  ) => invoke<void>("start_run_command", { id, onEvent, rows, cols }),
-  stopRunCommand: (id: string) => invoke<void>("stop_run_command", { id }),
-  sendRunCommandInput: (id: string, data: string) =>
-    invoke<void>("send_run_command_input", { id, data }),
-  resizeRunCommand: (id: string, rows: number, cols: number) =>
-    invoke<void>("resize_run_command", { id, rows, cols }),
+    workspaceId?: string | null,
+  ) =>
+    invoke<void>("start_run_command", {
+      id,
+      onEvent,
+      rows,
+      cols,
+      workspaceId: workspaceId ?? null,
+    }),
+  stopRunCommand: (id: string, workspaceId?: string | null) =>
+    invoke<void>("stop_run_command", { id, workspaceId: workspaceId ?? null }),
+  sendRunCommandInput: (id: string, data: string, workspaceId?: string | null) =>
+    invoke<void>("send_run_command_input", { id, data, workspaceId: workspaceId ?? null }),
+  resizeRunCommand: (id: string, rows: number, cols: number, workspaceId?: string | null) =>
+    invoke<void>("resize_run_command", { id, rows, cols, workspaceId: workspaceId ?? null }),
 
   // ── orchestrator (task lifecycle + terminal) ─────────────────────────
   startTask: (input: StartTaskInput) =>
@@ -319,11 +538,109 @@ export const tauri = {
     }),
   sendInputToTask: (taskId: string, data: string) =>
     invoke<void>("send_input_to_task", { taskId, data }),
+  sendMessageToTask: (taskId: string, text: string, submit = true) =>
+    invoke<void>("send_message_to_task", { taskId, text, submit }),
   readTaskLog: (taskId: string) => invoke<string>("read_task_log", { taskId }),
   resizeTask: (taskId: string, rows: number, cols: number) =>
     invoke<void>("resize_task", { taskId, rows, cols }),
   interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
   listTaskActivity: () => invoke<TaskActivity[]>("list_task_activity"),
+
+  // ── agent signals (M6) ───────────────────────────────────────────────
+  /** Every tracked task's agent state (tasks launched since app start). */
+  listAgentStates: () => invoke<TaskAgentState[]>("list_agent_states"),
+  /**
+   * Answer the agent's approval dialog. Rejects with "stale attention" when
+   * `attentionId` is no longer the dialog on screen (nothing is typed).
+   */
+  respondToAttention: (
+    taskId: string,
+    attentionId: string,
+    response: AttentionResponse,
+  ) => invoke<void>("respond_to_attention", { taskId, attentionId, response }),
+  /** `null` for agents without readable transcripts (Gemini/Copilot/OpenCode). */
+  getTaskUsage: (taskId: string) =>
+    invoke<TaskUsage | null>("get_task_usage", { taskId }),
+  getAgentSummary: (taskId: string) =>
+    invoke<AgentSummary | null>("get_agent_summary", { taskId }),
+  listAgentFileEdits: (taskId: string) =>
+    invoke<AgentFileEdit[]>("list_agent_file_edits", { taskId }),
+
+  // ── board (M7) ───────────────────────────────────────────────────────
+  /** Every task card, one repository or (`null`) all, newest first. */
+  listTaskCards: (repositoryId: string | null) =>
+    invoke<TaskCard[]>("list_task_cards", { repositoryId }),
+  /** Save without starting: a draft, or (`queue: true`) a queued task. */
+  createTaskDraft: (input: CreateTaskDraftInput) =>
+    invoke<Workspace>("create_task_draft", { input }),
+  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
+    invoke<Workspace>("update_task_draft", { id, input }),
+  /** Move a not-yet-started task into / out of the queue. */
+  setTaskQueued: (id: string, queued: boolean) =>
+    invoke<Workspace>("set_task_queued", { id, queued }),
+  /** "Start now" for a draft / queued task; an already-started task is returned as is. */
+  startQueuedTask: (id: string, rows?: number, cols?: number) =>
+    invoke<StartedTask>("start_queued_task", { id, rows, cols }).then((started) => {
+      // Same first-launch moment as `startTask` (DDR-003 §7).
+      void maybeRequestNotificationPermission();
+      return started;
+    }),
+  getSystemStatus: () => invoke<SystemStatus>("get_system_status"),
+
+  // ── review (M8) ──────────────────────────────────────────────────────
+  /** Files changed vs the merge-base with the task's base (committed too). */
+  gitReviewFiles: (workspaceId: string) =>
+    invoke<FileChange[]>("git_review_files", { workspaceId }),
+  /** Run checks now: these run commands, or every check when omitted. */
+  runChecks: (workspaceId: string, runCommandIds?: string[]) =>
+    invoke<CheckRun[]>("run_checks", { workspaceId, runCommandIds: runCommandIds ?? null }),
+  /** Cancel the task's queued/running checks; resolves to how many. */
+  cancelChecks: (workspaceId: string) => invoke<number>("cancel_checks", { workspaceId }),
+  listCheckRuns: (workspaceId: string) =>
+    invoke<CheckSummary>("list_check_runs", { workspaceId }),
+  /** Full output (end of the log, ≤ 4 MiB). */
+  getCheckOutput: (checkRunId: string) =>
+    invoke<string>("get_check_output", { checkRunId }),
+  listReviewComments: (workspaceId: string) =>
+    invoke<ReviewComment[]>("list_review_comments", { workspaceId }),
+  createReviewComment: (input: CreateReviewCommentInput) =>
+    invoke<ReviewComment>("create_review_comment", { input }),
+  updateReviewComment: (id: string, input: UpdateReviewCommentInput) =>
+    invoke<ReviewComment>("update_review_comment", { id, input }),
+  deleteReviewComment: (id: string) => invoke<void>("delete_review_comment", { id }),
+  /**
+   * Send pending comments to the task's agent as one message. Rejects with
+   * "agent not running" (no PTY) or "no pending comments to send".
+   */
+  sendReviewComments: (workspaceId: string, message?: string) =>
+    invoke<SendCommentsOutcome>("send_review_comments", { workspaceId, message: message ?? null }),
+  /** Like `sendReviewComments`, but a message alone is enough. */
+  requestChanges: (workspaceId: string, message?: string) =>
+    invoke<SendCommentsOutcome>("request_changes", { workspaceId, message: message ?? null }),
+  /**
+   * Gate on required checks → push → `gh pr create` (or the compare URL).
+   * Rejects with "required checks not passing: a, b" unless `overrideChecks`.
+   */
+  approveAndCreatePr: (workspaceId: string, input: ApproveInput = {}) =>
+    invoke<PullRequestOutcome>("approve_and_create_pr", { workspaceId, input }),
+  /** Re-read open PRs via `gh`; returns the tasks whose PR state / outcome changed. */
+  refreshPrStates: (repositoryId?: string | null) =>
+    invoke<Workspace[]>("refresh_pr_states", { repositoryId: repositoryId ?? null }),
+  /** Merge into the task's base in the main checkout; clean → outcome merged. */
+  mergeTaskLocally: (workspaceId: string, strategy: MergeStrategy) =>
+    invoke<MergeOutcome>("merge_task_locally", { workspaceId, strategy }),
+  /** Remove worktree + branch, outcome closed; the row and notes are kept. */
+  discardWorkspace: (workspaceId: string) =>
+    invoke<Workspace>("discard_workspace", { workspaceId }),
+
+  // ── notifications inbox (M8) ─────────────────────────────────────────
+  listNotifications: (input: ListNotificationsInput = {}) =>
+    invoke<AppNotification[]>("list_notifications", { input }),
+  unreadNotificationCount: () => invoke<number>("unread_notification_count"),
+  /** `null` = mark everything read. Resolves to how many changed. */
+  markNotificationsRead: (ids: string[] | null) =>
+    invoke<number>("mark_notifications_read", { ids }),
+  clearNotifications: () => invoke<number>("clear_notifications"),
 };
 
 export { Channel };

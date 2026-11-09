@@ -95,6 +95,9 @@ export function SessionTerminalTab({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
+  // The cursor and selection wash come from the accent, so an accent change
+  // re-pushes the palette exactly like a theme flip.
+  const accent = useUiStore((s) => s.accent);
   const [status, setStatus] = useState<TermStatus>(null);
   // See Terminal.tsx — mirrored onto the container for e2e.
   const [surfaceInfo, setSurfaceInfo] = useState<{
@@ -325,7 +328,7 @@ export function SessionTerminalTab({
     const entry = sessionSurfaceCache.get(tabId);
     if (!entry) return;
     entry.surface.applyTheme(readTerminalTheme());
-  }, [theme, tabId]);
+  }, [theme, accent, tabId]);
 
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + repaint synchronously here

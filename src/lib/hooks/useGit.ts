@@ -15,7 +15,7 @@ import type {
   MergeStrategy,
 } from "@/lib/types";
 
-const gitKeys = {
+export const gitKeys = {
   status: (workspaceId: string) => ["git", "status", workspaceId] as const,
   branchStatus: (workspaceId: string) =>
     ["git", "branchStatus", workspaceId] as const,

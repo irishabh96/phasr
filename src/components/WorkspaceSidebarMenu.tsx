@@ -107,7 +107,7 @@ export function WorkspaceSidebarMenu({
           <ContextMenu.Content
             className={cn(
               "z-[200] min-w-[180px] overflow-hidden p-1",
-              "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
+              "rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]",
             )}
           >
             <Item
@@ -164,8 +164,8 @@ function Item({
     <ContextMenu.Item
       onSelect={onSelect}
       className={cn(
-        "flex cursor-pointer items-center gap-2 rounded-[8px] px-2 py-1.5",
-        "text-[12.5px] leading-none outline-none",
+        "flex cursor-pointer items-center gap-2 rounded-(--radius-control) px-2 py-1.5",
+        "text-[12px] leading-none outline-none",
         "transition-colors duration-100",
         "data-[highlighted]:bg-(--color-bg-hover)",
         danger
@@ -213,7 +213,7 @@ function CloseConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-[160] w-[min(460px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}
@@ -221,12 +221,12 @@ function CloseConfirm({
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
             <header className="border-b border-(--glass-border-hairline) px-5 py-3.5">
               <Dialog.Title asChild>
-                <h3 className="text-[13.5px] font-semibold leading-none">
+                <h3 className="text-[13px] font-semibold leading-none">
                   {isLocal ? "Remove" : "Close"} workspace &quot;{name}&quot;?
                 </h3>
               </Dialog.Title>
             </header>
-            <div className="space-y-2 px-5 py-4 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
+            <div className="space-y-2 px-5 py-4 text-[12px] leading-relaxed text-(--color-text-secondary)">
               {isLocal ? (
                 <p>
                   Removes this workspace from Phasr. The repository folder stays
@@ -256,7 +256,7 @@ function CloseConfirm({
                 Cancel
               </GlassButton>
               <GlassButton
-                variant="danger"
+                variant="danger-solid"
                 size="sm"
                 onClick={onConfirm}
                 disabled={pending}

@@ -243,7 +243,7 @@ export function DiffCard({
         <button
           type="button"
           onClick={onToggle}
-          className="min-w-0 flex-1 cursor-pointer truncate rounded text-left text-[12.5px] font-medium text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+          className="min-w-0 flex-1 cursor-pointer truncate rounded text-left text-[12px] font-medium text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
           title={pathLabel}
         >
           {renameLabel ? (
@@ -529,12 +529,12 @@ function DiscardConfirm({
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md" />
+        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay)" />
         <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(420px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal overflow-hidden">
             <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>
-                <h2 className="text-[13.5px] font-semibold leading-none">
+                <h2 className="text-[13px] font-semibold leading-none">
                   {untracked ? "Delete untracked file?" : "Discard changes?"}
                 </h2>
               </Dialog.Title>
@@ -564,7 +564,7 @@ function DiscardConfirm({
               <GlassButton variant="outline" size="sm" onClick={onCancel}>
                 Cancel
               </GlassButton>
-              <GlassButton variant="danger" size="sm" onClick={onConfirm}>
+              <GlassButton variant="danger-solid" size="sm" onClick={onConfirm}>
                 {untracked ? "Delete file" : "Discard"}
               </GlassButton>
             </footer>
@@ -592,12 +592,12 @@ function ResolveConfirm({
   return (
     <Dialog.Root open={action !== null} onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md" />
+        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay)" />
         <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal overflow-hidden">
             <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
               <Dialog.Title asChild>
-                <h2 className="text-[13.5px] font-semibold leading-none">
+                <h2 className="text-[13px] font-semibold leading-none">
                   {action?.confirmTitle ?? ""}
                 </h2>
               </Dialog.Title>

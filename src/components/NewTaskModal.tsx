@@ -2,7 +2,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useNavigate } from "@tanstack/react-router";
 import { X } from "lucide-react";
 import { NewTaskForm } from "@/components/NewTaskForm";
-import { GlassButton } from "@/components/ui/GlassButton";
 import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useUiStore } from "@/lib/store";
 
@@ -33,58 +32,46 @@ export function NewTaskModal() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && clearPending()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) data-[state=open]:animate-[overlay-in_140ms_var(--ease-glass)]" />
         <Dialog.Content
-          className="fixed left-1/2 top-[14vh] z-[190] w-[min(560px,calc(100vw-32px))] -translate-x-1/2 outline-none"
+          aria-describedby={undefined}
+          className="fixed left-1/2 top-1/2 z-(--z-modal) w-[min(760px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onEscapeKeyDown={(e) => {
             // Esc inside an expanded combobox (base-branch field) belongs to
             // the combobox — it closes its own list; the modal must survive.
-            // Radix's layer stack already handles this when every component
-            // shares ONE react-dismissable-layer instance (pnpm override);
-            // this guard keeps it true even if versions ever drift again.
             const target = e.target as HTMLElement | null;
-            if (target?.closest('[role="combobox"][aria-expanded="true"]'))
-              e.preventDefault();
+            if (target?.closest('[role="combobox"][aria-expanded="true"]')) e.preventDefault();
           }}
         >
-          <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
-            <header className="flex h-12 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+          <div className="glass-modal animate-[modal-in_160ms_var(--ease-glass)] overflow-hidden">
+            <header className="flex items-center gap-2.5 border-b border-(--color-border-subtle) px-[18px] py-3.5">
               <Dialog.Title asChild>
-                <h2 className="text-[13.5px] font-semibold leading-none">
+                <h2 className="m-0 text-[14px] font-semibold leading-none">
                   New task{repo ? ` · ${repo.name}` : ""}
                 </h2>
               </Dialog.Title>
-              <div className="ml-auto">
-                <GlassButton
-                  variant="ghost"
-                  size="icon"
-                  onClick={clearPending}
-                  className="h-7 w-7"
-                  title="Close"
-                >
-                  <X size={13} />
-                </GlassButton>
-              </div>
+              <div className="flex-1" />
+              <Dialog.Close
+                aria-label="Close"
+                className="grid size-[26px] place-items-center rounded-(--radius-control) text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+              >
+                <X className="size-3.5" aria-hidden />
+              </Dialog.Close>
             </header>
-            <div className="p-5">
-              {repoId && (
-                <NewTaskForm
-                  key={repoId}
-                  repositoryId={repoId}
-                  onCreated={(task) => {
-                    clearPending();
-                    void navigate({
-                      to: "/repositories/$repositoryId/workspaces/$workspaceId",
-                      params: {
-                        repositoryId: task.repositoryId,
-                        workspaceId: task.id,
-                      },
-                    });
-                  }}
-                  onCancel={clearPending}
-                />
-              )}
-            </div>
+            {repoId && (
+              <NewTaskForm
+                key={repoId}
+                repositoryId={repoId}
+                onCreated={(task) => {
+                  clearPending();
+                  void navigate({
+                    to: "/repositories/$repositoryId/workspaces/$workspaceId",
+                    params: { repositoryId: task.repositoryId, workspaceId: task.id },
+                  });
+                }}
+                onCancel={clearPending}
+              />
+            )}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

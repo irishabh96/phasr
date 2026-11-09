@@ -227,12 +227,12 @@ export function MergeToMainDialog({
         )}
 
         {error && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-danger)">
+          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11px] text-(--color-danger)">
             {error}
           </p>
         )}
         {conflictNote && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-text-primary)">
+          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2 text-[11px] text-(--color-text-primary)">
             {conflictNote}
           </p>
         )}
@@ -243,7 +243,7 @@ export function MergeToMainDialog({
               className="shrink-0 text-(--color-success)"
               aria-hidden
             />
-            <p className="text-[11.5px] text-(--color-text-primary)">
+            <p className="text-[11px] text-(--color-text-primary)">
               Merged into {targetBranch}.
             </p>
           </div>
@@ -294,7 +294,7 @@ function StrategyRow({
         aria-hidden
       />
       <span className="flex flex-1 flex-col gap-0.5">
-        <span className="text-[12.5px] leading-none text-(--color-text-primary)">
+        <span className="text-[12px] leading-none text-(--color-text-primary)">
           {label}
         </span>
         <span className="text-[11px] text-(--color-text-secondary)">

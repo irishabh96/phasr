@@ -160,7 +160,7 @@ export function TerminalStatus({
   }, []);
 
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_oklab,var(--color-bg-terminal)_88%,transparent)] p-6 backdrop-blur-sm">
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_oklab,var(--color-bg-terminal)_88%,transparent)] p-6">
       <div
         className="glass-panel w-full max-w-sm p-4 text-center"
         role={role}
@@ -184,7 +184,7 @@ export function TerminalStatus({
             <summary className="cursor-pointer select-none text-[11px] text-(--color-text-muted)">
               Details
             </summary>
-            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-(--color-bg-input) p-2 font-mono text-[11px] text-(--color-text-secondary)">
+            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-(--radius-control) bg-(--color-bg-input) p-2 font-mono text-[11px] text-(--color-text-secondary)">
               {error}
             </pre>
           </details>

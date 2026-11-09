@@ -22,6 +22,18 @@ export interface Repository {
 /** The fixed set of built-in agents. Matches `domain::agent::Agent`. */
 export type Agent = "claude" | "codex" | "copilot" | "gemini" | "opencode";
 
+/**
+ * How much an agent may do without asking. Matches
+ * `domain::agent::PermissionMode` (serde kebab-case). Strictest first.
+ */
+export type PermissionMode = "ask-edits" | "ask-shell" | "skip-all";
+
+/** How a task ended. Matches `domain::workspace::TaskOutcome` (lowercase). */
+export type TaskOutcome = "merged" | "closed";
+
+/** Where `start_task` runs the agent. Matches `orchestrator::launch::RunIn`. */
+export type RunIn = "worktree" | "in-place";
+
 export interface Workspace {
   id: string;
   repositoryId: string;
@@ -39,14 +51,94 @@ export interface Workspace {
   finishedAt: string | null;
   archivedAt: string | null;
   updatedAt: string;
+  /**
+   * Mode the agent launched (or next launches) in. `null` = a row from
+   * before permission modes, which runs skip-all.
+   *
+   * Always sent by the backend; `?` only so pre-M4 test fixtures that
+   * build a full `Workspace` still type-check. Treat `undefined` as `null`.
+   */
+  permissionMode?: PermissionMode | null;
+  /** Always sent (default true); `?` for the same fixture reason. */
+  notifyOnAttention?: boolean;
+  /**
+   * When the agent last finished a turn (synced across devices). `null` =
+   * never / before agent signals. `?` for the same fixture reason.
+   */
+  lastTurnEndedAt?: string | null;
+  // ── Board (M7). Always sent by the backend; `?` only so the existing
+  // test fixtures that build a full `Workspace` still type-check. Treat
+  // `undefined` as `null`.
+  /**
+   * Branch the worktree was cut from — the diff base. `null` on rows from
+   * before M7 (the repository's default branch) and on in-place tasks.
+   */
+  baseBranch?: string | null;
+  /** Set while a not-yet-started task waits in the queue. */
+  queuedAt?: string | null;
+  /** The queued task starts once this task reaches review / is done. */
+  dependsOnWorkspaceId?: string | null;
+  /** `null` = still open. */
+  outcome?: TaskOutcome | null;
+  outcomeAt?: string | null;
+  /** Where a merged task's branch went ("merged into main"). */
+  mergedInto?: string | null;
+  prNumber?: number | null;
+  prUrl?: string | null;
+  /** "open" | "draft" | "merged" | "closed" as last seen (open set). */
+  prState?: string | null;
 }
 
 /** One built-in agent as returned by `list_agents`. */
 export interface AgentOption {
   agent: Agent;
   label: string;
+  /**
+   * What a new task with this agent runs by default: the effective
+   * template rendered for the user's default permission mode.
+   */
   command: string;
   isDefault: boolean;
+  // The fields below are always sent by `list_agents`; they're `?` only so
+  // pre-M4 test fixtures that build a full `AgentOption` still type-check.
+  // Tighten to required once those fixtures carry them.
+  /** Built-in template, with the `{{permissions}}` placeholder. */
+  defaultTemplate?: string;
+  /** Effective template: the user's override, else `defaultTemplate`. */
+  template?: string;
+  /** Modes this agent can express, strictest first. */
+  permissionModes?: PermissionMode[];
+  supportsHooks?: boolean;
+  usageSupported?: boolean;
+}
+
+/** Result of `<binary> --version` detection. Matches `detect::DetectionStatus`. */
+export type AgentDetectionStatus = "found" | "missing" | "timeout" | "error";
+
+/** One row of `detect_agents`. */
+export interface AgentDetection {
+  agent: Agent;
+  binary: string;
+  /** Absolute path on the user's login-shell PATH, if installed. */
+  path: string | null;
+  version: string | null;
+  status: AgentDetectionStatus;
+  installHint: string;
+  detectedAt: string;
+}
+
+/** Result of `check_environment`. */
+export interface EnvironmentCheck {
+  git: { version: string | null };
+  gh: {
+    installed: boolean;
+    version: string | null;
+    authenticated: boolean;
+    account: string | null;
+  };
+  /** Shell terminals and agents launch in. */
+  shell: string;
+  checkedAt: string;
 }
 
 export interface UserSettings {
@@ -67,6 +159,24 @@ export interface UserSettings {
   autoFetchSeconds: number;
   honorGpgSign: boolean;
   autoPushOnCommit: boolean;
+  /** Mode for new tasks that don't pick one. Defaults to "ask-shell". */
+  defaultPermissionMode: PermissionMode;
+  /** Per-agent launch template overrides (`{{permissions}}` placeholder). */
+  agentCommands: Partial<Record<Agent, string>>;
+  /**
+   * Inbox delivery: per-kind badge/system/sound, background-only, quiet
+   * hours. Omit it from an update to keep the stored value. Decided by
+   * `notificationPolicy.ts::shouldDeliver`.
+   */
+  notificationPrefs: NotificationPrefs;
+  /**
+   * Shell for session terminals and task PTYs (an absolute path, e.g. from
+   * `list_shells`); `""` = the account's login shell. Synced — a shell this
+   * machine lacks falls back to the login shell. Omit to keep the stored value.
+   */
+  terminalShell: string;
+  /** Copy terminal selections to the clipboard on mouse-up. */
+  copyOnSelect: boolean;
   updatedAt: string;
 }
 
@@ -147,7 +257,15 @@ export interface FileChange {
   removes: number | null;
 }
 
-export type DiffScope = "Unstaged" | "Staged" | "Head";
+/**
+ * PascalCase on the wire (`DiffScope` in `git/diff.rs`). `"Base"` = every
+ * change vs the merge-base with the task's base branch (committed +
+ * uncommitted + untracked) — the review diff.
+ */
+export type DiffScope = "Unstaged" | "Staged" | "Head" | "Base";
+
+/** When a run command starts by itself (snake_case on the wire). */
+export type RunWhen = "manual" | "task_start" | "before_review";
 
 export interface RunCommand {
   id: string;
@@ -157,8 +275,171 @@ export interface RunCommand {
   shortcut: string | null;
   pinned: boolean;
   sortOrder: number;
+  /**
+   * `task_start` = headless in the task's worktree when its agent starts;
+   * `before_review` = a check, auto-run on entering review. Auto-runs only
+   * once the command text is trusted on this machine (see
+   * `CheckSummary.needsConfirmation` / `confirmRunCommand`).
+   */
+  runWhen: RunWhen;
+  /** Watch output for a dev-server port ("dev · :3000"). */
+  detectPort: boolean;
+  /** Gates "Approve & create PR". A command that is required or `before_review` is a check. */
+  requiredForApprove: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** A run command that ran (or runs) this session, from `list_running_commands`. */
+export interface RunningCommand {
+  runCommandId: string;
+  /** `null` = running in the repository's own checkout. */
+  workspaceId: string | null;
+  startedAt: string;
+  running: boolean;
+  /** Set once it exited; `null` while running or when killed by a signal. */
+  exitCode: number | null;
+  /** A confirmed dev-server port, while running. */
+  port: number | null;
+}
+
+/** A `package.json` script offered as a run command. */
+export interface DetectedScript {
+  name: string;
+  /** e.g. `pnpm run dev` (package manager from the lockfile). */
+  command: string;
+  /** A run command with this exact command line exists. */
+  alreadyAdded: boolean;
+}
+
+// ── review (M8) ──────────────────────────────────────────────────────
+
+export type CheckStatus =
+  | "queued"
+  | "running"
+  | "passed"
+  | "failed"
+  | "cancelled"
+  | "error"
+  | "timeout";
+
+export interface CheckRun {
+  id: string;
+  workspaceId: string;
+  /** `null` once the run command was deleted. */
+  runCommandId: string | null;
+  name: string;
+  command: string;
+  status: CheckStatus;
+  exitCode: number | null;
+  /** Worktree state the run saw; compare via `CheckSummary.staleIds`. */
+  fingerprint: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  /** Last 64 KiB of output; `get_check_output` has the full log. */
+  outputTail: string;
+}
+
+export interface CheckSummary {
+  /** Latest run per run command (checks first). */
+  runs: CheckRun[];
+  /** Run command ids required for approve. */
+  required: string[];
+  /** Every required check passed on the worktree as it is now. */
+  requiredSatisfied: boolean;
+  /** Run ids whose code changed since they ran. */
+  staleIds: string[];
+  /** Auto-run command ids not yet confirmed on this machine (not auto-run). */
+  needsConfirmation: string[];
+}
+
+/** Payload of `phasr://check-output` (≤ 1 per run per 250ms). */
+export interface CheckOutputPayload {
+  checkRunId: string;
+  workspaceId: string;
+  chunk: string;
+}
+
+export type CommentSide = "new" | "old";
+export type CommentStatus = "pending" | "sent" | "resolved";
+
+export interface ReviewComment {
+  id: string;
+  workspaceId: string;
+  path: string;
+  line: number;
+  side: CommentSide;
+  /** The commented line's text when written (quoted to the agent). */
+  anchorText: string | null;
+  body: string;
+  status: CommentStatus;
+  createdAt: string;
+  updatedAt: string;
+  sentAt: string | null;
+  resolvedAt: string | null;
+}
+
+export interface SendCommentsOutcome {
+  /** Comments delivered to the agent. */
+  sent: number;
+}
+
+export interface PullRequestOutcome {
+  /** The PR (`viaGh`), or the compare page to open one by hand. */
+  url: string;
+  number: number | null;
+  viaGh: boolean;
+  draft: boolean;
+}
+
+// ── notifications inbox (M8) ─────────────────────────────────────────
+
+export type NotificationKind =
+  | "needs_approval"
+  | "task_finished"
+  | "task_failed"
+  | "checks_finished"
+  | "run_command_failed";
+
+export interface AppNotification {
+  id: string;
+  workspaceId: string | null;
+  repositoryId: string | null;
+  kind: NotificationKind;
+  title: string;
+  body: string | null;
+  /**
+   * Kind-specific routing data; always has `taskId`/`repositoryId` for task
+   * kinds. A `task_finished` entry with `suggestion: "cleanup"` (plus
+   * `worktreePath` / `branch`) is the cleanup-after-merge question — offer
+   * `remove_worktrees` instead of "Open".
+   */
+  payload: Record<string, unknown>;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface DeliveryChannels {
+  badge: boolean;
+  system: boolean;
+  sound: boolean;
+}
+
+export interface QuietHours {
+  enabled: boolean;
+  /** Local "HH:MM"; may wrap midnight (22:00 → 08:00). */
+  start: string;
+  end: string;
+}
+
+export interface NotificationPrefs {
+  /** Keyed by `NotificationKind` (unknown keys are kept as-is). */
+  matrix: Partial<Record<NotificationKind, DeliveryChannels>>;
+  /** System banners / sounds only while the window isn't focused. */
+  backgroundOnly: boolean;
+  quietHours: QuietHours;
 }
 
 export type NoteOriginKind =
@@ -272,4 +553,252 @@ export interface Launcher {
   name: string;
   kind: LauncherKind;
   available: boolean;
+}
+
+// ── Agent signals (M6) ────────────────────────────────────────────────
+// Mirrors `src-tauri/src/agent_signals/state.rs` + `transcripts/mod.rs` +
+// `domain/usage.rs`.
+
+/** `AgentStateKind` (kebab-case). */
+export type AgentStateKind = "working" | "idle" | "needs-you" | "exited";
+
+/**
+ * What kind of thing the agent is waiting on. `trust` = the agent's
+ * folder-trust dialog ("Do you trust this folder?", detail = the worktree
+ * path); the task's initial prompt is held until it's answered. Its
+ * responses: `allow-once` / `allow-task` → "Yes, I trust this folder";
+ * `deny` → "No, exit" (the agent quits and the prompt is dropped).
+ */
+export type AttentionKind = "shell" | "edit" | "tool" | "question" | "input" | "trust";
+
+/** `hook` = the agent told us; `heuristic` = recognised from its output. */
+export type AttentionSource = "hook" | "heuristic";
+
+/** The agent's current dialog. A new dialog always has a new `id`. */
+export interface Attention {
+  id: string;
+  kind: AttentionKind;
+  title: string;
+  /** e.g. the shell command, or the file path. */
+  detail: string | null;
+  /** ISO timestamp the dialog appeared (drives "blocked 4m"). */
+  since: string;
+  source: AttentionSource;
+  /**
+   * Whether Allow/Deny can be answered in-app. `false` → show
+   * "Waiting for input · Open terminal".
+   */
+  canRespond: boolean;
+}
+
+/** Payload of `list_agent_states` and the `phasr://task-agent-state` event. */
+export interface TaskAgentState {
+  taskId: string;
+  repositoryId: string;
+  state: AgentStateKind;
+  attention: Attention | null;
+  /** Running-card activity line, e.g. "Editing src/x.ts". */
+  lastActivity: string | null;
+  lastTurnEndedAt: string | null;
+}
+
+/** `respond_to_attention` answers. */
+export type AttentionResponse = "allow-once" | "allow-task" | "deny";
+
+/** Token/cost totals for a task, from the agent's own transcript. */
+export interface TaskUsage {
+  source: "claude" | "codex";
+  model: string | null;
+  /** Uncached input tokens (both agents). */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** USD. `null` when a model used has no known price — hide the cost. */
+  costUsd: number | null;
+  updatedAt: string;
+}
+
+/** Payload of `phasr://task-usage` (at most one per task per 5s). */
+export interface TaskUsagePayload {
+  taskId: string;
+  usage: TaskUsage;
+}
+
+/** The agent's last assistant message. */
+export interface AgentSummary {
+  text: string;
+  at: string;
+  /** `hook` until the transcript is readable (or for non-transcript agents). */
+  source: "transcript" | "hook";
+}
+
+/** A file the agent edited (latest edit per path, newest first). */
+export interface AgentFileEdit {
+  /** Worktree-relative when inside the worktree, else absolute. */
+  path: string;
+  at: string;
+  /** "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "apply_patch". */
+  tool: string;
+}
+
+// ── Board (M7) ────────────────────────────────────────────────────────
+// Mirrors `src-tauri/src/domain/board.rs` + `orchestrator/board.rs` +
+// `commands/board.rs`.
+
+/**
+ * A task's Board column, derived by the backend (`derive_lane`; kebab-case).
+ * `draft` = saved, never started; `queued` = waiting to start;
+ * `needs-review` = the agent stopped (or is idle) with changes vs base;
+ * `done` = merged/closed, or finished with no changes; `archived` =
+ * archived without an outcome (fold into Done or hide).
+ */
+export type BoardLane =
+  | "draft"
+  | "queued"
+  | "running"
+  | "needs-you"
+  | "needs-review"
+  | "failed"
+  | "done"
+  | "archived";
+
+/** Changes on a task's branch vs its base: committed + uncommitted + untracked. */
+export interface DiffStats {
+  adds: number;
+  removes: number;
+  files: number;
+}
+
+/** One Board card, from `list_task_cards`. */
+export interface TaskCard {
+  workspace: Workspace;
+  lane: BoardLane;
+  /** `null` before launch, when archived, or with no worktree on this machine. */
+  diff: DiffStats | null;
+  /** `null` when phasr hasn't tracked the agent since startup. */
+  agentState: TaskAgentState | null;
+  /** Stored token/cost snapshot; `null` for agents without usage. */
+  usage: TaskUsage | null;
+  /** "finished 18m ago" — set for needs-review / done / failed / archived. */
+  finishedAt: string | null;
+  /** Name of the task a queued task waits on. */
+  dependsOnName: string | null;
+}
+
+/** Payload of `phasr://task-cards-changed`: refetch that repository's cards. */
+export interface TaskCardsChangedPayload {
+  repositoryId: string;
+}
+
+/** Cloud-sync worker state. Matches `sync::SyncPhase` (lowercase). */
+export type SyncPhase = "off" | "idle" | "syncing" | "error";
+
+/** Status bar counts, from `get_system_status`. */
+export interface SystemStatus {
+  /** Agents running in task PTYs (not run commands / plain shells). */
+  agentsRunning: number;
+  /** The user's task worktrees present on this machine. */
+  worktrees: number;
+  sync: SyncPhase;
+}
+
+// ── Files tab (M9) ────────────────────────────────────────────────────
+
+/** One row of `list_workspace_tree`. `status: null` = clean. */
+export interface WorkspaceTreeFile {
+  /** Worktree-relative, `/`-separated. */
+  path: string;
+  status: FileStatus | null;
+}
+
+/** Tracked + untracked (not ignored) files; capped at 50k (`truncated`). */
+export interface WorkspaceTree {
+  files: WorkspaceTreeFile[];
+  truncated: boolean;
+}
+
+/** When the task's agent last edited a file (from its transcript). */
+export interface LastAgentEdit {
+  agent: Agent;
+  at: string;
+}
+
+/** `read_workspace_file`: ≤ 1 MB UTF-8 text. */
+export interface WorkspaceFile {
+  path: string;
+  contents: string;
+  /** sha256 hex of the bytes; pass back as `expectedHash` when saving. */
+  hash: string;
+  sizeBytes: number;
+  lastAgentEdit: LastAgentEdit | null;
+}
+
+/** `write_workspace_file`: the hash of what was written. */
+export interface WriteWorkspaceFileResult {
+  hash: string;
+}
+
+/** Diffs `revert_hunk` works on: uncommitted (`Head`) or vs the task's base. */
+export type RevertHunkScope = Extract<DiffScope, "Head" | "Base">;
+
+// ── Settings expansion + worktrees (M11) ──────────────────────────────
+
+/** Whether agents may `git push` on their own (lowercase on the wire). */
+export type PushPolicy = "ask" | "allow" | "deny";
+/** What "Approve & create PR" opens by default. */
+export type PrMode = "draft" | "ready";
+/** What happens to a task's worktree + local branch once it's merged. */
+export type CleanupAfterMerge = "ask" | "always" | "never";
+
+/** Per-repository rules (local to this machine, never synced). */
+export interface RepositoryConfig {
+  repositoryId: string;
+  /** `null` → the repository's default branch. */
+  defaultBaseBranch: string | null;
+  fetchBaseBeforeTask: boolean;
+  agentsMayPush: PushPolicy;
+  prMode: PrMode;
+  /** Worktree-relative globs the agent must ask before editing. */
+  protectedPaths: string[];
+  /** Untracked/ignored files copied into each new worktree (never overwriting). */
+  copyUntrackedGlobs: string[];
+  cleanupAfterMerge: CleanupAfterMerge;
+  /** "After creating" hook: runs once in a new worktree, output in the task log. */
+  preTaskHook: string | null;
+  /** Overrides `UserSettings.branchPrefixTemplate` (`{{slug}}`, `{{id}}`, `{{agent}}`). */
+  branchPrefixTemplate: string | null;
+  /** Overrides `UserSettings.worktreeBasePath` (absolute or `~/…`). */
+  worktreeBasePath: string | null;
+  /** Agents the push / protected-path rules bind (today: `["claude"]`); others aren't restricted. */
+  policyEnforcedFor: Agent[];
+  /** `null` = never saved (all defaults). */
+  updatedAt: string | null;
+}
+
+/** API keys phasr keeps in the Keychain, injected only into the matching agent. */
+export type ApiKeyName = "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GEMINI_API_KEY";
+
+export interface ApiKeyStatus {
+  name: ApiKeyName;
+  isSet: boolean;
+  /** Last 4 characters ("…a1b2"); `null` when unset or too short to hint. */
+  hint: string | null;
+}
+
+/** One worktree of a repository (`list_repository_worktrees`; main checkout excluded). */
+export interface RepositoryWorktree {
+  path: string;
+  branch: string | null;
+  workspaceId: string | null;
+  taskName: string | null;
+  lane: BoardLane | null;
+  /** In a phasr worktree folder with no task pointing at it. */
+  orphaned: boolean;
+}
+
+/** `compute_worktree_sizes`; `bytes: null` = couldn't measure (timeout / error). */
+export interface WorktreeSize {
+  path: string;
+  bytes: number | null;
 }

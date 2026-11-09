@@ -340,7 +340,7 @@ export function BaseBranchField({
   const activeRowClasses =
     "bg-[color-mix(in_oklab,var(--color-accent-500)_20%,transparent)] font-medium before:absolute before:bottom-1 before:left-0 before:top-1 before:w-[2px] before:rounded-full before:bg-(--color-focus-ring)";
   const rowBaseClasses =
-    "relative flex cursor-pointer items-center gap-2 rounded-[8px] px-2.5";
+    "relative flex cursor-pointer items-center gap-2 rounded-(--radius-control) px-2.5";
 
   // Status rows are always exclusive (the builder early-returns), and
   // they live OUTSIDE the listbox as a live region — an aria-hidden or
@@ -479,7 +479,7 @@ export function BaseBranchField({
                     {...rowInteractionProps(index)}
                     className={cn(
                       rowBaseClasses,
-                      "h-8 text-[12.5px] text-(--color-text-secondary)",
+                      "h-8 text-[12px] text-(--color-text-secondary)",
                       active === index && activeRowClasses,
                     )}
                   >
@@ -489,7 +489,7 @@ export function BaseBranchField({
                     </span>
                     <span
                       className={cn(
-                        "shrink-0 text-[10.5px]",
+                        "shrink-0 text-[11px]",
                         // muted fails 4.5:1 on the accent-tinted active fill
                         // in dark — promote to secondary while highlighted
                         active === index
@@ -527,7 +527,7 @@ export function BaseBranchField({
                       )}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12.5px] text-(--color-text-primary)">
+                      <span className="block truncate text-[12px] text-(--color-text-primary)">
                         Use{" "}
                         <span className="font-mono">
                           &quot;{row.ref}&quot;
@@ -558,7 +558,7 @@ export function BaseBranchField({
                   {...rowInteractionProps(index)}
                   className={cn(
                     rowBaseClasses,
-                    "h-8 font-mono text-[12.5px] text-(--color-text-primary)",
+                    "h-8 font-mono text-[12px] text-(--color-text-primary)",
                     active === index && activeRowClasses,
                   )}
                 >
@@ -577,7 +577,7 @@ export function BaseBranchField({
                   {row.isDefault && (
                     <span
                       className={cn(
-                        "shrink-0 font-sans text-[10.5px] uppercase tracking-[0.08em]",
+                        "shrink-0 font-sans text-[11px] uppercase tracking-[0.08em]",
                         active === index
                           ? "text-(--color-text-secondary)"
                           : "text-(--color-text-muted)",

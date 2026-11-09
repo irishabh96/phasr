@@ -94,6 +94,9 @@ export function Terminal({
   const initialStatusRef = useRef(status);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
+  // The cursor and selection wash come from the accent, so an accent change
+  // re-pushes the palette exactly like a theme flip.
+  const accent = useUiStore((s) => s.accent);
   const [termStatus, setTermStatus] = useState<TermStatus>(null);
   // Which surface this slot is showing, mirrored onto the container as
   // data-* so e2e can find a terminal and cross-reference the bridge
@@ -341,7 +344,7 @@ export function Terminal({
     const entry = mainSurfaceCache.get(workspaceId);
     if (!entry) return;
     entry.surface.applyTheme(readTerminalTheme());
-  }, [theme, workspaceId]);
+  }, [theme, accent, workspaceId]);
 
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + repaint synchronously here

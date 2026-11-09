@@ -489,7 +489,7 @@ export function NoteRow({
                 <DropdownMenu.Content
                   align="end"
                   sideOffset={6}
-                  className="glass-modal z-(--z-popover) min-w-[180px] overflow-hidden p-1"
+                  className="z-(--z-popover) min-w-[180px] overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) p-1 shadow-(--shadow-dropdown)"
                 >
                   <div
                     role="presentation"

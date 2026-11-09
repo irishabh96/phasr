@@ -9,3 +9,6 @@ interface ImportMetaEnv {
   readonly VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE?: string;
   readonly VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE?: string;
 }
+
+/** package.json version, injected by vite.config.ts `define`. */
+declare const __APP_VERSION__: string;

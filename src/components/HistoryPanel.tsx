@@ -117,7 +117,7 @@ function ScopeToggle({
       type="button"
       onClick={onClick}
       className={cn(
-        "relative h-6 px-2 text-[11.5px]",
+        "relative h-6 px-2 text-[11px]",
         "transition-colors duration-100",
         active
           ? "font-medium text-(--color-text-primary)"

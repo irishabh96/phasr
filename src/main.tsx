@@ -3,10 +3,21 @@ import { ClerkProvider } from "@clerk/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 
+import "@fontsource-variable/inter/wght.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/700.css";
 import "./index.css";
 import { routeTree } from "./routeTree.gen";
 import { queryClient } from "./lib/query";
-import { applyTheme, readStoredTheme } from "./lib/theme";
+import {
+  applyAccent,
+  applyDensity,
+  applyTheme,
+  readStoredAccent,
+  readStoredDensity,
+  readStoredTheme,
+} from "./lib/theme";
 import {
   CLERK_CONFIG_ERROR,
   CLERK_PUBLISHABLE_KEY,
@@ -23,8 +34,10 @@ import {
   sentryReactRootErrorHandler,
 } from "./lib/sentry";
 
-// Apply theme before React mounts to prevent FOUC.
+// Apply theme, accent and density before React mounts to prevent FOUC.
 applyTheme(readStoredTheme());
+applyAccent(readStoredAccent());
+applyDensity(readStoredDensity());
 
 const router = createRouter({
   routeTree,
@@ -77,7 +90,21 @@ const reactRootOptions: Parameters<typeof createRoot>[1] = isSentryConfigured
     }
   : undefined;
 
-createRoot(rootElement, reactRootOptions).render(
+// The terminal measures its cell box from the mono font the moment it mounts
+// and hands cols/rows to the PTY; an agent TUI reads its size once. Mounting
+// before the bundled fonts load would size every terminal against the
+// fallback face. The faces are local (bundled), so this resolves in a frame
+// or two; the cap only guards a broken font file.
+const fontsReady = Promise.race([
+  Promise.all([
+    document.fonts.load('12px "JetBrains Mono"'),
+    document.fonts.load('500 12px "JetBrains Mono"'),
+    document.fonts.load('13px "Inter Variable"'),
+  ]).catch(() => undefined),
+  new Promise((resolve) => window.setTimeout(resolve, 1500)),
+]);
+
+void fontsReady.then(() => createRoot(rootElement, reactRootOptions).render(
   missingConfigMessages.length > 0 ? (
     <MissingRequiredConfig messages={missingConfigMessages} />
   ) : (
@@ -85,7 +112,7 @@ createRoot(rootElement, reactRootOptions).render(
       {appTree}
     </ClerkProvider>
   ),
-);
+));
 
 // Defer Sentry off the first-paint path. `@sentry/react` is heavy and
 // isn't needed to render the initial UI, so we dynamically load and

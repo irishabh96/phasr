@@ -1,9 +1,9 @@
-import { Navigate, createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-function SettingsIndex() {
-  return <Navigate to="/settings/account" replace />;
-}
-
+// Settings moved into a sheet over any screen (`?settings=<section>`); this
+// path survives only so old links and muscle memory still land somewhere.
 export const Route = createFileRoute("/_app/settings/")({
-  component: SettingsIndex,
+  beforeLoad: () => {
+    throw redirect({ to: "/", search: { settings: "appearance" } as never, replace: true });
+  },
 });

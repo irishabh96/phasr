@@ -35,7 +35,7 @@ export function CommitCard({ workspaceId, commit }: CommitCardProps) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <code className="shrink-0 font-mono text-[10.5px] text-(--color-text-muted)">
+            <code className="shrink-0 font-mono text-[11px] text-(--color-text-muted)">
               {commit.shortSha}
             </code>
             <span className="min-w-0 flex-1 truncate text-[12px] text-(--color-text-primary)">
@@ -47,7 +47,7 @@ export function CommitCard({ workspaceId, commit }: CommitCardProps) {
               </span>
             )}
           </div>
-          <p className="mt-0.5 text-[10.5px] text-(--color-text-muted)">
+          <p className="mt-0.5 text-[11px] text-(--color-text-muted)">
             {commit.authorName} • {formatRelative(commit.authorDate)}
           </p>
         </div>

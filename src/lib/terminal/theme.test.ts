@@ -12,8 +12,8 @@ describe("readTerminalTheme", () => {
   it("falls back to the shipped palette when no tokens are defined", () => {
     const theme = readTerminalTheme();
     expect(theme.background).toBe("#000000");
-    expect(theme.foreground).toBe("#e6edf3");
-    expect(theme.cursor).toBe("#f78166");
+    expect(theme.foreground).toBe("#e6e9ee");
+    expect(theme.cursor).toBe("#e0674a");
     expect(theme.brightWhite).toBe("#ffffff");
   });
 
@@ -21,7 +21,7 @@ describe("readTerminalTheme", () => {
   // theme can move it. The fallback must still be the value that shipped.
   it("reads the selection colour from --ansi-selection", () => {
     expect(readTerminalTheme().selectionBackground).toBe(
-      "rgba(247, 129, 102, 0.28)",
+      "rgba(224, 103, 74, 0.28)",
     );
 
     document.documentElement.style.setProperty("--ansi-selection", "#123456");

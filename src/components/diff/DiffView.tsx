@@ -8,7 +8,7 @@
  *     the dev preview route and the unit tests)
  */
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { Fragment, createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Columns2, Rows3 } from "lucide-react";
 import { useShiki } from "@/lib/hooks/useShiki";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
@@ -282,6 +282,57 @@ export function Pill({
 
 type HighlightFn = (s: string) => { color: string; content: string }[];
 
+/**
+ * Optional line annotations (review comments). Provided by a reviewing
+ * surface; plain diff views render exactly as before.
+ */
+export interface DiffAnnotations {
+  /** Gutter "+" on hover: start a comment on this line. */
+  onComment?: (line: DiffLine, side: "old" | "new") => void;
+  /** Rendered as a full-width row under the line (threads, composer). */
+  renderAfter?: (line: DiffLine, side: "old" | "new") => ReactNode;
+  /** "Revert hunk" on each hunk header (the editor's Diff view). */
+  onRevertHunk?: (hunkHeader: string) => void;
+}
+
+export const DiffAnnotationsContext = createContext<DiffAnnotations | null>(null);
+
+/** Which side a line's comment anchors to: removed lines → old, else new. */
+export function lineSide(line: DiffLine): "old" | "new" {
+  return line.kind === "remove" ? "old" : "new";
+}
+
+function CommentGutterButton({ line }: { line: DiffLine }) {
+  const ann = useContext(DiffAnnotationsContext);
+  if (!ann?.onComment) return null;
+  const side = lineSide(line);
+  const n = side === "old" ? line.oldLine : line.newLine;
+  if (n == null) return null;
+  return (
+    <button
+      type="button"
+      aria-label={`Comment on line ${n}`}
+      onClick={() => ann.onComment!(line, side)}
+      className="absolute left-0.5 top-0.5 hidden size-4 place-items-center rounded-(--radius-chip) bg-(--color-accent-500) text-[11px] font-semibold leading-none text-(--color-accent-onfill) group-hover/row:grid focus-visible:grid focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+    >
+      +
+    </button>
+  );
+}
+
+function AfterRow({ line, colSpan }: { line: DiffLine; colSpan: number }) {
+  const ann = useContext(DiffAnnotationsContext);
+  const content = ann?.renderAfter?.(line, lineSide(line));
+  if (!content) return null;
+  return (
+    <tr>
+      <td colSpan={colSpan} className="p-0">
+        {content}
+      </td>
+    </tr>
+  );
+}
+
 function DiffBody({
   parsed,
   mode,
@@ -309,7 +360,7 @@ function DiffBody({
   const remaining = parsed.hunks.length - shown.length;
 
   return (
-    <div className="font-mono text-[11.5px] leading-[1.55]">
+    <div className="font-mono text-[11px] leading-[1.55]">
       {shown.map((hunk, idx) =>
         mode === "side-by-side" ? (
           <SideBySideHunk
@@ -362,12 +413,22 @@ function DiffMessage({
 }
 
 function HunkHeader({ hunk }: { hunk: DiffHunk }) {
+  const ann = useContext(DiffAnnotationsContext);
   return (
     <div className="flex items-center gap-3 border-y border-(--color-border-subtle) bg-(--color-bg-elevated)/60 px-3 py-1 text-[11px] text-(--color-text-muted)">
       <span className="font-mono">
         @@ −{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
       </span>
       {hunk.section && <span className="truncate">{hunk.section}</span>}
+      {ann?.onRevertHunk ? (
+        <button
+          type="button"
+          onClick={() => ann.onRevertHunk!(hunk.header)}
+          className="ml-auto shrink-0 rounded-(--radius-chip) px-1.5 py-0.5 font-sans text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-danger-text) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+        >
+          Revert hunk
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -404,15 +465,17 @@ function InlineRow({
   const gutter = gutterColor(line.kind);
   const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "−" : " ";
   return (
-    <tr style={{ backgroundColor: bg }}>
+    <>
+    <tr className="group/row" style={{ backgroundColor: bg }}>
       <td
-        className="select-none px-1 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
+        className="relative select-none px-1 text-right align-top font-mono text-[11px] text-(--color-text-muted)"
         style={{ width: "6ch" }}
       >
+        <CommentGutterButton line={line} />
         {line.oldLine ?? ""}
       </td>
       <td
-        className="select-none px-1 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
+        className="select-none px-1 text-right align-top font-mono text-[11px] text-(--color-text-muted)"
         style={{ width: "6ch" }}
       >
         {line.newLine ?? ""}
@@ -431,6 +494,8 @@ function InlineRow({
         />
       </td>
     </tr>
+    <AfterRow line={line} colSpan={4} />
+    </>
   );
 }
 
@@ -454,10 +519,14 @@ function SideBySideHunk({
         </colgroup>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i}>
-              <SideCell line={row.left} side="left" highlight={highlight} />
-              <SideCell line={row.right} side="right" highlight={highlight} />
-            </tr>
+            <Fragment key={i}>
+              <tr className="group/row">
+                <SideCell line={row.left} side="left" highlight={highlight} />
+                <SideCell line={row.right} side="right" highlight={highlight} />
+              </tr>
+              {row.left && row.left.kind === "remove" ? <AfterRow line={row.left} colSpan={4} /> : null}
+              {row.right ? <AfterRow line={row.right} colSpan={4} /> : null}
+            </Fragment>
           ))}
         </tbody>
       </table>
@@ -485,9 +554,12 @@ function SideCell({
   return (
     <>
       <td
-        className="select-none px-1 text-right align-top font-mono text-[10.5px] text-(--color-text-muted)"
+        className="relative select-none px-1 text-right align-top font-mono text-[11px] text-(--color-text-muted)"
         style={{ backgroundColor: bg }}
       >
+        {line && ((side === "right" && line.kind !== "remove") || (side === "left" && line.kind === "remove")) ? (
+          <CommentGutterButton line={line} />
+        ) : null}
         {lineNo ?? ""}
       </td>
       <td

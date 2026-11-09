@@ -2,8 +2,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal";
-import { AppSidebar } from "@/components/AppSidebar";
-import { BackgroundOrb } from "@/components/BackgroundOrb";
+import { TaskSidebar } from "@/components/shell/TaskSidebar";
+import { StatusBar } from "@/components/shell/StatusBar";
 import { CommandPalette } from "@/components/CommandPalette";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -12,9 +12,14 @@ import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
 import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
 import { disposeMainTerminal } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
+import { SettingsSheet } from "@/components/settings/SettingsSheet";
+import { useSettingsRoute, validateSettingsSearch } from "@/components/settings/useSettingsRoute";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
-import { useAdjustTerminalFontSize } from "@/lib/hooks/useUserSettings";
+import { useAccentFromSettings, useAdjustTerminalFontSize } from "@/lib/hooks/useUserSettings";
 import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
+import { useNeedsYouNotifications } from "@/lib/hooks/useNeedsYouNotifications";
+import { useAutoCollapse } from "@/lib/hooks/useAutoCollapse";
+import { useAgentStates } from "@/lib/hooks/useAgentSignals";
 import { useFileDrop } from "@/lib/hooks/useFileDrop";
 import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
 import { useMacTextEditingKeys } from "@/lib/hooks/useMacTextEditingKeys";
@@ -63,10 +68,16 @@ function AppShell() {
   const adjustTerminalFontSize = useAdjustTerminalFontSize();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { open: openSettings } = useSettingsRoute();
 
   useCloudSync();
+  useAccentFromSettings();
   useTaskEvents();
   useCompletionNotifications();
+  useNeedsYouNotifications();
+  useAutoCollapse();
+  // Keeps the agent-state snapshot live app-wide (board, sidebar, inspector).
+  useAgentStates();
   useFileDrop();
   // ⌘⌫ / ⌘← / ⌘→ in every field — the webview never runs the native
   // macOS editing actions for these, so we implement them ourselves.
@@ -80,7 +91,7 @@ function AppShell() {
     const handler = (e: KeyboardEvent) => {
       if (matchShortcut(e, SHORTCUTS.openSettings)) {
         e.preventDefault();
-        void navigate({ to: "/settings/account" });
+        openSettings();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarHide)) {
@@ -121,24 +132,27 @@ function AppShell() {
         return;
       }
       if (matchShortcut(e, SHORTCUTS.openNotes)) {
-        // Workspace context only — RepoHomeShell binds its own copy for
-        // the repo-home rail (the two never co-mount).
+        // In a task: bring the repository's notes pane forward with the
+        // composer open.
         const s = useUiStore.getState();
         const ctx = s.activeWorkspaceContext;
         if (!ctx) return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        s.setRightPanelCollapsed(false);
-        s.setRightPanelTab(ctx.workspaceId, "notes");
+        s.setSessionPane(ctx.workspaceId, "notes");
         s.openNotesComposer();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
-        const { activeWorkspaceContext, requestNewWorkspace } =
+        // In a task: its repository. On the board: the switcher's repo, else
+        // the first one.
+        const { activeWorkspaceContext, repoFilter, requestNewWorkspace } =
           useUiStore.getState();
-        if (!activeWorkspaceContext) return;
+        const repos = queryClient.getQueryData<Repository[]>(repositoryKeys.list());
+        const repoId = activeWorkspaceContext?.repositoryId ?? repoFilter ?? repos?.[0]?.id ?? null;
+        if (!repoId) return;
         e.preventDefault();
-        requestNewWorkspace(activeWorkspaceContext.repositoryId);
+        requestNewWorkspace(repoId);
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newTerminal)) {
@@ -199,16 +213,18 @@ function AppShell() {
     window.addEventListener("keydown", handler, { capture: true });
     return () =>
       window.removeEventListener("keydown", handler, { capture: true });
-  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, adjustTerminalFontSize, queryClient, navigate]);
+  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, adjustTerminalFontSize, queryClient, navigate, openSettings]);
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
-      <BackgroundOrb />
       <TitleBar />
       <div className="flex min-h-0 min-w-0 flex-1">
-        <AppSidebar />
-        <main className="relative min-h-0 flex-1 overflow-hidden">
-          <Outlet />
+        <TaskSidebar />
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <Outlet />
+          </div>
+          <StatusBar />
         </main>
       </div>
       <CommandPalette />
@@ -217,10 +233,12 @@ function AppShell() {
       <AddRepositoryPickerModal />
       <RepoFileSearchModal />
       <GitInitConfirmModal />
+      <SettingsSheet />
     </div>
   );
 }
 
 export const Route = createFileRoute("/_app")({
   component: AppLayout,
+  validateSearch: validateSettingsSearch,
 });

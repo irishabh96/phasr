@@ -1,0 +1,140 @@
+import { useQueries } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { deriveTaskLane, type TaskLane } from "@/lib/board";
+import { useAllWorkspaces } from "@/lib/hooks/useAllWorkspaces";
+import { gitKeys } from "@/lib/hooks/useGit";
+import { tauri } from "@/lib/tauri";
+import { useAgentStates } from "@/lib/hooks/useAgentSignals";
+import { useTaskCards } from "@/lib/hooks/useTaskCards";
+import type { Attention, BoardLane, Repository, TaskCard, Workspace } from "@/lib/types";
+
+export interface BoardTask {
+  workspace: Workspace;
+  repository: Repository | null;
+  lane: TaskLane;
+  /** Uncommitted-change totals for finished tasks; null when unknown. */
+  diff: { files: number; adds: number; removes: number } | null;
+  /** What the agent is doing right now ("Editing src/x.ts"); running only. */
+  activity: string | null;
+  /** The dialog the agent is blocked on (lane needs-you). */
+  attention: Attention | null;
+  /** When it stopped working ("finished 18m ago"); backend cards only. */
+  finishedAt: string | null;
+  /** A queued task's dependency name ("waits for tauri-v2"). */
+  dependsOnName: string | null;
+  /** Never started (draft or queued) — "Start now" applies. */
+  notStarted: boolean;
+}
+
+/** Backend lanes → the board's columns. Draft and queued share Queued; archived folds into Done. */
+const LANE_FROM_BACKEND: Record<BoardLane, TaskLane> = {
+  draft: "queued",
+  queued: "queued",
+  running: "running",
+  "needs-you": "needs-you",
+  "needs-review": "review",
+  failed: "failed",
+  done: "done",
+  archived: "done",
+};
+
+function fromCard(card: TaskCard, repository: Repository | null): BoardTask {
+  const st = card.agentState;
+  return {
+    workspace: card.workspace,
+    repository,
+    lane: LANE_FROM_BACKEND[card.lane],
+    diff: card.diff,
+    activity: card.workspace.status === "running" ? (st?.lastActivity ?? null) : null,
+    attention: st?.state === "needs-you" ? (st.attention ?? null) : null,
+    finishedAt: card.finishedAt,
+    dependsOnName: card.dependsOnName,
+    notStarted: card.lane === "draft" || card.lane === "queued",
+  };
+}
+
+/** Statuses whose worktree diff decides review-vs-done. */
+const NEEDS_DIFF = new Set(["stopped", "completed"]);
+
+/**
+ * Every agent task across repositories with its board lane. The in-place
+ * `local` workspace of each repo is returned separately (`localWorkspaces`)
+ * because it is not a task.
+ */
+export function useBoardTasks(repoFilter: string | null = null) {
+  const { repositories, workspaces, isLoading } = useAllWorkspaces();
+  const { data: agentStates } = useAgentStates();
+  // Authoritative lanes (diff vs base, outcomes, queue) from the backend.
+  // `null`/missing (older backend, test harness) falls back to deriving
+  // lanes here from status + uncommitted changes.
+  const cards = useTaskCards(null);
+  const candidates = workspaces.filter(
+    (w) => w.workspaceKind === "agent" && NEEDS_DIFF.has(w.status) && !!w.worktreePath,
+  );
+  const statuses = useQueries({
+    queries: candidates.map((w) => ({
+      queryKey: gitKeys.status(w.id),
+      queryFn: () => tauri.gitStatus(w.id),
+      staleTime: 15_000,
+      retry: false,
+    })),
+  });
+  const statusKey = statuses.map((s) => s.dataUpdatedAt).join(",");
+
+  return useMemo(() => {
+    const repoById = new Map(repositories.map((r) => [r.id, r]));
+    const diffById = new Map<string, BoardTask["diff"]>();
+    candidates.forEach((w, i) => {
+      const files = statuses[i]?.data;
+      if (!files) return;
+      diffById.set(w.id, {
+        files: files.length,
+        adds: files.reduce((n, f) => n + (f.adds ?? 0), 0),
+        removes: files.reduce((n, f) => n + (f.removes ?? 0), 0),
+      });
+    });
+    const stateById = new Map((agentStates ?? []).map((st) => [st.taskId, st]));
+    if (Array.isArray(cards.data)) {
+      const tasks = cards.data
+        .filter((c) => !repoFilter || c.workspace.repositoryId === repoFilter)
+        .map((c) => fromCard(c, repoById.get(c.workspace.repositoryId) ?? null));
+      const localWorkspaces = workspaces.filter(
+        (w) => w.workspaceKind === "local" && (!repoFilter || w.repositoryId === repoFilter),
+      );
+      tasks.sort((a, b) =>
+        (b.workspace.startedAt ?? b.workspace.createdAt).localeCompare(a.workspace.startedAt ?? a.workspace.createdAt),
+      );
+      return { tasks, localWorkspaces, repositories, isLoading: isLoading || cards.isLoading };
+    }
+    const tasks: BoardTask[] = [];
+    const localWorkspaces: Workspace[] = [];
+    for (const w of workspaces) {
+      if (repoFilter && w.repositoryId !== repoFilter) continue;
+      if (w.workspaceKind === "local") {
+        localWorkspaces.push(w);
+        continue;
+      }
+      const diff = diffById.get(w.id) ?? null;
+      const st = stateById.get(w.id);
+      const needsYou = st?.state === "needs-you";
+      const lane = deriveTaskLane(w, { ...(diff ? { changedFiles: diff.files } : {}), needsYou });
+      if (!lane) continue;
+      tasks.push({
+        workspace: w,
+        repository: repoById.get(w.repositoryId) ?? null,
+        lane,
+        diff,
+        activity: w.status === "running" ? (st?.lastActivity ?? null) : null,
+        attention: needsYou ? (st?.attention ?? null) : null,
+        finishedAt: w.finishedAt,
+        dependsOnName: null,
+        notStarted: w.status === "pending",
+      });
+    }
+    tasks.sort((a, b) =>
+      (b.workspace.startedAt ?? b.workspace.createdAt).localeCompare(a.workspace.startedAt ?? a.workspace.createdAt),
+    );
+    return { tasks, localWorkspaces, repositories, isLoading };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaces, repositories, statusKey, repoFilter, isLoading, agentStates, cards.data, cards.isLoading]);
+}

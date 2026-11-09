@@ -59,20 +59,33 @@ export const SHORTCUTS = {
     key: "b",
     meta: true,
     display: ["⌘", "B"],
-    label: "Pin sidebar",
+    label: "Collapse task list",
   },
   toggleSidebarHide: {
     key: "b",
     meta: true,
     shift: true,
     display: ["⌘", "⇧", "B"],
-    label: "Hide sidebar",
+    label: "Hide task list",
   },
   toggleRightPanel: {
-    key: "j",
+    key: "i",
     meta: true,
-    display: ["⌘", "J"],
-    label: "Toggle right panel",
+    display: ["⌘", "I"],
+    label: "Toggle inspector",
+  },
+  reviewChanges: {
+    key: "r",
+    meta: true,
+    shift: true,
+    display: ["⌘", "⇧", "R"],
+    label: "Review changes",
+  },
+  stopAgent: {
+    key: ".",
+    meta: true,
+    display: ["⌘", "."],
+    label: "Stop agent",
   },
 
   // Terminal font size. "+" and "-" live on shifted keys, and the glyph the

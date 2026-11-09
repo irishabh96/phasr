@@ -52,7 +52,7 @@ export function FilePreviewTab({ repoPath, filePath, visible }: FilePreviewTabPr
           </div>
         )}
         {!isLoading && !error && lines && (
-          <table className="w-full border-collapse font-mono text-[11.5px] leading-[1.55]">
+          <table className="w-full border-collapse font-mono text-[11px] leading-[1.55]">
             <tbody>
               {lines.map((line, i) => (
                 <tr key={i}>

@@ -113,7 +113,7 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
       </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-72 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]">
           <header className="border-b border-(--glass-border-hairline) px-3 py-2">
             <p className="text-[11px] uppercase tracking-[0.12em] text-(--color-text-muted)">
               Sync with main
@@ -185,7 +185,7 @@ function StrategyRow({
       type="button"
       onClick={() => onSelect(value)}
       className={cn(
-        "flex w-full items-start gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors duration-100",
+        "flex w-full items-start gap-2 rounded-(--radius-control) px-2 py-1.5 text-left transition-colors duration-100",
         "hover:bg-(--color-bg-hover)",
         selected && "bg-(--color-bg-active)",
       )}
@@ -200,7 +200,7 @@ function StrategyRow({
         aria-hidden
       />
       <span className="flex flex-1 flex-col gap-0.5">
-        <span className="text-[12.5px] leading-none text-(--color-text-primary)">
+        <span className="text-[12px] leading-none text-(--color-text-primary)">
           {label}
         </span>
         <span className="text-[11px] text-(--color-text-muted)">{hint}</span>

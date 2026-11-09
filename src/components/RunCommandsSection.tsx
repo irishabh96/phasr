@@ -130,7 +130,7 @@ export function RunCommandsSection({
       {showAdd && (
         <form
           onSubmit={handleCreate}
-          className="space-y-2.5 rounded-[14px] border border-(--color-border-subtle) bg-(--color-bg-surface) p-4"
+          className="space-y-2.5 rounded-(--radius-card) border border-(--color-border-subtle) bg-(--color-bg-surface) p-4"
         >
           <GlassInput
             value={name}
@@ -169,7 +169,7 @@ export function RunCommandsSection({
       )}
 
       {sorted.length > 0 && (
-        <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-[14px] border border-(--color-border-subtle) bg-(--color-bg-surface)">
+        <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-(--radius-card) border border-(--color-border-subtle) bg-(--color-bg-surface)">
           {sorted.map((rc) => {
             const isEditing = editingId === rc.id;
             return (

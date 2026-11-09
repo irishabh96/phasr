@@ -24,15 +24,14 @@ import { useUiStore } from "@/lib/store";
  * On select:
  *   - With an active workspace → opens a file-preview inner tab in it.
  *   - Otherwise → opens a preview tab on the repo's inner tab bar
- *     (`openRepoInnerPreviewTab`), driving the empty-repo view.
+ *     (no-op outside a task — there is no repo-level file view now).
  *
  * Styling is shared with `CommandPalette` via `@/components/ui/palette`.
  */
 export function RepoFileSearchModal() {
   const target = useUiStore((s) => s.fileSearchTarget);
   const close = useUiStore((s) => s.closeFileSearch);
-  const openInnerPreviewTab = useUiStore((s) => s.openInnerPreviewTab);
-  const openRepoInnerPreviewTab = useUiStore((s) => s.openRepoInnerPreviewTab);
+  const openSessionFile = useUiStore((s) => s.openSessionFile);
   const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceContext?.workspaceId ?? null);
   const { data: repositories } = useRepositories();
   const open = target !== null;
@@ -49,11 +48,8 @@ export function RepoFileSearchModal() {
       close();
       return;
     }
-    if (activeWorkspaceId) {
-      openInnerPreviewTab(activeWorkspaceId, relative);
-    } else {
-      openRepoInnerPreviewTab(target.repositoryId, relative);
-    }
+    // Files open in the task's Files pane (A-Editor).
+    if (activeWorkspaceId) openSessionFile(activeWorkspaceId, relative);
     close();
     setQuery("");
   };

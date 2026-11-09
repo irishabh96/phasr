@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
 import {
@@ -44,7 +44,8 @@ export function NewProjectPane() {
   const createRepository = useCreateRepository();
 
   const [location, setLocation] = useState("");
-  const [mode, setMode] = useState<Mode>("empty");
+  const initialMode = (useSearch({ strict: false }) as { mode?: Mode }).mode;
+  const [mode, setMode] = useState<Mode>(initialMode ?? "empty");
 
   // Empty mode pre-fills "my-project" rather than just showing it as
   // placeholder — Create is one click away.
@@ -181,14 +182,14 @@ export function NewProjectPane() {
               value={location}
               onChange={(e) => setLocation(e.target.value)}
               placeholder="/Users/you/projects"
-              className="h-10 flex-1 font-mono text-[12.5px]"
+              className="h-10 flex-1 font-mono text-[12px]"
             />
             <button
               type="button"
               onClick={browse}
               aria-label="Browse for parent folder"
               title="Browse for parent folder"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-(--glass-border-strong) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-(--radius-control) border border-(--glass-border-strong) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <FolderOpen size={14} />
             </button>
@@ -276,12 +277,12 @@ export function NewProjectPane() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https:// or git@github.com:user/repo.git"
-              className="h-10 font-mono text-[12.5px]"
+              className="h-10 font-mono text-[12px]"
               autoFocus
             />
             {url.trim() && location.trim() && (
               <p
-                className="truncate font-mono text-[11.5px] text-(--color-text-muted)"
+                className="truncate font-mono text-[11px] text-(--color-text-muted)"
                 title={`${location.replace(/\/$/, "")}/${deriveNameFromUrl(url.trim())}`}
               >
                 Creates {location.replace(/\/$/, "")}/
@@ -398,7 +399,7 @@ function ModeTile({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-[10px] border-2 px-4 py-5 text-center transition-all",
+        "flex flex-col items-center gap-2 rounded-(--radius-control) border-2 px-4 py-5 text-center transition-all",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
@@ -414,13 +415,13 @@ function ModeTile({
       </span>
       <span
         className={cn(
-          "text-[14px] text-(--color-text-primary)",
+          "text-[13px] text-(--color-text-primary)",
           active ? "font-semibold" : "font-medium",
         )}
       >
         {title}
       </span>
-      <span className="text-[11.5px] text-(--color-text-secondary)">
+      <span className="text-[11px] text-(--color-text-secondary)">
         {description}
       </span>
     </button>
@@ -442,7 +443,7 @@ function TemplateCard({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col gap-1 rounded-[10px] border-2 p-3 text-left transition-all",
+        "flex flex-col gap-1 rounded-(--radius-control) border-2 p-3 text-left transition-all",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
@@ -464,7 +465,7 @@ function TemplateCard({
           </span>
         )}
       </div>
-      <span className="text-[11.5px] text-(--color-text-secondary)">
+      <span className="text-[11px] text-(--color-text-secondary)">
         {template.description}
       </span>
     </button>

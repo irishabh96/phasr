@@ -29,6 +29,8 @@ type TermStatus =
 interface RunCommandTerminalProps {
   /** Run command id (NOT a workspace id). */
   runCommandId: string;
+  /** Run inside this task's worktree (keyed per task); omitted = the repo checkout. */
+  workspaceId?: string | null;
   visible: boolean;
   onExit?: (exitCode: number | null) => void;
 }
@@ -45,6 +47,7 @@ interface RunCommandTerminalProps {
  */
 export function RunCommandTerminal({
   runCommandId,
+  workspaceId = null,
   visible,
   onExit,
 }: RunCommandTerminalProps) {
@@ -61,6 +64,9 @@ export function RunCommandTerminal({
   const restartRef = useRef<(() => void) | null>(null);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
+  // The cursor and selection wash come from the accent, so an accent change
+  // re-pushes the palette exactly like a theme flip.
+  const accent = useUiStore((s) => s.accent);
   onExitRef.current = onExit;
   const editorIdRef = useRef<string | null>(null);
   editorIdRef.current = settings?.defaultEditor ?? null;
@@ -122,13 +128,14 @@ export function RunCommandTerminal({
           channel,
           surface.rows,
           surface.cols,
+          workspaceId,
         );
         if (cancelled) return;
         setStatus(null);
         disposables.push(
           surface.onData((data) => {
             if (cancelled) return;
-            void tauri.sendRunCommandInput(runCommandId, data).catch((err) => {
+            void tauri.sendRunCommandInput(runCommandId, data, workspaceId).catch((err) => {
               if (cancelled) return;
               setStatus({ state: "failed", error: String(err) });
             });
@@ -136,7 +143,7 @@ export function RunCommandTerminal({
           surface.onResize(({ rows, cols }) => {
             if (cancelled) return;
             void tauri
-              .resizeRunCommand(runCommandId, rows, cols)
+              .resizeRunCommand(runCommandId, rows, cols, workspaceId)
               .catch(() => {});
           }),
         );
@@ -160,7 +167,7 @@ export function RunCommandTerminal({
       surface.dispose();
       surfaceRef.current = null;
     };
-  }, [runCommandId]);
+  }, [runCommandId, workspaceId]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -173,7 +180,7 @@ export function RunCommandTerminal({
   // which holds its own rasterized copy of the palette.
   useEffect(() => {
     surfaceRef.current?.applyTheme(readTerminalTheme());
-  }, [theme]);
+  }, [theme, accent]);
 
   // This surface renders even while its tab is hidden so the PTY stays
   // connected — which is exactly why it has to be told when it is offscreen.

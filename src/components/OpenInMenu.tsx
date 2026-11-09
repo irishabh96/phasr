@@ -89,7 +89,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
       </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]">
           {launchers && launchers.length === 0 && (
             <div className="px-3 py-3 text-[12px] text-(--color-text-muted)">
               No editors or terminals detected.
@@ -118,7 +118,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                         : "Not installed or not found"
                     }
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] transition-colors duration-100",
+                      "flex w-full items-center gap-2 rounded-(--radius-control) px-2 py-1.5 text-left text-[12px] transition-colors duration-100",
                       launcher.available
                         ? "text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                         : "cursor-not-allowed text-(--color-text-muted) opacity-55",

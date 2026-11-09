@@ -10,6 +10,12 @@ interface WorkspaceTabContentProps {
   workspaceId: string;
   workspace: Workspace;
   onMainExit?: (exitCode: number | null) => void;
+  /**
+   * Another pane (Changes, Files, a run command) is in front: keep every
+   * tab mounted — PTYs and emulators must survive — but treat all of them
+   * as hidden.
+   */
+  suspended?: boolean;
 }
 
 /**
@@ -29,6 +35,7 @@ export function WorkspaceTabContent({
   workspaceId,
   workspace,
   onMainExit,
+  suspended = false,
 }: WorkspaceTabContentProps) {
   const state = useUiStore((s) => s.innerTabs[workspaceId]);
   const openInnerAgentTab = useUiStore((s) => s.openInnerAgentTab);
@@ -39,6 +46,7 @@ export function WorkspaceTabContent({
   const worktreePath = workspace.worktreePath ?? "";
 
   if (tabs.length === 0) {
+    if (suspended) return null;
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <div className="flex flex-col items-center gap-4 text-center">
@@ -76,7 +84,7 @@ export function WorkspaceTabContent({
   return (
     <div className="relative min-h-0 flex-1">
       {tabs.map((tab) => {
-        const active = tab.id === activeTabId;
+        const active = tab.id === activeTabId && !suspended;
         if (tab.kind === "main") {
           return (
             <div key={tab.id} className="absolute inset-0">

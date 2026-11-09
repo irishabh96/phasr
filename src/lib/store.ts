@@ -1,9 +1,17 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
 import {
+  applyAccent,
+  applyDensity,
   applyTheme,
+  readStoredAccent,
+  readStoredDensity,
   readStoredTheme,
+  writeStoredAccent,
+  writeStoredDensity,
   writeStoredTheme,
+  type Accent,
+  type Density,
   type Theme,
 } from "./theme";
 
@@ -94,6 +102,7 @@ interface RunPanelState {
 }
 
 export type SidebarMode = "collapsed" | "pinned" | "hidden";
+export type SessionPane = "tabs" | "changes" | "files" | "notes" | "run";
 
 const SIDEBAR_KEY = "phasr.sidebar";
 const RIGHT_PANEL_KEY = "phasr.rightPanel";
@@ -101,12 +110,12 @@ const SIDEBAR_WIDTH_KEY = "phasr.sidebarWidth";
 const RIGHT_PANEL_WIDTH_KEY = "phasr.rightPanelWidth";
 const LAST_WORKSPACE_KEY = "phasr.lastWorkspace";
 
-export const SIDEBAR_WIDTH_MIN = 200;
-export const SIDEBAR_WIDTH_MAX = 480;
-export const SIDEBAR_WIDTH_DEFAULT = 260;
-export const RIGHT_PANEL_WIDTH_MIN = 300;
-export const RIGHT_PANEL_WIDTH_MAX = 640;
-export const RIGHT_PANEL_WIDTH_DEFAULT = 360;
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 420;
+export const SIDEBAR_WIDTH_DEFAULT = 264;
+export const RIGHT_PANEL_WIDTH_MIN = 260;
+export const RIGHT_PANEL_WIDTH_MAX = 480;
+export const RIGHT_PANEL_WIDTH_DEFAULT = 300;
 
 function clampWidth(value: number, min: number, max: number, fallback: number) {
   return Number.isFinite(value)
@@ -162,6 +171,27 @@ function readStoredLastWorkspace(): ActiveWorkspaceContext | null {
 interface UiState {
   theme: Theme;
   setTheme: (theme: Theme) => void;
+  /** Accent mirror of UserSettings.accentColor; localStorage copy boots FOUC-free. */
+  accent: Accent;
+  setAccent: (accent: Accent) => void;
+  /**
+   * Which pane fills a task session's content area (A-Workspace pane tabs).
+   * "tabs" = the agent/terminal/preview tab stack (always mounted, so PTYs
+   * survive); the others overlay it. Per workspace, in memory.
+   */
+  sessionPane: Record<string, SessionPane>;
+  setSessionPane: (workspaceId: string, pane: SessionPane) => void;
+  /** Selected file in a task's Files pane (palette `@file` deep-links it). */
+  sessionFile: Record<string, string>;
+  openSessionFile: (workspaceId: string, path: string) => void;
+  /** Title-bar repository switcher: null = all repositories. */
+  repoFilter: string | null;
+  setRepoFilter: (repositoryId: string | null) => void;
+  /** Cloud sync worker health, fed by useCloudSync (status bar). */
+  cloudSync: { state: "unknown" | "ok" | "error"; at: number | null };
+  setCloudSync: (state: "ok" | "error") => void;
+  density: Density;
+  setDensity: (density: Density) => void;
 
   sidebarMode: SidebarMode;
   setSidebarMode: (mode: SidebarMode) => void;
@@ -334,6 +364,31 @@ export const useUiStore = create<UiState>((set, get) => ({
     writeStoredTheme(theme);
     applyTheme(theme);
     set({ theme });
+  },
+  accent: readStoredAccent(),
+  setAccent: (accent) => {
+    writeStoredAccent(accent);
+    applyAccent(accent);
+    set({ accent });
+  },
+  sessionPane: {},
+  setSessionPane: (workspaceId, pane) =>
+    set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: pane } })),
+  sessionFile: {},
+  openSessionFile: (workspaceId, path) =>
+    set((st) => ({
+      sessionFile: { ...st.sessionFile, [workspaceId]: path },
+      sessionPane: { ...st.sessionPane, [workspaceId]: "files" },
+    })),
+  repoFilter: null,
+  setRepoFilter: (repoFilter) => set({ repoFilter }),
+  cloudSync: { state: "unknown", at: null },
+  setCloudSync: (state) => set({ cloudSync: { state, at: Date.now() } }),
+  density: readStoredDensity(),
+  setDensity: (density) => {
+    writeStoredDensity(density);
+    applyDensity(density);
+    set({ density });
   },
 
   sidebarMode: readSidebar(),
@@ -633,6 +688,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     });
   },
   openInnerAgentTab: (workspaceId, title) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     const existing = state?.tabs.find((t) => t.kind === "main");
     if (existing && state) {
@@ -658,6 +718,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     return tab;
   },
   openInnerTerminalTab: (workspaceId, options) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     const existingTerminals = (state?.tabs ?? []).filter(
       (t) => t.kind === "terminal",
@@ -682,6 +747,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     return tab;
   },
   openInnerPreviewTab: (workspaceId, filePath) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     const existing = state?.tabs.find(
       (t) => t.kind === "preview" && t.filePath === filePath,
@@ -750,6 +820,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ innerTabs: {}, repoInnerTabs: {}, activeWorkspaceContext: null });
   },
   setActiveInnerTab: (workspaceId, tabId) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     if (!state) return;
     set({

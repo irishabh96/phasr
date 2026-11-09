@@ -34,7 +34,7 @@ export const GlassSelect = forwardRef<HTMLSelectElement, GlassSelectProps>(
           ref={ref}
           className={cn(
             inputBaseClasses,
-            "h-9 cursor-pointer appearance-none pl-3 pr-9 text-[13px]",
+            "h-8 cursor-pointer appearance-none pl-2.5 pr-8 text-[12px]",
             placeholder != null && isPlaceholder && "text-(--color-text-muted)",
             className,
           )}
@@ -53,7 +53,7 @@ export const GlassSelect = forwardRef<HTMLSelectElement, GlassSelectProps>(
           {children}
         </select>
         <ChevronDown
-          className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-(--color-text-muted)"
+          className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-(--color-text-muted)"
           aria-hidden="true"
         />
       </div>

@@ -106,3 +106,19 @@ SOFTWARE.
      half-applied.
 
    The MIT licence permits this; the patch is intended for upstreaming.
+
+## Inter and JetBrains Mono (bundled fonts)
+
+The interface typefaces are bundled through `@fontsource-variable/inter` and
+`@fontsource/jetbrains-mono` (imported in `src/main.tsx`) so the app renders
+identically offline.
+
+- **Inter** — Copyright 2016 The Inter Project Authors
+  (https://github.com/rsms/inter). Licensed under the SIL Open Font License,
+  Version 1.1.
+- **JetBrains Mono** — Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono). Licensed under the SIL Open
+  Font License, Version 1.1.
+
+The full licence text ships in each package (`node_modules/@fontsource*/*/LICENSE`)
+and is available at https://openfontlicense.org.

@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { useSettingsRoute } from "@/components/settings/useSettingsRoute";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { useNavigate } from "@tanstack/react-router";
+
 import {
   FolderOpen,
   NotebookPen,
@@ -28,7 +29,7 @@ interface RepositorySidebarMenuProps {
  *   1. Open project — navigates to the repository entry route.
  *   2. New workspace — sets `pendingNewWorkspaceRepoId`; the shell-mounted
  *      NewTaskModal picks it up and opens.
- *   3. Settings — navigate to /repositories/<id>/settings.
+ *   3. Settings — open the settings sheet on this repository.
  *   4. Remove project — opens a glass confirm dialog; on confirm,
  *      deletes only the DB row (local clone untouched).
  */
@@ -36,7 +37,7 @@ export function RepositorySidebarMenu({
   repository,
   children,
 }: RepositorySidebarMenuProps) {
-  const navigate = useNavigate();
+  const settingsRoute = useSettingsRoute();
   const navigateToRepoEntry = useNavigateToRepoEntry();
   const requestNewWorkspace = useUiStore((s) => s.requestNewWorkspace);
   const deleteRepo = useDeleteRepository();
@@ -52,25 +53,19 @@ export function RepositorySidebarMenu({
 
   const onNotes = async () => {
     await navigateToRepoEntry(repository.id);
-    // The entry route may be repo home OR the last workspace; let it
-    // mount and register its context, then open the matching rail.
+    // The entry route may be the board OR the last task; let it mount and
+    // register its context, then bring the notes pane forward.
     setTimeout(() => {
       const s = useUiStore.getState();
       const ctx = s.activeWorkspaceContext;
       if (ctx && ctx.repositoryId === repository.id) {
-        s.setRightPanelCollapsed(false);
-        s.setRightPanelTab(ctx.workspaceId, "notes");
-      } else {
-        s.setRepoRailCollapsed(false);
+        s.setSessionPane(ctx.workspaceId, "notes");
       }
     }, 50);
   };
 
   const onOpenSettings = () => {
-    navigate({
-      to: "/repositories/$repositoryId/settings",
-      params: { repositoryId: repository.id },
-    });
+    settingsRoute.open("run-commands", { repositoryId: repository.id });
   };
 
   const onConfirmRemove = () => {
@@ -92,7 +87,7 @@ export function RepositorySidebarMenu({
           <ContextMenu.Content
             className={cn(
               "z-[200] min-w-[180px] overflow-hidden p-1",
-              "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
+              "rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]",
             )}
           >
             <Item icon={<FolderOpen size={12} />} onSelect={onOpenProject}>
@@ -146,8 +141,8 @@ function Item({
     <ContextMenu.Item
       onSelect={onSelect}
       className={cn(
-        "flex cursor-pointer items-center gap-2 rounded-[8px] px-2 py-1.5",
-        "text-[12.5px] leading-none outline-none",
+        "flex cursor-pointer items-center gap-2 rounded-(--radius-control) px-2 py-1.5",
+        "text-[12px] leading-none outline-none",
         "transition-colors duration-100",
         "data-[highlighted]:bg-(--color-bg-hover)",
         danger
@@ -189,7 +184,7 @@ function RemoveConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-[160] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}
@@ -197,12 +192,12 @@ function RemoveConfirm({
           <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
             <header className="border-b border-(--glass-border-hairline) px-5 py-3.5">
               <Dialog.Title asChild>
-                <h3 className="text-[13.5px] font-semibold leading-none">
+                <h3 className="text-[13px] font-semibold leading-none">
                   Remove project &quot;{name}&quot;?
                 </h3>
               </Dialog.Title>
             </header>
-            <div className="px-5 py-4 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
+            <div className="px-5 py-4 text-[12px] leading-relaxed text-(--color-text-secondary)">
               The project will be removed from Phasr. Your local clone on disk
               stays untouched.
             </div>
@@ -216,7 +211,7 @@ function RemoveConfirm({
                 Cancel
               </GlassButton>
               <GlassButton
-                variant="danger"
+                variant="danger-solid"
                 size="sm"
                 onClick={onConfirm}
                 disabled={pending}

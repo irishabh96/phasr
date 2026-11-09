@@ -154,7 +154,7 @@ function ToastCard({ toast, leaving }: { toast: AppToast; leaving: boolean }) {
           type="button"
           aria-label="Dismiss notification"
           onClick={() => dismissToast(toast.id)}
-          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-[8px] text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
         >
           <X className="size-4" aria-hidden="true" />
         </button>

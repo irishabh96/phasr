@@ -177,8 +177,8 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         </GlassButton>
 
         {open && (
-          <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
-            <ul className="p-1 text-[12.5px]">
+          <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]">
+            <ul className="p-1 text-[12px]">
               {canMergeToMain && (
                 <MenuItem
                   icon={<GitMerge size={12} />}
@@ -278,7 +278,7 @@ function MenuItem({
         disabled={disabled}
         title={title}
         className={cn(
-          "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left",
+          "flex w-full items-center gap-2 rounded-(--radius-control) px-2 py-1.5 text-left",
           "transition-colors duration-100",
           "hover:bg-(--color-bg-hover)",
           danger
