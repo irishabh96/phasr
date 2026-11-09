@@ -51,6 +51,11 @@ export default defineConfig({
     // phasr ships in a Tauri webview (WKWebView / WebView2), so we can
     // target a modern baseline instead of the conservative default.
     target: "es2022",
+    // Never base64-inline fonts into the render-blocking CSS: they're read
+    // from the local app bundle anyway, and inlining makes every launch
+    // parse them even when unicode-range would skip the file. Other assets
+    // keep Vite's default 4 KB threshold.
+    assetsInlineLimit: (filePath) => (/\.(woff2?|ttf|otf|eot)$/i.test(filePath) ? false : undefined),
     // Keep readable stacks in Sentry despite minification.
     sourcemap: true,
     // The Shiki grammar chunks are legitimately large; raise the warning

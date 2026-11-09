@@ -4,7 +4,7 @@
 
 @theme {
   /* Option A "Mission Control" — Inter 13/1.4 body, JetBrains Mono 12.
-     Both are bundled (@fontsource, imported in main.tsx) so the app renders
+     Both are bundled (@fontsource files, declared in src/fonts.css) so the app renders
      the same offline; system stacks remain as fallbacks. */
   --font-sans:
     "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif,
