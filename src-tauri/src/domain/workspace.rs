@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::agent::Agent;
+use super::agent::{Agent, PermissionMode};
 
 /// One agent run inside a repository. Owns an isolated git worktree on
 /// a `phasr/*` branch and a PTY session. Previously called `Task`;
@@ -87,6 +87,33 @@ impl WorkspaceKind {
     }
 }
 
+/// How a task ended. `None` on the row = still open.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskOutcome {
+    /// Its branch was merged (`merged_into` says where).
+    Merged,
+    /// Closed without merging (discarded; notes kept).
+    Closed,
+}
+
+impl TaskOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Merged => "merged",
+            Self::Closed => "closed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "merged" => Self::Merged,
+            "closed" => Self::Closed,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -106,6 +133,50 @@ pub struct Workspace {
     pub finished_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// The mode the agent was (or will next be) launched in. `None` on rows
+    /// that predate permission modes: those launched with skip-all flags,
+    /// which are baked into `command`, so they keep behaving that way on
+    /// resume.
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
+    /// Whether this task should raise a notification when it needs the
+    /// user (M6 consumes it).
+    #[serde(default = "default_true")]
+    pub notify_on_attention: bool,
+    /// When the agent last finished a turn (its `Stop` hook / Codex
+    /// turn-complete notify). Synced, so "finished 18m ago" shows on every
+    /// device. `None` = never, or a row from before M6.
+    #[serde(default)]
+    pub last_turn_ended_at: Option<DateTime<Utc>>,
+    /// The branch the worktree was cut from — the diff base. `None` on rows
+    /// from before M7 (the repository's default branch is assumed) and on
+    /// in-place tasks.
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    /// Set while a not-yet-launched task waits in the queue.
+    #[serde(default)]
+    pub queued_at: Option<DateTime<Utc>>,
+    /// The queued task starts once this one reaches review / is done.
+    #[serde(default)]
+    pub depends_on_workspace_id: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<TaskOutcome>,
+    #[serde(default)]
+    pub outcome_at: Option<DateTime<Utc>>,
+    /// Where a `Merged` task's branch went.
+    #[serde(default)]
+    pub merged_into: Option<String>,
+    #[serde(default)]
+    pub pr_number: Option<i64>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// `open` | `draft` | `merged` | `closed`, as last seen. Open set.
+    #[serde(default)]
+    pub pr_state: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Workspace {
@@ -128,7 +199,40 @@ impl Workspace {
             finished_at: None,
             archived_at: None,
             updated_at: now,
+            permission_mode: None,
+            notify_on_attention: true,
+            last_turn_ended_at: None,
+            base_branch: None,
+            queued_at: None,
+            depends_on_workspace_id: None,
+            outcome: None,
+            outcome_at: None,
+            merged_into: None,
+            pr_number: None,
+            pr_url: None,
+            pr_state: None,
         }
+    }
+
+    /// An agent task that was created but never launched: `pending`, and
+    /// no worktree branch yet. Covers drafts AND queued tasks. (A launch
+    /// cuts the branch before the row leaves `pending`, so a mid-launch
+    /// row is never mistaken for one.) Uses `branch`, not `worktree_path`,
+    /// because the branch syncs and the path is machine-local.
+    pub fn is_unlaunched(&self) -> bool {
+        self.workspace_kind == WorkspaceKind::Agent
+            && self.status == WorkspaceStatus::Pending
+            && self.branch.is_none()
+    }
+
+    /// Waiting in the queue to be started (by the scheduler or "Start now").
+    pub fn is_queued(&self) -> bool {
+        self.is_unlaunched() && self.queued_at.is_some()
+    }
+
+    /// Saved for later; starts only when the user starts or queues it.
+    pub fn is_draft(&self) -> bool {
+        self.is_unlaunched() && self.queued_at.is_none()
     }
 }
 
@@ -165,6 +269,26 @@ mod tests {
     #[test]
     fn unknown_status_string_returns_none() {
         assert_eq!(WorkspaceStatus::from_str("nonsense"), None);
+    }
+
+    #[test]
+    fn drafts_and_queued_tasks_are_unlaunched_pending_rows() {
+        let mut ws = Workspace::new("r".into(), "n".into(), "claude".into());
+        assert!(ws.is_draft() && !ws.is_queued());
+        ws.queued_at = Some(Utc::now());
+        assert!(ws.is_queued() && !ws.is_draft());
+        // Launched (branch cut) → neither, even while still pending.
+        ws.branch = Some("phasr/n".into());
+        assert!(!ws.is_unlaunched());
+        ws.branch = None;
+        ws.status = WorkspaceStatus::Running;
+        assert!(!ws.is_unlaunched());
+        let mut local = Workspace::new("r".into(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        assert!(!local.is_draft());
+        assert_eq!(TaskOutcome::from_str("merged"), Some(TaskOutcome::Merged));
+        assert_eq!(TaskOutcome::Closed.as_str(), "closed");
+        assert_eq!(TaskOutcome::from_str("nope"), None);
     }
 
     #[test]

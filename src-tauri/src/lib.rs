@@ -1,6 +1,9 @@
+mod agent_signals;
 mod auth;
 mod auth_deeplink;
+mod checks;
 mod commands;
+mod detect;
 #[cfg(target_os = "macos")]
 mod dock_icon;
 mod domain;
@@ -8,6 +11,7 @@ mod fswatch;
 mod git;
 mod launcher;
 mod localfs;
+mod notifications;
 mod orchestrator;
 /// Terminal-path benchmark harness; see docs/adr/ADR-002-terminal-engine.md.
 /// Test-only.
@@ -17,8 +21,12 @@ mod perfbench;
 #[cfg(test)]
 mod loadtest;
 mod pty;
+mod review;
+mod run_commands;
+mod secrets;
 mod store;
 mod sync;
+mod util;
 mod vt;
 
 use std::path::Path;
@@ -26,11 +34,12 @@ use std::sync::Arc;
 
 use auth::SessionState;
 use domain::WorkspaceStatus;
-use orchestrator::{RepoLockRegistry, TaskOrchestrator};
+use orchestrator::{QueueScheduler, RepoLockRegistry, TaskBoard, TaskOrchestrator};
 use pty::TaskRuntime;
 use store::{
-    checkpoint, checkpoint_and_close, default_db_path, init_pool, NoteRepo, RepositoryRepo,
-    RunCommandRepo, SettingsRepo, UserRepo, WorkspaceRepo, WorkspaceUpdate,
+    checkpoint, checkpoint_and_close, default_db_path, init_pool, AppMetaRepo, CheckRunRepo,
+    NoteRepo, NotificationRepo, RepositoryConfigRepo, RepositoryRepo, ReviewCommentRepo,
+    RunCommandRepo, SettingsRepo, TaskUsageRepo, UserRepo, WorkspaceRepo, WorkspaceUpdate,
 };
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Manager;
@@ -48,6 +57,9 @@ pub fn run() {
         .manage(auth_deeplink::AuthDeepLinkState::default())
         .manage(session_state)
         .manage(cloud_sync_state)
+        // Agent/environment detection spawns real processes; cached for the
+        // app's lifetime, refreshed on demand (`force`).
+        .manage(Arc::new(detect::DetectionCache::default()))
         // Holds per-task routing metadata for the notification-activation seam
         // (DDR-003 §6); the plugin drops `extra` on desktop, so the frontend
         // records it here before firing each OS notification.
@@ -123,6 +135,7 @@ pub fn run() {
             tauri::async_runtime::block_on(initialize_database_state(
                 app.handle(),
                 &db_path,
+                &app_data_dir,
                 task_runtime,
             ))?;
 
@@ -157,16 +170,40 @@ pub fn run() {
             commands::workspaces::watch_workspace,
             commands::workspaces::unwatch_workspace,
             commands::agents::list_agents,
+            commands::agents::detect_agents,
+            commands::agents::check_environment,
+            commands::agents::preview_agent_command,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
+            commands::settings::list_shells,
+            commands::repository_config::get_repository_config,
+            commands::repository_config::update_repository_config,
+            commands::repository_config::list_repository_worktrees,
+            commands::repository_config::compute_worktree_sizes,
+            commands::repository_config::remove_worktrees,
+            commands::api_keys::list_api_keys,
+            commands::api_keys::set_api_key,
+            commands::api_keys::delete_api_key,
             commands::orchestrator::start_task,
             commands::orchestrator::stop_task,
             commands::orchestrator::open_task_terminal,
             commands::orchestrator::list_task_activity,
             commands::orchestrator::send_input_to_task,
+            commands::orchestrator::send_message_to_task,
             commands::orchestrator::read_task_log,
             commands::orchestrator::resize_task,
             commands::orchestrator::interrupt_task,
+            commands::agent_signals::list_agent_states,
+            commands::agent_signals::respond_to_attention,
+            commands::agent_signals::get_task_usage,
+            commands::agent_signals::get_agent_summary,
+            commands::agent_signals::list_agent_file_edits,
+            commands::board::list_task_cards,
+            commands::board::create_task_draft,
+            commands::board::update_task_draft,
+            commands::board::set_task_queued,
+            commands::board::start_queued_task,
+            commands::board::get_system_status,
             commands::git::git_status,
             commands::git::git_diff,
             commands::git::git_stage,
@@ -185,8 +222,27 @@ pub fn run() {
             commands::git::git_log,
             commands::git::git_commit_files,
             commands::git::git_commit_diff,
+            commands::review::git_review_files,
+            commands::review::run_checks,
+            commands::review::cancel_checks,
+            commands::review::list_check_runs,
+            commands::review::get_check_output,
+            commands::review::list_review_comments,
+            commands::review::create_review_comment,
+            commands::review::update_review_comment,
+            commands::review::delete_review_comment,
+            commands::review::send_review_comments,
+            commands::review::request_changes,
+            commands::review::approve_and_create_pr,
+            commands::review::refresh_pr_states,
+            commands::review::merge_task_locally,
+            commands::review::discard_workspace,
             commands::notifications::register_notification_route,
             commands::notifications::activate_notification,
+            commands::notifications::list_notifications,
+            commands::notifications::unread_notification_count,
+            commands::notifications::mark_notifications_read,
+            commands::notifications::clear_notifications,
             localfs::validate_workspace_path,
             localfs::default_projects_dir,
             localfs::ensure_dir,
@@ -200,6 +256,9 @@ pub fn run() {
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,
             commands::run_commands::resize_run_command,
+            commands::run_commands::confirm_run_command,
+            commands::run_commands::list_running_commands,
+            commands::run_commands::detect_package_scripts,
             commands::notes::create_note,
             commands::notes::list_notes_for_repository,
             commands::notes::update_note,
@@ -211,6 +270,10 @@ pub fn run() {
             commands::session_terminal::resize_session,
             commands::session_terminal::stop_session_terminal,
             commands::files::read_text_file,
+            commands::files::list_workspace_tree,
+            commands::files::read_workspace_file,
+            commands::files::write_workspace_file,
+            commands::files::revert_hunk,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -230,6 +293,7 @@ pub fn run() {
 async fn initialize_database_state(
     handle: &tauri::AppHandle,
     db_path: &Path,
+    app_data_dir: &Path,
     task_runtime: Arc<TaskRuntime>,
 ) -> Result<(), store::StoreError> {
     let pool = init_pool(db_path).await?;
@@ -264,25 +328,189 @@ async fn initialize_database_state(
     // a repo serializes against the same lock.
     let repo_locks = Arc::new(RepoLockRegistry::new());
 
+    // Needs-you state, approvals and usage for every agent launch. Installs
+    // the hook script under app data; degrades to heuristics if it can't.
+    let agent_signals = agent_signals::AgentSignals::new(
+        agent_signals::SignalsConfig::for_app(app_data_dir.to_path_buf()),
+        workspace_repo.clone(),
+        TaskUsageRepo::new(pool.clone()),
+    );
+    agent_signals.start();
+    commands::events::spawn_agent_signal_bridge(&agent_signals, handle.clone());
+
+    // Settings + repository rules for every launch (M11): branch template,
+    // worktree base, fetch / copy / after-create hook, shell, and each
+    // agent's API key from the Keychain.
+    let repository_configs = RepositoryConfigRepo::new(pool.clone());
+    let app_meta = AppMetaRepo::new(pool.clone());
+    let api_keys = secrets::ApiKeys::new(
+        Arc::new(secrets::KeychainStore::default()),
+        app_meta.clone(),
+    );
     let orchestrator = TaskOrchestrator::new(
         workspace_repo.clone(),
         repository_repo.clone(),
-        task_runtime,
+        task_runtime.clone(),
         repo_locks.clone(),
+    )
+    .with_agent_signals(agent_signals.clone())
+    .with_task_config(orchestrator::TaskConfig::new(
+        repository_configs.clone(),
+        SettingsRepo::new(pool.clone()),
+        Some(api_keys.clone()),
+    ));
+    commands::events::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+
+    // The Board: derived lanes + diff cache, and the queue that starts
+    // queued tasks once their dependency reaches review.
+    let board = TaskBoard::new(
+        workspace_repo.clone(),
+        repository_repo.clone(),
+        TaskUsageRepo::new(pool.clone()),
+        Some(agent_signals.clone()),
     );
-    commands::orchestrator::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+    board.start(orchestrator.subscribe_status(), Some(agent_signals.subscribe()));
+    commands::events::spawn_board_bridge(&board, handle.clone());
+    let scheduler = QueueScheduler::new(orchestrator.clone(), board.clone(), workspace_repo.clone());
+    scheduler.start(
+        orchestrator.subscribe_status(),
+        Some(agent_signals.subscribe()),
+        // Only the signed-in user's queue runs; signed out, nothing starts.
+        current_user_fn(handle),
+    );
+
+    // Review (M8): checks per worktree state, auto-run on entering review.
+    let run_command_repo = RunCommandRepo::new(pool.clone());
+    let checks = checks::CheckService::new(
+        CheckRunRepo::new(pool.clone()),
+        run_command_repo.clone(),
+        workspace_repo.clone(),
+        app_meta.clone(),
+        task_runtime.log_dir.clone(),
+    );
+    checks.settle_interrupted().await;
+    checks.start(
+        board.clone(),
+        orchestrator.subscribe_status(),
+        Some(agent_signals.subscribe()),
+        current_user_fn(handle),
+    );
+    commands::events::spawn_check_bridge(&checks, handle.clone());
+
+    // Run commands per task worktree; `task_start` ones start with the task.
+    let run_runtime = run_commands::RunCommandRuntime::new(task_runtime.clone());
+    run_runtime.start_task_hooks(
+        orchestrator.subscribe_status(),
+        workspace_repo.clone(),
+        run_command_repo.clone(),
+        app_meta.clone(),
+        current_user_fn(handle),
+    );
+    commands::events::spawn_run_command_bridge(&run_runtime, handle.clone());
+
+    let review = review::ReviewService::new(
+        workspace_repo.clone(),
+        repository_repo.clone(),
+        repo_locks.clone(),
+        checks.clone(),
+    );
+
+    // The inbox.
+    let notification_repo = NotificationRepo::new(pool.clone());
+    let notifier = notifications::NotificationService::new(
+        notification_repo.clone(),
+        workspace_repo.clone(),
+        Some(checks.clone()),
+    );
+    notifier.prune_old().await;
+    notifier.start(
+        orchestrator.subscribe_status(),
+        Some(agent_signals.subscribe()),
+        Some(checks.subscribe()),
+        Some(run_runtime.subscribe()),
+        current_user_fn(handle),
+    );
+    commands::events::spawn_notification_bridge(&notifier, handle.clone());
+
+    // Cleanup after merge (Settings → Worktrees): remove, or ask in the inbox.
+    let merge_cleanup = review::cleanup::MergeCleanup::new(
+        repository_configs.clone(),
+        repository_repo.clone(),
+        repo_locks.clone(),
+        task_runtime,
+    )
+    .with_services(run_runtime.clone(), checks.clone())
+    .with_notifier(notifier.clone());
+    spawn_pr_refresh(review.clone(), board.clone(), merge_cleanup.clone(), handle.clone());
 
     handle.manage(repository_repo);
+    handle.manage(repository_configs);
+    handle.manage(api_keys);
+    handle.manage(merge_cleanup);
     handle.manage(workspace_repo);
-    handle.manage(RunCommandRepo::new(pool.clone()));
+    handle.manage(run_command_repo);
+    handle.manage(app_meta);
+    handle.manage(ReviewCommentRepo::new(pool.clone()));
+    handle.manage(notification_repo);
+    handle.manage(checks);
+    handle.manage(run_runtime);
+    handle.manage(review);
+    handle.manage(notifier);
     handle.manage(NoteRepo::new(pool.clone()));
     handle.manage(SettingsRepo::new(pool.clone()));
     handle.manage(UserRepo::new(pool.clone()));
     handle.manage(pool);
     handle.manage(repo_locks);
     handle.manage(orchestrator);
+    handle.manage(agent_signals);
+    handle.manage(board);
+    handle.manage(scheduler);
 
     Ok(())
+}
+
+/// The signed-in user's id, re-read on every call — for background
+/// services that must act as the current user (and do nothing signed out).
+fn current_user_fn(handle: &tauri::AppHandle) -> impl Fn() -> Option<String> + Send + Sync + 'static {
+    let session = handle.state::<Arc<SessionState>>().inner().clone();
+    move || session.require().ok().flatten().map(|s| s.user_id)
+}
+
+/// How often open/draft PRs are re-read with `gh` (the frontend also
+/// refreshes on window focus via `refresh_pr_states`).
+const PR_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+fn spawn_pr_refresh(
+    review: review::ReviewService,
+    board: TaskBoard,
+    cleanup: review::cleanup::MergeCleanup,
+    handle: tauri::AppHandle,
+) {
+    let current_user = current_user_fn(&handle);
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(PR_REFRESH_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(user_id) = current_user() else { continue };
+            match review.refresh_pr_states_detailed(&user_id, None).await {
+                Ok(refresh) if !refresh.changed.is_empty() => {
+                    for merged in &refresh.newly_merged {
+                        cleanup.on_merged(merged, &user_id).await;
+                    }
+                    let changed = refresh.changed;
+                    for w in &changed {
+                        board.notify_changed(&w.repository_id);
+                    }
+                    if let Some(sync) = handle.try_state::<Arc<sync::CloudSyncState>>() {
+                        sync.request_sync();
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => eprintln!("pr refresh failed: {err}"),
+            }
+        }
+    });
 }
 
 async fn recover_startup_state(workspace_repo: &WorkspaceRepo, repository_repo: &RepositoryRepo) {

@@ -17,6 +17,7 @@ pub enum RepositoryCmdError {
     Git(GitError),
     Auth(AuthError),
     NoLocalPath,
+    OutsideRoots,
 }
 
 impl From<StoreError> for RepositoryCmdError {
@@ -44,6 +45,7 @@ impl std::fmt::Display for RepositoryCmdError {
             Self::Git(e) => write!(f, "{e}"),
             Self::Auth(e) => write!(f, "{e}"),
             Self::NoLocalPath => write!(f, "repository has no local path on this machine"),
+            Self::OutsideRoots => write!(f, "path is outside your repositories and worktrees"),
         }
     }
 }
@@ -230,6 +232,8 @@ pub async fn update_repository(
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Repository, RepositoryCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    // Ownership first: `update` itself is keyed by id alone.
+    repo.get_for_user(&id, &current_session.user_id).await?;
     let patch = RepositoryUpdate {
         name: input.name,
         remote_url: input.remote_url.map(Some),
@@ -252,12 +256,14 @@ pub async fn delete_repository(
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RepositoryCmdError> {
-    session.require()?;
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
 
-    // Need the repo's localPath for `git worktree remove` later.
-    // Tolerate NotFound so a double-delete doesn't error.
-    let repository = repo.get(&id).await.ok();
-    let repo_local_path = repository.as_ref().and_then(|r| r.local_path.clone());
+    // Ownership first, propagated: another account's repository is `not
+    // found` before any of its tasks are stopped or worktrees removed. (A
+    // double-delete already ended in `not found` from `repo.delete` below,
+    // so tolerating it here bought nothing.)
+    let repository = repo.get_for_user(&id, &current.user_id).await?;
+    let repo_local_path = repository.local_path.clone();
 
     // 1. Stop running tasks and force-kill any still-live PTYs.
     //    Workspaces are listed BEFORE the soft-delete + child wipe so
@@ -314,8 +320,8 @@ pub async fn git_init_repository(
     repo: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
-    session.require()?;
-    let repository = repo.get(&id).await?;
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let repository = repo.get_for_user(&id, &current.user_id).await?;
     let local_path = repository
         .local_path
         .as_deref()
@@ -384,13 +390,28 @@ pub async fn git_init_empty_repository(
 /// List files inside a repository for the file-search modal. Honors
 /// `.gitignore` when the path is a git repo; falls back to a manual
 /// walk that skips heavy folders otherwise.
+///
+/// Confined to the user's registered checkouts and worktrees: an arbitrary
+/// path (`~`, another account's repo) would list files phasr has no
+/// business enumerating.
 #[tauri::command]
 pub async fn list_repo_files(
     path: String,
+    repositories: State<'_, RepositoryRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<String>, RepositoryCmdError> {
-    session.require()?;
-    Ok(git::list_files(std::path::Path::new(&path))?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let roots =
+        super::files::registered_roots(&repositories, &workspaces, &current.user_id).await?;
+    let path = std::path::PathBuf::from(path);
+    if !git::is_within_roots(&path, &roots) {
+        return Err(RepositoryCmdError::OutsideRoots);
+    }
+    tokio::task::spawn_blocking(move || git::list_files(&path))
+        .await
+        .map_err(|e| RepositoryCmdError::Git(GitError::CommandFailed(e.to_string())))?
+        .map_err(RepositoryCmdError::Git)
 }
 
 /// Sorted list of local branch names in the repo. Used by the

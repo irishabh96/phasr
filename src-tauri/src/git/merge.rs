@@ -238,6 +238,29 @@ pub fn continue_after_resolution(cwd: &Path) -> Result<MergeOutcome, GitError> {
     }
 }
 
+/// Local branches whose tip is the in-progress merge's `MERGE_HEAD` — i.e.
+/// what is being merged into the current branch. Empty when no merge is in
+/// progress. Read BEFORE `continue_after_resolution` (which consumes
+/// MERGE_HEAD) to learn whether the merge being finished was a task's
+/// branch going into the checkout's branch.
+pub fn merge_head_branches(cwd: &Path) -> Result<Vec<String>, GitError> {
+    let Ok(sha) = run_git(cwd, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]) else {
+        return Ok(Vec::new());
+    };
+    let out = run_git(
+        cwd,
+        &["for-each-ref", "--format=%(refname:short)", "--points-at", sha.trim(), "refs/heads/"],
+    )?;
+    Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
+/// The branch `cwd` has checked out; `None` when detached.
+pub fn current_branch(cwd: &Path) -> Result<Option<String>, GitError> {
+    let out = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let name = out.trim();
+    Ok((name != "HEAD" && !name.is_empty()).then(|| name.to_string()))
+}
+
 /// Stages one side of a conflicting file and marks it resolved
 /// (`git checkout --ours/--theirs <path>` then `git add <path>`).
 ///
@@ -556,5 +579,38 @@ mod tests {
             GitError::CommandFailed(msg) => assert!(msg.contains("uncommitted")),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    /// The M7 gap: a merge-to-main that stopped on conflicts and is then
+    /// continued must still be recognisable as "task branch → main".
+    #[test]
+    fn merge_head_branches_names_the_branch_being_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(p).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(p.join("f.txt"), "base\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        git(&["checkout", "-qb", "phasr/task"]);
+        std::fs::write(p.join("f.txt"), "task\n").unwrap();
+        git(&["commit", "-qam", "task"]);
+        git(&["checkout", "-q", "main"]);
+        std::fs::write(p.join("f.txt"), "main\n").unwrap();
+        git(&["commit", "-qam", "main"]);
+
+        assert!(merge_head_branches(p).unwrap().is_empty(), "no merge yet");
+        let outcome = merge_to(p, "main", "phasr/task", MergeStrategy::Merge).unwrap();
+        assert!(matches!(outcome, MergeOutcome::Conflicts { .. }));
+        assert_eq!(merge_head_branches(p).unwrap(), vec!["phasr/task".to_string()]);
+        assert_eq!(current_branch(p).unwrap().as_deref(), Some("main"));
+        set_resolution(p, "f.txt", ConflictSide::Theirs).unwrap();
+        assert!(matches!(continue_after_resolution(p).unwrap(), MergeOutcome::Clean { .. }));
+        assert!(merge_head_branches(p).unwrap().is_empty());
     }
 }

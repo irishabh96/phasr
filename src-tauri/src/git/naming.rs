@@ -14,6 +14,55 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// Where a repository's task worktrees go: `configured` (the repository
+/// override or the user setting, already picked by precedence — see
+/// `RepositoryConfig::worktree_base`) with a leading `~` expanded, else
+/// phasr's default. A relative path (or `~` with no `$HOME`) is ignored in
+/// favour of the default: it would resolve against whatever the app's cwd
+/// happens to be.
+pub fn resolve_worktree_base(configured: Option<&str>) -> PathBuf {
+    configured
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(expand_home)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(default_worktree_base_path)
+}
+
+fn expand_home(raw: &str) -> Option<PathBuf> {
+    if raw == "~" {
+        return home_dir();
+    }
+    match raw.strip_prefix("~/") {
+        Some(rest) => home_dir().map(|h| h.join(rest)),
+        None => Some(PathBuf::from(raw)),
+    }
+}
+
+/// Fill a branch template. Placeholders: `{{slug}}` (the task name,
+/// slugified; the short id when the name has no usable characters),
+/// `{{id}}` (first UUID segment) and `{{agent}}`. A template with no
+/// `{{slug}}`/`{{id}}` is a bare prefix (`me/` or `me`): the slug is
+/// appended, so every task still gets its own branch.
+///
+/// The result is sanitised for git (`sanitize_branch_name`) but NOT made
+/// unique — pass it through `unique_branch_name` against the repository.
+pub fn render_branch_name(template: &str, slug: &str, short_id: &str, agent: &str) -> String {
+    let slug = if slug.is_empty() { short_id } else { slug };
+    let template = template.trim();
+    let mut rendered = template
+        .replace("{{slug}}", slug)
+        .replace("{{id}}", short_id)
+        .replace("{{agent}}", agent);
+    if !template.contains("{{slug}}") && !template.contains("{{id}}") {
+        if !rendered.is_empty() && !rendered.ends_with('/') && !rendered.ends_with('-') {
+            rendered.push('/');
+        }
+        rendered.push_str(slug);
+    }
+    sanitize_branch_name(&rendered).unwrap_or_else(|| default_branch_name(slug, short_id))
+}
+
 /// First UUID segment, short enough for branch names while remaining
 /// useful as a collision fallback.
 pub fn short_id(id: &str) -> &str {
@@ -136,6 +185,47 @@ mod tests {
         assert_eq!(slugify(""), "");
         assert_eq!(slugify("???"), "");
         assert_eq!(slugify("v1.2.3-rc"), "v1-2-3-rc");
+    }
+
+    #[test]
+    fn render_branch_name_fills_placeholders() {
+        assert_eq!(render_branch_name("phasr/{{slug}}", "add-dark-mode", "1a2b", "claude"), "phasr/add-dark-mode");
+        assert_eq!(
+            render_branch_name("{{agent}}/{{slug}}-{{id}}", "fix-bug", "1a2b", "codex"),
+            "codex/fix-bug-1a2b"
+        );
+        // An unusable name falls back to the id.
+        assert_eq!(render_branch_name("phasr/{{slug}}", "", "1a2b", "claude"), "phasr/1a2b");
+    }
+
+    #[test]
+    fn render_branch_name_treats_a_bare_template_as_a_prefix() {
+        assert_eq!(render_branch_name("rb/", "fix", "1a2b", "claude"), "rb/fix");
+        assert_eq!(render_branch_name("rb", "fix", "1a2b", "claude"), "rb/fix");
+        assert_eq!(render_branch_name("rb-", "fix", "1a2b", "claude"), "rb-fix");
+        assert_eq!(render_branch_name("", "fix", "1a2b", "claude"), "fix");
+    }
+
+    #[test]
+    fn render_branch_name_sanitises_what_git_would_reject() {
+        assert_eq!(render_branch_name("my team/{{slug}}", "x", "1a2b", "claude"), "my-team/x");
+        assert_eq!(render_branch_name("a..b/{{slug}}.lock", "x", "1a2b", "claude"), "a.b/x");
+        assert_eq!(render_branch_name("~^:/{{slug}}", "x", "1a2b", "claude"), "x");
+        // A prefix with nothing usable leaves just the slug (here the id).
+        assert_eq!(render_branch_name("///", "", "1a2b", "claude"), "1a2b");
+    }
+
+    #[test]
+    fn resolve_worktree_base_expands_home_and_falls_back() {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("HOME in tests"));
+        assert_eq!(resolve_worktree_base(Some("~/wt")), home.join("wt"));
+        assert_eq!(resolve_worktree_base(Some("~")), home);
+        assert_eq!(resolve_worktree_base(Some("/fast/wt")), PathBuf::from("/fast/wt"));
+        assert_eq!(resolve_worktree_base(Some("  ")), default_worktree_base_path());
+        assert_eq!(resolve_worktree_base(None), default_worktree_base_path());
+        assert_eq!(resolve_worktree_base(Some("relative/wt")), default_worktree_base_path());
+        // The settings default IS the built-in default.
+        assert_eq!(resolve_worktree_base(Some("~/.phasr/worktrees")), default_worktree_base_path());
     }
 
     #[test]

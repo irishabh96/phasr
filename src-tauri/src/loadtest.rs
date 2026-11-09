@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::pty::PtyEvent;
-use crate::pty::TaskRuntime;
+use crate::pty::{SpawnSpec, TaskRuntime};
 
 const AGENT_CMD: &str = "claude --dangerously-skip-permissions";
 /// Small, safe, and real: each is a genuine turn, none of them touch
@@ -89,12 +89,10 @@ fn drive_agent(
     let id = format!("load-{idx}");
     let started = Instant::now();
     let handle = match runtime.spawn(
-        id.clone(),
-        Some(AGENT_CMD.into()),
-        Some(TASKS[0].into()),
-        dir,
-        40,
-        120,
+        SpawnSpec::new(id.clone(), dir)
+            .with_initial_command(Some(AGENT_CMD.into()))
+            .with_initial_prompt(Some(TASKS[0].into()))
+            .with_size(40, 120),
     ) {
         Ok(h) => h,
         Err(e) => {
@@ -299,8 +297,12 @@ fn kill_reaps_the_agent_not_just_the_shell() {
     let runtime = TaskRuntime::new(dir.path().join("logs"));
 
     let handle = runtime
-        .spawn("reap".into(), Some(AGENT_CMD.into()), Some("say hi".into()),
-               wd.clone(), 40, 120)
+        .spawn(
+            SpawnSpec::new("reap", wd.clone())
+                .with_initial_command(Some(AGENT_CMD.into()))
+                .with_initial_prompt(Some("say hi".into()))
+                .with_size(40, 120),
+        )
         .unwrap();
 
     // Wait until the agent is genuinely up.

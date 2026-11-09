@@ -13,7 +13,8 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::{AuthError, SessionState};
-use crate::pty::{PtyEvent, TaskRuntime};
+use crate::pty::{usable_shell_override, PtyEvent, SpawnSpec, TaskRuntime};
+use crate::store::SettingsRepo;
 
 /// Distinct from `run:` and bare workspace UUIDs so the keys never collide.
 const SESSION_PTY_PREFIX: &str = "session:";
@@ -46,19 +47,25 @@ pub async fn start_session_terminal(
     cols: Option<u16>,
     on_event: Channel<PtyEvent>,
     runtime: State<'_, Arc<TaskRuntime>>,
+    settings: State<'_, SettingsRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, SessionTerminalError> {
     session.require()?;
     let session_id = Uuid::new_v4().to_string();
     let key = pty_id(&session_id);
+    // Settings → Terminal → Shell; unreadable settings or a shell this
+    // machine lacks mean the login shell, never a failed terminal.
+    let shell = settings
+        .get_or_default()
+        .await
+        .ok()
+        .and_then(|s| usable_shell_override(&s.terminal_shell));
 
     let handle = runtime.spawn(
-        key.clone(),
-        initial_command,
-        None,
-        PathBuf::from(cwd),
-        rows.unwrap_or(24),
-        cols.unwrap_or(80),
+        SpawnSpec::new(key.clone(), PathBuf::from(cwd))
+            .with_initial_command(initial_command)
+            .with_shell(shell)
+            .with_size(rows.unwrap_or(24), cols.unwrap_or(80)),
     )?;
 
     let (replay, rx) = handle.subscribe_with_replay();

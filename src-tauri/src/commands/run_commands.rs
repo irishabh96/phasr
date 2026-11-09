@@ -1,7 +1,12 @@
-//! CRUD + PTY launch for run commands. Run-command PTYs live in
-//! `TaskRuntime` alongside workspace PTYs; we use a synthesized id
-//! prefix (`run:<run_command_id>`) so they don't collide with
-//! workspace ids.
+//! CRUD + PTY launch for run commands. A run command runs per task, in
+//! that task's worktree (PTY key `run:<id>@<workspaceId>`), or in the
+//! repository's own checkout when no task is given (`run:<id>@repo`) —
+//! see `crate::run_commands`.
+//!
+//! Trusted-hash guard: creating or editing a command here (or confirming
+//! it) marks its exact text trusted on THIS machine. Only trusted commands
+//! auto-run (`task_start` / `before_review`); one synced from elsewhere
+//! waits for `confirm_run_command`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,18 +18,14 @@ use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::RunCommand;
+use crate::domain::{RunCommand, RunWhen};
 use crate::pty::{PtyEvent, TaskRuntime};
-use crate::store::{RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError};
+use crate::run_commands::scripts::{self, DetectedScript};
+use crate::run_commands::{pty_key, RunCommandRuntime, RunTarget, RunningCommand};
+use crate::store::{AppMetaRepo, RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError, WorkspaceRepo};
 use crate::sync::CloudSyncState;
 
-/// Prefix every running PTY id with this so they never collide with
-/// workspace UUIDs in the `TaskRuntime` map.
-const RUN_PTY_PREFIX: &str = "run:";
-
-fn pty_id(run_command_id: &str) -> String {
-    format!("{RUN_PTY_PREFIX}{run_command_id}")
-}
+use super::require_user;
 
 #[derive(Debug, Error)]
 pub enum RunCommandError {
@@ -36,6 +37,10 @@ pub enum RunCommandError {
     Auth(#[from] AuthError),
     #[error("repository has no local path")]
     NoRepositoryPath,
+    #[error("this task has no worktree on this machine")]
+    NoWorktree,
+    #[error("that run command belongs to another repository")]
+    WrongRepository,
     #[error("no running PTY for run command `{0}`")]
     NotRunning(String),
 }
@@ -54,6 +59,12 @@ pub struct CreateRunCommandInput {
     pub command: String,
     pub shortcut: Option<String>,
     pub pinned: Option<bool>,
+    #[serde(default)]
+    pub run_when: Option<RunWhen>,
+    #[serde(default)]
+    pub detect_port: Option<bool>,
+    #[serde(default)]
+    pub required_for_approve: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -64,6 +75,12 @@ pub struct UpdateRunCommandInput {
     pub shortcut: Option<String>,
     pub pinned: Option<bool>,
     pub sort_order: Option<i64>,
+    #[serde(default)]
+    pub run_when: Option<RunWhen>,
+    #[serde(default)]
+    pub detect_port: Option<bool>,
+    #[serde(default)]
+    pub required_for_approve: Option<bool>,
 }
 
 // ── CRUD ─────────────────────────────────────────────────────────────
@@ -72,6 +89,7 @@ pub struct UpdateRunCommandInput {
 pub async fn create_run_command(
     input: CreateRunCommandInput,
     repo: State<'_, RunCommandRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<RunCommand, RunCommandError> {
@@ -79,7 +97,12 @@ pub async fn create_run_command(
     let mut rc = RunCommand::new(input.repository_id, input.name, input.command);
     rc.shortcut = input.shortcut;
     rc.pinned = input.pinned.unwrap_or(false);
+    rc.run_when = input.run_when.unwrap_or_default();
+    rc.detect_port = input.detect_port.unwrap_or(false);
+    rc.required_for_approve = input.required_for_approve.unwrap_or(false);
     repo.insert_for_user(&rc, &current_session.user_id).await?;
+    // Typed here, by this user: trusted to auto-run on this machine.
+    meta.trust_command(&rc.command).await?;
     sync_state.request_sync();
     Ok(rc)
 }
@@ -101,98 +124,175 @@ pub async fn update_run_command(
     id: String,
     input: UpdateRunCommandInput,
     repo: State<'_, RunCommandRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<RunCommand, RunCommandError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    repo.get_for_user(&id, &current.user_id).await?;
+    let edited_command = input.command.is_some();
     let patch = RunCommandUpdate {
         name: input.name,
         command: input.command,
         shortcut: input.shortcut.map(Some),
         pinned: input.pinned,
         sort_order: input.sort_order,
+        run_when: input.run_when,
+        detect_port: input.detect_port,
+        required_for_approve: input.required_for_approve,
     };
     let run_command = repo.update(&id, patch).await?;
+    // Editing the text here is confirming it. Toggling `run_when` alone is
+    // NOT: that would let one click auto-run a command synced from
+    // elsewhere without the user ever looking at its text.
+    if edited_command {
+        meta.trust_command(&run_command.command).await?;
+    }
     sync_state.request_sync();
     Ok(run_command)
+}
+
+/// "Allow on this machine" for a run command synced from elsewhere: its
+/// current text may now auto-run here.
+#[tauri::command]
+pub async fn confirm_run_command(
+    id: String,
+    repo: State<'_, RunCommandRepo>,
+    meta: State<'_, AppMetaRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<RunCommand, RunCommandError> {
+    let current = require_user(&session)?;
+    let rc = repo.get_for_user(&id, &current.user_id).await?;
+    meta.trust_command(&rc.command).await?;
+    Ok(rc)
 }
 
 #[tauri::command]
 pub async fn delete_run_command(
     id: String,
     repo: State<'_, RunCommandRepo>,
-    runtime: State<'_, Arc<TaskRuntime>>,
+    runs: State<'_, RunCommandRuntime>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RunCommandError> {
-    session.require()?;
-    // Kill the PTY if it's still running so the row deletion doesn't
-    // leave behind an orphaned process.
-    if let Some(handle) = runtime.get(&pty_id(&id)) {
-        let _ = handle.kill();
-        runtime.drop_task(&pty_id(&id));
-    }
+    let current = require_user(&session)?;
+    // Ownership before the kill: another account's running command is
+    // not ours to stop.
+    repo.get_for_user(&id, &current.user_id).await?;
+    // Stop it everywhere it runs (every task) so the row deletion doesn't
+    // leave orphaned processes.
+    runs.forget_command(&id);
     repo.delete(&id).await?;
     sync_state.request_sync();
     Ok(())
 }
 
+/// `package.json` scripts of the repository's checkout, as run-command
+/// suggestions.
+#[tauri::command]
+pub async fn detect_package_scripts(
+    repository_id: String,
+    repositories: State<'_, RepositoryRepo>,
+    repo: State<'_, RunCommandRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<DetectedScript>, RunCommandError> {
+    let current = require_user(&session)?;
+    let repository = repositories.get_for_user(&repository_id, &current.user_id).await?;
+    let Some(root) = repository.local_path.as_deref().map(PathBuf::from) else {
+        return Ok(Vec::new());
+    };
+    let existing: Vec<String> = repo
+        .list_by_repository_for_user(&repository_id, &current.user_id)
+        .await?
+        .into_iter()
+        .map(|rc| rc.command)
+        .collect();
+    Ok(tokio::task::spawn_blocking(move || scripts::detect(&root, &existing))
+        .await
+        .unwrap_or_default())
+}
+
 // ── Runtime ─────────────────────────────────────────────────────────
 
+/// Start (or re-attach to) a run command. With `workspaceId` it runs in
+/// that task's worktree; without, in the repository's own checkout.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_run_command(
     id: String,
     on_event: Channel<PtyEvent>,
     rows: Option<u16>,
     cols: Option<u16>,
+    workspace_id: Option<String>,
     run_commands: State<'_, RunCommandRepo>,
     repositories: State<'_, RepositoryRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
+    runs: State<'_, RunCommandRuntime>,
     runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RunCommandError> {
-    session.require()?;
-    let rc = run_commands.get(&id).await?;
-    let key = pty_id(&id);
+    let current = require_user(&session)?;
+    // Gates the PTY key too: stop/input/resize can only address a PTY this
+    // check let start (or re-attach to).
+    let rc = run_commands.get_for_user(&id, &current.user_id).await?;
+    let key = pty_key(&id, workspace_id.as_deref());
 
-    // Idempotent: re-attach to an already-running PTY.
+    // Idempotent: re-attach to an already-running PTY (including one
+    // auto-started headless for the task).
     if let Some(handle) = runtime.get(&key) {
         let (replay, rx) = handle.subscribe_with_replay();
-        forward(replay, rx, on_event, runtime.inner().clone(), key);
+        forward(replay, rx, on_event);
         return Ok(());
     }
 
-    let repository = repositories.get(&rc.repository_id).await?;
-    let cwd = repository
-        .local_path
-        .as_ref()
-        .map(PathBuf::from)
-        .ok_or(RunCommandError::NoRepositoryPath)?;
+    let cwd = match workspace_id.as_deref() {
+        Some(workspace_id) => {
+            let workspace = workspaces.get_for_user(workspace_id, &current.user_id).await?;
+            if workspace.repository_id != rc.repository_id {
+                return Err(RunCommandError::WrongRepository);
+            }
+            workspace
+                .worktree_path
+                .as_deref()
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+                .ok_or(RunCommandError::NoWorktree)?
+        }
+        None => repositories
+            .get_for_user(&rc.repository_id, &current.user_id)
+            .await?
+            .local_path
+            .as_ref()
+            .map(PathBuf::from)
+            .ok_or(RunCommandError::NoRepositoryPath)?,
+    };
 
-    let handle = runtime.spawn(
-        key.clone(),
-        Some(rc.command.clone()),
-        None,
-        cwd,
-        rows.unwrap_or(24),
-        cols.unwrap_or(80),
+    let handle = runs.start(
+        &rc,
+        RunTarget {
+            workspace_id,
+            cwd,
+            user_id: current.user_id,
+            rows: rows.unwrap_or(24),
+            cols: cols.unwrap_or(80),
+        },
     )?;
     let (replay, rx) = handle.subscribe_with_replay();
-    forward(replay, rx, on_event, runtime.inner().clone(), key);
+    forward(replay, rx, on_event);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn stop_run_command(
     id: String,
-    runtime: State<'_, Arc<TaskRuntime>>,
+    workspace_id: Option<String>,
+    runs: State<'_, RunCommandRuntime>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RunCommandError> {
     session.require()?;
-    let key = pty_id(&id);
-    let handle = runtime
-        .get(&key)
-        .ok_or_else(|| RunCommandError::NotRunning(id.clone()))?;
-    handle.kill()?;
+    if !runs.stop(&pty_key(&id, workspace_id.as_deref()))? {
+        return Err(RunCommandError::NotRunning(id));
+    }
     Ok(())
 }
 
@@ -200,12 +300,13 @@ pub async fn stop_run_command(
 pub async fn send_run_command_input(
     id: String,
     data: String,
+    workspace_id: Option<String>,
     runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RunCommandError> {
     session.require()?;
     let handle = runtime
-        .get(&pty_id(&id))
+        .get(&pty_key(&id, workspace_id.as_deref()))
         .ok_or_else(|| RunCommandError::NotRunning(id.clone()))?;
     handle.write(data.as_bytes())?;
     Ok(())
@@ -216,23 +317,37 @@ pub async fn resize_run_command(
     id: String,
     rows: u16,
     cols: u16,
+    workspace_id: Option<String>,
     runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RunCommandError> {
     session.require()?;
     let handle = runtime
-        .get(&pty_id(&id))
+        .get(&pty_key(&id, workspace_id.as_deref()))
         .ok_or_else(|| RunCommandError::NotRunning(id.clone()))?;
     handle.resize(rows, cols)?;
     Ok(())
 }
 
+/// The user's run commands that are running (or exited this session) —
+/// for one task, or all when `workspaceId` is omitted.
+#[tauri::command]
+pub async fn list_running_commands(
+    workspace_id: Option<String>,
+    runs: State<'_, RunCommandRuntime>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<RunningCommand>, RunCommandError> {
+    let current = require_user(&session)?;
+    Ok(runs.list(&current.user_id, workspace_id.as_deref()))
+}
+
+/// Pipe a PTY's replay + live events into the frontend channel. The PTY's
+/// exit is handled (unregistered) by the runtime's own monitor, so a
+/// closed channel or a second viewer never affects it.
 fn forward(
     replay: Vec<PtyEvent>,
     mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
     channel: Channel<PtyEvent>,
-    runtime: Arc<TaskRuntime>,
-    key: String,
 ) {
     tauri::async_runtime::spawn(async move {
         for event in replay {
@@ -242,9 +357,7 @@ fn forward(
             match rx.recv().await {
                 Ok(event) => {
                     let is_exit = matches!(event, PtyEvent::Exit { .. });
-                    let _ = channel.send(event);
-                    if is_exit {
-                        runtime.drop_task(&key);
+                    if channel.send(event).is_err() || is_exit {
                         break;
                     }
                 }

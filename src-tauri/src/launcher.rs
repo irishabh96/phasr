@@ -267,14 +267,29 @@ fn is_available(strategy: DetectStrategy) -> bool {
 }
 
 fn which(cmd: &str) -> Option<std::path::PathBuf> {
-    let path_env = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_env) {
-        let candidate = dir.join(cmd);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    which_in(cmd, &std::env::var_os("PATH")?)
+}
+
+/// `which` against an explicit PATH — agent detection passes the user's
+/// login-shell PATH (`pty::login_path`), since a Finder-launched app's own
+/// PATH is launchd's minimal one and misses npm/Homebrew/nvm installs.
+/// Requires an executable regular file: a stray non-executable file of the
+/// same name earlier on PATH would otherwise shadow the real binary.
+pub(crate) fn which_in(cmd: &str, path_env: &std::ffi::OsStr) -> Option<std::path::PathBuf> {
+    std::env::split_paths(path_env)
+        .map(|dir| dir.join(cmd))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn find_def(id: &str) -> Option<&'static LauncherDef> {

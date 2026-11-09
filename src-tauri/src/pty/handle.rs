@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -75,24 +76,126 @@ impl serde::Serialize for PtyError {
     }
 }
 
+/// How the PTY's child process is started.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LaunchMode {
+    /// An interactive login shell; `SpawnSpec::initial_command` (if any) is
+    /// *typed* into it. The shell outlives the command, so the user can keep
+    /// working in the terminal — but the PTY's exit code is the shell's,
+    /// which says nothing about how the command went.
+    #[default]
+    InteractiveTyped,
+    /// `$SHELL -l -i -c <command>`: the shell runs exactly this command and
+    /// exits with its status, so `PtyEvent::Exit` carries the command's real
+    /// exit code. `-l -i` keeps the user's full PATH/rc environment, which
+    /// is why this isn't a bare `exec` of the binary.
+    Exec(String),
+}
+
+/// What `run_initial_writes` may do with the initial prompt right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptGateDecision {
+    /// Nothing on screen objects: type it.
+    Proceed,
+    /// Something that must not receive keystrokes is up (e.g. the agent's
+    /// folder-trust dialog): ask again shortly.
+    Wait,
+    /// Never type it (the dialog was declined and the agent exited).
+    Abandon,
+}
+
+/// Consulted by `run_initial_writes` before it types the initial prompt,
+/// and again before every retry and blind fallback. The PTY layer knows
+/// bytes, not what an agent's screen means; the layer that does
+/// (`AgentSignals`) holds the prompt while a dialog that a stray Enter
+/// would answer wrongly is on screen.
+pub trait PromptGate: Send + Sync + std::fmt::Debug {
+    fn check(&self) -> PromptGateDecision;
+}
+
+/// Everything needed to start one PTY. Built with `SpawnSpec::new` plus the
+/// `with_*` setters so new knobs don't grow a positional argument list at
+/// every call site.
 #[derive(Debug, Clone)]
-pub struct PtySpawnOptions {
+pub struct SpawnSpec {
     pub task_id: String,
-    /// Optional command typed into the shell as if the user had entered
-    /// it. Sent after a brief delay so the shell finishes initialising
-    /// and shows its prompt first.
+    pub cwd: PathBuf,
+    pub rows: u16,
+    pub cols: u16,
+    pub launch: LaunchMode,
+    /// `LaunchMode::InteractiveTyped` only: a command typed into the shell
+    /// as if the user had entered it, after a brief delay so the shell
+    /// finishes initialising and shows its prompt first.
     pub initial_command: Option<String>,
     /// Optional prompt typed into the running command once its TUI has
     /// taken over the terminal, then submitted with Enter. Use this for
     /// agents that take their prompt interactively (e.g.
     /// `claude --dangerously-skip-permissions` followed by the user's
     /// question). Delivery waits for the agent's TUI escape sequences
-    /// rather than a fixed delay — see `run_initial_writes`.
+    /// rather than a fixed delay — see `run_initial_writes`. Valid in
+    /// either launch mode.
     pub initial_prompt: Option<String>,
-    pub cwd: PathBuf,
-    pub log_path: PathBuf,
-    pub rows: u16,
-    pub cols: u16,
+    /// Applied AFTER `shell::terminal_env`, so these win over both the
+    /// inherited environment and phasr's terminal defaults.
+    pub extra_env: Vec<(String, String)>,
+    /// Use this shell instead of the account's login shell.
+    pub shell_override: Option<String>,
+    /// Holds `initial_prompt` while the agent shows a dialog it must not
+    /// be typed into. `None` = type as soon as the TUI is ready.
+    pub prompt_gate: Option<Arc<dyn PromptGate>>,
+}
+
+impl SpawnSpec {
+    pub fn new(task_id: impl Into<String>, cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            task_id: task_id.into(),
+            cwd: cwd.into(),
+            rows: 24,
+            cols: 80,
+            launch: LaunchMode::InteractiveTyped,
+            initial_command: None,
+            initial_prompt: None,
+            extra_env: Vec::new(),
+            shell_override: None,
+            prompt_gate: None,
+        }
+    }
+
+    pub fn with_size(mut self, rows: u16, cols: u16) -> Self {
+        self.rows = rows;
+        self.cols = cols;
+        self
+    }
+
+    pub fn with_initial_command(mut self, command: Option<String>) -> Self {
+        self.initial_command = command;
+        self
+    }
+
+    pub fn with_initial_prompt(mut self, prompt: Option<String>) -> Self {
+        self.initial_prompt = prompt;
+        self
+    }
+
+    pub fn with_launch(mut self, launch: LaunchMode) -> Self {
+        self.launch = launch;
+        self
+    }
+
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_env.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn with_prompt_gate(mut self, gate: Option<Arc<dyn PromptGate>>) -> Self {
+        self.prompt_gate = gate;
+        self
+    }
+
+    pub fn with_shell(mut self, shell: Option<String>) -> Self {
+        self.shell_override = shell;
+        self
+    }
 }
 
 /// Owns one running task's PTY. Cheaply cloneable (`Arc` inside).
@@ -114,6 +217,19 @@ pub struct PtyHandle {
     /// coalescer thread. Initialised to spawn time so a freshly started
     /// task counts as active before its first byte arrives.
     last_output_at: Arc<std::sync::atomic::AtomicI64>,
+    /// Whether the program in the PTY last asked for bracketed paste
+    /// (`CSI ? 2004 h` / `l`), tracked by the coalescer thread. Decides how
+    /// `send_message` frames text.
+    bracketed_paste: Arc<AtomicBool>,
+    /// The child's exit code once it has exited. Set by the wait thread
+    /// BEFORE it broadcasts `PtyEvent::Exit`, so "subscribe, then check
+    /// this" can never miss an exit that raced the subscription — which a
+    /// fast `LaunchMode::Exec` command readily does.
+    exit_code: Arc<OnceLock<Option<i64>>>,
+    /// The PTY's own child (the shell) — compared against the terminal's
+    /// foreground process group to tell "the agent is running" from "back
+    /// at the shell prompt".
+    shell_pid: Option<u32>,
 }
 
 /// Wall-clock epoch milliseconds. The frontend compares this against
@@ -126,28 +242,40 @@ fn epoch_ms() -> i64 {
 }
 
 impl PtyHandle {
-    /// Spawns an interactive shell inside the PTY. Known user shells are
-    /// launched as login shells so their normal terminal rc/history setup
-    /// matches Terminal.app, iTerm, and Warp. If login launch fails, spawn
-    /// retries with progressively more conservative fallbacks.
+    /// Spawns a shell inside the PTY. Known user shells are launched as
+    /// login shells so their normal terminal rc/history setup matches
+    /// Terminal.app, iTerm, and Warp. If login launch fails, spawn retries
+    /// with progressively more conservative fallbacks.
     ///
-    /// If `initial_command` is set, it's typed into the shell after
-    /// a brief delay (so the shell has time to print its prompt). The
-    /// shell keeps running after the command finishes — the user can
-    /// then run any other command (`ls`, `git status`, etc.) just like
-    /// in Terminal.app. If `initial_prompt` is set, it's typed once the
-    /// command's TUI has taken over the terminal, then submitted with
-    /// Enter — see `run_initial_writes`.
-    pub fn spawn(options: PtySpawnOptions) -> Result<Arc<Self>, PtyError> {
-        let PtySpawnOptions {
+    /// In `LaunchMode::InteractiveTyped`, `initial_command` (if set) is
+    /// typed into the shell after a brief delay (so the shell has time to
+    /// print its prompt). The shell keeps running after the command
+    /// finishes — the user can then run any other command (`ls`, `git
+    /// status`, etc.) just like in Terminal.app. In `LaunchMode::Exec` the
+    /// shell runs the command and exits with its status. Either way, if
+    /// `initial_prompt` is set it's typed once the command's TUI has taken
+    /// over the terminal, then submitted with Enter — see
+    /// `run_initial_writes`.
+    pub fn spawn(spec: SpawnSpec, log_path: PathBuf) -> Result<Arc<Self>, PtyError> {
+        let SpawnSpec {
             task_id,
-            initial_command,
-            initial_prompt,
             cwd,
-            log_path,
             rows,
             cols,
-        } = options;
+            launch,
+            initial_command,
+            initial_prompt,
+            extra_env,
+            shell_override,
+            prompt_gate,
+        } = spec;
+        // A typed command in Exec mode would land in whatever the exec'd
+        // program reads from stdin — never what a caller means.
+        if matches!(launch, LaunchMode::Exec(_)) && initial_command.is_some() {
+            return Err(PtyError::Pty(
+                "initial_command is only valid with LaunchMode::InteractiveTyped".into(),
+            ));
+        }
 
         // Open the PTY and spawn the child.
         let pty_system = native_pty_system();
@@ -160,16 +288,27 @@ impl PtyHandle {
             })
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
-        let resolved_shell = shell::resolve_shell();
+        let resolved_shell = shell_override
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(shell::resolve_shell);
+        let candidates = match &launch {
+            LaunchMode::InteractiveTyped => shell::spawn_candidates(&resolved_shell),
+            LaunchMode::Exec(command) => shell::exec_candidates(&resolved_shell, command),
+        };
         let mut spawn_errors = Vec::new();
         let mut child = None;
-        for launch in shell::spawn_candidates(&resolved_shell) {
+        for launch in candidates {
             let mut cmd = CommandBuilder::new(&launch.shell);
             for arg in &launch.args {
                 cmd.arg(arg);
             }
             cmd.cwd(&cwd);
             for (key, value) in shell::terminal_env(&launch.shell) {
+                cmd.env(key, value);
+            }
+            // After terminal_env so a caller's value is never clobbered by
+            // phasr's defaults (TERM, PATH, …).
+            for (key, value) in &extra_env {
                 cmd.env(key, value);
             }
 
@@ -199,6 +338,7 @@ impl PtyHandle {
         // wait-thread mutex. The waiter parks on `wait()` while
         // holding the mutex; without this, `kill()` would deadlock.
         let killer = child.clone_killer();
+        let shell_pid = child.process_id();
         drop(pty_pair.slave);
 
         let master = pty_pair.master;
@@ -223,6 +363,9 @@ impl PtyHandle {
             tx: tx.clone(),
             replay: Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES))),
             last_output_at: Arc::new(std::sync::atomic::AtomicI64::new(epoch_ms())),
+            bracketed_paste: Arc::new(AtomicBool::new(false)),
+            exit_code: Arc::new(OnceLock::new()),
+            shell_pid,
         });
 
         // Schedule the agent command + optional prompt as keystrokes
@@ -241,6 +384,7 @@ impl PtyHandle {
                 readiness_rx,
                 initial_command,
                 initial_prompt,
+                prompt_gate,
             )
         });
 
@@ -271,7 +415,10 @@ impl PtyHandle {
         let task_id_for_coalesce = task_id.clone();
         let tx_for_coalesce = tx.clone();
         let replay_for_coalesce = handle.replay.clone();
-        let last_output_for_coalesce = handle.last_output_at.clone();
+        let observers = OutputObservers {
+            last_output_at: handle.last_output_at.clone(),
+            bracketed_paste: handle.bracketed_paste.clone(),
+        };
         std::thread::Builder::new()
             .name(format!("phasr-pty-out-{task_id_for_coalesce}"))
             .spawn(move || {
@@ -281,7 +428,7 @@ impl PtyHandle {
                     log_file,
                     tx_for_coalesce,
                     replay_for_coalesce,
-                    last_output_for_coalesce,
+                    observers,
                 )
             })
             .map_err(PtyError::from)?;
@@ -290,6 +437,7 @@ impl PtyHandle {
         let task_id_for_wait = task_id.clone();
         let child_for_wait = child.clone();
         let tx_for_wait = tx;
+        let exit_code_for_wait = handle.exit_code.clone();
         std::thread::Builder::new()
             .name(format!("phasr-pty-wait-{task_id_for_wait}"))
             .spawn(move || {
@@ -297,6 +445,8 @@ impl PtyHandle {
                     let mut guard = child_for_wait.lock();
                     guard.wait().ok().and_then(exit_status_to_code)
                 };
+                // Recorded before the broadcast — see `PtyHandle::exit_code`.
+                let _ = exit_code_for_wait.set(exit_code);
                 let _ = tx_for_wait.send(PtyEvent::Exit {
                     task_id: task_id_for_wait,
                     exit_code,
@@ -314,8 +464,78 @@ impl PtyHandle {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether the program currently in the PTY has bracketed paste on —
+    /// i.e. the last `CSI ? 2004 h|l` it emitted was `h`. Interactive shells
+    /// toggle this around every prompt, and agent TUIs turn it on at boot.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.bracketed_paste.load(Ordering::Acquire)
+    }
+
+    /// `None` while the child is running; `Some(code)` once it has exited
+    /// (`code` itself is `None` if the status couldn't be read). Check this
+    /// AFTER subscribing to cover an exit that happened before the
+    /// subscription existed.
+    pub fn exit_code(&self) -> Option<Option<i64>> {
+        self.exit_code.get().copied()
+    }
+
+    /// Deliver `text` to the program in the PTY as ONE message (a reply in
+    /// an agent's composer), and press Enter if `submit`.
+    ///
+    /// With bracketed paste on, the text is wrapped in paste markers so a
+    /// multi-line message lands as a single paste rather than as lines that
+    /// each submit. With it off, newlines would each act as Enter, so they
+    /// are collapsed to spaces.
+    ///
+    /// Enter goes out as a separate write `ENTER_GAP` after the text, in
+    /// both modes — the same rule `run_initial_writes` learned the hard
+    /// way: TUIs with paste-burst detection fold an Enter that arrives in
+    /// the same read as the text into the paste instead of submitting.
+    ///
+    /// Writes run on the blocking pool: a PTY write blocks once the
+    /// kernel's input buffer is full (the program isn't reading yet), and
+    /// a long message must not park a Tokio worker while it waits.
+    pub async fn send_message(self: &Arc<Self>, text: &str, submit: bool) -> Result<(), PtyError> {
+        let body = frame_message(text, self.bracketed_paste_enabled());
+        if !body.is_empty() {
+            self.write_off_runtime(body).await?;
+        }
+        if submit {
+            if !text.is_empty() {
+                tokio::time::sleep(ENTER_GAP).await;
+            }
+            self.write_off_runtime(b"\r".to_vec()).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_off_runtime(self: &Arc<Self>, bytes: Vec<u8>) -> Result<(), PtyError> {
+        let handle = self.clone();
+        tokio::task::spawn_blocking(move || handle.write(&bytes))
+            .await
+            .map_err(|e| PtyError::Pty(format!("pty write task failed: {e}")))?
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<PtyEvent> {
         self.tx.subscribe()
+    }
+
+    /// Whether the PTY's own shell is the terminal's foreground job, i.e.
+    /// no program it launched (the agent) is running right now. A job the
+    /// shell starts gets its own process group, so the foreground group's
+    /// leader is the shell only when the shell itself has the terminal.
+    /// `None` when the platform can't tell.
+    pub fn shell_in_foreground(&self) -> Option<bool> {
+        #[cfg(unix)]
+        {
+            let leader = self.master.lock().process_group_leader()?;
+            let shell = self.shell_pid?;
+            Some(u32::try_from(leader).ok()? == shell)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     pub fn subscribe_with_replay(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
@@ -389,6 +609,34 @@ const REATTEMPT_WAIT: Duration = Duration::from_secs(30);
 /// Typing attempts before falling back to the blind type-and-Enter.
 const MAX_TYPE_ATTEMPTS: usize = 3;
 
+const PASTE_START: &str = "\x1b[200~";
+const PASTE_END: &str = "\x1b[201~";
+
+/// The bytes `send_message` writes for `text` (Enter not included).
+fn frame_message(text: &str, bracketed_paste: bool) -> Vec<u8> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if bracketed_paste {
+        // A paste-end marker INSIDE the text would close the paste early
+        // and turn the rest into keystrokes — review comments and file
+        // excerpts are exactly where such bytes could come from. Strip the
+        // delimiters rather than trust the content.
+        let clean = text.replace(PASTE_END, "").replace(PASTE_START, "");
+        let mut out = Vec::with_capacity(clean.len() + PASTE_START.len() + PASTE_END.len());
+        out.extend_from_slice(PASTE_START.as_bytes());
+        out.extend_from_slice(clean.as_bytes());
+        out.extend_from_slice(PASTE_END.as_bytes());
+        out
+    } else {
+        // Each line break would be an Enter; one message must stay one
+        // line. `\r\n` first so it becomes a single space, not two.
+        text.replace("\r\n", " ")
+            .replace(['\n', '\r'], " ")
+            .into_bytes()
+    }
+}
+
 /// Type the agent command, then the user's prompt, into the PTY.
 ///
 /// The prompt is NOT sent on a timer. A fixed delay raced the agent's
@@ -406,6 +654,7 @@ fn run_initial_writes(
     mut events: broadcast::Receiver<PtyEvent>,
     initial_command: Option<String>,
     initial_prompt: Option<String>,
+    gate: Option<Arc<dyn PromptGate>>,
 ) {
     if let Some(cmd_text) = initial_command {
         let trimmed = cmd_text.trim();
@@ -431,7 +680,9 @@ fn run_initial_writes(
         // any. Fall back to typing blind, which is exactly what the
         // fixed delay always did.
         TuiWait::TimedOut => {
-            type_prompt_blind(&handle, trimmed);
+            if pass_gate(&handle, gate.as_ref(), &mut events) {
+                type_prompt_blind(&handle, trimmed);
+            }
             return;
         }
         TuiWait::Ready => {}
@@ -447,6 +698,11 @@ fn run_initial_writes(
     // dialog being answered repaints the terminal) and try again.
     let needle = echo_needle(trimmed);
     for _ in 0..MAX_TYPE_ATTEMPTS {
+        // Before EVERY attempt: a folder-trust dialog focused on "No, exit"
+        // must never receive the prompt, and above all not its Enter.
+        if !pass_gate(&handle, gate.as_ref(), &mut events) {
+            return;
+        }
         std::thread::sleep(TUI_SETTLE);
         let _ = handle.write(trimmed.as_bytes());
         match watch_after_typing(&mut events, &needle, ECHO_DEADLINE) {
@@ -473,8 +729,50 @@ fn run_initial_writes(
     }
     // Out of attempts — the echo check may be wrong (an exotic
     // composer that doesn't echo plainly). Take the blind path rather
-    // than dropping the prompt.
-    type_prompt_blind(&handle, trimmed);
+    // than dropping the prompt — unless the gate holds it.
+    if pass_gate(&handle, gate.as_ref(), &mut events) {
+        type_prompt_blind(&handle, trimmed);
+    }
+}
+
+/// How often a holding `PromptGate` is asked again.
+const GATE_POLL: Duration = Duration::from_millis(50);
+
+/// Block until `gate` lets the prompt through. `false` = drop the prompt:
+/// the gate abandoned it, the PTY went away while it was held, or — after
+/// a hold — the shell itself is back in the foreground. That last check is
+/// what keeps a prompt from being typed (and Entered) as a shell command
+/// when the user answered "No, exit" in the terminal and the agent quit.
+fn pass_gate(
+    handle: &PtyHandle,
+    gate: Option<&Arc<dyn PromptGate>>,
+    events: &mut broadcast::Receiver<PtyEvent>,
+) -> bool {
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let Some(gate) = gate else {
+        return true;
+    };
+    let mut held = false;
+    loop {
+        match gate.check() {
+            PromptGateDecision::Proceed => {
+                return !(held && handle.shell_in_foreground() == Some(true));
+            }
+            PromptGateDecision::Abandon => return false,
+            PromptGateDecision::Wait => held = true,
+        }
+        // Only an exit matters while held; the typing that follows watches
+        // fresh output for its own echo.
+        loop {
+            match events.try_recv() {
+                Ok(PtyEvent::Exit { .. }) | Err(TryRecvError::Closed) => return false,
+                Ok(_) | Err(TryRecvError::Lagged(_)) => continue,
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+        std::thread::sleep(GATE_POLL);
+    }
 }
 
 /// The pre-readiness delivery: type the text and press Enter without
@@ -649,6 +947,78 @@ impl TuiMarkerScanner {
     }
 }
 
+/// Streaming tracker for DECSET/DECRST 2004 (bracketed paste) in PTY
+/// output.
+///
+/// A small state machine over `ESC [ ? <params> h|l` rather than a search
+/// for the literal `\x1b[?2004h`: state carries across calls, so a sequence
+/// split at ANY byte between two PTY reads is still recognised, and the
+/// combined form some programs emit (`\x1b[?1049;2004h`) counts too. Last
+/// sequence wins, which is the terminal's own semantics.
+#[derive(Default)]
+struct PasteModeScanner {
+    state: PasteScanState,
+    /// Digits of the parameter currently being read.
+    param: u32,
+    /// Whether any completed parameter in this sequence was 2004.
+    saw_2004: bool,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum PasteScanState {
+    #[default]
+    Ground,
+    Esc,
+    Csi,
+    Private,
+}
+
+impl PasteModeScanner {
+    /// Feed bytes; returns the mode set by the LAST complete 2004 sequence
+    /// in them, or `None` if they contained none.
+    fn scan(&mut self, bytes: &[u8]) -> Option<bool> {
+        let mut result = None;
+        for &b in bytes {
+            match (self.state, b) {
+                // ESC always (re)starts a sequence, even mid-sequence.
+                (_, 0x1b) => self.state = PasteScanState::Esc,
+                (PasteScanState::Esc, b'[') => self.state = PasteScanState::Csi,
+                (PasteScanState::Csi, b'?') => {
+                    self.state = PasteScanState::Private;
+                    self.param = 0;
+                    self.saw_2004 = false;
+                }
+                (PasteScanState::Private, b'0'..=b'9') => {
+                    // Saturate: an absurd parameter just never equals 2004.
+                    self.param = self
+                        .param
+                        .saturating_mul(10)
+                        .saturating_add(u32::from(b - b'0'));
+                }
+                (PasteScanState::Private, b';') => {
+                    self.saw_2004 |= self.param == 2004;
+                    self.param = 0;
+                }
+                (PasteScanState::Private, b'h' | b'l') => {
+                    if self.saw_2004 || self.param == 2004 {
+                        result = Some(b == b'h');
+                    }
+                    self.state = PasteScanState::Ground;
+                }
+                _ => self.state = PasteScanState::Ground,
+            }
+        }
+        result
+    }
+}
+
+/// Side-channel state the coalescer stamps as bytes arrive, before any
+/// framing decision.
+struct OutputObservers {
+    last_output_at: Arc<std::sync::atomic::AtomicI64>,
+    bracketed_paste: Arc<AtomicBool>,
+}
+
 /// Size of a single PTY read. Unchanged — reading bigger doesn't help, the
 /// kernel hands over only what it has.
 const READ_BUF_BYTES: usize = 4096;
@@ -718,10 +1088,15 @@ fn coalesce_pty_output<W: Write>(
     mut log: W,
     tx: broadcast::Sender<PtyEvent>,
     replay: Arc<Mutex<ReplayBuffer>>,
-    last_output_at: Arc<std::sync::atomic::AtomicI64>,
+    observers: OutputObservers,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
 
+    let OutputObservers {
+        last_output_at,
+        bracketed_paste,
+    } = observers;
+    let mut paste_scanner = PasteModeScanner::default();
     let mut buf: Vec<u8> = Vec::with_capacity(COALESCE_BYTES);
     // When the oldest byte currently in `buf` must be flushed by. `None`
     // while `buf` is empty, so an idle PTY blocks instead of spinning.
@@ -739,6 +1114,12 @@ fn coalesce_pty_output<W: Write>(
                 // bytes" is the fact the activity dot reports, independent
                 // of how those bytes are framed for delivery.
                 last_output_at.store(epoch_ms(), std::sync::atomic::Ordering::Relaxed);
+                // Scanned at receipt, before the bytes are even framed, so
+                // by the time anyone has SEEN a prompt the flag describing
+                // it is already set.
+                if let Some(enabled) = paste_scanner.scan(&bytes) {
+                    bracketed_paste.store(enabled, Ordering::Release);
+                }
                 // The log is the raw byte stream, written before any framing
                 // decision — `read_task_log` and the B1 replay corpus both
                 // depend on it being exactly what the PTY produced.
@@ -898,6 +1279,13 @@ mod tests {
         }
     }
 
+    fn observers() -> OutputObservers {
+        OutputObservers {
+            last_output_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            bracketed_paste: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     #[test]
     fn scanner_finds_alt_screen_in_one_chunk() {
         let mut scanner = TuiMarkerScanner::default();
@@ -1030,8 +1418,7 @@ mod tests {
         drop(bytes_tx);
 
         let mut sink: Vec<u8> = Vec::new();
-        let last_output = Arc::new(std::sync::atomic::AtomicI64::new(0));
-        coalesce_pty_output("t".into(), bytes_rx, &mut sink, tx, replay, last_output);
+        coalesce_pty_output("t".into(), bytes_rx, &mut sink, tx, replay, observers());
 
         let mut chunks = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -1060,7 +1447,10 @@ mod tests {
             &mut sink,
             tx,
             replay,
-            last_output.clone(),
+            OutputObservers {
+                last_output_at: last_output.clone(),
+                bracketed_paste: Arc::new(AtomicBool::new(false)),
+            },
         );
 
         let stamped = last_output.load(std::sync::atomic::Ordering::Relaxed);
@@ -1324,5 +1714,105 @@ mod tests {
             "replay held {held} bytes, over the {REPLAY_BUFFER_BYTES} budget"
         );
         assert_eq!(held, REPLAY_BUFFER_BYTES);
+    }
+
+    // -- bracketed paste --------------------------------------------------
+
+    #[test]
+    fn paste_scanner_tracks_set_and_reset() {
+        let mut scanner = PasteModeScanner::default();
+        assert_eq!(scanner.scan(b"plain output, no modes"), None);
+        assert_eq!(scanner.scan(b"$ \x1b[?2004h"), Some(true));
+        assert_eq!(scanner.scan(b"\x1b[?2004lrunning cmd"), Some(false));
+        // Last sequence in a chunk wins.
+        assert_eq!(scanner.scan(b"\x1b[?2004l...\x1b[?2004h"), Some(true));
+    }
+
+    #[test]
+    fn paste_scanner_survives_a_split_at_every_byte() {
+        for (stream, expected) in [
+            (&b"zsh prompt \x1b[?2004h tail"[..], true),
+            (&b"exec cmd \x1b[?2004l tail"[..], false),
+        ] {
+            for split in 0..=stream.len() {
+                let mut scanner = PasteModeScanner::default();
+                let first = scanner.scan(&stream[..split]);
+                let second = scanner.scan(&stream[split..]);
+                assert_eq!(
+                    second.or(first),
+                    Some(expected),
+                    "split at {split} of {:?}",
+                    String::from_utf8_lossy(stream)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn paste_scanner_reads_combined_params_and_ignores_lookalikes() {
+        let mut scanner = PasteModeScanner::default();
+        // Combined DECSET, as some TUIs emit at boot.
+        assert_eq!(scanner.scan(b"\x1b[?1049;2004h"), Some(true));
+        assert_eq!(scanner.scan(b"\x1b[?2004;25l"), Some(false));
+        // Other private modes, a DECRQM query for 2004, a non-private CSI
+        // with the same digits, and a longer number that merely starts
+        // with 2004 — none of them change paste mode.
+        assert_eq!(scanner.scan(b"\x1b[?1049h\x1b[?25l"), None);
+        assert_eq!(scanner.scan(b"\x1b[?2004$p"), None);
+        assert_eq!(scanner.scan(b"\x1b[2004h"), None);
+        assert_eq!(scanner.scan(b"\x1b[?20045h"), None);
+    }
+
+    #[test]
+    fn coalescer_sets_paste_flag_from_a_marker_split_across_reads() {
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx, _rx) = broadcast::channel::<PtyEvent>(16);
+        let replay = Arc::new(Mutex::new(ReplayBuffer::new(REPLAY_BUFFER_BYTES)));
+        let flag = Arc::new(AtomicBool::new(false));
+        bytes_tx.send(b"prompt \x1b[?20".to_vec()).unwrap();
+        bytes_tx.send(b"04h".to_vec()).unwrap();
+        drop(bytes_tx);
+
+        let mut sink: Vec<u8> = Vec::new();
+        coalesce_pty_output(
+            "t".into(),
+            bytes_rx,
+            &mut sink,
+            tx,
+            replay,
+            OutputObservers {
+                last_output_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                bracketed_paste: flag.clone(),
+            },
+        );
+        assert!(flag.load(Ordering::Acquire));
+        // Observing the stream never alters it.
+        assert_eq!(sink, b"prompt \x1b[?2004h");
+    }
+
+    #[test]
+    fn frame_message_wraps_in_paste_markers_when_paste_is_on() {
+        assert_eq!(
+            frame_message("line one\nline two", true),
+            b"\x1b[200~line one\nline two\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn frame_message_collapses_newlines_when_paste_is_off() {
+        assert_eq!(
+            frame_message("line one\nline two\r\nthree\rfour", false),
+            b"line one line two three four".to_vec()
+        );
+        assert!(frame_message("", true).is_empty());
+        assert!(frame_message("", false).is_empty());
+    }
+
+    #[test]
+    fn frame_message_cannot_be_broken_out_of_by_its_own_content() {
+        // An embedded paste-end would otherwise turn "; rm -rf" into typed
+        // keystrokes after the paste closes.
+        let framed = frame_message("before\x1b[201~; rm -rf ~\x1b[200~after", true);
+        assert_eq!(framed, b"\x1b[200~before; rm -rf ~after\x1b[201~".to_vec());
     }
 }

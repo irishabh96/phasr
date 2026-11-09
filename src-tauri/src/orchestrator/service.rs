@@ -27,19 +27,26 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::domain::{Agent, Workspace, WorkspaceStatus};
+use crate::agent_signals::{AgentSignals, AttentionResponse, LaunchTask};
+use crate::domain::{Agent, PermissionMode, Repository, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::git;
 use crate::pty::handle::PtyHandle;
-use crate::pty::{PtyEvent, TaskRuntime};
-use crate::store::{RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
+use crate::pty::{PtyEvent, SpawnSpec, TaskRuntime};
+use crate::store::{LocalTaskClaim, RepositoryRepo, WorkspaceRepo, WorkspaceUpdate};
 
 use super::error::OrchestratorError;
+use super::launch::{interpolate_for_task, RunIn};
 use super::repo_locks::RepoLockRegistry;
-use super::templating::interpolate_command;
+use super::setup::{self, SetupLog, TaskConfig, TaskSetup};
 
 /// How long we wait for SIGINT to gracefully shut a process down
 /// before escalating to SIGKILL (via portable_pty's killer).
 const SIGINT_GRACE: Duration = Duration::from_secs(3);
+
+/// Pause between the keystrokes of a multi-key attention answer: long
+/// enough for an Ink TUI to process (and re-render) one key before the
+/// next arrives in a separate read.
+const KEYSTROKE_GAP: Duration = Duration::from_millis(150);
 
 /// Capacity for the status-event broadcast channel. Status events are
 /// rare (a few per task lifecycle) and consumers re-emit them onto
@@ -68,14 +75,55 @@ pub struct StartTaskRequest {
     /// The agent recorded on the workspace (metadata).
     pub agent: Agent,
     /// The command to actually run. In production this is
-    /// `agent.command()`, resolved by the command layer; kept separate
-    /// so tests can substitute a fast-exiting command.
+    /// `launch::resolve_launch(agent, mode, settings)`, resolved by the
+    /// command layer; kept separate so tests can substitute a fast-exiting
+    /// command.
     pub command: String,
     pub name: String,
     pub prompt: Option<String>,
     pub base_branch: Option<String>,
     pub rows: Option<u16>,
     pub cols: Option<u16>,
+    /// Recorded on the row; the flags themselves are already in `command`.
+    /// `None` only from tests that predate permission modes.
+    pub permission_mode: Option<PermissionMode>,
+    pub notify_on_attention: bool,
+    pub run_in: RunIn,
+}
+
+/// A task row to save without starting it (`TaskOrchestrator::create_row`),
+/// and the shared shape `start_task` builds its row from.
+#[derive(Debug, Clone)]
+pub struct TaskRow {
+    pub repository_id: String,
+    pub agent: Agent,
+    /// Resolved launch template; `{{prompt}}` is filled when the row is built.
+    pub command: String,
+    pub name: String,
+    pub prompt: Option<String>,
+    /// `None` → the repository's default branch, read at launch.
+    pub base_branch: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
+    pub notify_on_attention: bool,
+    pub queued: bool,
+    pub depends_on: Option<String>,
+}
+
+/// Edits to a not-yet-launched task. `None` = leave as is; for the
+/// clearable fields `Some(None)` clears.
+#[derive(Debug, Clone, Default)]
+pub struct TaskRowPatch {
+    pub name: Option<String>,
+    pub prompt: Option<Option<String>>,
+    pub agent: Option<Agent>,
+    /// New launch template (re-resolved by the caller for the new agent /
+    /// mode); `{{prompt}}` is re-filled with the final prompt.
+    pub command: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
+    pub notify_on_attention: Option<bool>,
+    pub base_branch: Option<Option<String>>,
+    pub queued: Option<bool>,
+    pub depends_on: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +149,30 @@ pub struct TaskOrchestrator {
     runtime: Arc<TaskRuntime>,
     repo_locks: Arc<RepoLockRegistry>,
     status_tx: broadcast::Sender<TaskStatusEvent>,
+    /// `task_id → user_id` pairs `assert_owner` has already confirmed
+    /// against the store. Positive-only and never needs invalidating for
+    /// correctness: a workspace's owner never changes (adoption only fills
+    /// a NULL owner in), and a deleted workspace has no PTY left to
+    /// address. Exists because `send_input_to_task` runs per keystroke and
+    /// must not pay a SQLite round-trip each time.
+    verified_owners: Arc<parking_lot::Mutex<HashMap<String, String>>>,
+    /// Needs-you / usage tracking. `None` in tests that don't exercise it;
+    /// every agent launch then runs exactly the stored command.
+    signals: Option<AgentSignals>,
+    /// Settings + repository rules (branch template, worktree base, copy /
+    /// hook / fetch, shell, API keys). `None` in tests: built-in behaviour.
+    task_config: Option<TaskConfig>,
+}
+
+/// What actually gets typed into a fresh agent PTY.
+struct AgentLaunch {
+    command: Option<String>,
+    prompt: Option<String>,
+    env: Vec<(String, String)>,
+    /// Registration with `AgentSignals`, to attach the PTY to.
+    generation: Option<u64>,
+    /// `user_settings.terminal_shell`, when usable on this machine.
+    shell: Option<String>,
 }
 
 impl TaskOrchestrator {
@@ -122,7 +194,156 @@ impl TaskOrchestrator {
             runtime,
             repo_locks,
             status_tx,
+            verified_owners: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            signals: None,
+            task_config: None,
         }
+    }
+
+    /// Read settings + repository rules for every launch (see `setup`).
+    pub fn with_task_config(mut self, config: TaskConfig) -> Self {
+        self.task_config = Some(config);
+        self
+    }
+
+    async fn setup_for(&self, repository_id: &str) -> TaskSetup {
+        match &self.task_config {
+            Some(config) => config.setup_for(repository_id).await,
+            None => TaskSetup::defaults(repository_id),
+        }
+    }
+
+    /// Track agent state/usage for every task this orchestrator launches,
+    /// and add the hook-bridge extras to their launch commands.
+    pub fn with_agent_signals(mut self, signals: AgentSignals) -> Self {
+        self.signals = Some(signals);
+        self
+    }
+
+    /// Resolve the line to type for `workspace`'s agent: hook extras, and on
+    /// `resuming`, the CLI's resume syntax instead of re-sending the prompt.
+    /// Registers the task with `AgentSignals` (before the spawn, so a hook
+    /// that fires during boot finds it).
+    async fn agent_launch(
+        &self,
+        workspace: &Workspace,
+        command: Option<String>,
+        prompt: Option<String>,
+        cwd: &Path,
+        resuming: bool,
+    ) -> AgentLaunch {
+        let setup = self.setup_for(&workspace.repository_id).await;
+        let shell = setup.shell();
+        // The agent's own API key (Keychain), and only its own.
+        let key_env = match (&self.task_config, workspace.agent) {
+            (Some(config), Some(agent)) => config.api_env(agent).await,
+            _ => Vec::new(),
+        };
+        let (Some(signals), Some(agent), Some(stored)) =
+            (self.signals.as_ref(), workspace.agent, command.clone())
+        else {
+            return AgentLaunch {
+                command,
+                prompt,
+                env: key_env,
+                generation: None,
+                shell,
+            };
+        };
+        let target = signals.target_for(workspace);
+        let plan = signals
+            .prepare_launch(&LaunchTask {
+                task_id: workspace.id.clone(),
+                agent,
+                command: stored,
+                prompt: prompt.clone(),
+                resuming,
+                target: target.clone().unwrap_or_else(|| crate::agent_signals::transcripts::TranscriptTarget {
+                    agent,
+                    cwd: cwd.to_path_buf(),
+                    since: None,
+                    session_ids: Vec::new(),
+                    shared_cwd: workspace.workspace_kind == WorkspaceKind::Local,
+                }),
+                policy: setup.policy(),
+            })
+            .await;
+        let generation = signals.register_task(workspace, agent, cwd, target);
+        let mut env = plan.env;
+        env.extend(key_env);
+        AgentLaunch {
+            command: Some(plan.command),
+            prompt: if plan.send_prompt { prompt } else { None },
+            env,
+            generation: Some(generation),
+            shell,
+        }
+    }
+
+    /// Spawn a task PTY for `launch`, and hand it to `AgentSignals`.
+    fn spawn_agent_pty(
+        &self,
+        task_id: &str,
+        cwd: PathBuf,
+        launch: AgentLaunch,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Arc<PtyHandle>, OrchestratorError> {
+        // Only a launch that types a prompt needs the gate; it must exist
+        // before the spawn, since the writer thread starts with the PTY.
+        let gate = match (&self.signals, launch.generation, &launch.prompt) {
+            (Some(signals), Some(generation), Some(_)) => signals.prompt_gate(task_id, generation),
+            _ => None,
+        };
+        let mut spec = SpawnSpec::new(task_id, cwd)
+            .with_initial_command(launch.command)
+            .with_initial_prompt(launch.prompt)
+            .with_prompt_gate(gate)
+            .with_shell(launch.shell)
+            .with_size(rows, cols);
+        for (key, value) in launch.env {
+            spec = spec.with_env(key, value);
+        }
+        let handle = match self.runtime.spawn(spec) {
+            Ok(handle) => handle,
+            Err(err) => {
+                if let Some(signals) = &self.signals {
+                    signals.mark_exited(task_id);
+                }
+                return Err(err.into());
+            }
+        };
+        if let (Some(signals), Some(generation)) = (&self.signals, launch.generation) {
+            signals.attach_pty(task_id, generation, &handle);
+        }
+        Ok(handle)
+    }
+
+    /// `Ok` only if `task_id` is a live workspace owned by `user_id`.
+    /// Another account's task is `not found`, exactly like a missing one.
+    ///
+    /// Every PTY command keyed by a task id calls this first. Task ids here
+    /// are always workspace ids: run-command (`run:<id>`) and ad-hoc
+    /// session (`session:<uuid>`) PTYs have their own commands and never
+    /// reach the orchestrator.
+    pub async fn assert_owner(
+        &self,
+        task_id: &str,
+        user_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        if self
+            .verified_owners
+            .lock()
+            .get(task_id)
+            .is_some_and(|owner| owner == user_id)
+        {
+            return Ok(());
+        }
+        self.workspaces.get_for_user(task_id, user_id).await?;
+        self.verified_owners
+            .lock()
+            .insert(task_id.to_string(), user_id.to_string());
+        Ok(())
     }
 
     pub fn subscribe_status(&self) -> broadcast::Receiver<TaskStatusEvent> {
@@ -135,14 +356,18 @@ impl TaskOrchestrator {
         self.runtime.activity()
     }
 
-    /// Create a task row, build its worktree, spawn the PTY, and
-    /// transition `pending → running`. Returns the row id once the
-    /// runtime has accepted the spawn.
-    pub async fn start_task(
+    /// The repository a task is created in, owner-scoped when there's a
+    /// session (unscoped only on the sessionless test path), and its
+    /// checkout — which must exist and be a git repository.
+    async fn task_repository(
         &self,
-        request: StartTaskRequest,
-    ) -> Result<StartedTask, OrchestratorError> {
-        let repository = self.repositories.get(&request.repository_id).await?;
+        repository_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<(Repository, PathBuf), OrchestratorError> {
+        let repository = match user_id {
+            Some(user_id) => self.repositories.get_for_user(repository_id, user_id).await?,
+            None => self.repositories.get(repository_id).await?,
+        };
         let repository_path = repository
             .local_path
             .as_deref()
@@ -158,11 +383,110 @@ impl TaskOrchestrator {
                 repository_path.to_string_lossy().into_owned(),
             ));
         }
+        Ok((repository, repository_path))
+    }
 
-        let base_ref = request
-            .base_branch
-            .clone()
-            .unwrap_or_else(|| repository.default_branch.clone());
+    async fn get_task(&self, task_id: &str, user_id: Option<&str>) -> Result<Workspace, OrchestratorError> {
+        Ok(match user_id {
+            Some(user_id) => self.workspaces.get_for_user(task_id, user_id).await?,
+            None => self.workspaces.get(task_id).await?,
+        })
+    }
+
+    /// Cut the task's branch (from the branch template) at `start_point`
+    /// into a fresh worktree under the resolved base, and record branch +
+    /// path + base on `workspace`. `base` is what the task merges into and
+    /// diffs against; `start_point` is where it forks — `origin/<base>`
+    /// after a fresh fetch, else `base` itself. Caller holds the repo lock
+    /// (`git worktree add` races on the shared `.git`).
+    fn cut_worktree(
+        repository_path: &Path,
+        workspace: &mut Workspace,
+        base: &str,
+        start_point: &str,
+        setup: &TaskSetup,
+    ) -> Result<PathBuf, OrchestratorError> {
+        let branch = setup.branch_for(repository_path, &workspace.name, &workspace.id, workspace.agent);
+        let worktree_path = setup.worktree_base().join(&workspace.id);
+        git::create_worktree(repository_path, &worktree_path, &branch, start_point)?;
+        workspace.branch = Some(branch);
+        workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
+        workspace.base_branch = Some(base.to_string());
+        Ok(worktree_path)
+    }
+
+    /// Steps 1 of the setup order (see `setup`): fetch the base when the
+    /// repository asks for it. Returns the start point.
+    async fn start_point(
+        &self,
+        repository_path: &Path,
+        base: &str,
+        setup: &TaskSetup,
+        log: &mut SetupLog,
+    ) -> String {
+        if setup.config.fetch_base_before_task {
+            setup::fetch_base(repository_path, base, log).await
+        } else {
+            base.to_string()
+        }
+    }
+
+    /// Steps 3–4: copy untracked files into the new worktree, then run the
+    /// after-create hook once. Both log to the task log; neither fails the
+    /// start.
+    async fn prepare_worktree(
+        &self,
+        task_id: &str,
+        repository_path: &Path,
+        worktree: &Path,
+        setup: &TaskSetup,
+        mut log: SetupLog,
+    ) {
+        if !setup.config.copy_untracked_globs.is_empty() {
+            let (repo, wt, globs) = (
+                repository_path.to_path_buf(),
+                worktree.to_path_buf(),
+                setup.config.copy_untracked_globs.clone(),
+            );
+            let copied = tokio::task::spawn_blocking(move || setup::copy_untracked(&repo, &wt, &globs))
+                .await
+                .unwrap_or_default();
+            if !copied.is_empty() {
+                log.push(format!("phasr: copied into the worktree: {}", copied.join(", ")));
+            }
+        }
+        if let Some(hook) = setup.config.after_create_hook() {
+            let shell = setup.shell();
+            setup::run_after_create_hook(worktree, hook, shell.as_deref(), &mut log).await;
+        }
+        log.flush(&self.runtime.log_dir, task_id);
+    }
+
+    /// Create a task row, build its worktree, spawn the PTY, and
+    /// transition `pending → running`. Returns the row id once the
+    /// runtime has accepted the spawn.
+    ///
+    /// The same two halves as `create_row` + `launch`, fused so the
+    /// duplicate check, the worktree and the insert are one step under the
+    /// repo lock — and so a failed worktree never leaves a row behind.
+    pub async fn start_task(
+        &self,
+        request: StartTaskRequest,
+    ) -> Result<StartedTask, OrchestratorError> {
+        let (repository, repository_path) = self
+            .task_repository(&request.repository_id, request.user_id.as_deref())
+            .await?;
+
+        if request.run_in == RunIn::InPlace {
+            return self
+                .start_in_place(request, &repository, repository_path)
+                .await;
+        }
+
+        let setup = self.setup_for(&request.repository_id).await;
+        let base = setup.base_branch(request.base_branch.as_deref(), &repository.default_branch);
+        let mut log = SetupLog::default();
+        let start_point = self.start_point(&repository_path, &base, &setup, &mut log).await;
 
         // Serialize git ops against the shared `.git` for this repo.
         // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
@@ -180,8 +504,9 @@ impl TaskOrchestrator {
 
         // Idempotency guard: return the existing ACTIVE (pending/running)
         // task for this `(repository_id, name)` rather than creating a
-        // duplicate. Bounded to *active* tasks so a deliberate re-run after
-        // the first has stopped/completed/been deleted still starts fresh.
+        // duplicate. Bounded to *active, launched* tasks so a deliberate
+        // re-run after the first has stopped/completed/been deleted still
+        // starts fresh, and a same-named draft doesn't swallow the start.
         // Owner-scoped when we have a user_id (production); the unscoped
         // variant covers the sessionless test path.
         let existing = match request.user_id.as_deref() {
@@ -203,27 +528,20 @@ impl TaskOrchestrator {
             });
         }
 
-        let interpolated = interpolate_for_task(&request.command, request.prompt.as_deref());
-
-        let mut workspace = Workspace::new(
-            request.repository_id.clone(),
-            request.name,
-            interpolated.clone(),
-        );
-        workspace.prompt = request.prompt.clone();
-        workspace.agent = Some(request.agent);
-
-        let task_id = workspace.id.clone();
-        let slug = git::slugify(&workspace.name);
-        let branch_seed = git::default_branch_name(&slug, git::short_id(&task_id));
-        let branch =
-            git::unique_branch_name(&repository_path, &branch_seed, git::short_id(&task_id));
-        let worktree_path = git::default_worktree_base_path().join(&task_id);
-
-        git::create_worktree(&repository_path, &worktree_path, &branch, &base_ref)?;
-
-        workspace.branch = Some(branch);
-        workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
+        let mut workspace = Self::new_task_row(TaskRow {
+            repository_id: request.repository_id.clone(),
+            agent: request.agent,
+            command: request.command,
+            name: request.name,
+            prompt: request.prompt,
+            base_branch: None,
+            permission_mode: request.permission_mode,
+            notify_on_attention: request.notify_on_attention,
+            queued: false,
+            depends_on: None,
+        });
+        let worktree =
+            Self::cut_worktree(&repository_path, &mut workspace, &base, &start_point, &setup)?;
 
         // Stamp the owner so cloud sync picks the row up. Without a
         // user_id the workspace stays local-only forever.
@@ -237,11 +555,202 @@ impl TaskOrchestrator {
         // `.git`, so there's no reason to hold up other repo tasks for them.
         drop(guard);
 
+        self.prepare_worktree(&workspace.id, &repository_path, &worktree, &setup, log)
+            .await;
+        self.go_running(&workspace.id, request.rows, request.cols).await
+    }
+
+    fn new_task_row(row: TaskRow) -> Workspace {
+        let command = interpolate_for_task(&row.command, row.prompt.as_deref());
+        let mut workspace = Workspace::new(row.repository_id, row.name, command);
+        workspace.prompt = row.prompt;
+        workspace.agent = Some(row.agent);
+        workspace.permission_mode = row.permission_mode;
+        workspace.notify_on_attention = row.notify_on_attention;
+        workspace.base_branch = row.base_branch;
+        workspace.queued_at = row.queued.then(Utc::now);
+        workspace.depends_on_workspace_id = row.depends_on;
+        workspace
+    }
+
+    /// Save a task without starting it: a draft, or (`queued`) one the
+    /// queue scheduler starts once its dependency is satisfied. No worktree
+    /// yet — that's cut at `launch`, from the then-current base.
+    pub async fn create_row(
+        &self,
+        row: TaskRow,
+        user_id: Option<&str>,
+    ) -> Result<Workspace, OrchestratorError> {
+        let repository = match user_id {
+            Some(user_id) => self.repositories.get_for_user(&row.repository_id, user_id).await?,
+            None => self.repositories.get(&row.repository_id).await?,
+        };
+        if let Some(dependency) = row.depends_on.as_deref() {
+            self.get_task(dependency, user_id)
+                .await
+                .map_err(|_| OrchestratorError::InvalidDependency(dependency.to_string()))?;
+        }
+        let workspace = Self::new_task_row(row);
+        match user_id {
+            Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
+            None => self.workspaces.insert(&workspace).await?,
+        }
+        self.broadcast_status(TaskStatusEvent {
+            task_id: workspace.id.clone(),
+            repository_id: repository.id,
+            status: workspace.status,
+            exit_code: None,
+        });
+        Ok(workspace)
+    }
+
+    /// Edit a task that hasn't started (draft or queued).
+    pub async fn update_unlaunched(
+        &self,
+        task_id: &str,
+        user_id: Option<&str>,
+        patch: TaskRowPatch,
+    ) -> Result<Workspace, OrchestratorError> {
+        let current = self.get_task(task_id, user_id).await?;
+        if !current.is_unlaunched() {
+            return Err(OrchestratorError::AlreadyLaunched);
+        }
+        if let Some(Some(dependency)) = patch.depends_on.as_ref() {
+            if dependency == task_id || self.depends_on_transitively(dependency, task_id).await {
+                return Err(OrchestratorError::InvalidDependency(dependency.clone()));
+            }
+            self.get_task(dependency, user_id)
+                .await
+                .map_err(|_| OrchestratorError::InvalidDependency(dependency.clone()))?;
+        }
+        let prompt = patch.prompt.clone().unwrap_or(current.prompt.clone());
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    name: patch.name,
+                    prompt: patch.prompt,
+                    agent: patch.agent.map(Some),
+                    command: patch
+                        .command
+                        .map(|template| interpolate_for_task(&template, prompt.as_deref())),
+                    permission_mode: patch.permission_mode.map(Some),
+                    notify_on_attention: patch.notify_on_attention,
+                    base_branch: patch.base_branch,
+                    queued_at: patch.queued.map(|queued| queued.then(Utc::now)),
+                    depends_on_workspace_id: patch.depends_on,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        self.broadcast_status(TaskStatusEvent {
+            task_id: updated.id.clone(),
+            repository_id: updated.repository_id.clone(),
+            status: updated.status,
+            exit_code: None,
+        });
+        Ok(updated)
+    }
+
+    /// Whether `from`'s dependency chain reaches `target` (a cycle if
+    /// `target` were made to depend on `from`). Bounded: chains are short,
+    /// and a pre-existing cycle must not loop forever.
+    async fn depends_on_transitively(&self, from: &str, target: &str) -> bool {
+        let mut next = Some(from.to_string());
+        for _ in 0..64 {
+            let Some(id) = next.take() else {
+                return false;
+            };
+            if id == target {
+                return true;
+            }
+            next = self
+                .workspaces
+                .get(&id)
+                .await
+                .ok()
+                .and_then(|w| w.depends_on_workspace_id);
+        }
+        true
+    }
+
+    /// Start a saved (draft or queued) task: cut its worktree from its base,
+    /// then spawn exactly as `start_task` does.
+    ///
+    /// Idempotent under the repo lock: the row is re-read inside it, and a
+    /// task that has already launched (its branch exists) is returned as
+    /// is. That's what keeps the queue scheduler and "Start now" — or two
+    /// scheduler passes — from ever starting one task twice.
+    pub async fn launch(
+        &self,
+        task_id: &str,
+        user_id: Option<&str>,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> Result<StartedTask, OrchestratorError> {
+        let workspace = self.get_task(task_id, user_id).await?;
+        if !workspace.is_unlaunched() {
+            return Ok(StartedTask {
+                task_id: workspace.id.clone(),
+                workspace,
+            });
+        }
+        let (repository, repository_path) = self
+            .task_repository(&workspace.repository_id, user_id)
+            .await?;
+        let setup = self.setup_for(&workspace.repository_id).await;
+        let base = setup.base_branch(workspace.base_branch.as_deref(), &repository.default_branch);
+        let mut log = SetupLog::default();
+        let start_point = self.start_point(&repository_path, &base, &setup, &mut log).await;
+
+        let lock = self.repo_locks.for_repository(&workspace.repository_id);
+        let guard = lock.lock().await;
+        let mut workspace = self.workspaces.get(task_id).await?;
+        if !workspace.is_unlaunched() {
+            return Ok(StartedTask {
+                task_id: workspace.id.clone(),
+                workspace,
+            });
+        }
+        if workspace.agent.is_none() {
+            return Err(OrchestratorError::AlreadyLaunched);
+        }
+        let worktree =
+            Self::cut_worktree(&repository_path, &mut workspace, &base, &start_point, &setup)?;
+        self.workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    branch: Some(workspace.branch.clone()),
+                    worktree_path: Some(workspace.worktree_path.clone()),
+                    base_branch: Some(workspace.base_branch.clone()),
+                    queued_at: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        drop(guard);
+
+        self.prepare_worktree(task_id, &repository_path, &worktree, &setup, log)
+            .await;
+        self.go_running(task_id, rows, cols).await
+    }
+
+    /// `pending → running` for a row whose worktree exists: register with
+    /// `AgentSignals`, spawn the PTY (agent command + prompt), broadcast,
+    /// and watch for its exit.
+    async fn go_running(
+        &self,
+        task_id: &str,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> Result<StartedTask, OrchestratorError> {
         let started_at = Utc::now();
         let updated = self
             .workspaces
             .update(
-                &task_id,
+                task_id,
                 WorkspaceUpdate {
                     status: Some(WorkspaceStatus::Running),
                     started_at: Some(Some(started_at)),
@@ -249,29 +758,167 @@ impl TaskOrchestrator {
                 },
             )
             .await?;
+        let worktree_path = updated
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or(OrchestratorError::WorktreeUnavailable)?;
 
-        let pty_handle = self.runtime.spawn(
-            task_id.clone(),
-            Some(interpolated),
-            request.prompt.clone(),
+        let launch = self
+            .agent_launch(
+                &updated,
+                Some(updated.command.clone()),
+                updated.prompt.clone(),
+                &worktree_path,
+                false,
+            )
+            .await;
+        let pty_handle = self.spawn_agent_pty(
+            task_id,
             worktree_path,
-            request.rows.unwrap_or(24),
-            request.cols.unwrap_or(80),
+            launch,
+            rows.unwrap_or(24),
+            cols.unwrap_or(80),
         )?;
 
         self.broadcast_status(TaskStatusEvent {
-            task_id: task_id.clone(),
+            task_id: task_id.to_string(),
             repository_id: updated.repository_id.clone(),
             status: WorkspaceStatus::Running,
             exit_code: None,
         });
 
-        self.spawn_exit_watcher(task_id.clone(), updated.repository_id.clone(), pty_handle);
+        self.spawn_exit_watcher(task_id.to_string(), updated.repository_id.clone(), pty_handle);
 
         Ok(StartedTask {
-            task_id,
+            task_id: task_id.to_string(),
             workspace: updated,
         })
+    }
+
+    /// Ids of tasks with a live PTY.
+    pub fn running_task_ids(&self) -> std::collections::HashSet<String> {
+        self.runtime.activity().into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Run the agent in the repository's own checkout, on its `local`
+    /// workspace row — no worktree, no branch. The row is reused (one per
+    /// repository), so only one in-place agent can run per repository.
+    ///
+    /// If the local workspace's terminal is open as a plain shell (no agent
+    /// on the row), that shell is replaced by the agent: the in-place task
+    /// *is* the local workspace's terminal from now on. A running in-place
+    /// agent is never replaced — that's `InPlaceTaskRunning`.
+    async fn start_in_place(
+        &self,
+        request: StartTaskRequest,
+        repository: &Repository,
+        repository_path: PathBuf,
+    ) -> Result<StartedTask, OrchestratorError> {
+        // Held through the spawn (unlike the worktree path): "is an agent
+        // running here?" is answered from the row AND the live PTY, so the
+        // check, the claim and the spawn must be one step per repository.
+        let lock = self.repo_locks.for_repository(&request.repository_id);
+        let _guard = lock.lock().await;
+
+        let local = match self
+            .workspaces
+            .get_local_by_repository(&request.repository_id)
+            .await?
+        {
+            Some(local) => local,
+            None => {
+                self.create_local_workspace(repository, &repository_path, request.user_id.as_deref())
+                    .await?
+            }
+        };
+        // Same owner rule as every other task id (a local row belongs to
+        // its repository's account).
+        if let Some(user_id) = request.user_id.as_deref() {
+            self.workspaces.get_for_user(&local.id, user_id).await?;
+        }
+
+        let live = self.runtime.get(&local.id);
+        if live.is_some() && local.status == WorkspaceStatus::Running && local.agent.is_some() {
+            return Err(OrchestratorError::InPlaceTaskRunning);
+        }
+        if let Some(shell) = live {
+            // Free the runtime slot for the agent. The old PTY's exit
+            // watcher notices it was replaced and leaves the row alone
+            // (see `spawn_exit_watcher`).
+            let _ = shell.kill();
+            self.runtime.drop_task(&local.id);
+        }
+
+        let command = interpolate_for_task(&request.command, request.prompt.as_deref());
+        let started_at = Utc::now();
+        let claimed = self
+            .workspaces
+            .claim_local_for_task(
+                &local.id,
+                LocalTaskClaim {
+                    agent: request.agent,
+                    command: command.clone(),
+                    prompt: request.prompt.clone(),
+                    // The command layer always resolves one; a bare test
+                    // request is recorded as what its command means today.
+                    permission_mode: request.permission_mode.unwrap_or(PermissionMode::SkipAll),
+                    notify_on_attention: request.notify_on_attention,
+                    started_at,
+                },
+            )
+            .await?;
+
+        let launch = self
+            .agent_launch(
+                &claimed,
+                Some(command),
+                request.prompt.clone(),
+                &repository_path,
+                false,
+            )
+            .await;
+        let pty_handle = self.spawn_agent_pty(
+            &claimed.id,
+            repository_path,
+            launch,
+            request.rows.unwrap_or(24),
+            request.cols.unwrap_or(80),
+        )?;
+
+        self.broadcast_status(TaskStatusEvent {
+            task_id: claimed.id.clone(),
+            repository_id: claimed.repository_id.clone(),
+            status: WorkspaceStatus::Running,
+            exit_code: None,
+        });
+        self.spawn_exit_watcher(claimed.id.clone(), claimed.repository_id.clone(), pty_handle);
+
+        Ok(StartedTask {
+            task_id: claimed.id.clone(),
+            workspace: claimed,
+        })
+    }
+
+    /// The `local` row `commands::repositories` normally creates when a
+    /// repository is added; repositories added before local workspaces
+    /// existed (or whose row was deleted) may not have one yet.
+    async fn create_local_workspace(
+        &self,
+        repository: &Repository,
+        repository_path: &Path,
+        user_id: Option<&str>,
+    ) -> Result<Workspace, OrchestratorError> {
+        let mut workspace = Workspace::new(repository.id.clone(), "local".into(), String::new());
+        workspace.workspace_kind = WorkspaceKind::Local;
+        workspace.status = WorkspaceStatus::Stopped;
+        workspace.branch = git::get_default_branch(repository_path);
+        workspace.worktree_path = Some(repository_path.to_string_lossy().into_owned());
+        match user_id {
+            Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
+            None => self.workspaces.insert(&workspace).await?,
+        }
+        Ok(workspace)
     }
 
     /// Stop a running task. Sends SIGINT first (gives the agent a
@@ -339,6 +986,12 @@ impl TaskOrchestrator {
     /// No status broadcast: the caller is about to archive or delete the
     /// row and will publish that transition itself.
     pub async fn quiesce_task(&self, task_id: &str) {
+        // Archive/delete are the end of this task id's life as far as the
+        // terminal is concerned; don't keep vouching for it.
+        self.verified_owners.lock().remove(task_id);
+        if let Some(signals) = &self.signals {
+            signals.forget_task(task_id);
+        }
         let Some(handle) = self.runtime.get(task_id) else {
             return;
         };
@@ -387,6 +1040,11 @@ impl TaskOrchestrator {
                 workspace.status.as_str().into(),
             ));
         }
+        // A draft / queued task has no worktree: resuming it here would
+        // run the agent in the repository's own checkout.
+        if workspace.is_unlaunched() {
+            return Err(OrchestratorError::NotStarted);
+        }
 
         let cwd = self.cwd_for_task(&workspace).await?;
         let initial_command = if workspace.command.trim().is_empty() {
@@ -403,6 +1061,10 @@ impl TaskOrchestrator {
             }
         });
 
+        // It ran before → continue that conversation rather than start a
+        // new one with the original prompt typed again.
+        let resuming = workspace.started_at.is_some();
+
         let now = Utc::now();
         let updated = self
             .workspaces
@@ -418,14 +1080,10 @@ impl TaskOrchestrator {
             )
             .await?;
 
-        let handle = self.runtime.spawn(
-            task_id.to_string(),
-            initial_command,
-            initial_prompt,
-            cwd,
-            rows,
-            cols,
-        )?;
+        let launch = self
+            .agent_launch(&updated, initial_command, initial_prompt, &cwd, resuming)
+            .await;
+        let handle = self.spawn_agent_pty(task_id, cwd, launch, rows, cols)?;
 
         self.broadcast_status(TaskStatusEvent {
             task_id: task_id.to_string(),
@@ -486,6 +1144,60 @@ impl TaskOrchestrator {
             .get(task_id)
             .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
         handle.write(bytes)?;
+        if let Some(signals) = &self.signals {
+            signals.note_user_input(task_id, bytes);
+        }
+        Ok(())
+    }
+
+    /// Deliver `text` to the task's agent as one message (bracketed-paste
+    /// aware), pressing Enter if `submit` — the composer's send path.
+    pub async fn send_message(
+        &self,
+        task_id: &str,
+        text: &str,
+        submit: bool,
+    ) -> Result<(), OrchestratorError> {
+        let handle = self
+            .runtime
+            .get(task_id)
+            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        handle.send_message(text, submit).await?;
+        if let Some(signals) = &self.signals {
+            let sent: &[u8] = if text.is_empty() { b"\r" } else { text.as_bytes() };
+            signals.note_user_input(task_id, sent);
+        }
+        Ok(())
+    }
+
+    /// Answer the agent's approval dialog from the app. The attention id is
+    /// checked (and consumed) first: a stale or unanswerable card writes
+    /// nothing to the PTY. The PTY is looked up before claiming so a dead
+    /// task doesn't silently eat the user's answer.
+    ///
+    /// A multi-key answer (the trust dialog's Down-then-Enter) goes out one
+    /// keystroke at a time, `KEYSTROKE_GAP` apart — see `split_keystrokes`.
+    pub async fn respond_to_attention(
+        &self,
+        task_id: &str,
+        attention_id: &str,
+        response: AttentionResponse,
+    ) -> Result<(), OrchestratorError> {
+        let handle = self
+            .runtime
+            .get(task_id)
+            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        let signals = self
+            .signals
+            .as_ref()
+            .ok_or(crate::agent_signals::AgentSignalError::StaleAttention)?;
+        let keys = signals.claim_attention(task_id, attention_id, response)?;
+        for (i, key) in crate::agent_signals::split_keystrokes(&keys).into_iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(KEYSTROKE_GAP).await;
+            }
+            handle.write(key.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -529,6 +1241,12 @@ impl TaskOrchestrator {
         workspace: &Workspace,
         worktree_path: &Path,
     ) -> Result<PathBuf, OrchestratorError> {
+        // A merged/closed task's worktree is gone on purpose (discarded, or
+        // cleaned up after merge): recreating it would resurrect a deleted
+        // branch from its base as an empty task.
+        if workspace.outcome.is_some() {
+            return Err(OrchestratorError::WorktreeUnavailable);
+        }
         let branch = workspace
             .branch
             .as_deref()
@@ -542,7 +1260,10 @@ impl TaskOrchestrator {
         if !repo_path.join(".git").exists() {
             return Err(OrchestratorError::WorktreeUnavailable);
         }
-        let base_ref = repository.default_branch.clone();
+        let base_ref = workspace
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| repository.default_branch.clone());
         let worktree_path = worktree_path.to_path_buf();
 
         // Serialize the worktree-add against every other shared-`.git`
@@ -566,15 +1287,35 @@ impl TaskOrchestrator {
     /// user typing `exit`, or an explicit kill.
     fn spawn_exit_watcher(&self, task_id: String, repository_id: String, handle: Arc<PtyHandle>) {
         let mut rx = handle.subscribe();
+        // Weak: identity only — the watcher must not extend the PTY's life.
+        let watched = Arc::downgrade(&handle);
+        drop(handle);
         let workspaces = self.workspaces.clone();
         let runtime = self.runtime.clone();
         let status_tx = self.status_tx.clone();
+        let signals = self.signals.clone();
 
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok(PtyEvent::Output { .. }) => continue,
                     Ok(PtyEvent::Exit { exit_code, .. }) => {
+                        // Only the PTY currently registered for this task may
+                        // settle its row. An in-place start replaces the
+                        // local workspace's shell under the same id; the
+                        // replaced shell's exit must neither flip the agent's
+                        // fresh `running` row to `failed` nor unregister the
+                        // agent's PTY. (A quiesced task is already
+                        // unregistered and its row already `stopped`.)
+                        let still_ours = runtime
+                            .get(&task_id)
+                            .is_some_and(|current| std::ptr::eq(Arc::as_ptr(&current), watched.as_ptr()));
+                        if !still_ours {
+                            break;
+                        }
+                        if let Some(signals) = &signals {
+                            signals.mark_exited(&task_id);
+                        }
                         let current = workspaces.get(&task_id).await.ok();
                         if !current
                             .as_ref()
@@ -617,16 +1358,6 @@ impl TaskOrchestrator {
     }
 }
 
-/// Build the variable map and run the template through. Centralised
-/// here so the seeded-presets case (no `{{prompt}}` in the template)
-/// returns the command verbatim without an empty-prompt placeholder
-/// appearing in the output.
-fn interpolate_for_task(template: &str, prompt: Option<&str>) -> String {
-    let prompt_value = prompt.unwrap_or("");
-    let mut vars = HashMap::new();
-    vars.insert("prompt", prompt_value);
-    interpolate_command(template, &vars)
-}
 
 #[cfg(test)]
 mod tests {
@@ -743,6 +1474,9 @@ mod tests {
             base_branch: None,
             rows: None,
             cols: None,
+            permission_mode: None,
+            notify_on_attention: true,
+            run_in: RunIn::Worktree,
         }
     }
 
@@ -792,6 +1526,9 @@ mod tests {
                 base_branch: None,
                 rows: None,
                 cols: None,
+                permission_mode: None,
+                notify_on_attention: true,
+                run_in: RunIn::Worktree,
             })
             .await
             .expect("start_task should succeed");
@@ -850,6 +1587,61 @@ mod tests {
     // defends against), then a third back-to-back, and assert every call
     // resolves to the same task_id with exactly one worktree + one
     // `phasr/*` branch created.
+    /// M11: settings + repository rules drive the worktree a task gets —
+    /// branch template, worktree base, default base branch, copied
+    /// untracked files (never overwriting) and the after-create hook, whose
+    /// output lands in the task log before the agent spawns.
+    #[tokio::test]
+    async fn start_task_applies_repository_rules_before_spawning() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "rules-repo").await;
+        let repo_path = PathBuf::from(repo.local_path.clone().unwrap());
+        // A `develop` base with a marker file, and an ignored `.env` in the
+        // checkout to copy; README.md is tracked (must not be overwritten).
+        Command::new("git").args(["checkout", "-qb", "develop"]).current_dir(&repo_path).status().unwrap();
+        std::fs::write(repo_path.join("DEVELOP"), "d").unwrap();
+        std::fs::write(repo_path.join(".gitignore"), ".env\n").unwrap();
+        Command::new("git").args(["add", "-A"]).current_dir(&repo_path).status().unwrap();
+        Command::new("git").args(["commit", "-qm", "develop"]).current_dir(&repo_path).status().unwrap();
+        Command::new("git").args(["checkout", "-q", "main"]).current_dir(&repo_path).status().unwrap();
+        std::fs::write(repo_path.join(".env"), "TOKEN=1\n").unwrap();
+        std::fs::write(repo_path.join("README.md"), "edited in checkout").unwrap();
+
+        let configs = crate::store::RepositoryConfigRepo::new(pool.clone());
+        let mut cfg = configs.get(&repo.id).await.unwrap();
+        let base = tmp.path().join("custom-wt");
+        cfg.worktree_base_path = Some(base.to_string_lossy().into_owned());
+        cfg.branch_prefix_template = Some("team/{{agent}}/{{slug}}".into());
+        cfg.default_base_branch = Some("develop".into());
+        cfg.copy_untracked_globs = vec![".env".into(), "README.md".into()];
+        cfg.pre_task_hook = Some("echo hook-ran > HOOK && echo from-the-hook".into());
+        configs.upsert(&cfg, None).await.unwrap();
+        let orchestrator = orchestrator.with_task_config(TaskConfig::new(
+            configs,
+            crate::store::SettingsRepo::new(pool.clone()),
+            None,
+        ));
+
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "Add login page"))
+            .await
+            .unwrap();
+        let ws = &started.workspace;
+        let worktree = PathBuf::from(ws.worktree_path.clone().unwrap());
+        assert_eq!(worktree, base.join(&ws.id), "under the repository's worktree base");
+        assert_eq!(ws.branch.as_deref(), Some("team/claude/add-login-page"));
+        assert_eq!(ws.base_branch.as_deref(), Some("develop"));
+        assert!(worktree.join("DEVELOP").exists(), "cut from develop");
+        assert_eq!(std::fs::read_to_string(worktree.join(".env")).unwrap(), "TOKEN=1\n");
+        assert_eq!(std::fs::read_to_string(worktree.join("README.md")).unwrap(), "hi", "never overwritten");
+        assert_eq!(std::fs::read_to_string(worktree.join("HOOK")).unwrap().trim(), "hook-ran");
+        let log = orchestrator.read_task_log(&ws.id).await.unwrap();
+        assert!(log.contains("from-the-hook"), "{log}");
+        assert!(log.contains("copied into the worktree: .env"), "{log}");
+
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
     #[tokio::test]
     async fn duplicate_start_task_is_idempotent() {
         let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
@@ -877,6 +1669,9 @@ mod tests {
             base_branch: None,
             rows: None,
             cols: None,
+            permission_mode: None,
+            notify_on_attention: true,
+            run_in: RunIn::Worktree,
         };
 
         // Fire both concurrently. The per-repo lock serializes them: one
@@ -919,6 +1714,47 @@ mod tests {
         // worktree dir so the `sleep` doesn't linger — the worktree lives
         // under $HOME/.phasr, outside the test's TempDir.
         cleanup(&orchestrator, &[&first]).await;
+    }
+
+    // A same-named DRAFT must not hijack start_task (it would return the
+    // never-launched row instead of starting anything), and start_task
+    // records the base branch it cut the worktree from.
+    #[tokio::test]
+    async fn start_task_ignores_a_same_named_draft_and_records_its_base() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let draft = orchestrator
+            .create_row(
+                TaskRow {
+                    repository_id: repo.id.clone(),
+                    agent: Agent::Claude,
+                    command: "sleep 30".into(),
+                    name: "add-feature".into(),
+                    prompt: None,
+                    base_branch: None,
+                    permission_mode: None,
+                    notify_on_attention: true,
+                    queued: false,
+                    depends_on: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        assert_ne!(started.task_id, draft.id, "the draft was returned instead of a new task");
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert_eq!(started.workspace.base_branch.as_deref(), Some("main"));
+        // The draft has no worktree: opening its terminal must not run the
+        // agent in the repository's own checkout.
+        assert!(matches!(
+            orchestrator.open_terminal(&draft.id, 24, 80).await,
+            Err(OrchestratorError::NotStarted)
+        ));
+        cleanup(&orchestrator, &[&started]).await;
     }
 
     // --- Dedup correctness: distinct requests must stay distinct ---
@@ -1116,7 +1952,12 @@ mod tests {
         let workspaces = WorkspaceRepo::new(pool.clone());
         let repo_path = Path::new(repo.local_path.as_deref().unwrap());
 
-        let pending = Workspace::new(repo.id.clone(), "add-feature".into(), "cmd".into());
+        // The row a start in flight has written: pending, branch already
+        // cut (start_task inserts after the worktree). Without a branch it
+        // would be a draft, which must NOT dedup (see
+        // `start_task_ignores_a_same_named_draft_and_records_its_base`).
+        let mut pending = Workspace::new(repo.id.clone(), "add-feature".into(), "cmd".into());
+        pending.branch = Some("phasr/add-feature-inflight".into());
         assert_eq!(pending.status, WorkspaceStatus::Pending);
         workspaces.insert(&pending).await.unwrap();
 
@@ -1317,7 +2158,6 @@ mod tests {
             None,
         );
         repo.default_branch = "main".into();
-        repositories.insert(&repo).await.unwrap();
 
         // workspaces.user_id has a FK to users(id), so seed a user row.
         sqlx::query(
@@ -1327,6 +2167,10 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // Owned by the same account, as in production (create_repository
+        // stamps the owner; sign-in adopts legacy unowned rows) — a
+        // session-scoped start_task can only see its own repositories.
+        repositories.insert_for_user(&repo, "user-x").await.unwrap();
 
         let started = orchestrator
             .start_task(StartTaskRequest {
@@ -1339,6 +2183,9 @@ mod tests {
                 base_branch: None,
                 rows: None,
                 cols: None,
+                permission_mode: None,
+                notify_on_attention: true,
+                run_in: RunIn::Worktree,
             })
             .await
             .expect("start_task should succeed");
@@ -1376,6 +2223,9 @@ mod tests {
                 base_branch: None,
                 rows: None,
                 cols: None,
+                permission_mode: None,
+                notify_on_attention: true,
+                run_in: RunIn::Worktree,
             })
             .await
             .unwrap_err();
@@ -1424,6 +2274,9 @@ mod tests {
                 base_branch: None,
                 rows: None,
                 cols: None,
+                permission_mode: None,
+                notify_on_attention: true,
+                run_in: RunIn::Worktree,
             })
             .await
             .expect("start_task should succeed");
@@ -1492,6 +2345,29 @@ mod tests {
         );
     }
 
+    /// A discarded task (outcome closed, worktree removed) must not come
+    /// back from the dead when its terminal is reopened.
+    #[tokio::test]
+    async fn cwd_for_task_does_not_recreate_a_closed_tasks_worktree() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let mut repo = Repository::new("test".into(), Some(repo_dir.to_string_lossy().into_owned()), None);
+        repo.default_branch = "main".into();
+        repositories.insert(&repo).await.unwrap();
+        let worktree_path = tmp.path().join("discarded");
+        let mut workspace = Workspace::new(repo.id.clone(), "discarded".into(), "echo".into());
+        workspace.branch = Some("phasr/discarded".into());
+        workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
+        workspace.outcome = Some(crate::domain::TaskOutcome::Closed);
+        assert!(matches!(
+            orchestrator.cwd_for_task(&workspace).await,
+            Err(OrchestratorError::WorktreeUnavailable)
+        ));
+        assert!(!worktree_path.exists());
+    }
+
     // The calm path: a missing worktree with no branch to recreate from
     // returns WorktreeUnavailable, not a hard RepositoryPathMissing.
     #[tokio::test]
@@ -1515,6 +2391,627 @@ mod tests {
 
         let err = orchestrator.cwd_for_task(&workspace).await.unwrap_err();
         assert!(matches!(err, OrchestratorError::WorktreeUnavailable));
+    }
+
+    async fn seed_user(pool: &crate::store::Db, id: &str) {
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+             VALUES (?, ?, 'n', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(format!("{id}@example.com"))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// The gate in front of stop/send-input/interrupt/resize/open/read-log:
+    /// a second local account presenting the first account's task id gets
+    /// `not found` — and a cached approval for the owner never leaks to
+    /// another account.
+    #[tokio::test]
+    async fn assert_owner_rejects_another_users_task() {
+        let (orchestrator, repositories, pool, _tmp) = fresh_orchestrator().await;
+        seed_user(&pool, "user-a").await;
+        seed_user(&pool, "user-b").await;
+        let repo = Repository::new("r".into(), None, None);
+        repositories.insert_for_user(&repo, "user-a").await.unwrap();
+        let ws = Workspace::new(repo.id.clone(), "a-task".into(), "c".into());
+        WorkspaceRepo::new(pool.clone())
+            .insert_for_user(&ws, "user-a")
+            .await
+            .unwrap();
+
+        let denied = |r: Result<(), OrchestratorError>| {
+            matches!(
+                r,
+                Err(OrchestratorError::Store(crate::store::StoreError::NotFound))
+            )
+        };
+
+        assert!(denied(orchestrator.assert_owner(&ws.id, "user-b").await));
+        orchestrator.assert_owner(&ws.id, "user-a").await.unwrap();
+        // Now cached for user-a — user-b is still refused.
+        assert!(denied(orchestrator.assert_owner(&ws.id, "user-b").await));
+        orchestrator.assert_owner(&ws.id, "user-a").await.unwrap();
+        // Non-workspace ids (a bogus id, a run-command PTY key) are refused
+        // too: the orchestrator's PTY commands only ever address workspaces.
+        assert!(denied(orchestrator.assert_owner("missing", "user-a").await));
+        assert!(denied(orchestrator.assert_owner("run:abc", "user-a").await));
+    }
+
+    /// `start_task` with a session must not build a worktree in a
+    /// repository that belongs to another account.
+    #[tokio::test]
+    async fn start_task_refuses_another_users_repository() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        seed_user(&pool, "user-a").await;
+        seed_user(&pool, "user-b").await;
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        init_repo(&repo_dir);
+        let repo = Repository::new(
+            "a-repo".into(),
+            Some(repo_dir.to_string_lossy().into_owned()),
+            None,
+        );
+        repositories.insert_for_user(&repo, "user-a").await.unwrap();
+
+        let mut request = sleep_request(&repo.id, "intrusion");
+        request.user_id = Some("user-b".into());
+        let err = orchestrator.start_task(request).await.unwrap_err();
+        assert!(matches!(
+            err,
+            OrchestratorError::Store(crate::store::StoreError::NotFound)
+        ));
+        assert_eq!(count_worktrees(&repo_dir), 1, "no worktree may be created");
+    }
+
+    // --- Permission modes + in-place (M4) ---
+
+    #[tokio::test]
+    async fn start_task_stores_permission_mode_and_notify() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+
+        let mut request = sleep_request(&repo.id, "with-mode");
+        request.permission_mode = Some(PermissionMode::AskEdits);
+        request.notify_on_attention = false;
+        let started = orchestrator.start_task(request).await.unwrap();
+        assert_eq!(started.workspace.permission_mode, Some(PermissionMode::AskEdits));
+        assert!(!started.workspace.notify_on_attention);
+
+        // Persisted, not just echoed.
+        let row = orchestrator.workspaces.get(&started.task_id).await.unwrap();
+        assert_eq!(row.permission_mode, Some(PermissionMode::AskEdits));
+        assert!(!row.notify_on_attention);
+
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// The repository's local workspace, as `ensure_local_workspace`
+    /// creates it.
+    async fn local_workspace(pool: &crate::store::Db, repo: &Repository) -> Workspace {
+        let mut local = Workspace::new(repo.id.clone(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        local.status = WorkspaceStatus::Stopped;
+        local.worktree_path = repo.local_path.clone();
+        WorkspaceRepo::new(pool.clone()).insert(&local).await.unwrap();
+        local
+    }
+
+    fn in_place_request(repository_id: &str) -> StartTaskRequest {
+        let mut request = sleep_request(repository_id, "in place");
+        request.run_in = RunIn::InPlace;
+        request.permission_mode = Some(PermissionMode::AskShell);
+        request.prompt = Some("fix the bug".into());
+        request
+    }
+
+    #[tokio::test]
+    async fn in_place_runs_on_the_local_workspace_without_a_worktree() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap()).to_path_buf();
+        let local = local_workspace(&pool, &repo).await;
+
+        let started = orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        assert_eq!(started.task_id, local.id, "reuses the local row");
+        let row = &started.workspace;
+        assert_eq!(row.workspace_kind, WorkspaceKind::Local);
+        assert_eq!(row.status, WorkspaceStatus::Running);
+        assert_eq!(row.agent, Some(Agent::Claude));
+        assert_eq!(row.command, "sleep 30");
+        assert_eq!(row.prompt.as_deref(), Some("fix the bug"));
+        assert_eq!(row.permission_mode, Some(PermissionMode::AskShell));
+        assert_eq!(row.worktree_path, repo.local_path, "runs in the checkout");
+        assert!(orchestrator.runtime.get(&local.id).is_some(), "PTY is live");
+        assert_eq!(count_worktrees(&repo_path), 1, "no worktree was created");
+        assert_eq!(count_phasr_branches(&repo_path), 0);
+
+        // Local rows never sync.
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = ?")
+            .bind(&local.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
+
+        orchestrator.quiesce_task(&local.id).await;
+    }
+
+    #[tokio::test]
+    async fn second_in_place_task_is_rejected_while_one_runs() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let local = local_workspace(&pool, &repo).await;
+
+        orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        let mut second = in_place_request(&repo.id);
+        second.agent = Agent::Codex;
+        let err = orchestrator.start_task(second).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::InPlaceTaskRunning), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "an in-place task is already running in this repository"
+        );
+        // The running task is untouched.
+        let row = orchestrator.workspaces.get(&local.id).await.unwrap();
+        assert_eq!(row.agent, Some(Agent::Claude));
+        assert_eq!(row.status, WorkspaceStatus::Running);
+
+        // Worktree tasks in the same repository are unaffected.
+        let worktree = orchestrator
+            .start_task(sleep_request(&repo.id, "parallel"))
+            .await
+            .unwrap();
+        assert_eq!(worktree.workspace.workspace_kind, WorkspaceKind::Agent);
+
+        orchestrator.quiesce_task(&local.id).await;
+        cleanup(&orchestrator, &[&worktree]).await;
+    }
+
+    /// The local workspace's terminal open as a plain shell is taken over by
+    /// the agent — and the replaced shell's exit must not report the new
+    /// agent as failed or unregister its PTY.
+    #[tokio::test]
+    async fn in_place_replaces_an_idle_local_shell_without_a_false_failure() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let local = local_workspace(&pool, &repo).await;
+
+        // Open the local terminal: a plain shell, row → running, no agent.
+        let shell = orchestrator.open_terminal(&local.id, 24, 80).await.unwrap();
+        drop(shell);
+        let shell_handle = orchestrator.runtime.get(&local.id).unwrap();
+        let mut status_rx = orchestrator.subscribe_status();
+
+        let started = orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        let agent_handle = orchestrator.runtime.get(&local.id).unwrap();
+        assert!(!Arc::ptr_eq(&shell_handle, &agent_handle), "shell was replaced");
+        assert_eq!(started.workspace.agent, Some(Agent::Claude));
+
+        // Only the agent's `running` may be broadcast; give the old shell's
+        // exit watcher time to misbehave.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(200), status_rx.recv()).await
+            {
+                assert_eq!(event.status, WorkspaceStatus::Running, "got {event:?}");
+            }
+        }
+        let row = orchestrator.workspaces.get(&local.id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Running);
+        let still = orchestrator.runtime.get(&local.id).expect("agent PTY still registered");
+        assert!(Arc::ptr_eq(&still, &agent_handle));
+
+        orchestrator.quiesce_task(&local.id).await;
+    }
+
+    /// A local row a finished shell left `completed` can still be claimed —
+    /// the one-shot task state machine doesn't apply to the local slot.
+    #[tokio::test]
+    async fn in_place_claims_a_completed_local_row_and_creates_a_missing_one() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let local = local_workspace(&pool, &repo).await;
+        sqlx::query("UPDATE workspaces SET status = 'completed', exit_code = 0 WHERE id = ?")
+            .bind(&local.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let started = orchestrator.start_task(in_place_request(&repo.id)).await.unwrap();
+        assert_eq!(started.task_id, local.id);
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert_eq!(started.workspace.exit_code, None);
+        orchestrator.quiesce_task(&local.id).await;
+
+        // A repository with no local row yet gets one.
+        let other = repo_with_git(&repositories, &tmp, "other").await;
+        let started = orchestrator.start_task(in_place_request(&other.id)).await.unwrap();
+        assert_eq!(started.workspace.workspace_kind, WorkspaceKind::Local);
+        assert_eq!(started.workspace.name, "local");
+        assert_eq!(started.workspace.worktree_path, other.local_path);
+        orchestrator.quiesce_task(&started.task_id).await;
+    }
+
+    #[tokio::test]
+    async fn send_message_reaches_the_task_and_requires_a_live_pty() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let err = orchestrator.send_message("missing", "hi", true).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::TaskNotRunning(_)));
+
+        let mut request = sleep_request(&repo.id, "echo-back");
+        // Announces it's reading (`rea%s` so the shell's echo of the typed
+        // line can't match), reads one line and echoes it with a marker —
+        // proving the text was delivered AND submitted.
+        request.command = r#"printf 'rea%s\n' dy; IFS= read -r line; echo "got[$line]""#.into();
+        let started = orchestrator.start_task(request).await.unwrap();
+        let handle = orchestrator.runtime.get(&started.task_id).unwrap();
+        let (replay, mut rx) = handle.subscribe_with_replay();
+        let mut output = String::new();
+        for event in replay {
+            if let PtyEvent::Output { chunk, .. } = event {
+                output.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        while !output.contains("ready") {
+            assert!(tokio::time::Instant::now() < deadline, "never ready; output: {output:?}");
+            if let Ok(Ok(PtyEvent::Output { chunk, .. })) =
+                tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+            {
+                output.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+        orchestrator
+            .send_message(&started.task_id, "hello agent", true)
+            .await
+            .unwrap();
+
+        while !output.contains("got[hello agent]") {
+            assert!(tokio::time::Instant::now() < deadline, "no echo; output: {output:?}");
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(PtyEvent::Output { chunk, .. })) => {
+                    output.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                _ => continue,
+            }
+        }
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// A stand-in `claude` that behaves like the real one where phasr cares:
+    /// reads `--settings`, runs the hook command from it through a shell
+    /// with JSON on stdin (exactly how Claude runs command hooks), takes its
+    /// prompt after a TUI takeover, and blocks on a single keystroke for its
+    /// "permission dialog". On `--resume` it only announces the session.
+    const FAKE_CLAUDE: &str = r#"#!/bin/sh
+settings=""; resume=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --settings) settings="$2"; shift 2 ;;
+    --resume) resume="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cmd=$(sed -n 's/.*"command": *"\(.*\)",*$/\1/p' "$settings" | head -n 1)
+emit() { printf '%s' "$1" | eval "$cmd"; }
+sid=11111111-2222-4333-8444-555555555555
+printf '\033[?1049h'
+echo "fake-claude resume=[$resume]"
+emit "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$sid\",\"transcript_path\":\"/t.jsonl\",\"source\":\"startup\"}"
+if [ -n "$resume" ]; then sleep 30; exit 0; fi
+read -r prompt
+echo "got-prompt:[$prompt]"
+emit "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$sid\",\"prompt\":\"p\"}"
+emit "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$sid\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pnpm test\"},\"tool_use_id\":\"t1\"}"
+emit "{\"hook_event_name\":\"Notification\",\"session_id\":\"$sid\",\"notification_type\":\"permission_prompt\",\"message\":\"Claude needs your permission to use Bash\"}"
+stty -icanon -echo min 1
+key=$(dd bs=1 count=1 2>/dev/null)
+stty icanon echo
+echo "got-answer:[$key]"
+emit "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"$sid\",\"tool_name\":\"Bash\"}"
+emit "{\"hook_event_name\":\"Stop\",\"session_id\":\"$sid\",\"stop_hook_active\":false,\"last_assistant_message\":\"Tests pass.\"}"
+sleep 30
+"#;
+
+    async fn orchestrator_with_signals() -> (
+        TaskOrchestrator,
+        AgentSignals,
+        RepositoryRepo,
+        WorkspaceRepo,
+        tempfile::TempDir,
+    ) {
+        use crate::agent_signals::transcripts::TranscriptRoots;
+        use crate::agent_signals::SignalsConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = init_pool(&dir.path().join("test.sqlite")).await.unwrap();
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let repositories = RepositoryRepo::new(pool.clone());
+        let signals = AgentSignals::new(
+            SignalsConfig {
+                // A space, like the real "Application Support".
+                app_data_dir: dir.path().join("App Support"),
+                roots: TranscriptRoots {
+                    claude_projects: dir.path().join("claude/projects"),
+                    codex_sessions: dir.path().join("codex/sessions"),
+                },
+                codex_config: dir.path().join("codex/config.toml"),
+            },
+            workspaces.clone(),
+            crate::store::TaskUsageRepo::new(pool),
+        );
+        signals.start();
+        let orchestrator = TaskOrchestrator::new(
+            workspaces.clone(),
+            repositories.clone(),
+            Arc::new(TaskRuntime::new(dir.path().join("logs"))),
+            Arc::new(RepoLockRegistry::new()),
+        )
+        .with_agent_signals(signals.clone());
+        (orchestrator, signals, repositories, workspaces, dir)
+    }
+
+    fn collect_output(rx: &mut broadcast::Receiver<PtyEvent>, into: &mut String) {
+        while let Ok(event) = rx.try_recv() {
+            if let PtyEvent::Output { chunk, .. } = event {
+                into.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+    }
+
+    async fn wait_for<F: FnMut() -> bool>(what: &str, mut done: F) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// End to end: a fake `claude` fires real hooks through the installed
+    /// script; the registry turns them into "needs you"; a stale answer
+    /// types nothing; a current one types the approval key; Stop stamps the
+    /// turn end; and re-opening the stopped task resumes the recorded
+    /// session without re-sending the prompt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fake_claude_hooks_drive_needs_you_approval_and_resume() {
+        use crate::agent_signals::state::{AgentStateKind, AttentionKind};
+        let (orchestrator, signals, repositories, workspaces, tmp) =
+            orchestrator_with_signals().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let fake = tmp.path().join("bin").join("claude");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(&fake, FAKE_CLAUDE).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut request = sleep_request(&repo.id, "fake claude");
+        request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
+        request.prompt = Some("do the thing".into());
+        let started = orchestrator.start_task(request).await.unwrap();
+        let task_id = started.task_id.clone();
+        // The stored command stays clean: hook extras are spawn-time only.
+        assert!(!started.workspace.command.contains("--settings"));
+
+        let handle = orchestrator.runtime.get(&task_id).unwrap();
+        let (replay, mut rx) = handle.subscribe_with_replay();
+        let mut out = String::new();
+        for event in replay {
+            if let PtyEvent::Output { chunk, .. } = event {
+                out.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+
+        wait_for("needs-you", || {
+            signals
+                .state(&task_id)
+                .is_some_and(|s| s.state == AgentStateKind::NeedsYou)
+        })
+        .await;
+        collect_output(&mut rx, &mut out);
+        assert!(out.contains("got-prompt:[do the thing]"), "{out}");
+        let state = signals.state(&task_id).unwrap();
+        let attention = state.attention.unwrap();
+        assert_eq!(attention.kind, AttentionKind::Shell);
+        assert_eq!(attention.detail.as_deref(), Some("pnpm test"));
+        assert!(attention.can_respond);
+        assert_eq!(state.last_activity.as_deref(), Some("Running pnpm test"));
+
+        // Stale id → error, and NOTHING reaches the PTY.
+        let err = orchestrator
+            .respond_to_attention(&task_id, "not-the-current-id", AttentionResponse::AllowOnce)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "stale attention");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        collect_output(&mut rx, &mut out);
+        assert!(!out.contains("got-answer"), "a stale respond typed something: {out}");
+
+        orchestrator
+            .respond_to_attention(&task_id, &attention.id, AttentionResponse::AllowOnce)
+            .await
+            .unwrap();
+        wait_for("answer", || {
+            collect_output(&mut rx, &mut out);
+            out.contains("got-answer:[1]")
+        })
+        .await;
+        wait_for("idle after Stop", || {
+            signals
+                .state(&task_id)
+                .is_some_and(|s| s.state == AgentStateKind::Idle && s.last_turn_ended_at.is_some())
+        })
+        .await;
+        assert_eq!(
+            workspaces.get_agent_session_id(&task_id).await.unwrap().as_deref(),
+            Some("11111111-2222-4333-8444-555555555555")
+        );
+        assert!(workspaces.get(&task_id).await.unwrap().last_turn_ended_at.is_some());
+
+        // Stop, wait for the PTY to go, then re-open: resume, no prompt.
+        orchestrator.stop_task(&task_id).await.unwrap();
+        wait_for("pty exit", || orchestrator.runtime.get(&task_id).is_none()).await;
+        let sub = orchestrator.open_terminal(&task_id, 24, 80).await.unwrap();
+        let mut rx = sub.rx;
+        let mut resumed = String::new();
+        wait_for("resume", || {
+            collect_output(&mut rx, &mut resumed);
+            resumed.contains("fake-claude resume=[11111111-2222-4333-8444-555555555555]")
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        collect_output(&mut rx, &mut resumed);
+        assert!(!resumed.contains("do the thing"), "prompt re-sent on resume: {resumed}");
+        assert!(resumed.contains("--resume 11111111-2222-4333-8444-555555555555"), "{resumed}");
+
+        orchestrator.quiesce_task(&task_id).await;
+        assert!(signals.state(&task_id).is_none());
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// A stand-in `claude` that opens on the REAL 2.1.319 folder-trust
+    /// dialog (the captured fixture, "No, exit" focused), then reads raw
+    /// keys until Enter (or a lone key followed by a 1s pause). Down+Enter
+    /// = trusted: it clears the screen, shows a composer and reads one
+    /// prompt line. Anything else = "No, exit": it quits. `got-keys` shows
+    /// EXACTLY which bytes reached the dialog, so a prompt typed into it
+    /// would be visible there.
+    fn fake_trust_claude(tmp: &tempfile::TempDir) -> PathBuf {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/agent_signals/fixtures/claude-2.1.319-trust.ansi"
+        );
+        let script = format!(
+            r#"#!/bin/sh
+cat '{fixture}'
+stty -icanon -echo -icrnl min 0 time 10
+keys=""
+while :; do
+  k=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+  if [ -z "$k" ]; then [ -n "$keys" ] && break; continue; fi
+  keys="$keys$k"
+  [ "$k" = "0d" ] && break
+done
+stty icanon echo icrnl
+echo "got-keys:[$keys]"
+if [ "$keys" = "1b5b420d" ]; then
+  printf '\033[2J\033[H\033[?25l> '
+  IFS= read -r prompt
+  echo "got-prompt:[$prompt]"
+  sleep 30
+fi
+exit 1
+"#
+        );
+        let fake = tmp.path().join("bin").join("claude");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(&fake, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    /// Start the fake trust-dialog claude with a prompt and wait for its
+    /// "Trust this folder?" card.
+    async fn start_at_trust_dialog(
+        orchestrator: &TaskOrchestrator,
+        signals: &AgentSignals,
+        repositories: &RepositoryRepo,
+        tmp: &tempfile::TempDir,
+    ) -> (StartedTask, crate::agent_signals::state::Attention, broadcast::Receiver<PtyEvent>, String) {
+        use crate::agent_signals::state::{AgentStateKind, AttentionKind};
+        let repo = repo_with_git(repositories, tmp, "repo").await;
+        let fake = fake_trust_claude(tmp);
+        let mut request = sleep_request(&repo.id, "trust me");
+        request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
+        request.prompt = Some("do the thing".into());
+        let started = orchestrator.start_task(request).await.unwrap();
+        let task_id = started.task_id.clone();
+        let handle = orchestrator.runtime.get(&task_id).unwrap();
+        let (replay, rx) = handle.subscribe_with_replay();
+        let mut out = String::new();
+        for event in replay {
+            if let PtyEvent::Output { chunk, .. } = event {
+                out.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+        wait_for("trust card", || {
+            signals.state(&task_id).is_some_and(|s| {
+                s.state == AgentStateKind::NeedsYou
+                    && s.attention.as_ref().is_some_and(|a| a.kind == AttentionKind::Trust)
+            })
+        })
+        .await;
+        let attention = signals.state(&task_id).unwrap().attention.unwrap();
+        (started, attention, rx, out)
+    }
+
+    /// The trust dialog holds the initial prompt: a card (kind `trust`,
+    /// detail = the worktree) instead of keystrokes; "allow" sends
+    /// Down+Enter, and only then is the prompt typed and submitted — once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trust_dialog_holds_the_prompt_until_allowed_then_types_it_once() {
+        let (orchestrator, signals, repositories, _workspaces, tmp) = orchestrator_with_signals().await;
+        let (started, attention, mut rx, mut out) =
+            start_at_trust_dialog(&orchestrator, &signals, &repositories, &tmp).await;
+        assert_eq!(attention.title, "Trust this folder?");
+        assert_eq!(attention.detail, started.workspace.worktree_path);
+        assert!(attention.can_respond);
+
+        // Held: well past every typing deadline, nothing reached the dialog.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        collect_output(&mut rx, &mut out);
+        assert!(!out.contains("got-keys"), "something was typed into the trust dialog: {out}");
+
+        orchestrator
+            .respond_to_attention(&started.task_id, &attention.id, AttentionResponse::AllowTask)
+            .await
+            .unwrap();
+        wait_for("prompt submitted", || {
+            collect_output(&mut rx, &mut out);
+            out.contains("got-prompt:")
+        })
+        .await;
+        assert!(out.contains("got-keys:[1b5b420d]"), "trust answered with the wrong keys: {out}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        collect_output(&mut rx, &mut out);
+        assert_eq!(out.matches("got-prompt:").count(), 1, "{out}");
+        assert!(out.contains("got-prompt:[do the thing]"), "{out}");
+
+        orchestrator.quiesce_task(&started.task_id).await;
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// "Deny" answers the dialog with Esc ("No, exit"); the prompt is
+    /// dropped — never typed into the shell the agent quit to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trust_dialog_denied_exits_without_typing_the_prompt() {
+        let (orchestrator, signals, repositories, _workspaces, tmp) = orchestrator_with_signals().await;
+        let (started, attention, mut rx, mut out) =
+            start_at_trust_dialog(&orchestrator, &signals, &repositories, &tmp).await;
+        orchestrator
+            .respond_to_attention(&started.task_id, &attention.id, AttentionResponse::Deny)
+            .await
+            .unwrap();
+        wait_for("dialog answered", || {
+            collect_output(&mut rx, &mut out);
+            out.contains("got-keys:")
+        })
+        .await;
+        assert!(out.contains("got-keys:[1b]"), "{out}");
+        tokio::time::sleep(Duration::from_millis(4000)).await;
+        collect_output(&mut rx, &mut out);
+        assert!(!out.contains("got-prompt"), "{out}");
+        assert!(!out.contains("do the thing"), "prompt typed after a deny: {out}");
+
+        orchestrator.quiesce_task(&started.task_id).await;
+        cleanup(&orchestrator, &[&started]).await;
     }
 
     #[test]

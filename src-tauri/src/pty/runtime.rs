@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::handle::{PtyError, PtyHandle, PtySpawnOptions};
+use super::handle::{PtyError, PtyHandle, SpawnSpec};
 
 /// Registry of currently-running PTYs, keyed by task id.
 pub struct TaskRuntime {
@@ -21,32 +21,17 @@ impl TaskRuntime {
         }
     }
 
-    pub fn spawn(
-        &self,
-        task_id: String,
-        initial_command: Option<String>,
-        initial_prompt: Option<String>,
-        cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-    ) -> Result<Arc<PtyHandle>, PtyError> {
+    pub fn spawn(&self, spec: SpawnSpec) -> Result<Arc<PtyHandle>, PtyError> {
         {
             let running = self.running.lock();
-            if running.contains_key(&task_id) {
+            if running.contains_key(&spec.task_id) {
                 return Err(PtyError::AlreadyRunning);
             }
         }
 
+        let task_id = spec.task_id.clone();
         let log_path = self.log_dir.join(format!("{task_id}.log"));
-        let handle = PtyHandle::spawn(PtySpawnOptions {
-            task_id: task_id.clone(),
-            initial_command,
-            initial_prompt,
-            cwd,
-            log_path,
-            rows,
-            cols,
-        })?;
+        let handle = PtyHandle::spawn(spec, log_path)?;
 
         self.running.lock().insert(task_id, handle.clone());
         Ok(handle)
@@ -76,6 +61,7 @@ impl TaskRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty::handle::LaunchMode;
     use std::time::Duration;
 
     fn fresh_runtime() -> (TaskRuntime, tempfile::TempDir) {
@@ -93,12 +79,8 @@ mod tests {
         // the test doesn't hang on an idle prompt.
         let handle = runtime
             .spawn(
-                "t1".into(),
-                Some("echo hello-phasr; exit".into()),
-                None,
-                cwd,
-                24,
-                80,
+                SpawnSpec::new("t1", cwd)
+                    .with_initial_command(Some("echo hello-phasr; exit".into())),
             )
             .unwrap();
 
@@ -146,12 +128,11 @@ mod tests {
         // Enter, not just echoed by the terminal while being typed.
         let handle = runtime
             .spawn(
-                "p1".into(),
-                Some(r#"printf '\033[?1049h'; read line; echo "got-$line"; exit"#.into()),
-                Some("hello-prompt".into()),
-                cwd,
-                24,
-                80,
+                SpawnSpec::new("p1", cwd)
+                    .with_initial_command(Some(
+                        r#"printf '\033[?1049h'; read line; echo "got-$line"; exit"#.into(),
+                    ))
+                    .with_initial_prompt(Some("hello-prompt".into())),
             )
             .unwrap();
 
@@ -191,10 +172,8 @@ mod tests {
     fn spawning_same_task_twice_errors() {
         let (runtime, _dir) = fresh_runtime();
         let cwd = std::env::temp_dir();
-        runtime
-            .spawn("dupe".into(), None, None, cwd.clone(), 24, 80)
-            .unwrap();
-        let result = runtime.spawn("dupe".into(), None, None, cwd, 24, 80);
+        runtime.spawn(SpawnSpec::new("dupe", cwd.clone())).unwrap();
+        let result = runtime.spawn(SpawnSpec::new("dupe", cwd));
         assert!(matches!(result, Err(PtyError::AlreadyRunning)));
     }
 
@@ -224,12 +203,10 @@ mod tests {
 
         let handle = runtime
             .spawn(
-                "e2e-claude".into(),
-                Some("claude --dangerously-skip-permissions".into()),
-                Some("hello from the phasr readiness e2e".into()),
-                workdir.path().to_path_buf(),
-                40,
-                120,
+                SpawnSpec::new("e2e-claude", workdir.path())
+                    .with_initial_command(Some("claude --dangerously-skip-permissions".into()))
+                    .with_initial_prompt(Some("hello from the phasr readiness e2e".into()))
+                    .with_size(40, 120),
             )
             .unwrap();
 
@@ -277,11 +254,205 @@ mod tests {
         );
     }
 
+    /// Drain `rx` until the PTY exits; returns its exit code. Falls back to
+    /// `exit_code()` so an exit that beat the subscription isn't missed.
+    fn wait_for_exit(
+        handle: &PtyHandle,
+        rx: &mut tokio::sync::broadcast::Receiver<super::super::PtyEvent>,
+        output: &mut String,
+    ) -> Option<i64> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pty never exited; output so far: {output:?}"
+            );
+            match rx.try_recv() {
+                Ok(super::super::PtyEvent::Output { chunk, .. }) => {
+                    output.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                Ok(super::super::PtyEvent::Exit { exit_code, .. }) => return exit_code,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    if let Some(code) = handle.exit_code() {
+                        return code;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(e) => panic!("unexpected recv error: {e:?}"),
+            }
+        }
+    }
+
+    /// Keep reading output (past Exit — see the first test for why) until
+    /// `needle` shows up.
+    fn drain_until(
+        rx: &mut tokio::sync::broadcast::Receiver<super::super::PtyEvent>,
+        output: &mut String,
+        needle: &str,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !output.contains(needle) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw {needle:?}; output so far: {output:?}"
+            );
+            match rx.try_recv() {
+                Ok(super::super::PtyEvent::Output { chunk, .. }) => {
+                    output.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                Ok(super::super::PtyEvent::Exit { .. }) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    panic!("channel closed before {needle:?}; output: {output:?}")
+                }
+            }
+        }
+    }
+
+    /// Exec mode's whole point: the PTY's exit code IS the command's, not
+    /// the surrounding interactive shell's. Runs through the account's
+    /// real login shell, like production.
+    #[test]
+    fn exec_mode_reports_the_commands_exit_code() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("exec-3", std::env::temp_dir())
+                    .with_launch(LaunchMode::Exec("exit 3".into())),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+        let mut output = String::new();
+        assert_eq!(wait_for_exit(&handle, &mut rx, &mut output), Some(3));
+
+        let ok = runtime
+            .spawn(
+                SpawnSpec::new("exec-0", std::env::temp_dir())
+                    .with_launch(LaunchMode::Exec("true".into())),
+            )
+            .unwrap();
+        let mut rx = ok.subscribe();
+        assert_eq!(wait_for_exit(&ok, &mut rx, &mut output), Some(0));
+    }
+
+    #[test]
+    fn exec_mode_rejects_a_typed_initial_command() {
+        let (runtime, _dir) = fresh_runtime();
+        let result = runtime.spawn(
+            SpawnSpec::new("exec-typed", std::env::temp_dir())
+                .with_launch(LaunchMode::Exec("true".into()))
+                .with_initial_command(Some("echo typed".into())),
+        );
+        assert!(matches!(result, Err(PtyError::Pty(_))));
+    }
+
+    /// `extra_env` reaches the child, and wins over phasr's own terminal
+    /// defaults (TERM is set by `terminal_env`). Also exercises
+    /// `shell_override` — `/bin/sh` keeps the output free of the
+    /// developer's rc-file noise.
+    #[test]
+    fn extra_env_reaches_the_child_and_overrides_terminal_defaults() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("env", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_env("PHASR_TEST", "from-spawn-spec")
+                    .with_env("TERM", "phasr-test-term")
+                    .with_launch(LaunchMode::Exec(
+                        r#"echo "env=$PHASR_TEST term=$TERM""#.into(),
+                    )),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+        let mut output = String::new();
+        drain_until(
+            &mut rx,
+            &mut output,
+            "env=from-spawn-spec term=phasr-test-term",
+        );
+    }
+
+    /// With the program in paste mode, `send_message` delivers the text
+    /// inside paste markers and then submits it. The stand-in program turns
+    /// on bracketed paste, reads one line, and prints it with ESC made
+    /// visible as `E`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_wraps_in_paste_markers_when_the_program_asks() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("paste-on", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_launch(LaunchMode::Exec(
+                        r#"printf '\033[?2004h'; IFS= read -r line; printf 'got[%s]\n' "$line" | tr '\033' 'E'"#
+                            .into(),
+                    )),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !handle.bracketed_paste_enabled() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "paste mode never detected"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        handle.send_message("hello-msg", true).await.unwrap();
+
+        let mut output = String::new();
+        let handle_for_drain = handle.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            let _keep = handle_for_drain;
+            drain_until(&mut rx, &mut output, "got[E[200~hello-msgE[201~]");
+            output
+        })
+        .await
+        .unwrap();
+        assert!(output.contains("got[E[200~hello-msgE[201~]"));
+    }
+
+    /// Paste mode off: no markers, and a multi-line message is folded onto
+    /// one line instead of submitting each line separately.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_collapses_newlines_without_paste_mode() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("paste-off", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_launch(LaunchMode::Exec(
+                        r#"IFS= read -r line; printf 'got[%s]\n' "$line""#.into(),
+                    )),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+        assert!(!handle.bracketed_paste_enabled());
+
+        handle.send_message("one\ntwo", true).await.unwrap();
+
+        let output = tokio::task::spawn_blocking(move || {
+            let mut output = String::new();
+            drain_until(&mut rx, &mut output, "got[one two]");
+            output
+        })
+        .await
+        .unwrap();
+        assert!(output.contains("got[one two]"));
+    }
+
     #[test]
     fn kill_terminates_process() {
         let (runtime, _dir) = fresh_runtime();
         let cwd = std::env::temp_dir();
-        let handle = runtime.spawn("k1".into(), None, None, cwd, 24, 80).unwrap();
+        let handle = runtime.spawn(SpawnSpec::new("k1", cwd)).unwrap();
 
         let mut rx = handle.subscribe();
         handle.kill().unwrap();

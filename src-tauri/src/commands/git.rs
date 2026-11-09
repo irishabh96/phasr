@@ -8,12 +8,16 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
+use crate::domain::{TaskOutcome, Workspace, WorkspaceKind};
 use crate::git::{
     self, BranchStatus, Commit, CommitFileChange, CommitOutput, ConflictSide, DiffScope,
     FileChange, GitError, InProgress, LogOptions, MergeOutcome, MergeStrategy,
 };
-use crate::orchestrator::RepoLockRegistry;
+use crate::orchestrator::{RepoLockRegistry, TaskBoard};
+use crate::review::cleanup::MergeCleanup;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
+
+use super::require_user;
 
 #[derive(Debug)]
 pub enum GitCmdError {
@@ -58,9 +62,24 @@ impl serde::Serialize for GitCmdError {
     }
 }
 
-async fn workspace_cwd(repo: &WorkspaceRepo, workspace_id: &str) -> Result<PathBuf, GitCmdError> {
-    let workspace = repo.get(workspace_id).await?;
-    workspace
+/// The workspace, if it belongs to `user_id`. Another account's workspace
+/// is indistinguishable from a missing one (`not found`), so a second local
+/// account can neither run git in it nor learn that it exists.
+async fn owned_workspace(
+    repo: &WorkspaceRepo,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<Workspace, GitCmdError> {
+    Ok(repo.get_for_user(workspace_id, user_id).await?)
+}
+
+async fn workspace_cwd(
+    repo: &WorkspaceRepo,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<PathBuf, GitCmdError> {
+    owned_workspace(repo, workspace_id, user_id)
+        .await?
         .worktree_path
         .map(PathBuf::from)
         .ok_or(GitCmdError::NoWorktree)
@@ -92,8 +111,8 @@ pub async fn git_status(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<FileChange>, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::status(&cwd)).await
 }
 
@@ -109,10 +128,32 @@ pub struct DiffInput {
 pub async fn git_diff(
     input: DiffInput,
     workspaces: State<'_, WorkspaceRepo>,
+    repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &input.workspace_id).await?;
+    let current = require_user(&session)?;
+    if matches!(input.scope, DiffScope::Base) {
+        // Everything the task changed since it forked from its base:
+        // committed + uncommitted + untracked (the review diff).
+        let workspace = owned_workspace(&workspaces, &input.workspace_id, &current.user_id).await?;
+        let cwd = workspace
+            .worktree_path
+            .as_ref()
+            .map(PathBuf::from)
+            .ok_or(GitCmdError::NoWorktree)?;
+        let base = match workspace.base_branch.clone() {
+            Some(base) => base,
+            None => {
+                let repository = repositories
+                    .get_for_user(&workspace.repository_id, &current.user_id)
+                    .await?;
+                git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch)
+            }
+        };
+        let path = input.path;
+        return blocking_git(move || git::diff_vs_base(&cwd, &base, path.as_deref())).await;
+    }
+    let cwd = workspace_cwd(&workspaces, &input.workspace_id, &current.user_id).await?;
     let scope = input.scope;
     let path = input.path;
     blocking_git(move || git::diff(&cwd, scope, path.as_deref())).await
@@ -125,8 +166,8 @@ pub async fn git_stage(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || {
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         git::stage(&cwd, &refs)
@@ -141,8 +182,8 @@ pub async fn git_unstage(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || {
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         git::unstage(&cwd, &refs)
@@ -157,8 +198,8 @@ pub async fn git_discard(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || {
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         git::discard(&cwd, &refs)
@@ -173,8 +214,8 @@ pub async fn git_commit(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<CommitOutput, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::commit(&cwd, &message)).await
 }
 
@@ -197,8 +238,8 @@ pub async fn git_push(
     repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<GitPushOutcome, GitCmdError> {
-    session.require()?;
-    let workspace = workspaces.get(&workspace_id).await?;
+    let current = require_user(&session)?;
+    let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
     let cwd = workspace
         .worktree_path
         .as_ref()
@@ -218,7 +259,10 @@ pub async fn git_push(
     // never fails the push, which already succeeded above. The two git
     // shell-outs (`get_remote_url`, `resolve_base_branch`) also run off
     // the async runtime.
-    let target = match repositories.get(&workspace.repository_id).await {
+    let target = match repositories
+        .get_for_user(&workspace.repository_id, &current.user_id)
+        .await
+    {
         Ok(repository) => {
             let remote_hint = repository.remote_url.clone();
             let local_path = repository.local_path.clone();
@@ -249,8 +293,8 @@ pub async fn git_branch_status(
     repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<BranchStatus, GitCmdError> {
-    session.require()?;
-    let workspace = workspaces.get(&workspace_id).await?;
+    let current = require_user(&session)?;
+    let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
     let cwd = workspace
         .worktree_path
         .as_ref()
@@ -261,7 +305,7 @@ pub async fn git_branch_status(
     // SyncButton and MergeToMain gates use the target-relative counts;
     // BranchChip continues to show upstream-relative counts.
     let target = repositories
-        .get(&workspace.repository_id)
+        .get_for_user(&workspace.repository_id, &current.user_id)
         .await
         .ok()
         .map(|r| r.default_branch);
@@ -274,8 +318,8 @@ pub async fn git_fetch(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     // `--prune` so stale tracking refs disappear; non-fatal if there's
     // no remote (offline use). `fetch` hits the network, so keep it off
     // the async runtime.
@@ -302,14 +346,16 @@ pub async fn git_sync_with_main(
     repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<MergeOutcome, GitCmdError> {
-    session.require()?;
-    let workspace = workspaces.get(&workspace_id).await?;
+    let current = require_user(&session)?;
+    let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
     let worktree = workspace
         .worktree_path
         .as_ref()
         .map(PathBuf::from)
         .ok_or(GitCmdError::NoWorktree)?;
-    let repository = repositories.get(&workspace.repository_id).await?;
+    let repository = repositories
+        .get_for_user(&workspace.repository_id, &current.user_id)
+        .await?;
     // Use the local repo's tracking ref so offline users can still
     // sync (no network round-trip needed when fetch fails). When a
     // remote exists, the caller usually fetches first via git_fetch.
@@ -329,14 +375,19 @@ pub async fn git_merge_to_main(
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
     repo_locks: State<'_, Arc<RepoLockRegistry>>,
+    board: State<'_, TaskBoard>,
+    cleanup: State<'_, MergeCleanup>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<crate::sync::CloudSyncState>>,
 ) -> Result<MergeOutcome, GitCmdError> {
-    session.require()?;
-    let workspace = workspaces.get(&workspace_id).await?;
+    let current = require_user(&session)?;
+    let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
     let branch = workspace.branch.clone().ok_or_else(|| {
         GitCmdError::Git(GitError::CommandFailed("workspace has no branch".into()))
     })?;
-    let repository = repositories.get(&workspace.repository_id).await?;
+    let repository = repositories
+        .get_for_user(&workspace.repository_id, &current.user_id)
+        .await?;
     let main_repo = repository
         .local_path
         .as_ref()
@@ -355,8 +406,33 @@ pub async fn git_merge_to_main(
     // create/start/delete can't corrupt `index.lock`/refs mid-merge. The
     // guard is held across the `spawn_blocking` await (tokio Mutex).
     let lock = repo_locks.for_repository(&workspace.repository_id);
-    let _guard = lock.lock().await;
-    blocking_git(move || git::merge_to(&main_repo, &default_branch, &branch, strategy)).await
+    let guard = lock.lock().await;
+    let target = default_branch.clone();
+    let outcome =
+        blocking_git(move || git::merge_to(&main_repo, &default_branch, &branch, strategy)).await?;
+    drop(guard);
+
+    // A clean merge finishes the task: the Board's Done lane ("merged into
+    // main"). A merge completed after resolving conflicts is recorded by
+    // `git_continue_merge`.
+    if matches!(outcome, MergeOutcome::Clean { .. })
+        && workspace.workspace_kind == WorkspaceKind::Agent
+    {
+        match workspaces
+            .set_outcome(&workspace.id, Some(TaskOutcome::Merged), Some(&target))
+            .await
+        {
+            Ok(merged) => {
+                if workspace.outcome != Some(TaskOutcome::Merged) {
+                    cleanup.on_merged(&merged, &current.user_id).await;
+                }
+                board.notify_changed(&workspace.repository_id);
+                sync_state.request_sync();
+            }
+            Err(err) => eprintln!("failed to record merge outcome for {}: {err}", workspace.id),
+        }
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -365,8 +441,8 @@ pub async fn git_merge_in_progress(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<InProgress, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::merge_in_progress(&cwd)).await
 }
 
@@ -376,8 +452,8 @@ pub async fn git_abort_merge(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::merge_abort(&cwd)).await
 }
 
@@ -385,11 +461,46 @@ pub async fn git_abort_merge(
 pub async fn git_continue_merge(
     workspace_id: String,
     workspaces: State<'_, WorkspaceRepo>,
+    review: State<'_, crate::review::ReviewService>,
+    cleanup: State<'_, MergeCleanup>,
+    board: State<'_, TaskBoard>,
     session: State<'_, Arc<SessionState>>,
+    sync_state: State<'_, Arc<crate::sync::CloudSyncState>>,
 ) -> Result<MergeOutcome, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
-    blocking_git(move || git::merge_continue(&cwd)).await
+    let current = require_user(&session)?;
+    let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
+    let cwd = workspace
+        .worktree_path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or(GitCmdError::NoWorktree)?;
+    // Read what's being merged (MERGE_HEAD) and into what BEFORE finishing:
+    // the commit consumes MERGE_HEAD. A merge-to-main that stopped on
+    // conflicts is finished here, in the main checkout — and must still
+    // land the task in Done (M7 left this gap).
+    let (outcome, merged, target) = blocking_git(move || {
+        let merged = git::merge_head_branches(&cwd)?;
+        let target = git::current_branch(&cwd)?;
+        Ok((git::merge_continue(&cwd)?, merged, target))
+    })
+    .await?;
+    if matches!(outcome, MergeOutcome::Clean { .. }) && !merged.is_empty() {
+        match review
+            .record_continued_merge(&workspace, &current.user_id, &merged, target.as_deref())
+            .await
+        {
+            Ok(done) if !done.is_empty() => {
+                for merged in &done {
+                    cleanup.on_merged(merged, &current.user_id).await;
+                }
+                board.notify_changed(&workspace.repository_id);
+                sync_state.request_sync();
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("failed to record merge outcome after continue: {err}"),
+        }
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -400,8 +511,8 @@ pub async fn git_resolve_conflict(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::merge_set_resolution(&cwd, &path, side)).await
 }
 
@@ -413,8 +524,8 @@ pub async fn git_log(
     repositories: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<Commit>, GitCmdError> {
-    session.require()?;
-    let workspace = workspaces.get(&workspace_id).await?;
+    let current = require_user(&session)?;
+    let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
     let cwd = workspace
         .worktree_path
         .as_ref()
@@ -426,7 +537,7 @@ pub async fn git_log(
     let mut opts = opts;
     if opts.branch_only && opts.default_branch.is_none() {
         opts.default_branch = repositories
-            .get(&workspace.repository_id)
+            .get_for_user(&workspace.repository_id, &current.user_id)
             .await
             .ok()
             .map(|r| r.default_branch);
@@ -441,8 +552,8 @@ pub async fn git_commit_files(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<CommitFileChange>, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::commit_files(&cwd, &sha)).await
 }
 
@@ -454,7 +565,62 @@ pub async fn git_commit_diff(
     workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, GitCmdError> {
-    session.require()?;
-    let cwd = workspace_cwd(&workspaces, &workspace_id).await?;
+    let current = require_user(&session)?;
+    let cwd = workspace_cwd(&workspaces, &workspace_id, &current.user_id).await?;
     blocking_git(move || git::diff_for_commit(&cwd, &sha, path.as_deref())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::Repository;
+    use crate::store::init_pool;
+
+    async fn seed_user(pool: &crate::store::Db, id: &str) {
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+             VALUES (?, ?, 'n', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(format!("{id}@example.com"))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Every `git_*` command resolves its cwd through `workspace_cwd`; a
+    /// second local account handing in the first account's workspace id
+    /// must get the same `not found` as a bogus id — never a worktree path.
+    #[tokio::test]
+    async fn git_commands_cannot_reach_another_users_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
+        seed_user(&pool, "user-a").await;
+        seed_user(&pool, "user-b").await;
+        let repositories = RepositoryRepo::new(pool.clone());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let repo = Repository::new("r".into(), None, None);
+        repositories.insert_for_user(&repo, "user-a").await.unwrap();
+        let mut ws = Workspace::new(repo.id.clone(), "a-task".into(), "c".into());
+        ws.worktree_path = Some("/tmp/phasr-owned-by-a".into());
+        workspaces.insert_for_user(&ws, "user-a").await.unwrap();
+
+        assert_eq!(
+            workspace_cwd(&workspaces, &ws.id, "user-a").await.unwrap(),
+            PathBuf::from("/tmp/phasr-owned-by-a")
+        );
+        let err = workspace_cwd(&workspaces, &ws.id, "user-b")
+            .await
+            .expect_err("user-b must not resolve user-a's worktree");
+        assert!(matches!(err, GitCmdError::Store(StoreError::NotFound)));
+        // The serialized error the frontend sees is the plain string.
+        assert_eq!(serde_json::to_string(&err).unwrap(), "\"not found\"");
+
+        assert!(matches!(
+            owned_workspace(&workspaces, &ws.id, "user-b").await,
+            Err(GitCmdError::Store(StoreError::NotFound))
+        ));
+    }
 }

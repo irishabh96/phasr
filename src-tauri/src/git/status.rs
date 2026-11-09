@@ -118,7 +118,7 @@ fn merge_numstat(numstat: &str, into: &mut HashMap<String, (Option<u32>, Option<
     }
 }
 
-fn parse_porcelain(input: &str) -> Vec<FileChange> {
+pub(super) fn parse_porcelain(input: &str) -> Vec<FileChange> {
     let mut out = Vec::new();
     let mut iter = input.split('\0').peekable();
     while let Some(entry) = iter.next() {

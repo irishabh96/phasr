@@ -11,7 +11,7 @@ use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 pub const WORKTREE_CHANGED_EVENT: &str = "worktree-changed";
@@ -95,6 +95,10 @@ impl WorktreeWatchRegistry {
             }
             if changed.is_empty() {
                 return;
+            }
+            // The task's board card shows its diff: drop the cached one.
+            if let Some(board) = app.try_state::<crate::orchestrator::TaskBoard>() {
+                board.invalidate_diff(&ws_id_for_cb);
             }
             let _ = app.emit(
                 WORKTREE_CHANGED_EVENT,

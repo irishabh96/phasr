@@ -1,10 +1,33 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
-use crate::domain::{Agent, Workspace, WorkspaceKind, WorkspaceStatus};
+use crate::domain::{
+    Agent, PermissionMode, TaskOutcome, Workspace, WorkspaceKind, WorkspaceStatus,
+};
 
 use super::error::StoreError;
 use super::pool::Db;
+
+/// Every column `row_to_workspace` reads. A macro rather than a `const` so
+/// `concat!` keeps each query a `&'static str`.
+macro_rules! workspace_columns {
+    () => {
+        "id, repository_id, workspace_kind, name, prompt, agent, command, status,
+         branch, worktree_path, exit_code,
+         created_at, started_at, finished_at, archived_at, updated_at,
+         permission_mode, notify_on_attention, last_turn_ended_at,
+         base_branch, queued_at, depends_on_workspace_id,
+         outcome, outcome_at, merged_into, pr_number, pr_url, pr_state"
+    };
+}
+
+/// SQL for "created but never launched" (drafts and queued tasks) — the
+/// same predicate as `Workspace::is_unlaunched`.
+macro_rules! unlaunched_sql {
+    () => {
+        "(workspace_kind = 'agent' AND status = 'pending' AND branch IS NULL)"
+    };
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct WorkspaceUpdate {
@@ -19,6 +42,23 @@ pub struct WorkspaceUpdate {
     pub started_at: Option<Option<DateTime<Utc>>>,
     pub finished_at: Option<Option<DateTime<Utc>>>,
     pub archived_at: Option<Option<DateTime<Utc>>>,
+    pub permission_mode: Option<Option<PermissionMode>>,
+    pub notify_on_attention: Option<bool>,
+    pub base_branch: Option<Option<String>>,
+    pub queued_at: Option<Option<DateTime<Utc>>>,
+    pub depends_on_workspace_id: Option<Option<String>>,
+}
+
+/// What an in-place task writes onto the repository's `local` workspace
+/// row when it takes it over. See `WorkspaceRepo::claim_local_for_task`.
+#[derive(Debug, Clone)]
+pub struct LocalTaskClaim {
+    pub agent: Agent,
+    pub command: String,
+    pub prompt: Option<String>,
+    pub permission_mode: PermissionMode,
+    pub notify_on_attention: bool,
+    pub started_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -58,8 +98,12 @@ impl WorkspaceRepo {
                 id, user_id, repository_id, workspace_kind, name, prompt, agent, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
+                permission_mode, notify_on_attention,
+                base_branch, queued_at, depends_on_workspace_id,
+                outcome, outcome_at, merged_into, pr_number, pr_url, pr_state,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
         )
         .bind(&workspace.id)
         .bind(user_id)
@@ -78,6 +122,17 @@ impl WorkspaceRepo {
         .bind(workspace.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.archived_at.map(|dt| dt.to_rfc3339()))
         .bind(workspace.updated_at.to_rfc3339())
+        .bind(workspace.permission_mode.map(PermissionMode::as_str))
+        .bind(workspace.notify_on_attention as i64)
+        .bind(&workspace.base_branch)
+        .bind(workspace.queued_at.map(|dt| dt.to_rfc3339()))
+        .bind(&workspace.depends_on_workspace_id)
+        .bind(workspace.outcome.map(TaskOutcome::as_str))
+        .bind(workspace.outcome_at.map(|dt| dt.to_rfc3339()))
+        .bind(&workspace.merged_into)
+        .bind(workspace.pr_number)
+        .bind(&workspace.pr_url)
+        .bind(&workspace.pr_state)
         .bind(dirty)
         .execute(&self.db)
         .await?;
@@ -88,14 +143,14 @@ impl WorkspaceRepo {
         &self,
         repository_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE repository_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
-        )
+        ))
         .bind(repository_id)
         .fetch_all(&self.db)
         .await?;
@@ -109,14 +164,14 @@ impl WorkspaceRepo {
         repository_id: &str,
         user_id: &str,
     ) -> Result<Vec<Workspace>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE repository_id = ? AND user_id = ? AND deleted_at IS NULL
              ORDER BY created_at DESC",
-        )
+        ))
         .bind(repository_id)
         .bind(user_id)
         .fetch_all(&self.db)
@@ -128,14 +183,14 @@ impl WorkspaceRepo {
         &self,
         status: WorkspaceStatus,
     ) -> Result<Vec<Workspace>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE status = ? AND deleted_at IS NULL
              ORDER BY updated_at DESC",
-        )
+        ))
         .bind(status.as_str())
         .fetch_all(&self.db)
         .await?;
@@ -143,13 +198,13 @@ impl WorkspaceRepo {
     }
 
     pub async fn get(&self, id: &str) -> Result<Workspace, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE id = ? AND deleted_at IS NULL",
-        )
+        ))
         .bind(id)
         .fetch_optional(&self.db)
         .await?;
@@ -163,13 +218,13 @@ impl WorkspaceRepo {
     /// Owner-scoped `get`: `NotFound` for a workspace owned by another
     /// account.
     pub async fn get_for_user(&self, id: &str, user_id: &str) -> Result<Workspace, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
-        )
+        ))
         .bind(id)
         .bind(user_id)
         .fetch_optional(&self.db)
@@ -181,18 +236,31 @@ impl WorkspaceRepo {
             .ok_or(StoreError::NotFound)
     }
 
+    /// Every on-disk path the user's live workspaces point at (task
+    /// worktrees and `local` checkouts). The allow-list for the absolute-
+    /// path file commands, so they can't read outside registered roots.
+    pub async fn worktree_paths_for_user(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT worktree_path FROM workspaces
+             WHERE user_id = ? AND deleted_at IS NULL AND worktree_path IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?)
+    }
+
     pub async fn get_local_by_repository(
         &self,
         repository_id: &str,
     ) -> Result<Option<Workspace>, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE repository_id = ? AND workspace_kind = 'local' AND deleted_at IS NULL
              LIMIT 1",
-        )
+        ))
         .bind(repository_id)
         .fetch_optional(&self.db)
         .await?;
@@ -208,22 +276,27 @@ impl WorkspaceRepo {
     /// `local` workspace (name `"local"`) must never be mistaken for a
     /// duplicate agent task. A task that has since stopped/completed/failed/
     /// archived or been deleted is NOT active, so a deliberate re-run after
-    /// the first ends still creates fresh state.
+    /// the first ends still creates fresh state. Drafts and queued tasks
+    /// (never launched) don't count either: a same-named draft must not
+    /// turn a "Start task" into a no-op that returns the draft.
     pub async fn find_active_by_name(
         &self,
         repository_id: &str,
         name: &str,
     ) -> Result<Option<Workspace>, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
+               AND NOT ",
+            unlaunched_sql!(),
+            "
              ORDER BY created_at DESC
              LIMIT 1",
-        )
+        ))
         .bind(repository_id)
         .bind(name)
         .fetch_optional(&self.db)
@@ -240,16 +313,19 @@ impl WorkspaceRepo {
         name: &str,
         user_id: &str,
     ) -> Result<Option<Workspace>, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, repository_id, workspace_kind, name, prompt, agent, command, status,
-                    branch, worktree_path, exit_code,
-                    created_at, started_at, finished_at, archived_at, updated_at
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
+               AND NOT ",
+            unlaunched_sql!(),
+            "
              ORDER BY created_at DESC
              LIMIT 1",
-        )
+        ))
         .bind(repository_id)
         .bind(name)
         .bind(user_id)
@@ -305,6 +381,21 @@ impl WorkspaceRepo {
         if let Some(archived_at) = patch.archived_at {
             current.archived_at = archived_at;
         }
+        if let Some(permission_mode) = patch.permission_mode {
+            current.permission_mode = permission_mode;
+        }
+        if let Some(notify_on_attention) = patch.notify_on_attention {
+            current.notify_on_attention = notify_on_attention;
+        }
+        if let Some(base_branch) = patch.base_branch {
+            current.base_branch = base_branch;
+        }
+        if let Some(queued_at) = patch.queued_at {
+            current.queued_at = queued_at;
+        }
+        if let Some(depends_on) = patch.depends_on_workspace_id {
+            current.depends_on_workspace_id = depends_on;
+        }
         current.updated_at = Utc::now();
 
         sqlx::query(
@@ -312,6 +403,8 @@ impl WorkspaceRepo {
                 name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 started_at = ?, finished_at = ?, archived_at = ?, updated_at = ?,
+                permission_mode = ?, notify_on_attention = ?,
+                base_branch = ?, queued_at = ?, depends_on_workspace_id = ?,
                 dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
              WHERE id = ?",
         )
@@ -327,11 +420,232 @@ impl WorkspaceRepo {
         .bind(current.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(current.archived_at.map(|dt| dt.to_rfc3339()))
         .bind(current.updated_at.to_rfc3339())
+        .bind(current.permission_mode.map(PermissionMode::as_str))
+        .bind(current.notify_on_attention as i64)
+        .bind(&current.base_branch)
+        .bind(current.queued_at.map(|dt| dt.to_rfc3339()))
+        .bind(&current.depends_on_workspace_id)
         .bind(id)
         .execute(&self.db)
         .await?;
 
         Ok(current)
+    }
+
+    /// Every agent task (never `local` rows), newest first — one repository
+    /// or all of them. Unscoped: the sessionless test/scheduler path. Commands
+    /// use `list_tasks_for_user`.
+    pub async fn list_tasks(
+        &self,
+        repository_id: Option<&str>,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        self.list_tasks_scoped(None, repository_id).await
+    }
+
+    /// Owner-scoped `list_tasks`.
+    pub async fn list_tasks_for_user(
+        &self,
+        user_id: &str,
+        repository_id: Option<&str>,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        self.list_tasks_scoped(Some(user_id), repository_id).await
+    }
+
+    async fn list_tasks_scoped(
+        &self,
+        user_id: Option<&str>,
+        repository_id: Option<&str>,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
+             FROM workspaces
+             WHERE workspace_kind = 'agent' AND deleted_at IS NULL
+               AND (? IS NULL OR user_id = ?)
+               AND (? IS NULL OR repository_id = ?)
+             ORDER BY created_at DESC",
+        ))
+        .bind(user_id)
+        .bind(user_id)
+        .bind(repository_id)
+        .bind(repository_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
+    /// Queued (never-launched) tasks, oldest in the queue first — the
+    /// scheduler's work list. `user_id: None` = every owner (tests).
+    pub async fn list_queued(&self, user_id: Option<&str>) -> Result<Vec<Workspace>, StoreError> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            workspace_columns!(),
+            "
+             FROM workspaces
+             WHERE ",
+            unlaunched_sql!(),
+            " AND queued_at IS NOT NULL AND deleted_at IS NULL
+               AND (? IS NULL OR user_id = ?)
+             ORDER BY queued_at ASC",
+        ))
+        .bind(user_id)
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
+    /// Record how a task ended (`None` reopens it). Synced: bumps
+    /// `updated_at` and marks the row dirty.
+    pub async fn set_outcome(
+        &self,
+        id: &str,
+        outcome: Option<TaskOutcome>,
+        merged_into: Option<&str>,
+    ) -> Result<Workspace, StoreError> {
+        let now = Utc::now();
+        let res = sqlx::query(
+            "UPDATE workspaces SET outcome = ?, outcome_at = ?, merged_into = ?, updated_at = ?,
+                dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(outcome.map(TaskOutcome::as_str))
+        .bind(outcome.map(|_| now.to_rfc3339()))
+        .bind(merged_into)
+        .bind(now.to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        self.get(id).await
+    }
+
+    /// Record the task's pull request (`pr_state`: `open` | `draft` |
+    /// `merged` | `closed`). `number` is `None` when only a URL is known.
+    /// Synced: bumps `updated_at` and marks the row dirty.
+    pub async fn set_pull_request(
+        &self,
+        id: &str,
+        number: Option<i64>,
+        url: Option<&str>,
+        state: Option<&str>,
+    ) -> Result<Workspace, StoreError> {
+        let res = sqlx::query(
+            "UPDATE workspaces SET pr_number = ?, pr_url = ?, pr_state = ?, updated_at = ?,
+                dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(number)
+        .bind(url)
+        .bind(state)
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        self.get(id).await
+    }
+
+    /// Point the repository's `local` workspace at an in-place agent run:
+    /// record the agent/command/prompt/mode and flip it to `running`.
+    ///
+    /// Deliberately bypasses `WorkspaceStatus::can_transition_to`. That
+    /// state machine models a one-shot agent task (`completed` is terminal),
+    /// but the local row is a long-lived slot for the repository's own
+    /// checkout whose terminal comes and goes — a shell that exited 0 left
+    /// it `completed`, and an in-place run must still be able to take it
+    /// over. Scoped to `workspace_kind = 'local'` so it can never be used to
+    /// resurrect a finished agent task. Stays `dirty = 0`: local rows are
+    /// never synced.
+    pub async fn claim_local_for_task(
+        &self,
+        id: &str,
+        claim: LocalTaskClaim,
+    ) -> Result<Workspace, StoreError> {
+        let res = sqlx::query(
+            "UPDATE workspaces SET
+                agent = ?, command = ?, prompt = ?,
+                permission_mode = ?, notify_on_attention = ?,
+                status = 'running', exit_code = NULL,
+                started_at = ?, finished_at = NULL, updated_at = ?,
+                dirty = 0
+             WHERE id = ? AND workspace_kind = 'local' AND deleted_at IS NULL",
+        )
+        .bind(claim.agent.as_str())
+        .bind(&claim.command)
+        .bind(&claim.prompt)
+        .bind(claim.permission_mode.as_str())
+        .bind(claim.notify_on_attention as i64)
+        .bind(claim.started_at.to_rfc3339())
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        self.get(id).await
+    }
+
+    /// Record the agent CLI's own session id so a later resume continues
+    /// that conversation. Local-only on purpose: it touches neither
+    /// `updated_at` nor `dirty`, so it never makes the row push — a session
+    /// exists only in this machine's agent state.
+    pub async fn set_agent_session_id(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            "UPDATE workspaces SET agent_session_id = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(session_id)
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
+    pub async fn get_agent_session_id(&self, id: &str) -> Result<Option<String>, StoreError> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT agent_session_id FROM workspaces WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+        row.map(|(session,)| session).ok_or(StoreError::NotFound)
+    }
+
+    /// Stamp the end of an agent turn. Unlike the session id this IS synced,
+    /// so it bumps `updated_at` (last-write-wins needs it to travel) and marks
+    /// agent rows dirty; `local` rows never sync.
+    pub async fn set_last_turn_ended_at(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            "UPDATE workspaces SET last_turn_ended_at = ?, updated_at = ?,
+                dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(at.to_rfc3339())
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
     }
 
     /// Soft-delete: tombstone the row (mirrors `RepositoryRepo::delete`)
@@ -382,6 +696,13 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
             })
         })
         .transpose()?;
+    // Lenient on purpose: an unknown mode string (written by a newer build
+    // or another device) reads as "unknown" rather than making the whole
+    // workspace list fail to load. The launch command is already baked
+    // into `command`, so nothing here depends on parsing it.
+    let permission_mode = row
+        .try_get::<Option<String>, _>("permission_mode")?
+        .and_then(|s| PermissionMode::from_str(&s));
 
     Ok(Workspace {
         id: row.try_get("id")?,
@@ -400,6 +721,25 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         finished_at: parse_optional_timestamp(row.try_get("finished_at")?, "finished_at")?,
         archived_at: parse_optional_timestamp(row.try_get("archived_at")?, "archived_at")?,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,
+        permission_mode,
+        notify_on_attention: row.try_get::<i64, _>("notify_on_attention")? != 0,
+        last_turn_ended_at: parse_optional_timestamp(
+            row.try_get("last_turn_ended_at")?,
+            "last_turn_ended_at",
+        )?,
+        base_branch: row.try_get("base_branch")?,
+        queued_at: parse_optional_timestamp(row.try_get("queued_at")?, "queued_at")?,
+        depends_on_workspace_id: row.try_get("depends_on_workspace_id")?,
+        // Lenient like `permission_mode`: an outcome a newer build wrote
+        // reads as "open" rather than failing the whole list.
+        outcome: row
+            .try_get::<Option<String>, _>("outcome")?
+            .and_then(|s| TaskOutcome::from_str(&s)),
+        outcome_at: parse_optional_timestamp(row.try_get("outcome_at")?, "outcome_at")?,
+        merged_into: row.try_get("merged_into")?,
+        pr_number: row.try_get("pr_number")?,
+        pr_url: row.try_get("pr_url")?,
+        pr_state: row.try_get("pr_state")?,
     })
 }
 
@@ -519,8 +859,11 @@ mod tests {
     async fn find_active_by_name_matches_only_active_agent_rows() {
         let (_repos, workspaces, repo) = fresh().await;
 
-        // A pending agent task is ACTIVE → found.
-        let alpha = Workspace::new(repo.id.clone(), "alpha".into(), "cmd".into());
+        // A pending agent task mid-launch is ACTIVE → found. (start_task
+        // cuts the branch before inserting; a pending row WITHOUT one is a
+        // draft — see `find_active_by_name_ignores_drafts_and_queued_tasks`.)
+        let mut alpha = Workspace::new(repo.id.clone(), "alpha".into(), "cmd".into());
+        alpha.branch = Some("phasr/alpha".into());
         workspaces.insert(&alpha).await.unwrap();
         assert_eq!(
             workspaces
@@ -609,6 +952,86 @@ mod tests {
         );
     }
 
+    // A draft or queued task (pending, never launched) is not "active": a
+    // same-named draft must not turn a start into a no-op returning it.
+    #[tokio::test]
+    async fn find_active_by_name_ignores_drafts_and_queued_tasks() {
+        let (_repos, workspaces, repo) = fresh().await;
+        let draft = Workspace::new(repo.id.clone(), "same".into(), "cmd".into());
+        workspaces.insert(&draft).await.unwrap();
+        let mut queued = Workspace::new(repo.id.clone(), "same".into(), "cmd".into());
+        queued.queued_at = Some(Utc::now());
+        workspaces.insert(&queued).await.unwrap();
+        assert!(workspaces.find_active_by_name(&repo.id, "same").await.unwrap().is_none());
+
+        // A launched (branch cut) pending row still counts.
+        let mut launching = Workspace::new(repo.id.clone(), "same".into(), "cmd".into());
+        launching.branch = Some("phasr/same".into());
+        workspaces.insert(&launching).await.unwrap();
+        assert_eq!(
+            workspaces
+                .find_active_by_name(&repo.id, "same")
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(launching.id)
+        );
+
+        // The queue's work list: queued only, oldest first.
+        let listed = workspaces.list_queued(None).await.unwrap();
+        assert_eq!(listed.iter().map(|w| &w.id).collect::<Vec<_>>(), vec![&queued.id]);
+    }
+
+    #[tokio::test]
+    async fn board_columns_round_trip_and_outcome_is_settable() {
+        let (_r, workspaces, repo) = fresh().await;
+        let mut ws = Workspace::new(repo.id.clone(), "t".into(), "c".into());
+        ws.base_branch = Some("develop".into());
+        ws.depends_on_workspace_id = Some("other".into());
+        ws.pr_number = Some(142);
+        ws.pr_url = Some("https://example.com/pr/142".into());
+        ws.pr_state = Some("open".into());
+        workspaces.insert(&ws).await.unwrap();
+        let read = workspaces.get(&ws.id).await.unwrap();
+        assert_eq!(read.base_branch.as_deref(), Some("develop"));
+        assert_eq!(read.depends_on_workspace_id.as_deref(), Some("other"));
+        assert_eq!((read.pr_number, read.pr_state.as_deref()), (Some(142), Some("open")));
+        assert_eq!(read.outcome, None);
+
+        let merged = workspaces
+            .set_outcome(&ws.id, Some(TaskOutcome::Merged), Some("main"))
+            .await
+            .unwrap();
+        assert_eq!(merged.outcome, Some(TaskOutcome::Merged));
+        assert_eq!(merged.merged_into.as_deref(), Some("main"));
+        assert!(merged.outcome_at.is_some());
+        // Unknown outcomes (a newer build) read as open, not as an error.
+        sqlx::query("UPDATE workspaces SET outcome = 'shipped' WHERE id = ?")
+            .bind(&ws.id)
+            .execute(&workspaces.db)
+            .await
+            .unwrap();
+        assert_eq!(workspaces.get(&ws.id).await.unwrap().outcome, None);
+
+        // Updates can set and clear the queue fields.
+        let updated = workspaces
+            .update(
+                &ws.id,
+                WorkspaceUpdate {
+                    queued_at: Some(Some(Utc::now())),
+                    depends_on_workspace_id: Some(None),
+                    base_branch: Some(Some("main".into())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(updated.queued_at.is_some());
+        assert_eq!(updated.depends_on_workspace_id, None);
+        assert_eq!(updated.base_branch.as_deref(), Some("main"));
+        assert_eq!(workspaces.list_tasks(Some(&repo.id)).await.unwrap().len(), 1);
+    }
+
     // Owner-scoping (defense-in-depth): `_for_user` only returns the
     // querying user's active task, never another account's — even for an
     // identical `(repository_id, name)`.
@@ -635,10 +1058,13 @@ mod tests {
             .unwrap();
         }
 
-        // Identical (repository_id, name), two different owners.
-        let a = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        // Identical (repository_id, name), two different owners, both
+        // launched (branch cut) so neither is a draft.
+        let mut a = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        a.branch = Some("phasr/shared-a".into());
         workspaces.insert_for_user(&a, "user-a").await.unwrap();
-        let b = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        let mut b = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        b.branch = Some("phasr/shared-b".into());
         workspaces.insert_for_user(&b, "user-b").await.unwrap();
 
         assert_eq!(
@@ -696,5 +1122,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(dirty, 0);
+    }
+
+    /// The lookup every workspace-keyed command (git, PTY, update, archive,
+    /// delete, PR) now goes through: another account's workspace id is
+    /// `NotFound`, as is a soft-deleted one.
+    #[tokio::test]
+    async fn get_for_user_hides_another_owners_workspace() {
+        let (_repos, workspaces, repo) = fresh().await;
+        for uid in ["user-a", "user-b"] {
+            sqlx::query(
+                "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+                 VALUES (?, ?, 'n', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            )
+            .bind(uid)
+            .bind(uid)
+            .bind(format!("{uid}@example.com"))
+            .execute(&workspaces.db)
+            .await
+            .unwrap();
+        }
+        let a = Workspace::new(repo.id.clone(), "a".into(), "cmd".into());
+        workspaces.insert_for_user(&a, "user-a").await.unwrap();
+
+        assert_eq!(
+            workspaces.get_for_user(&a.id, "user-a").await.unwrap().id,
+            a.id
+        );
+        assert!(matches!(
+            workspaces.get_for_user(&a.id, "user-b").await,
+            Err(StoreError::NotFound)
+        ));
+
+        workspaces.delete(&a.id).await.unwrap();
+        assert!(matches!(
+            workspaces.get_for_user(&a.id, "user-a").await,
+            Err(StoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn permission_mode_and_notify_round_trip_and_update() {
+        let (_r, workspaces, repo) = fresh().await;
+        let legacy = Workspace::new(repo.id.clone(), "legacy".into(), "c".into());
+        workspaces.insert(&legacy).await.unwrap();
+        let read = workspaces.get(&legacy.id).await.unwrap();
+        assert_eq!(read.permission_mode, None, "pre-0015 semantics: NULL");
+        assert!(read.notify_on_attention);
+
+        let updated = workspaces
+            .update(
+                &legacy.id,
+                WorkspaceUpdate {
+                    permission_mode: Some(Some(PermissionMode::AskEdits)),
+                    notify_on_attention: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.permission_mode, Some(PermissionMode::AskEdits));
+        let reread = workspaces.get(&legacy.id).await.unwrap();
+        assert_eq!(reread.permission_mode, Some(PermissionMode::AskEdits));
+        assert!(!reread.notify_on_attention);
+
+        // An unrelated update leaves them alone.
+        workspaces
+            .update(
+                &legacy.id,
+                WorkspaceUpdate {
+                    name: Some("renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let reread = workspaces.get(&legacy.id).await.unwrap();
+        assert_eq!(reread.permission_mode, Some(PermissionMode::AskEdits));
+    }
+
+    #[tokio::test]
+    async fn unknown_permission_mode_reads_as_none_instead_of_failing() {
+        let (_r, workspaces, repo) = fresh().await;
+        let ws = Workspace::new(repo.id.clone(), "w".into(), "c".into());
+        workspaces.insert(&ws).await.unwrap();
+        sqlx::query("UPDATE workspaces SET permission_mode = 'from-the-future' WHERE id = ?")
+            .bind(&ws.id)
+            .execute(&workspaces.db)
+            .await
+            .unwrap();
+        let listed = workspaces.list_by_repository(&repo.id).await.unwrap();
+        assert_eq!(listed[0].permission_mode, None);
+    }
+
+    #[tokio::test]
+    async fn claim_local_for_task_only_touches_local_rows() {
+        let (_r, workspaces, repo) = fresh().await;
+        let agent_row = Workspace::new(repo.id.clone(), "task".into(), "c".into());
+        workspaces.insert(&agent_row).await.unwrap();
+        let claim = || LocalTaskClaim {
+            agent: Agent::Codex,
+            command: "codex".into(),
+            prompt: Some("p".into()),
+            permission_mode: PermissionMode::AskShell,
+            notify_on_attention: false,
+            started_at: Utc::now(),
+        };
+        assert!(matches!(
+            workspaces.claim_local_for_task(&agent_row.id, claim()).await,
+            Err(StoreError::NotFound)
+        ));
+
+        let mut local = Workspace::new(repo.id.clone(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        local.status = WorkspaceStatus::Completed;
+        local.exit_code = Some(0);
+        workspaces.insert(&local).await.unwrap();
+        let claimed = workspaces.claim_local_for_task(&local.id, claim()).await.unwrap();
+        assert_eq!(claimed.status, WorkspaceStatus::Running);
+        assert_eq!(claimed.exit_code, None);
+        assert_eq!(claimed.agent, Some(Agent::Codex));
+        assert_eq!(claimed.command, "codex");
+        assert_eq!(claimed.permission_mode, Some(PermissionMode::AskShell));
+        assert!(!claimed.notify_on_attention);
+        assert_eq!(claimed.name, "local", "the slot keeps its identity");
     }
 }

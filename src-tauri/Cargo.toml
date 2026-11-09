@@ -41,6 +41,10 @@ bytes = "1"
 anyhow = "1"
 notify = "6"
 notify-debouncer-mini = { version = "0.4", default-features = false }
+# Agent-signal heuristics (approval-dialog patterns over PTY output) and
+# reading the user's Codex `notify` setting so phasr can chain it.
+regex = "1"
+toml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 jsonwebtoken = { version = "9", default-features = false }
 # Hardware-derived machine id (IOPlatformUUID on macOS) so cloud-sync's
@@ -60,6 +64,10 @@ libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+# API keys for agents (Settings → Agents & keys) live in the login Keychain,
+# never in SQLite or the cloud. macOS-only: elsewhere `secrets::KeychainStore`
+# reports "keychain unavailable" and the in-memory store backs tests.
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 # VT engine selection for `src/vt` (B1).
 #

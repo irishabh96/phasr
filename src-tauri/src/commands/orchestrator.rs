@@ -2,26 +2,26 @@
 //!
 //! Thin handlers: each one validates inputs and delegates to
 //! `TaskOrchestrator`. Status events from the orchestrator's
-//! broadcast channel are re-emitted onto Tauri's event bus on a
-//! background task spawned at app start.
+//! broadcast channel are re-emitted onto Tauri's event bus by
+//! `commands::events`.
 
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter, State};
+use tauri::State;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::auth::{AuthError, SessionState};
-use crate::domain::Agent;
+use crate::auth::SessionState;
+use crate::domain::{Agent, PermissionMode};
 use crate::orchestrator::{
-    OrchestratorError, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStatusEvent,
+    launch, OrchestratorError, RunIn, StartTaskRequest, StartedTask, TaskOrchestrator,
 };
 use crate::pty::PtyEvent;
+use crate::store::SettingsRepo;
 use crate::sync::CloudSyncState;
 
-/// Tauri event name on which task status transitions are broadcast.
-pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
+use super::require_user;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +37,17 @@ pub struct StartTaskInput {
     pub rows: Option<u16>,
     #[serde(default)]
     pub cols: Option<u16>,
+    /// `None` → the user's `defaultPermissionMode` (clamped to what the
+    /// agent supports). An explicit mode the agent can't express is an
+    /// error, never silently swapped.
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
+    /// `None` → true.
+    #[serde(default)]
+    pub notify_on_attention: Option<bool>,
+    /// `None` → a new worktree.
+    #[serde(default)]
+    pub run_in: Option<RunIn>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -77,20 +88,27 @@ pub async fn list_task_activity(
 pub async fn start_task(
     input: StartTaskInput,
     orchestrator: State<'_, TaskOrchestrator>,
+    settings: State<'_, SettingsRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<StartedTask, OrchestratorError> {
-    let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let current_session = require_user(&session)?;
+    let user_settings = settings.get_or_init().await?;
+    let (mode, command) =
+        launch::resolve_launch(input.agent, input.permission_mode, &user_settings)?;
     let request = StartTaskRequest {
         repository_id: input.repository_id,
         user_id: Some(current_session.user_id),
         agent: input.agent,
-        command: input.agent.command().to_string(),
+        command,
         name: input.name,
         prompt: input.prompt,
         base_branch: input.base_branch,
         rows: input.rows,
         cols: input.cols,
+        permission_mode: Some(mode),
+        notify_on_attention: input.notify_on_attention.unwrap_or(true),
+        run_in: input.run_in.unwrap_or_default(),
     };
     let started = orchestrator.start_task(request).await?;
     sync_state.request_sync();
@@ -103,7 +121,10 @@ pub async fn stop_task(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), OrchestratorError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
     orchestrator.stop_task(&task_id).await
 }
 
@@ -116,7 +137,10 @@ pub async fn open_task_terminal(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<RunningTaskInfo, OrchestratorError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
     let sub = orchestrator
         .open_terminal(&task_id, rows.unwrap_or(24), cols.unwrap_or(80))
         .await?;
@@ -160,8 +184,28 @@ pub async fn send_input_to_task(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), OrchestratorError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
     orchestrator.send_input(&task_id, data.as_bytes())
+}
+
+/// Send one composed message to the task's agent (paste-framed when the
+/// agent asked for bracketed paste), pressing Enter if `submit`.
+#[tauri::command]
+pub async fn send_message_to_task(
+    task_id: String,
+    text: String,
+    submit: bool,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), OrchestratorError> {
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
+    orchestrator.send_message(&task_id, &text, submit).await
 }
 
 #[tauri::command]
@@ -170,7 +214,10 @@ pub async fn read_task_log(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, OrchestratorError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
     orchestrator.read_task_log(&task_id).await
 }
 
@@ -182,7 +229,10 @@ pub async fn resize_task(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), OrchestratorError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
     orchestrator.resize_task(&task_id, rows, cols)
 }
 
@@ -192,41 +242,9 @@ pub async fn interrupt_task(
     orchestrator: State<'_, TaskOrchestrator>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), OrchestratorError> {
-    session.require()?;
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
     orchestrator.interrupt_task(&task_id)
-}
-
-/// Subscribe to the orchestrator's status broadcast and re-emit each
-/// event onto the Tauri event bus. Call once at app startup.
-pub fn spawn_status_bridge(orchestrator: Arc<TaskOrchestrator>, app: AppHandle) {
-    let mut rx = orchestrator.subscribe_status();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let _ = app.emit(TASK_STATUS_EVENT, event_payload(&event));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TaskStatusPayload {
-    task_id: String,
-    repository_id: String,
-    status: String,
-    exit_code: Option<i64>,
-}
-
-fn event_payload(event: &TaskStatusEvent) -> TaskStatusPayload {
-    TaskStatusPayload {
-        task_id: event.task_id.clone(),
-        repository_id: event.repository_id.clone(),
-        status: event.status.as_str().to_string(),
-        exit_code: event.exit_code,
-    }
 }

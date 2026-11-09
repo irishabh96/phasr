@@ -22,7 +22,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::pty::handle::{PtyEvent, PtyHandle, PtySpawnOptions};
+use crate::pty::handle::{PtyEvent, PtyHandle, SpawnSpec};
 
 // ---------------------------------------------------------------------------
 // Shared plumbing
@@ -212,15 +212,12 @@ fn measure_shipping(corpus: &Path, script: &Path, rate: Rate) -> Framing {
         rate.period_ms,
         WINDOW_MS
     );
-    let handle = PtyHandle::spawn(PtySpawnOptions {
-        task_id: "bench".into(),
-        initial_command: Some(cmd),
-        initial_prompt: None,
-        cwd: tmp.path().to_path_buf(),
-        log_path: tmp.path().join("bench.log"),
-        rows: 40,
-        cols: 200,
-    })
+    let handle = PtyHandle::spawn(
+        SpawnSpec::new("bench", tmp.path())
+            .with_initial_command(Some(cmd))
+            .with_size(40, 200),
+        tmp.path().join("bench.log"),
+    )
     .expect("spawn");
 
     let mut rx = handle.subscribe();
