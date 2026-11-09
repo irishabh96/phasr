@@ -46,7 +46,7 @@ export function upsertAgentState(
  * Mounted by `useAgentStates`; mounting it more than once is harmless
  * (each listener applies the same idempotent patch).
  */
-function useAgentSignalEvents() {
+export function useAgentSignalEvents() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -87,7 +87,6 @@ function useAgentSignalEvents() {
 
 /** Every tracked task's agent state, kept live by events. */
 export function useAgentStates() {
-  useAgentSignalEvents();
   return useQuery({
     queryKey: agentSignalKeys.states(),
     queryFn: tauri.listAgentStates,
@@ -103,12 +102,6 @@ export function useTaskAgentState(taskId: string | null | undefined): TaskAgentS
     () => (taskId ? (data?.find((s) => s.taskId === taskId) ?? null) : null),
     [data, taskId],
   );
-}
-
-/** How many tasks are waiting on the user. */
-export function useNeedsYouCount(): number {
-  const { data } = useAgentStates();
-  return useMemo(() => data?.filter((s) => s.state === "needs-you").length ?? 0, [data]);
 }
 
 /**
@@ -135,7 +128,6 @@ export function useRespondToAttention() {
 
 /** Token/cost totals; `null` for agents without usage (hide the row). */
 export function useTaskUsage(taskId: string | null | undefined) {
-  useAgentSignalEvents();
   return useQuery({
     queryKey: agentSignalKeys.usage(taskId ?? ""),
     queryFn: () => tauri.getTaskUsage(taskId ?? ""),
@@ -147,20 +139,9 @@ export function useTaskUsage(taskId: string | null | undefined) {
 
 /** The agent's last assistant message; refreshed when a turn ends. */
 export function useAgentSummary(taskId: string | null | undefined) {
-  useAgentSignalEvents();
   return useQuery({
     queryKey: agentSignalKeys.summary(taskId ?? ""),
     queryFn: () => tauri.getAgentSummary(taskId ?? ""),
-    enabled: !!taskId,
-  });
-}
-
-/** Files the agent edited (M9 editor); refreshed when a turn ends. */
-export function useAgentFileEdits(taskId: string | null | undefined) {
-  useAgentSignalEvents();
-  return useQuery({
-    queryKey: agentSignalKeys.fileEdits(taskId ?? ""),
-    queryFn: () => tauri.listAgentFileEdits(taskId ?? ""),
     enabled: !!taskId,
   });
 }

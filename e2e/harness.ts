@@ -358,6 +358,9 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "stop_session_terminal":
       case "stop_run_command":
       case "start_run_command": return null;
+      // Like the backend: attach only succeeds for a live command; a tab
+      // mount then starts it only on an explicit Run.
+      case "attach_run_command": return { __reject: "not running" };
       case "list_launchers": return [
         { id: "vscode", name: "VS Code", kind: "editor", available: true },
         { id: "terminal", name: "Terminal", kind: "terminal", available: true },

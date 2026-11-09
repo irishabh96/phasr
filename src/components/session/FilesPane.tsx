@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, FileText, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FileEditor } from "@/components/files/FileEditor";
+import { ConfirmDialog } from "@/components/ui/Dialog";
 import { useWorkspaceTree } from "@/lib/hooks/useWorkspaceFiles";
 import { GroupHeader } from "@/components/ui/GroupHeader";
 import { PanelState } from "@/components/ui/PanelState";
@@ -58,6 +59,13 @@ export function FilesPane({ workspace, visible }: { workspace: Workspace; visibl
   const { data: changes } = useGitStatus(workspace.id);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
+  const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  const closeTab = (p: string) => {
+    const rest = openTabs.filter((x) => x !== p);
+    setOpenTabs(rest);
+    onDirtyChange(p, false);
+    if (p === selected && rest.length > 0) setSelected(rest[rest.length - 1]!);
+  };
   const onDirtyChange = useCallback((p: string, dirty: boolean) => {
     setDirtyPaths((prev) => {
       if (prev.has(p) === dirty) return prev;
@@ -214,11 +222,7 @@ export function FilesPane({ workspace, visible }: { workspace: Workspace; visibl
                   <button
                     type="button"
                     aria-label={`Close ${p}`}
-                    onClick={() => {
-                      const rest = openTabs.filter((x) => x !== p);
-                      setOpenTabs(rest);
-                      if (active && rest.length > 0) setSelected(rest[rest.length - 1]!);
-                    }}
+                    onClick={() => (dirtyPaths.has(p) ? setConfirmClose(p) : closeTab(p))}
                     className="grid size-4 place-items-center rounded-(--radius-chip) opacity-0 hover:bg-(--color-bg-hover) group-hover/ftab:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
                   >
                     ×
@@ -228,9 +232,15 @@ export function FilesPane({ workspace, visible }: { workspace: Workspace; visibl
             })}
           </div>
         ) : null}
-        {selected ? (
-          <div className="min-h-0 flex-1">
-            <FileEditor key={selected} workspaceId={workspace.id} path={selected} onDirtyChange={onDirtyChange} />
+        {openTabs.length > 0 ? (
+          <div className="relative min-h-0 flex-1">
+            {/* Every open tab stays mounted (hidden) so its buffer, cursor and
+                undo history survive switching tabs. */}
+            {openTabs.map((p) => (
+              <div key={p} className={cn("absolute inset-0", p !== selected && "hidden")}>
+                <FileEditor workspaceId={workspace.id} path={p} onDirtyChange={onDirtyChange} />
+              </div>
+            ))}
           </div>
         ) : (
           <div className="flex h-full items-center justify-center text-[12px] text-(--color-text-muted)">
@@ -238,6 +248,18 @@ export function FilesPane({ workspace, visible }: { workspace: Workspace; visibl
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmClose !== null}
+        onOpenChange={(o) => !o && setConfirmClose(null)}
+        title="Close without saving?"
+        description={`${confirmClose ?? ""} has unsaved changes. Closing the tab discards them.`}
+        confirmLabel="Discard changes"
+        destructive
+        onConfirm={() => {
+          if (confirmClose) closeTab(confirmClose);
+          setConfirmClose(null);
+        }}
+      />
     </div>
   );
 }

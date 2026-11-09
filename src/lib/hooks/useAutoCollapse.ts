@@ -5,6 +5,7 @@ import { useUiStore } from "@/lib/store";
 export const COMPACT_BREAKPOINT = 1360;
 
 const PREF_KEY = "phasr.autoCollapse";
+const PREF_EVENT = "phasr:auto-collapse-changed";
 
 /** Settings › Appearance "Fold side panels on narrow windows" (default on). */
 export function readAutoCollapse(): boolean {
@@ -21,46 +22,49 @@ export function writeAutoCollapse(on: boolean) {
   } catch {
     /* ignore */
   }
+  // Applies now, not on the next launch.
+  window.dispatchEvent(new Event(PREF_EVENT));
 }
 
 /**
  * A-Compact: at a 1280px window the task list and inspector collapse to
- * their rails so the terminal keeps its width. Only fires when the width
- * CROSSES the breakpoint, so a manual ⌘B / ⌘I in between always wins until
- * the window is resized past it again. Growing back restores what auto-
- * collapse folded, not panels the user closed themselves.
+ * their rails so the terminal keeps its width. Only acts when the width
+ * CROSSES the breakpoint (or the setting flips), so a manual ⌘B / ⌘I in
+ * between always wins. Growing back — or turning the setting off — restores
+ * only what auto-collapse folded, never panels the user closed.
  */
 export function useAutoCollapse() {
   useEffect(() => {
-    if (!readAutoCollapse()) return;
-    let wasCompact = window.innerWidth < COMPACT_BREAKPOINT;
-    let autoFolded = { sidebar: false, inspector: false };
+    let folded = { sidebar: false, inspector: false };
+    let compact = false;
 
     const fold = () => {
       const s = useUiStore.getState();
-      autoFolded = {
-        sidebar: s.sidebarMode === "pinned",
-        inspector: !s.rightPanelCollapsed,
-      };
-      if (autoFolded.sidebar) s.setSidebarMode("collapsed");
-      if (autoFolded.inspector) s.setRightPanelCollapsed(true);
+      folded = { sidebar: s.sidebarMode === "pinned", inspector: !s.rightPanelCollapsed };
+      if (folded.sidebar) s.setSidebarMode("collapsed");
+      if (folded.inspector) s.setRightPanelCollapsed(true);
     };
     const unfold = () => {
       const s = useUiStore.getState();
-      if (autoFolded.sidebar && s.sidebarMode === "collapsed") s.setSidebarMode("pinned");
-      if (autoFolded.inspector && s.rightPanelCollapsed) s.setRightPanelCollapsed(false);
-      autoFolded = { sidebar: false, inspector: false };
+      if (folded.sidebar && s.sidebarMode === "collapsed") s.setSidebarMode("pinned");
+      if (folded.inspector && s.rightPanelCollapsed) s.setRightPanelCollapsed(false);
+      folded = { sidebar: false, inspector: false };
     };
-
-    if (wasCompact) fold();
-    const onResize = () => {
-      const compact = window.innerWidth < COMPACT_BREAKPOINT;
-      if (compact === wasCompact) return;
-      wasCompact = compact;
-      if (compact) fold();
+    /** Effective state = narrow window AND setting on. */
+    const evaluate = () => {
+      const next = readAutoCollapse() && window.innerWidth < COMPACT_BREAKPOINT;
+      if (next === compact) return;
+      compact = next;
+      if (next) fold();
       else unfold();
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+
+    evaluate();
+    window.addEventListener("resize", evaluate);
+    window.addEventListener(PREF_EVENT, evaluate);
+    return () => {
+      window.removeEventListener("resize", evaluate);
+      window.removeEventListener(PREF_EVENT, evaluate);
+    };
   }, []);
 }

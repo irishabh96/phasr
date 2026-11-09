@@ -2,9 +2,11 @@ import { Check, Minus, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AgentMark } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/Dialog";
 import { Kbd } from "@/components/ui/Kbd";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Switch } from "@/components/ui/Switch";
+import { SyncedSettingsBanner } from "./SyncedSettingsBanner";
 import { readAutoCollapse, writeAutoCollapse } from "@/lib/hooks/useAutoCollapse";
 import { SettingsCard, SettingsRow } from "@/components/ui/SettingsRow";
 import { GlassSelect } from "@/components/ui/GlassSelect";
@@ -245,7 +247,7 @@ function AutoCollapseRow() {
     <SettingsRow
       id="settings-row-auto-collapse"
       label="Fold side panels on narrow windows"
-      help="Below 1360 px the task list and inspector collapse to rails. Applies from the next resize."
+      help="Below 1360 px the task list and inspector collapse to rails."
     >
       <Switch
         checked={on}
@@ -289,6 +291,8 @@ export function TerminalSection() {
   const { data: shells } = useShells();
 
   return (
+    <div className="flex flex-col gap-3">
+    <SyncedSettingsBanner scope="terminalShell" />
     <SettingsCard title="Terminal">
       <SettingsRow id="settings-row-font" label="Font" help="Monospace face for every terminal" htmlFor="st-font">
         <GlassSelect
@@ -389,6 +393,7 @@ export function TerminalSection() {
         />
       </SettingsRow>
     </SettingsCard>
+    </div>
   );
 }
 
@@ -467,6 +472,7 @@ export function AgentsSection() {
           );
         })}
       </SettingsCard>
+      <SyncedSettingsBanner scope="agentCommands" />
       <ApiKeysCard />
       <SettingsCard>
         <SettingsRow
@@ -502,8 +508,14 @@ function ApiKeysCard() {
   const { data: keys } = useApiKeys();
   const setKey = useSetApiKey();
   const delKey = useDeleteApiKey();
-  const [editing, setEditing] = useState<ApiKeyName | null>(null);
+  const [editing, setEditingRaw] = useState<ApiKeyName | null>(null);
   const [value, setValue] = useState("");
+  const [removing, setRemoving] = useState<ApiKeyName | null>(null);
+  // A typed key never carries over to another provider's field.
+  const setEditing = (name: ApiKeyName | null) => {
+    setValue("");
+    setEditingRaw(name);
+  };
   if (!keys) return null;
   return (
     <SettingsCard title="API keys · stored in macOS Keychain, never synced">
@@ -524,10 +536,7 @@ function ApiKeysCard() {
                 setKey.mutate(
                   { name: k.name, value: value.trim() },
                   {
-                    onSuccess: () => {
-                      setEditing(null);
-                      setValue("");
-                    },
+                    onSuccess: () => setEditing(null),
                     onError: (err) => showToast({ intent: "error", title: "Couldn't store the key", message: humanizeError(err) }),
                   },
                 );
@@ -556,7 +565,7 @@ function ApiKeysCard() {
                 {k.isSet ? "Replace" : "+ Add"}
               </Button>
               {k.isSet ? (
-                <Button size="sm" variant="ghost" disabled={delKey.isPending} onClick={() => delKey.mutate(k.name)}>
+                <Button size="sm" variant="ghost" disabled={delKey.isPending} onClick={() => setRemoving(k.name)}>
                   Remove
                 </Button>
               ) : null}
@@ -564,6 +573,18 @@ function ApiKeysCard() {
           )}
         </div>
       ))}
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(o) => !o && setRemoving(null)}
+        title={`Remove ${removing ?? ""}?`}
+        description="The key is deleted from your macOS Keychain. The agent falls back to its own login."
+        confirmLabel="Remove key"
+        destructive
+        onConfirm={() => {
+          if (removing) delKey.mutate(removing);
+          setRemoving(null);
+        }}
+      />
     </SettingsCard>
   );
 }

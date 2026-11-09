@@ -589,6 +589,14 @@ export interface Attention {
    * "Waiting for input · Open terminal".
    */
   canRespond: boolean;
+  /**
+   * Whether "Allow for this task" is answerable: the dialog on screen has an
+   * option scoped to this session/task. False for Claude until its options
+   * are read off the screen (its option 2 is often a persistent "always
+   * allow … from this project" rule) — hide the button then;
+   * `respondToAttention(…, "allow-task")` rejects in that case.
+   */
+  canAllowForTask: boolean;
 }
 
 /** Payload of `list_agent_states` and the `phasr://task-agent-state` event. */

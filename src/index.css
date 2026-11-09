@@ -216,8 +216,8 @@
 
 /* ---------- Light theme (A-SystemLight) ----------
    Same token names, only values change; status hues are darkened so 11px
-   labels pass 4.5:1 on white, and the accent darkens so white text on it
-   passes. */
+   labels pass 4.5:1 on every light surface (see below), and the accent
+   darkens so white text on it passes. */
 [data-theme="light"] {
   --color-bg-base: #f6f5f2;
   --color-bg-surface: #ffffff;
@@ -243,9 +243,13 @@
   --color-text-faint: #9aa0aa;
   --color-text-inverse: #ffffff;
 
-  --color-info: #2f6fe0;
-  --color-success: #1f8a5b;
-  --color-warning: #b7791f;
+  /* Darker than A-SystemLight's swatches (#2F6FE0 / #1F8A5B / #B7791F),
+     which measure 3.1–4.3:1 on bg-0 and the tints. These clear 4.5:1 on
+     bg-0, surface, raised and every status tint (5.0–6.4:1), so 11px status
+     labels pass AA. */
+  --color-info: #2459c2;
+  --color-success: #18724a;
+  --color-warning: #8a5a12;
   --color-danger: #c0392b;
   --color-danger-solid: #c0392b;
   --color-danger-text: #a8321f;

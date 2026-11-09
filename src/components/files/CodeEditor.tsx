@@ -168,10 +168,13 @@ export default function CodeEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // A new document (another file, or a reload after an agent edit).
+  // A new document (another file, or a reload after an agent edit). When
+  // the new disk version is exactly what's in the editor (we just saved it),
+  // leave the document alone so cursor and undo history survive ⌘S.
   useEffect(() => {
     const v = view.current;
     if (!v) return;
+    if (v.state.doc.toString() === value) return;
     v.dispatch({
       changes: { from: 0, to: v.state.doc.length, insert: value },
       effects: langCompartment.current.reconfigure(languageFor(path).ext ?? []),

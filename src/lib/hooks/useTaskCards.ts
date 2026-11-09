@@ -8,7 +8,7 @@ import {
   TASK_CARDS_CHANGED_EVENT,
   TASK_STATUS_EVENT,
 } from "@/lib/events";
-import { tauri, type CreateTaskDraftInput, type UpdateTaskDraftInput } from "@/lib/tauri";
+import { tauri, type CreateTaskDraftInput } from "@/lib/tauri";
 import type {
   StartedTask,
   TaskAgentState,
@@ -64,7 +64,7 @@ function concerns(listRepo: string | null, repositoryId: string): boolean {
  * more than once is harmless: every handler is an idempotent
  * invalidate/patch.
  */
-function useTaskCardEvents() {
+export function useTaskCardEvents() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -111,7 +111,6 @@ function useTaskCardEvents() {
 
 /** Task cards for one repository, or every repository when `null`. */
 export function useTaskCards(repositoryId: string | null) {
-  useTaskCardEvents();
   return useQuery({
     queryKey: taskCardKeys.list(repositoryId),
     queryFn: () => tauri.listTaskCards(repositoryId),
@@ -141,26 +140,6 @@ export function useCreateTaskDraft() {
   });
 }
 
-/** Edit a draft / queued task (rejected once it has started). */
-export function useUpdateTaskDraft() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, input }: { id: string; input: UpdateTaskDraftInput }) =>
-      tauri.updateTaskDraft(id, input),
-    onSuccess: (workspace) => invalidateTask(queryClient, workspace),
-  });
-}
-
-/** Move a not-yet-started task into / out of the queue. */
-export function useSetTaskQueued() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, queued }: { id: string; queued: boolean }) =>
-      tauri.setTaskQueued(id, queued),
-    onSuccess: (workspace) => invalidateTask(queryClient, workspace),
-  });
-}
-
 /** "Start now" for a draft or queued task. */
 export function useStartQueuedTask() {
   const queryClient = useQueryClient();
@@ -176,7 +155,6 @@ export function useStartQueuedTask() {
  * every 30s and refreshed on task/board/sync events.
  */
 export function useSystemStatus() {
-  useTaskCardEvents();
   const queryClient = useQueryClient();
 
   useEffect(() => {

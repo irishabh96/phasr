@@ -13,7 +13,10 @@ import {
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { showToast, type ToastIntent } from "@/lib/toast";
+import { settingsKeys } from "@/lib/hooks/useUserSettings";
+import { shouldDeliver } from "@/lib/notificationPolicy";
 import type {
+  UserSettings,
   Repository,
   TaskStatusPayload,
   Workspace,
@@ -166,8 +169,17 @@ export function useCompletionNotifications() {
       if (events.length === 0) return;
 
       const qc = qcRef.current;
+      // Settings › Notifications decide the channels: the per-event matrix,
+      // "only in the background" and quiet hours. A failure anywhere in the
+      // batch reads as the failed kind (the stronger one).
+      const prefs = qc.getQueryData<UserSettings>(settingsKeys.current)?.notificationPrefs;
+      const kind = events.some((e) => e.status === "failed") ? "task_failed" : "task_finished";
+      const channels = shouldDeliver(prefs, kind, {
+        focused: appFocusedRef.current,
+        now: new Date(),
+      });
       // Decide the OS channel at flush time: never buzz while focused.
-      const fireOs = !appFocusedRef.current && osNotificationsGranted();
+      const fireOs = !appFocusedRef.current && channels.system && osNotificationsGranted();
 
       let toastTitle: string;
       let toastMessage: string;
@@ -248,7 +260,7 @@ export function useCompletionNotifications() {
         revealChanges = latestEvent.status === "completed";
       }
 
-      showToast({
+      if (channels.badge) showToast({
         title: toastTitle,
         message: toastMessage,
         intent,

@@ -10,6 +10,7 @@ import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useWorkspaces, workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { useCreateTaskDraft } from "@/lib/hooks/useTaskCards";
 import { humanizeError } from "@/lib/humanizeError";
 import { buildPlanPreview, nameFromPrompt, PERMISSION_LABEL } from "@/lib/planPreview";
 import { reportP0Error } from "@/lib/sentry";
@@ -50,6 +51,7 @@ export function NewTaskForm({
   const { data: settings } = useUserSettings();
   const { data: workspaces } = useWorkspaces(repositoryId);
   const queryClient = useQueryClient();
+  const createDraft = useCreateTaskDraft();
 
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -126,7 +128,7 @@ export function NewTaskForm({
     setError(null);
     try {
       if (kind === "draft") {
-        const ws = await tauri.createTaskDraft({
+        const ws = await createDraft.mutateAsync({
           repositoryId,
           name: finalName,
           agent: activeAgent.agent,
@@ -135,7 +137,6 @@ export function NewTaskForm({
           ...(mode !== null ? { permissionMode: mode } : {}),
           ...(trimmedBaseBranch && runIn === "worktree" ? { baseBranch: trimmedBaseBranch } : {}),
         });
-        void queryClient.invalidateQueries({ queryKey: ["task-cards"] });
         afterCreate(ws);
         return;
       }

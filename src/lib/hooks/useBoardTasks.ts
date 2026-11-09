@@ -68,7 +68,9 @@ export function useBoardTasks(repoFilter: string | null = null) {
   // `null`/missing (older backend, test harness) falls back to deriving
   // lanes here from status + uncommitted changes.
   const cards = useTaskCards(null);
-  const candidates = workspaces.filter(
+  const haveCards = Array.isArray(cards.data);
+  // Per-task `git status` only for the fallback — backend cards carry the diff.
+  const candidates = haveCards ? [] : workspaces.filter(
     (w) => w.workspaceKind === "agent" && NEEDS_DIFF.has(w.status) && !!w.worktreePath,
   );
   const statuses = useQueries({

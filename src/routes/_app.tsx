@@ -19,7 +19,8 @@ import { useAccentFromSettings, useAdjustTerminalFontSize } from "@/lib/hooks/us
 import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
 import { useNeedsYouNotifications } from "@/lib/hooks/useNeedsYouNotifications";
 import { useAutoCollapse } from "@/lib/hooks/useAutoCollapse";
-import { useAgentStates } from "@/lib/hooks/useAgentSignals";
+import { useAppEvents } from "@/lib/hooks/useAppEvents";
+import { usePrRefresh } from "@/lib/hooks/usePrRefresh";
 import { useFileDrop } from "@/lib/hooks/useFileDrop";
 import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
 import { useMacTextEditingKeys } from "@/lib/hooks/useMacTextEditingKeys";
@@ -76,8 +77,9 @@ function AppShell() {
   useCompletionNotifications();
   useNeedsYouNotifications();
   useAutoCollapse();
-  // Keeps the agent-state snapshot live app-wide (board, sidebar, inspector).
-  useAgentStates();
+  // One subscription per app event (board, agent signals, checks).
+  useAppEvents();
+  usePrRefresh();
   useFileDrop();
   // ⌘⌫ / ⌘← / ⌘→ in every field — the webview never runs the native
   // macOS editing actions for these, so we implement them ourselves.
@@ -185,6 +187,19 @@ function AppShell() {
         const state = useUiStore.getState();
         const ctx = state.activeWorkspaceContext;
         if (!ctx) return;
+        // A pane in front (Changes / Files / Notes / a run command) is what
+        // ⌘W closes — never the terminal tab hidden behind it.
+        const pane = state.sessionPane[ctx.workspaceId] ?? "tabs";
+        if (pane !== "tabs") {
+          e.preventDefault();
+          if (pane === "run" && state.runPanel.activeTab) {
+            const id = state.runPanel.activeTab;
+            void tauri.stopRunCommand(id, ctx.workspaceId).catch(() => {});
+            state.runPanel.closeTab(id);
+          }
+          state.setSessionPane(ctx.workspaceId, "tabs");
+          return;
+        }
         const inner = state.innerTabs[ctx.workspaceId];
         const activeInner = inner?.tabs.find((t) => t.id === inner.activeTabId);
         if (!activeInner?.closable) return;

@@ -98,6 +98,8 @@ function Worktrees({ repositoryId }: { repositoryId: string }) {
   const remove = useRemoveWorktrees(repositoryId);
   const save = useSave(repositoryId);
   const [confirm, setConfirm] = useState<string[] | null>(null);
+  /** Paths whose removal would lose uncommitted or unpushed work. */
+  const [lossy, setLossy] = useState<{ paths: string[]; message: string } | null>(null);
   const sizeOf = (p: string) => sizes?.find((s) => s.path === p)?.bytes ?? null;
   const total = (sizes ?? []).reduce((n, s) => n + (s.bytes ?? 0), 0);
   const orphans = (worktrees ?? []).filter((w) => w.orphaned).map((w) => w.path);
@@ -192,16 +194,44 @@ function Worktrees({ repositoryId }: { repositoryId: string }) {
         open={confirm !== null}
         onOpenChange={(o) => !o && setConfirm(null)}
         title={confirm && confirm.length > 1 ? `Remove ${confirm.length} worktrees?` : "Remove this worktree?"}
-        description="The folders are deleted. Branches are kept, so reopening a task rebuilds its worktree."
+        description="The folders are deleted; their branches are kept, so reopening a task rebuilds its worktree from the branch. Uncommitted changes are NOT on the branch — Phasr checks first and asks again if anything would be lost."
         confirmLabel="Remove"
         destructive
         pending={remove.isPending}
         onConfirm={() =>
           confirm &&
-          remove.mutate(confirm, {
-            onSuccess: () => setConfirm(null),
-            onError: (err) => showToast({ intent: "error", title: "Couldn't remove", message: humanizeError(err) }),
-          })
+          remove.mutate(
+            { paths: confirm },
+            {
+              onSuccess: () => setConfirm(null),
+              onError: (err) => {
+                const message = String(err);
+                setConfirm(null);
+                if (message.startsWith("uncommitted changes or unpushed commits would be lost"))
+                  setLossy({ paths: confirm, message });
+                else showToast({ intent: "error", title: "Couldn't remove", message: humanizeError(err) });
+              },
+            },
+          )
+        }
+      />
+      <ConfirmDialog
+        open={lossy !== null}
+        onOpenChange={(o) => !o && setLossy(null)}
+        title="Work would be lost"
+        description={`${lossy?.message ?? ""}\n\nRemove anyway? This deletes those changes for good.`}
+        confirmLabel="Remove and lose the work"
+        destructive
+        pending={remove.isPending}
+        onConfirm={() =>
+          lossy &&
+          remove.mutate(
+            { paths: lossy.paths, force: true },
+            {
+              onSuccess: () => setLossy(null),
+              onError: (err) => showToast({ intent: "error", title: "Couldn't remove", message: humanizeError(err) }),
+            },
+          )
         }
       />
     </div>

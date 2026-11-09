@@ -10,6 +10,8 @@ import { GroupHeader } from "@/components/ui/GroupHeader";
 import { useAgentSummary } from "@/lib/hooks/useAgentSignals";
 import {
   useApproveAndCreatePr,
+  useCancelChecks,
+  useCheckOutput,
   useChecks,
   useDiscardWorkspace,
   useRequestChanges,
@@ -57,6 +59,9 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
   const navigate = useNavigate();
   const { data: checks } = useChecks(wsId);
   const runChecks = useRunChecks(wsId);
+  const cancelChecks = useCancelChecks(wsId);
+  const [openRun, setOpenRun] = useState<string | null>(null);
+  const anyRunning = !!checks?.runs.some((r) => r.status === "running" || r.status === "queued");
   const { data: summary } = useAgentSummary(wsId);
   const { data: comments } = useReviewComments(wsId);
   const send = useSendReviewComments(wsId);
@@ -66,15 +71,16 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [overrideOpen, setOverrideOpen] = useState(false);
+  const [dirtyOpen, setDirtyOpen] = useState(false);
   const agent = workspace.agent ? AGENT_META[workspace.agent].label : "the agent";
   const pending = (comments ?? []).filter((c) => c.status === "pending");
   const stale = new Set(checks?.staleIds ?? []);
   const required = new Set(checks?.required ?? []);
   const gated = !!checks && checks.required.length > 0 && !checks.requiredSatisfied;
 
-  const doApprove = (overrideChecks = false) =>
+  const doApprove = (overrideChecks = false, commitDirty = false) =>
     approve.mutate(
-      overrideChecks ? { overrideChecks: true } : {},
+      { ...(overrideChecks ? { overrideChecks: true } : {}), ...(commitDirty ? { commitDirty: true } : {}) },
       {
         onSuccess: (pr) => {
           if (pr.viaGh) {
@@ -90,6 +96,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         },
         onError: (err) => {
           if (String(err).startsWith("required checks not passing")) setOverrideOpen(true);
+          else if (String(err) === "worktree has uncommitted changes") setDirtyOpen(true);
           else showToast({ intent: "error", title: "Couldn't create the PR", message: humanizeError(err) });
         },
       },
@@ -143,14 +150,20 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         {checks && checks.runs.length > 0 ? (
           <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[12px]">
             {checks.runs.map((r) => (
-              <li key={r.id} className="flex items-center gap-2">
+              <li key={r.id} className="flex flex-col gap-1">
+                <span className="flex items-center gap-2">
                 <CheckIcon run={r} stale={stale.has(r.id)} />
-                <span className="min-w-0 flex-1 truncate">
+                <button
+                  type="button"
+                  aria-expanded={openRun === r.id}
+                  onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
+                  className="min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:underline"
+                >
                   {r.name}
                   {r.runCommandId && required.has(r.runCommandId) ? (
                     <span className="ml-1 text-[11px] text-(--color-text-muted)">required</span>
                   ) : null}
-                </span>
+                </button>
                 <span className="font-mono text-[11px] text-(--color-text-muted)">
                   {r.status === "running" || r.status === "queued"
                     ? r.status
@@ -160,6 +173,8 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
                         ? `${(r.durationMs / 1000).toFixed(1)}s`
                         : r.status}
                 </span>
+                </span>
+                {openRun === r.id ? <CheckOutput runId={r.id} /> : null}
               </li>
             ))}
           </ul>
@@ -174,6 +189,11 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
             confirming on this Mac before they auto-run.
           </p>
         ) : null}
+        {anyRunning ? (
+          <Button size="sm" disabled={cancelChecks.isPending} onClick={() => cancelChecks.mutate()}>
+            Cancel checks
+          </Button>
+        ) : (
         <Button
           size="sm"
           disabled={runChecks.isPending}
@@ -185,6 +205,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         >
           {runChecks.isPending ? "Starting…" : "Run checks"}
         </Button>
+        )}
       </Section>
 
       {summary ? (
@@ -269,6 +290,17 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         }
       />
       <ConfirmDialog
+        open={dirtyOpen}
+        onOpenChange={setDirtyOpen}
+        title="The worktree has uncommitted changes"
+        description={`The pull request would leave them out, though the review and checks included them. Commit everything as “${workspace.name}” and push?`}
+        confirmLabel="Commit & push"
+        onConfirm={() => {
+          setDirtyOpen(false);
+          doApprove(false, true);
+        }}
+      />
+      <ConfirmDialog
         open={overrideOpen}
         onOpenChange={setOverrideOpen}
         title="Required checks aren't passing"
@@ -280,5 +312,15 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         }}
       />
     </aside>
+  );
+}
+
+/** The tail of a check's output (live while it runs). */
+function CheckOutput({ runId }: { runId: string }) {
+  const { data, isLoading } = useCheckOutput(runId);
+  return (
+    <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-(--radius-control) border border-(--color-border-subtle) bg-(--color-bg-base) p-2 font-mono text-[11px] leading-[1.5] text-(--color-text-secondary)">
+      {isLoading ? "Loading…" : data?.trim() ? data.slice(-6000) : "No output."}
+    </pre>
   );
 }

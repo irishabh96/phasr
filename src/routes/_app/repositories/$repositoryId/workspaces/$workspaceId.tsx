@@ -12,6 +12,8 @@ import { ReviewInspector } from "@/components/review/ReviewInspector";
 import { ApprovalCard } from "@/components/session/ApprovalCard";
 import { useSettingsRoute } from "@/components/settings/useSettingsRoute";
 import { useRespondToAttention, useTaskAgentState } from "@/lib/hooks/useAgentSignals";
+import { useRunningCommands } from "@/lib/hooks/useReview";
+import { runTabsForTask } from "@/lib/runTabs";
 import { Composer } from "@/components/session/Composer";
 import { FilesPane } from "@/components/session/FilesPane";
 import { Inspector } from "@/components/session/Inspector";
@@ -38,6 +40,16 @@ import { showToast } from "@/lib/toast";
 import type { Workspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+/**
+ * Keyed on the task id: per-task view state (open files, comment drafts,
+ * the Review/Stage toggle) must not carry over when you switch tasks.
+ * Terminals survive the remount — their surfaces are parked in the cache.
+ */
+function WorkspaceRoute() {
+  const { workspaceId } = Route.useParams();
+  return <WorkspaceDetail key={workspaceId} />;
+}
+
 function WorkspaceDetail() {
   const { repositoryId, workspaceId } = Route.useParams();
   const { data: repos } = useRepositories();
@@ -62,6 +74,7 @@ function WorkspaceDetail() {
   const runPanel = useUiStore((s) => s.runPanel);
   const [stopOpen, setStopOpen] = useState(false);
   const inspectorCollapsed = useUiStore((s) => s.rightPanelCollapsed);
+  const { data: runningHere } = useRunningCommands(workspaceQuery.data?.worktreePath ? workspaceId : null);
   const [changesView, setChangesView] = useState<"review" | "stage">("review");
   const agentState = useTaskAgentState(workspaceId);
   const respond = useRespondToAttention();
@@ -237,7 +250,12 @@ function WorkspaceDetail() {
   const activeInner = innerState?.tabs.find((t) => t.id === innerState.activeTabId) ?? null;
   const showComposer =
     isAgent && pane === "tabs" && activeInner?.kind === "main" && workspace.status === "running";
-  const openedRunTabs = runPanel.openTabs.filter((id) => runCommands?.some((rc) => rc.id === id));
+  const openedRunTabs = runTabsForTask(
+    runPanel.openTabs,
+    runPanel.shown,
+    runningHere,
+    workspace.worktreePath ? workspaceId : null,
+  ).filter((id) => runCommands?.some((rc) => rc.id === id));
 
   return (
     <div className="flex h-full min-h-0">
@@ -328,7 +346,9 @@ function WorkspaceDetail() {
             attention={agentState.attention}
             worktree={workspace.worktreePath}
             busy={respond.isPending}
-            allowForTask={workspace.workspaceKind !== "local"}
+            // Only when the dialog itself offers a this-session option (Claude's
+            // option 2 is a permanent project rule), never on the real checkout.
+            allowForTask={workspace.workspaceKind !== "local" && agentState.attention.canAllowForTask}
             onRespond={(response) =>
               respond.mutate(
                 { taskId: workspaceId, attentionId: agentState.attention!.id, response },
@@ -384,7 +404,7 @@ function WorkspaceDetail() {
 export const Route = createFileRoute(
   "/_app/repositories/$repositoryId/workspaces/$workspaceId",
 )({
-  component: WorkspaceDetail,
+  component: WorkspaceRoute,
   // `?pane=changes|files|notes` deep-links a pane (board review cards,
   // palette, notifications). Consumed once on arrival, then dropped.
   validateSearch: (search: Record<string, unknown>): { pane?: "changes" | "files" | "notes" } =>

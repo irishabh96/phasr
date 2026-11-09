@@ -69,6 +69,7 @@ import {
   type GridSnapshot,
   type SnapshotCell,
   type SnapshotRow,
+  trimHistoryForReflow,
 } from "@/lib/terminal/serialize";
 import type {
   LinkSource,
@@ -734,7 +735,7 @@ export class GhosttySurface implements TerminalSurface {
     // which is the only way to read the shell's scrollback while a TUI is
     // running. Safe to do to a grid that is about to be freed.
     if (alternate) term.write(decModeSequence(ALT_SCREEN_MODE, false));
-    const primary = this.snapshotPrimary(term);
+    const primary = this.snapshotPrimary(term, target);
     const plan = planPrimary(primary);
     if (this.diag)
       diagNote(
@@ -948,7 +949,10 @@ export class GhosttySurface implements TerminalSurface {
    * always at the live bottom — `getLine(r)` is active-screen row `r` and
    * `getScrollbackLine(i)` is history line `i`, whatever the scrollbar says.
    */
-  private snapshotPrimary(term: GhosttyTerminal): GridSnapshot {
+  private snapshotPrimary(
+    term: GhosttyTerminal,
+    target?: { cols: number; rows: number },
+  ): GridSnapshot {
     const wasm = term.wasmTerm;
     if (!wasm) return { history: [], screen: [], cursor: { x: 0, y: 0 } };
     const defaultFg = wasm.getColors().foreground;
@@ -1019,8 +1023,19 @@ export class GhosttySurface implements TerminalSurface {
     }
 
     const cursor = wasm.getCursor();
+    // The row limit is a promise about the scrollback AFTER the rebuild, so
+    // count rows at the geometry being rebuilt to, not the one being left.
+    const fitted =
+      target && Number.isFinite(limit)
+        ? trimHistoryForReflow(history, screen, target.cols, target.rows, limit, Math.max(0, cursor.y))
+        : history;
+    if (fitted.length < history.length)
+      console.info(
+        `[terminal] rebuild trimmed ${history.length - fitted.length} more history rows so ` +
+          `the re-wrapped scrollback stays within ${limit} rows at ${target!.cols} columns`,
+      );
     return {
-      history,
+      history: fitted,
       screen,
       cursor: {
         x: Math.max(0, cursor.x),

@@ -55,7 +55,7 @@ export function useNeedsYouNotifications() {
           }
         : null;
 
-    if (!(viewing && focused)) {
+    if (!(viewing && focused) && channels.badge) {
       showToast({
         intent: n.kind === "needs_approval" ? "warning" : n.kind === "run_command_failed" ? "error" : "info",
         title: n.title,

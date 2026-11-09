@@ -54,19 +54,24 @@ export function ApprovalCard({
   const name = agent ? AGENT_META[agent].label : "The agent";
   const isTrust = (attention.kind as string) === "trust";
 
-  // ⌘Y allow once, ⌘⌫ deny — only while focus isn't in an editable field
-  // (⌘⌫ there is "delete to line start").
+  // ⌘Y allow once, ⌘⌫ deny. ⌘ only (Ctrl+Y is readline yank in a shell),
+  // never auto-repeat, never while a response is in flight, and never from
+  // a text field or the editor — only the page or a terminal surface, where
+  // ⌘ shortcuts are the app's (A: "shortcuts never fire in a terminal
+  // unless they include ⌘").
   useEffect(() => {
     if (!attention.canRespond) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (!e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.repeat || busy) return;
       const t = e.target as HTMLElement | null;
-      const editable = !!t?.closest("input, textarea, select, [contenteditable='true']");
+      const inTerminal = !!t?.closest("[data-testid='terminal-surface']");
+      const editable = !inTerminal && !!t?.closest("input, textarea, select, [contenteditable='true'], [contenteditable=''], .cm-editor");
+      if (editable) return;
       if (e.key.toLowerCase() === "y") {
         e.preventDefault();
         e.stopImmediatePropagation();
         onRespond("allow-once");
-      } else if (e.key === "Backspace" && !editable) {
+      } else if (e.key === "Backspace") {
         e.preventDefault();
         e.stopImmediatePropagation();
         onRespond("deny");
@@ -74,7 +79,7 @@ export function ApprovalCard({
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [attention.canRespond, attention.id, onRespond]);
+  }, [attention.canRespond, attention.id, onRespond, busy]);
 
   return (
     <section

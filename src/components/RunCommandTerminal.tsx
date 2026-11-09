@@ -2,7 +2,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
-import { useUiStore } from "@/lib/store";
+import { runKey, useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import { canTakeTerminalFocus } from "@/lib/terminal/cache";
@@ -123,13 +123,32 @@ export function RunCommandTerminal({
       for (const d of disposables.splice(0)) d.dispose();
       try {
         await whenGridSettles(surface);
-        await tauri.startRunCommand(
-          runCommandId,
-          channel,
-          surface.rows,
-          surface.cols,
-          workspaceId,
-        );
+        // Mounting ATTACHES; only an explicit Run (an intent from openTab,
+        // or Retry/Restart here) spawns. Visiting another task — or coming
+        // back after an exec command exited — never runs it again by itself.
+        let attached = false;
+        if (mode === "initial") {
+          try {
+            await tauri.attachRunCommand(runCommandId, channel, surface.rows, surface.cols, workspaceId);
+            attached = true;
+          } catch (err) {
+            if (String(err) !== "not running") throw err;
+            const key = runKey(runCommandId, workspaceId);
+            if (!useUiStore.getState().runPanel.consumeIntent(key)) {
+              if (cancelled) return;
+              setStatus({ state: "exited", exitCode: null });
+              return;
+            }
+          }
+        }
+        if (!attached)
+          await tauri.startRunCommand(
+            runCommandId,
+            channel,
+            surface.rows,
+            surface.cols,
+            workspaceId,
+          );
         if (cancelled) return;
         setStatus(null);
         disposables.push(

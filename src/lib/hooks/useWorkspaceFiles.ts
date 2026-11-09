@@ -93,7 +93,8 @@ export function useWorkspaceFile(
   workspaceId: string | null | undefined,
   path: string | null | undefined,
 ) {
-  useWorktreeFileEvents(workspaceId);
+  // Worktree-change events are subscribed once by the Files pane
+  // (useWorkspaceTree), not per open file tab.
   return useQuery({
     queryKey: workspaceFileKeys.file(workspaceId ?? "", path ?? ""),
     queryFn: () => tauri.readWorkspaceFile(workspaceId ?? "", path ?? ""),

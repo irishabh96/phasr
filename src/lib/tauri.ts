@@ -171,6 +171,12 @@ export interface ApproveInput {
   body?: string;
   /** Open the PR although required checks aren't passing. */
   overrideChecks?: boolean;
+  /**
+   * The worktree has uncommitted (incl. untracked) changes: commit them all
+   * (message = the task name) before pushing. Without it a dirty worktree
+   * rejects with exactly "worktree has uncommitted changes".
+   */
+  commitDirty?: boolean;
 }
 
 export interface ListNotificationsInput {
@@ -315,8 +321,20 @@ export const tauri = {
 
   // ── settings ─────────────────────────────────────────────────────────
   getUserSettings: () => invoke<UserSettings>("get_user_settings"),
+  /**
+   * Saving trusts (on this machine) any agent template / terminal shell the
+   * user CHANGED; unchanged synced values stay unconfirmed.
+   */
   updateUserSettings: (settings: UserSettings) =>
     invoke<UserSettings>("update_user_settings", { settings }),
+  /**
+   * Synced settings that would run as commands here but aren't confirmed on
+   * this machine (`"agentCommands.<agent>"`, `"terminalShell"`). Until
+   * confirmed, launches use the default template / login shell.
+   */
+  listUnconfirmedSettings: () => invoke<string[]>("list_unconfirmed_settings"),
+  /** "Allow on this machine" for them all; resolves to what was confirmed. */
+  confirmSettingsOnThisMachine: () => invoke<string[]>("confirm_settings_on_this_machine"),
   /** Shells from `/etc/shells` present on this machine. */
   listShells: () => invoke<string[]>("list_shells"),
 
@@ -334,10 +352,12 @@ export const tauri = {
   /**
    * Remove worktrees (branches kept). All-or-nothing: rejects the batch for
    * the main checkout, a path outside phasr's worktree folders, or one with
-   * a running agent. Resolves to the removed paths.
+   * a running agent — and, unless `force`, for worktrees with uncommitted
+   * changes or unpushed/unmerged commits ("uncommitted changes or unpushed
+   * commits would be lost in: <paths>; …"). Resolves to the removed paths.
    */
-  removeWorktrees: (repositoryId: string, paths: string[]) =>
-    invoke<string[]>("remove_worktrees", { repositoryId, paths }),
+  removeWorktrees: (repositoryId: string, paths: string[], force = false) =>
+    invoke<string[]>("remove_worktrees", { repositoryId, paths, force }),
 
   // ── API keys (Keychain; values never come back) ──────────────────────
   listApiKeys: () => invoke<ApiKeyStatus[]>("list_api_keys"),
@@ -489,9 +509,30 @@ export const tauri = {
     invoke<Note>("set_note_done", { id, done }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
   /**
-   * Start (or re-attach to) a run command. With `workspaceId` it runs in
-   * that task's worktree (one process per task); without, in the
-   * repository's checkout. Pass the same `workspaceId` to stop/input/resize.
+   * Attach (with replay) to a run command that is ALREADY running for this
+   * task (`workspaceId`) or the repository checkout. Never starts it:
+   * rejects with exactly "not running" when nothing is live under that key
+   * (including an exec-mode command that has exited). Call on mount.
+   */
+  attachRunCommand: (
+    id: string,
+    onEvent: Channel<PtyEvent>,
+    rows = 24,
+    cols = 80,
+    workspaceId?: string | null,
+  ) =>
+    invoke<void>("attach_run_command", {
+      id,
+      onEvent,
+      rows,
+      cols,
+      workspaceId: workspaceId ?? null,
+    }),
+  /**
+   * Explicitly start a run command (the user pressed Run); attaches instead
+   * if it is already running. With `workspaceId` it runs in that task's
+   * worktree (one process per task); without, in the repository's checkout.
+   * Pass the same `workspaceId` to stop/input/resize.
    */
   startRunCommand: (
     id: string,
@@ -619,16 +660,14 @@ export const tauri = {
     invoke<SendCommentsOutcome>("request_changes", { workspaceId, message: message ?? null }),
   /**
    * Gate on required checks → push → `gh pr create` (or the compare URL).
-   * Rejects with "required checks not passing: a, b" unless `overrideChecks`.
+   * Rejects with "required checks not passing: a, b" unless `overrideChecks`,
+   * and with "worktree has uncommitted changes" unless `commitDirty`.
    */
   approveAndCreatePr: (workspaceId: string, input: ApproveInput = {}) =>
     invoke<PullRequestOutcome>("approve_and_create_pr", { workspaceId, input }),
   /** Re-read open PRs via `gh`; returns the tasks whose PR state / outcome changed. */
   refreshPrStates: (repositoryId?: string | null) =>
     invoke<Workspace[]>("refresh_pr_states", { repositoryId: repositoryId ?? null }),
-  /** Merge into the task's base in the main checkout; clean → outcome merged. */
-  mergeTaskLocally: (workspaceId: string, strategy: MergeStrategy) =>
-    invoke<MergeOutcome>("merge_task_locally", { workspaceId, strategy }),
   /** Remove worktree + branch, outcome closed; the row and notes are kept. */
   discardWorkspace: (workspaceId: string) =>
     invoke<Workspace>("discard_workspace", { workspaceId }),

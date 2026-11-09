@@ -6,14 +6,10 @@ import type { Agent } from "@/lib/types";
 import { showToast } from "@/lib/toast";
 import { humanizeError } from "@/lib/humanizeError";
 
-/** Gap between pasting the message and pressing Enter (matches the backend's ENTER_GAP). */
-const ENTER_GAP_MS = 300;
-
 /**
- * Reply box under the agent's terminal (A-Workspace "Composer"). Sends the
- * text into the agent PTY as a bracketed paste, then Enter after a short
- * gap — the agent's TUI sees one paste, not a burst of keystrokes, so
- * newlines don't submit early.
+ * Reply box under the agent's terminal (A-Workspace "Composer"). Sends via
+ * `send_message_to_task`: one bracketed paste (control bytes stripped) then
+ * Enter, so newlines don't submit early and pasted text can't act as keys.
  *
  * FIXED HEIGHT from the first render: the terminal above sizes itself from
  * the space left over and an agent TUI reads its size once at startup, so
@@ -38,12 +34,17 @@ export function Composer({
     if (!message || sending) return;
     setSending(true);
     try {
-      await tauri.sendInputToTask(taskId, `\x1b[200~${message}\x1b[201~`);
-      await new Promise((r) => window.setTimeout(r, ENTER_GAP_MS));
-      await tauri.sendInputToTask(taskId, "\r");
+      // The backend frames it as one bracketed paste with control bytes
+      // stripped, presses Enter after the paste settles, and refuses once
+      // the agent has exited (so text never lands in a bare shell).
+      await tauri.sendMessageToTask(taskId, message, true);
       setText("");
     } catch (err) {
-      showToast({ intent: "error", title: `Couldn't send to ${name}`, message: humanizeError(err) });
+      showToast(
+        String(err).includes("agent not running")
+          ? { intent: "warning", title: `${name} isn't running`, message: "Open the agent tab to resume it." }
+          : { intent: "error", title: `Couldn't send to ${name}`, message: humanizeError(err) },
+      );
     } finally {
       setSending(false);
       ref.current?.focus();

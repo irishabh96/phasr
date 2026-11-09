@@ -18,7 +18,6 @@ import type {
   CheckOutputPayload,
   CheckRun,
   CheckSummary,
-  MergeStrategy,
   RunningCommand,
 } from "@/lib/types";
 
@@ -100,7 +99,7 @@ function useTauriListeners(
 }
 
 /** Check-run + task-change events → summaries and file lists. Idempotent if mounted twice. */
-function useCheckEvents() {
+export function useCheckEvents() {
   const queryClient = useQueryClient();
   useTauriListeners(
     (keep) => {
@@ -135,7 +134,6 @@ function useCheckEvents() {
 
 /** The task's checks: latest run each, the approve gate, stale + unconfirmed ids. */
 export function useChecks(workspaceId: string | null | undefined) {
-  useCheckEvents();
   return useQuery({
     queryKey: reviewKeys.checks(workspaceId ?? ""),
     queryFn: () => tauri.listCheckRuns(workspaceId ?? ""),
@@ -165,7 +163,6 @@ export function useCancelChecks(workspaceId: string) {
 
 /** A check's full output, kept live while it runs (appended from events). */
 export function useCheckOutput(checkRunId: string | null | undefined) {
-  useCheckEvents();
   return useQuery({
     queryKey: reviewKeys.checkOutput(checkRunId ?? ""),
     queryFn: () => tauri.getCheckOutput(checkRunId ?? ""),
@@ -176,7 +173,6 @@ export function useCheckOutput(checkRunId: string | null | undefined) {
 
 /** Files changed vs the merge-base with the task's base (committed work included). */
 export function useReviewFiles(workspaceId: string | null | undefined) {
-  useCheckEvents();
   return useQuery({
     queryKey: reviewKeys.files(workspaceId ?? ""),
     queryFn: () => tauri.gitReviewFiles(workspaceId ?? ""),
@@ -268,11 +264,6 @@ export function useApproveAndCreatePr(workspaceId: string) {
   );
 }
 
-export function useMergeLocally(workspaceId: string) {
-  return useCloseOutMutation(workspaceId, (strategy: MergeStrategy) =>
-    tauri.mergeTaskLocally(workspaceId, strategy),
-  );
-}
 
 /** Remove the worktree + branch; the task is closed, its row and notes kept. */
 export function useDiscardWorkspace(workspaceId: string) {
@@ -285,7 +276,7 @@ export function useRefreshPrStates() {
   return useMutation({
     mutationFn: (repositoryId?: string | null) => tauri.refreshPrStates(repositoryId),
     onSuccess: (changed) => {
-      if (changed.length > 0) {
+      if (Array.isArray(changed) && changed.length > 0) {
         queryClient.invalidateQueries({ queryKey: taskCardKeys.all });
         queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       }

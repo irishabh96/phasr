@@ -403,3 +403,76 @@ export function restoreCursorSequence(up: number, col: number): string {
   if (col > 0) out += `\x1b[${col}C`;
   return out;
 }
+
+/** Columns a row's text uses: up to its last non-blank glyph (trailing
+ *  styled blanks are dropped by the re-wrap, so they don't count). */
+export function rowWidth(row: SnapshotRow): number {
+  for (let c = row.cells.length - 1; c >= 0; c--) {
+    const cell = row.cells[c]!;
+    if (cell.text !== "" && cell.text !== " ") return c + 1;
+  }
+  return 0;
+}
+
+/** Rows a run of rows (one logical line) occupies when re-wrapped at `cols`. */
+function reflowedRows(rows: readonly SnapshotRow[], from: number, to: number, cols: number): number {
+  let width = 0;
+  for (let i = from; i < to; i++) {
+    // A continued row was written out to its end; only the last row of the
+    // line may stop short.
+    width += i < to - 1 ? Math.max(rowWidth(rows[i]!), rows[i]!.cells.length) : rowWidth(rows[i]!);
+  }
+  return Math.max(1, Math.ceil(width / Math.max(1, cols)));
+}
+
+/**
+ * Trim history so that, AFTER the rebuild re-wraps it at `cols`, the
+ * retained scrollback is within `limit` rows.
+ *
+ * Trimming by the old grid's row count is wrong whenever the new grid is
+ * narrower (lines re-wrap into more rows) or shorter (screen rows spill into
+ * history): the scrollback setting then ends up exceeded after every panel
+ * toggle. Works in whole logical lines (`wrapped` is LEADING: a row
+ * continues the one above), newest first, and reserves room for the screen
+ * rows that will no longer fit on a `screenRows`-high grid.
+ */
+export function trimHistoryForReflow(
+  history: readonly SnapshotRow[],
+  screen: readonly SnapshotRow[],
+  cols: number,
+  screenRows: number,
+  limit: number,
+  cursorY = 0,
+): readonly SnapshotRow[] {
+  if (!Number.isFinite(limit)) return history;
+  // Mirror planPrimary exactly: the screen is replayed as its used rows
+  // (down to the last non-blank row or the cursor's, whichever is lower),
+  // re-wrapped, then the blank rows beneath as line feeds. Whatever exceeds
+  // the new height scrolls into history.
+  let lastUsed = Math.min(cursorY, screen.length - 1);
+  for (let r = screen.length - 1; r > lastUsed; r--) {
+    if (rowWidth(screen[r]!) > 0) {
+      lastUsed = r;
+      break;
+    }
+  }
+  let screenTotal = Math.max(0, screen.length - 1 - lastUsed);
+  for (let end = lastUsed + 1; end > 0; ) {
+    let start = end - 1;
+    while (start > 0 && screen[start]!.wrapped) start--;
+    screenTotal += reflowedRows(screen, start, end, cols);
+    end = start;
+  }
+  let budget = Math.max(0, limit - Math.max(0, screenTotal - screenRows));
+
+  let keepFrom = history.length;
+  while (keepFrom > 0) {
+    let start = keepFrom - 1;
+    while (start > 0 && history[start]!.wrapped) start--;
+    const need = reflowedRows(history, start, keepFrom, cols);
+    if (need > budget) break;
+    budget -= need;
+    keepFrom = start;
+  }
+  return keepFrom === 0 ? history : history.slice(keepFrom);
+}

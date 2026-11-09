@@ -120,5 +120,13 @@ identically offline.
   (https://github.com/JetBrains/JetBrainsMono). Licensed under the SIL Open
   Font License, Version 1.1.
 
-The full licence text ships in each package (`node_modules/@fontsource*/*/LICENSE`)
-and is available at https://openfontlicense.org.
+The full licence texts ship inside the app bundle at `licenses/Inter-OFL.txt`
+and `licenses/JetBrainsMono-OFL.txt` (copied into `public/licenses/`), as the
+OFL requires when the fonts are redistributed.
+
+## CodeMirror and Lezer (editor)
+
+The Files-tab editor uses CodeMirror 6 (`@codemirror/*`) and the Lezer
+parsers it depends on (`@lezer/*`). Copyright (C) 2018-2021 by Marijn
+Haverbeke and others. Licensed under the MIT License; the full text ships at
+`licenses/CodeMirror-MIT.txt` and `licenses/Lezer-MIT.txt`.

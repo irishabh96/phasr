@@ -124,7 +124,7 @@ function CleanupAction({ repositoryId, path, onDone }: { repositoryId: string; p
       <button
         type="button"
         disabled={remove.isPending || remove.isSuccess}
-        onClick={() => remove.mutate([path], { onSuccess: onDone })}
+        onClick={() => remove.mutate({ paths: [path] }, { onSuccess: onDone })}
         className="rounded-(--radius-control) border border-(--color-border-default) px-2 py-0.5 text-[11px] text-(--color-text-secondary) hover:border-(--color-border-strong) disabled:opacity-50 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
       >
         {remove.isSuccess ? "Worktree removed" : remove.isPending ? "Removing…" : "Remove worktree"}

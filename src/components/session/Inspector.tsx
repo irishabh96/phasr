@@ -245,7 +245,7 @@ function TaskSection({ workspace, onCollapse }: { workspace: Workspace; onCollap
   const running = workspace.status === "running";
   const now = useNow(running);
   const started = workspace.startedAt ? new Date(workspace.startedAt) : null;
-  const base = repo?.defaultBranch ?? "main";
+  const base = workspace.baseBranch ?? repo?.defaultBranch ?? "main";
   const baseState =
     !branch || branch.targetRef === null
       ? null

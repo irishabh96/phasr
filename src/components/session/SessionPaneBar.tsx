@@ -12,6 +12,7 @@ import { useGitStatus } from "@/lib/hooks/useGit";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useRunningCommands } from "@/lib/hooks/useReview";
 import { portOf } from "./Inspector";
+import { runTabsForTask } from "@/lib/runTabs";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore, type InnerTab, type SessionPane } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -38,7 +39,8 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
   const { data: running } = useRunningCommands(workspace.worktreePath ? workspaceId : null);
 
   const tabs = state?.tabs ?? [];
-  const runTabs = runPanel.openTabs
+  const runScope = workspace.worktreePath ? workspaceId : null;
+  const runTabs = runTabsForTask(runPanel.openTabs, runPanel.shown, running, runScope)
     .map((id) => runCommands?.find((rc) => rc.id === id))
     .filter((rc): rc is NonNullable<typeof rc> => !!rc);
   const adds = changes?.reduce((n, f) => n + (f.adds ?? 0), 0) ?? 0;

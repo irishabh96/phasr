@@ -99,7 +99,8 @@ export function useWorktreeSizes(repositoryId: string | null | undefined, enable
 export function useRemoveWorktrees(repositoryId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (paths: string[]) => tauri.removeWorktrees(repositoryId, paths),
+    mutationFn: ({ paths, force = false }: { paths: string[]; force?: boolean }) =>
+      tauri.removeWorktrees(repositoryId, paths, force),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: repositoryConfigKeys.worktrees(repositoryId) });
       void queryClient.invalidateQueries({ queryKey: repositoryConfigKeys.sizes(repositoryId) });

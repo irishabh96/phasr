@@ -99,6 +99,20 @@ interface RunPanelState {
   hidePanel(): void;
   /** show the panel and focus the first tab if none is active */
   showPanel(): void;
+  /**
+   * `${runCommandId}@${workspaceId|"repo"}` keys. `intents`: the user asked
+   * to RUN it there (consumed by the terminal's first start). `shown`: the
+   * tab belongs to that task's pane bar. Mounting a run tab only ever
+   * ATTACHES; it spawns only with an intent, so visiting another task never
+   * starts a command there.
+   */
+  intents: Record<string, true>;
+  shown: Record<string, true>;
+  consumeIntent(key: string): boolean;
+}
+
+export function runKey(runCommandId: string, workspaceId: string | null | undefined): string {
+  return `${runCommandId}@${workspaceId ?? "repo"}`;
 }
 
 export type SidebarMode = "collapsed" | "pinned" | "hidden";
@@ -854,20 +868,40 @@ export const useUiStore = create<UiState>((set, get) => ({
     openTabs: [],
     activeTab: null,
     openTab: (id) => {
-      const { runPanel } = get();
+      const { runPanel, activeWorkspaceContext } = get();
       const existing = runPanel.openTabs.includes(id)
         ? runPanel.openTabs
         : [...runPanel.openTabs, id];
+      // Opening a run tab is an explicit "run it here".
+      const key = runKey(id, activeWorkspaceContext?.workspaceId);
       set({
-        runPanel: { ...runPanel, openTabs: existing, activeTab: id },
+        runPanel: {
+          ...runPanel,
+          openTabs: existing,
+          activeTab: id,
+          intents: { ...runPanel.intents, [key]: true },
+          shown: { ...runPanel.shown, [key]: true },
+        },
       });
+    },
+    intents: {},
+    shown: {},
+    consumeIntent: (key) => {
+      const { runPanel } = get();
+      if (!runPanel.intents[key]) return false;
+      const { [key]: _used, ...rest } = runPanel.intents;
+      set({ runPanel: { ...runPanel, intents: rest } });
+      return true;
     },
     closeTab: (id) => {
       const { runPanel } = get();
       const remaining = runPanel.openTabs.filter((tab) => tab !== id);
+      const ctxWs = get().activeWorkspaceContext?.workspaceId;
+      const { [runKey(id, ctxWs)]: _gone, ...shownRest } = runPanel.shown;
       set({
         runPanel: {
           ...runPanel,
+          shown: shownRest,
           openTabs: remaining,
           activeTab:
             runPanel.activeTab === id

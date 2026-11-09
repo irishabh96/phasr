@@ -187,7 +187,7 @@ function TaskBreadcrumb({ workspaceId }: { workspaceId: string }) {
   const { data: ws } = useWorkspace(workspaceId);
   const { data: repo } = useRepository(ws?.repositoryId);
   if (!ws) return null;
-  const base = repo?.defaultBranch ?? null;
+  const base = ws.baseBranch ?? repo?.defaultBranch ?? null;
   return (
     <div className="flex min-w-0 items-center gap-3" data-tauri-drag-region>
       <span aria-hidden className="text-(--color-text-faint)">

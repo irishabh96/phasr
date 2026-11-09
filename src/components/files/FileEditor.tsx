@@ -17,7 +17,7 @@ import {
 import { humanizeError } from "@/lib/humanizeError";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { languageFor } from "./CodeEditor";
+import { languageLabel } from "./language";
 
 const CodeEditor = lazy(() => import("./CodeEditor"));
 
@@ -47,36 +47,75 @@ export function FileEditor({
   const write = useWriteWorkspaceFile(workspaceId);
   const revert = useRevertHunk(workspaceId);
   const [buffer, setBuffer] = useState<string | null>(null);
+  /** The disk version the editor's document is based on. */
+  const [base, setBase] = useState<{ hash: string; contents: string } | null>(null);
+  /** The file changed on disk under unsaved edits (agent write). */
+  const [diskChanged, setDiskChanged] = useState(false);
   const [mode, setMode] = useState<"edit" | "diff">("edit");
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const now = useNow(false);
 
-  const loaded = file.data?.contents ?? "";
+  const loaded = base?.contents ?? "";
   const dirty = buffer !== null && buffer !== loaded;
   useEffect(() => onDirtyChange(path, dirty), [path, dirty, onDirtyChange]);
-  // A fresh load (another file, or a reload after an agent edit) resets the buffer.
-  useEffect(() => setBuffer(null), [file.data?.hash]);
+
+  // A new disk version: adopt it when there's nothing to lose (or it IS what
+  // we just saved); otherwise keep the user's buffer and say the file moved.
+  useEffect(() => {
+    const d = file.data;
+    if (!d) return;
+    if (base && d.hash === base.hash) return;
+    if (!base || !dirty || d.contents === buffer) {
+      setBase({ hash: d.hash, contents: d.contents });
+      if (d.contents === buffer) setBuffer(null);
+      setDiskChanged(false);
+    } else {
+      setDiskChanged(true);
+    }
+    // Only a new disk version should trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.data?.hash]);
+
+  const reloadFromDisk = () => {
+    if (!file.data) return;
+    setBase({ hash: file.data.hash, contents: file.data.contents });
+    setBuffer(null);
+    setDiskChanged(false);
+  };
 
   const save = (overwrite = false) => {
-    if (!file.data || buffer === null || !dirty) return;
+    if (!base || buffer === null || !dirty) return;
+    // After the disk moved under us, saving means "keep mine" explicitly.
+    const expectedHash = overwrite || diskChanged ? null : base.hash;
+    if (diskChanged && !overwrite) {
+      showToast({
+        intent: "warning",
+        title: "This file changed on disk",
+        message: "Reload to take the agent's version, or keep yours.",
+        action: { label: "Keep mine", onClick: () => save(true) },
+      });
+      return;
+    }
     write.mutate(
-      { path, contents: buffer, expectedHash: overwrite ? null : file.data.hash },
+      { path, contents: buffer, expectedHash },
       {
+        onSuccess: () => setDiskChanged(false),
         onError: (err) =>
           isFileChangedOnDisk(err)
-            ? showToast({
+            ? (setDiskChanged(true),
+              showToast({
                 intent: "warning",
                 title: "The agent changed this file since you opened it",
                 message: "Your edits are still in the editor.",
-                action: { label: "Overwrite with mine", onClick: () => save(true) },
-              })
+                action: { label: "Keep mine", onClick: () => save(true) },
+              }))
             : showToast({ intent: "error", title: "Couldn't save", message: humanizeError(err) }),
       },
     );
   };
 
   const crumbs = path.split("/");
-  const lang = languageFor(path).label;
+  const lang = languageLabel(path);
   const indent = useMemo(() => detectIndent(loaded), [loaded]);
   const eol = loaded.includes("\r\n") ? "CRLF" : "LF";
   const edit = file.data?.lastAgentEdit ?? null;
@@ -119,6 +158,19 @@ export function FileEditor({
         </div>
       </div>
 
+      {diskChanged ? (
+        <div role="status" className="flex shrink-0 items-center gap-2 border-b border-(--color-border-subtle) bg-(--color-warning-tint) px-3 py-1.5 text-[12px]">
+          <span className="flex-1 text-(--color-text-secondary)">
+            {edit ? AGENT_META[edit.agent].label : "Something"} changed this file on disk while you had unsaved edits.
+          </span>
+          <Button size="sm" className="h-6" onClick={reloadFromDisk}>
+            Reload theirs
+          </Button>
+          <Button size="sm" className="h-6" variant="primary" onClick={() => save(true)}>
+            Keep mine
+          </Button>
+        </div>
+      ) : null}
       <div className="relative min-h-0 flex-1">
         {file.isLoading ? (
           <PanelState kind="loading" rows={8} className="p-4" />
@@ -154,7 +206,7 @@ export function FileEditor({
             }
           >
             <CodeEditor
-              docKey={`${path}@${file.data?.hash ?? ""}`}
+              docKey={`${path}@${base?.hash ?? ""}`}
               value={loaded}
               path={path}
               onChange={setBuffer}
