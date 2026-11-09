@@ -1,4 +1,5 @@
 import { useAgentSignalEvents } from "@/lib/hooks/useAgentSignals";
+import { useInboxEvents } from "@/lib/hooks/useInbox";
 import { useCheckEvents } from "@/lib/hooks/useReview";
 import { useTaskCardEvents } from "@/lib/hooks/useTaskCards";
 
@@ -12,4 +13,6 @@ export function useAppEvents() {
   useTaskCardEvents();
   useAgentSignalEvents();
   useCheckEvents();
+  // Inbox cache + delivery fan-out (`useOnInboxCreated`).
+  useInboxEvents();
 }

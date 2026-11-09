@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
-import { useInboxEvents } from "@/lib/hooks/useInbox";
+import { useOnInboxCreated } from "@/lib/hooks/useInbox";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { initNotificationPermissionState, osNotificationsGranted } from "@/lib/notificationPermission";
 import { shouldDeliver } from "@/lib/notificationPolicy";
@@ -33,7 +33,7 @@ export function useNeedsYouNotifications() {
     void initNotificationPermissionState();
   }, []);
 
-  useInboxEvents((n: AppNotification) => {
+  useOnInboxCreated((n: AppNotification) => {
     if (!HANDLED_HERE.has(n.kind)) return;
     const focused = typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus();
     const taskId = (n.payload.taskId as string | undefined) ?? n.workspaceId ?? null;
