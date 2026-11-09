@@ -5,6 +5,7 @@ use tauri::State;
 use crate::auth::{AuthError, SessionState};
 use crate::domain::UserSettings;
 use crate::store::{AppMetaRepo, SettingsRepo, StoreError};
+use crate::settings_trust::UnconfirmedSetting;
 use crate::sync::CloudSyncState;
 
 /// Wraps `StoreError` so we can carry an auth-rejection variant on the
@@ -130,31 +131,35 @@ pub async fn update_user_settings(
     Ok(updated)
 }
 
-/// Synced settings that would run as commands here but haven't been
-/// confirmed on this machine: `agentCommands.<agent>` / `terminalShell`.
-/// Until confirmed, launches use the default template / login shell.
+/// Synced settings that would take effect here but haven't been confirmed
+/// on this machine, each with its value: `agentCommands.<agent>` /
+/// `terminalShell` / `defaultPermissionMode` (only when `skip-all`). Until
+/// confirmed, launches use the default template / login shell / asking
+/// permission mode.
 #[tauri::command]
 pub async fn list_unconfirmed_settings(
     repo: State<'_, SettingsRepo>,
     meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
-) -> Result<Vec<String>, SettingsCmdError> {
+) -> Result<Vec<UnconfirmedSetting>, SettingsCmdError> {
     session.require()?;
     let settings = repo.get_or_init().await?;
     Ok(crate::settings_trust::unconfirmed(&meta, &settings).await?)
 }
 
-/// "Allow on this machine" for the current agent templates and terminal
-/// shell. Returns the entries that were unconfirmed.
+/// "Allow on this Mac" for exactly `keys` (as `list_unconfirmed_settings`
+/// names them), each at its current value — never every synced setting at
+/// once. Returns the keys that were confirmed.
 #[tauri::command]
 pub async fn confirm_settings_on_this_machine(
+    keys: Vec<String>,
     repo: State<'_, SettingsRepo>,
     meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<String>, SettingsCmdError> {
     session.require()?;
     let settings = repo.get_or_init().await?;
-    Ok(crate::settings_trust::confirm_all(&meta, &settings).await?)
+    Ok(crate::settings_trust::confirm_keys(&meta, &settings, &keys).await?)
 }
 
 /// Shells from `/etc/shells` that exist here (Settings → Terminal → Shell).
