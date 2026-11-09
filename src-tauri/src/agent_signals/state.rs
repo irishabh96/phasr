@@ -81,11 +81,13 @@ pub struct Attention {
     /// the UI offers "Open terminal" instead of Allow/Deny.
     pub can_respond: bool,
     /// Whether "Allow for this task" is answerable: the dialog on screen has
-    /// an option scoped to THIS session/task. Claude's option 2 is often a
-    /// persistent project rule ("always allow access to <dir> from this
-    /// project"), which must never be what "for this task" sends, so for
-    /// Claude this stays false until the options are read off the screen
-    /// and one of them is session-scoped.
+    /// an option scoped to THIS session/task (`heuristics::
+    /// is_session_scoped`), whose number/hotkey is `keys.allow_task`. Option
+    /// 2 is often a persistent rule ("always allow access to <dir> from
+    /// this project", "don't ask again for `<cmd>` commands in <dir>",
+    /// Codex's "commands that start with …"), which must never be what "for
+    /// this task" sends — so for every agent this is false until the
+    /// options are read off the screen and one of them is session-scoped.
     pub can_allow_for_task: bool,
     #[serde(skip)]
     pub keys: KeyOverrides,
@@ -410,8 +412,8 @@ impl TaskSignalState {
                             since: now,
                             source: AttentionSource::Hook,
                             can_respond: self.agent.approval_keys().is_some(),
-                            can_allow_for_task: allow_task_by_default(self.agent)
-                                && self.agent.approval_keys().is_some(),
+                            // Until the screen shows a session-scoped option.
+                            can_allow_for_task: false,
                             keys: KeyOverrides::default(),
                         },
                         None,
@@ -496,7 +498,7 @@ impl TaskSignalState {
                         can_respond: found.can_respond && self.agent.approval_keys().is_some(),
                         can_allow_for_task: found.can_respond
                             && self.agent.approval_keys().is_some()
-                            && (allow_task_by_default(self.agent) || found.keys.allow_task.is_some()),
+                            && found.keys.allow_task.is_some(),
                         keys: found.keys,
                     },
                     None,
@@ -550,7 +552,6 @@ impl TaskSignalState {
         if found.kind == AttentionKind::Trust || self.kind != AgentStateKind::NeedsYou {
             return;
         }
-        let agent = self.agent;
         let Some(attention) = self
             .attention
             .as_mut()
@@ -558,17 +559,8 @@ impl TaskSignalState {
         else {
             return;
         };
-        match found.keys.allow_task.clone() {
-            Some(key) => {
-                attention.keys.allow_task = Some(key);
-                attention.can_allow_for_task = true;
-            }
-            None if !allow_task_by_default(agent) => {
-                attention.keys.allow_task = None;
-                attention.can_allow_for_task = false;
-            }
-            None => {}
-        }
+        attention.can_allow_for_task = found.keys.allow_task.is_some();
+        attention.keys.allow_task = found.keys.allow_task.clone();
     }
 
     pub fn on_exit(&mut self, now: DateTime<Utc>) {
@@ -610,13 +602,6 @@ impl TaskSignalState {
 
 fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
-}
-
-/// Whether the agent's static "allow for this task" key (`approval_keys`)
-/// is safe to send without reading the dialog. Not for Claude: its option 2
-/// varies per dialog and is often a persistent project rule.
-fn allow_task_by_default(agent: Agent) -> bool {
-    agent != Agent::Claude
 }
 
 fn str_input<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
@@ -753,7 +738,9 @@ pub fn tool_attention(
         since: now,
         source: AttentionSource::Hook,
         can_respond,
-        can_allow_for_task: can_respond && allow_task_by_default(agent),
+        // Hook cards are raised before the dialog is drawn; the screen
+        // decides (`refine_hook_attention`).
+        can_allow_for_task: false,
         keys: KeyOverrides::default(),
     }
 }
@@ -1250,13 +1237,21 @@ mod tests {
         let claimed = s.claim_attention(&a.id, AttentionResponse::AllowTask, now).unwrap();
         assert_eq!(claimed.keys.allow_task.as_deref(), Some("2"));
 
-        // Codex reads its own hotkeys: allow-task stays available.
+        // Codex reads its own hotkeys: a session-scoped option on screen
+        // ("this command in this session (a)") is allow-task, with its key…
         let mut c = state(Agent::Codex);
-        c.apply_heuristic(Some(claude_options(Some("p"))), now);
+        c.apply_heuristic(Some(claude_options(Some("a"))), now);
         assert!(c.attention.as_ref().unwrap().can_allow_for_task);
         // Wire field.
         let v = serde_json::to_value(c.to_wire()).unwrap();
         assert_eq!(v["attention"]["canAllowForTask"], true);
+        // …and with none (the persistent prefix rule, `p`), no static
+        // fallback key makes it available.
+        for agent in [Agent::Codex, Agent::Gemini, Agent::Copilot] {
+            let mut c = state(agent);
+            c.apply_heuristic(Some(claude_options(None)), now);
+            assert!(!c.attention.as_ref().unwrap().can_allow_for_task, "{agent:?}");
+        }
     }
 
     #[test]

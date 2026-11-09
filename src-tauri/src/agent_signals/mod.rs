@@ -73,8 +73,9 @@ pub enum AgentSignalError {
     StaleAttention,
     #[error("this prompt can't be answered from Phasr; open the terminal to respond")]
     NotRespondable,
-    /// The dialog offers no option scoped to this task/session (Claude's
-    /// "always allow … from this project" is a persistent rule).
+    /// The dialog offers no option scoped to this task/session ("always
+    /// allow … from this project", "don't ask again for `<cmd>` commands in
+    /// <dir>", Codex's "commands that start with …" are persistent rules).
     #[error("this prompt has no allow-for-this-task option; allow once or answer in the terminal")]
     AllowTaskUnavailable,
 }
@@ -530,6 +531,17 @@ impl AgentSignals {
                 .agent
                 .approval_keys()
                 .ok_or(AgentSignalError::NotRespondable)?;
+            if response == AttentionResponse::AllowTask
+                && entry
+                    .state
+                    .attention
+                    .as_ref()
+                    .is_some_and(|a| a.id == attention_id && a.keys.allow_task.is_none())
+            {
+                // Only ever the session-scoped option read off the screen:
+                // there is no static "allow for this task" key to guess.
+                return Err(AgentSignalError::AllowTaskUnavailable);
+            }
             let attention = entry
                 .state
                 .claim_attention(attention_id, response, Utc::now())
@@ -557,7 +569,7 @@ impl AgentSignals {
                 AttentionResponse::AllowTask => attention
                     .keys
                     .allow_task
-                    .unwrap_or_else(|| keys.allow_task.to_string()),
+                    .ok_or(AgentSignalError::AllowTaskUnavailable)?,
                 AttentionResponse::Deny => attention
                     .keys
                     .deny

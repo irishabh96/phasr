@@ -204,7 +204,7 @@ pub fn detect(agent: Agent, text: &str) -> Option<Detection> {
         } else if agent == Agent::Claude {
             claude_option_keys(after)
         } else {
-            KeyOverrides::default()
+            numbered_option_keys(after)
         };
         let found = Detection {
             kind,
@@ -235,9 +235,11 @@ pub fn detect(agent: Agent, text: &str) -> Option<Detection> {
 }
 
 /// Codex prints each option's hotkey: `1. Yes, proceed (y)  2. Yes, and
-/// don't ask again for … (p)  3. No, … (esc)`. Observed on 0.165: the "don't
-/// ask again" key is `p` for a command-prefix rule; other variants (session
-/// grants) use other letters, so it's read off the screen, not assumed.
+/// don't ask again for … (p)  3. No, … (esc)`. Option 2 varies: "don't ask
+/// again for this command in this session (a)" is a session grant, while
+/// "don't ask again for commands that start with `…` (p)" (0.165) saves a
+/// command-prefix rule — so it becomes `allow_task` only when its label is
+/// session-scoped (`is_session_scoped`), with the key read off the screen.
 fn codex_hotkeys(after_question: &str) -> KeyOverrides {
     static OPTION: OnceLock<Regex> = OnceLock::new();
     static KEY: OnceLock<Regex> = OnceLock::new();
@@ -258,7 +260,8 @@ fn codex_hotkeys(after_question: &str) -> KeyOverrides {
             .map(|k| k[1].to_string());
         match &c[1] {
             "1" => keys.allow_once = found,
-            _ => keys.allow_task = found,
+            _ if is_session_scoped(&c[2]) => keys.allow_task = found,
+            _ => {}
         }
         // Continue from the next option's number (the lookahead consumed it).
         let next = c.get(2).map(|m| m.end()).unwrap_or(whole);
@@ -296,21 +299,83 @@ fn claude_option_keys(after_question: &str) -> KeyOverrides {
             continue;
         }
         let label = &after_question[(*label_from).min(label_to)..label_to];
-        // Words may be glued together where the TUI moved the cursor
-        // instead of printing a space.
-        let squashed: String = label.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
-        if number == "1" && squashed.is_empty() {
+        if number == "1" && label.trim().is_empty() {
             keys.allow_once = Some("1".into());
-        } else if squashed.contains("session")
-            && !squashed.contains("always")
-            && !squashed.contains("project")
-            && !squashed.contains("automode")
-            && keys.allow_task.is_none()
-        {
+        } else if keys.allow_task.is_none() && is_session_scoped(label) {
             keys.allow_task = Some(number.clone());
         }
     }
     keys
+}
+
+/// A plain numbered option list (Gemini: `1. Allow once  2. Allow for this
+/// session  3. No, suggest changes (esc)`): the first session-scoped option
+/// is `allow_task`, answered with its own number.
+fn numbered_option_keys(after_question: &str) -> KeyOverrides {
+    static OPTION: OnceLock<Regex> = OnceLock::new();
+    let option = OPTION.get_or_init(|| {
+        Regex::new(r"(?:^|[\s\u{276f}\u{203a}\u{25cf}>])([1-9])\.\s*[A-Za-z]").expect("numbered option regex")
+    });
+    let span = &after_question[..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
+    let starts: Vec<(usize, usize, String)> = option
+        .captures_iter(span)
+        .filter_map(|c| {
+            let number = c.get(1)?;
+            Some((number.start(), number.end() + 1, number.as_str().to_string()))
+        })
+        .collect();
+    let mut keys = KeyOverrides::default();
+    for (i, (_, label_from, number)) in starts.iter().enumerate() {
+        let label_to = starts.get(i + 1).map_or(span.len(), |next| next.0);
+        let label = &span[(*label_from).min(label_to)..label_to];
+        if is_session_scoped(label) {
+            keys.allow_task = Some(number.clone());
+            break;
+        }
+    }
+    keys
+}
+
+/// Whether a dialog option grants approval for THIS agent session only —
+/// what "Allow for this task" means. Anything that saves a rule beyond the
+/// session is not: "always allow access to <dir> from this project", "don't
+/// ask again for `<cmd>` commands in <dir>" (a permanent project rule, even
+/// when the command or path happens to contain "session"), "commands that
+/// start with …", "allow always", future sessions, auto mode.
+///
+/// Read conservatively: quoted text (a command) and path-like words are
+/// dropped first, so they can't supply the session wording; a persistent
+/// marker anywhere disqualifies; and the session wording must then be there
+/// ("this session", "the current/running session", "for the rest of the
+/// session"). Words glued together where the TUI moved the cursor instead
+/// of printing a space still read.
+pub(crate) fn is_session_scoped(label: &str) -> bool {
+    static QUOTED: OnceLock<Regex> = OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| Regex::new(r#"`[^`]*`|"[^"]*"|'[^'\s]*'"#).expect("quoted regex"));
+    let unquoted = quoted.replace_all(label, " ");
+    let words: String = unquoted
+        .split_whitespace()
+        .filter(|w| !w.contains('/') && !w.starts_with('~'))
+        .collect::<String>()
+        .to_lowercase();
+    const PERSISTENT: &[&str] = &[
+        "always",
+        "project",
+        "automode",
+        "commandsin",
+        "commandsthat",
+        "startwith",
+        "future",
+        "allsessions",
+        "everysession",
+        "permanent",
+        "settings",
+    ];
+    if PERSISTENT.iter().any(|m| words.contains(m)) {
+        return false;
+    }
+    const SESSION: &[&str] = &["thissession", "currentsession", "runningsession", "restofthesession"];
+    SESSION.iter().any(|m| words.contains(m))
 }
 
 /// The keystrokes that answer Claude's folder-trust dialog, read off its
@@ -717,7 +782,9 @@ mod tests {
         assert_eq!(d.kind, AttentionKind::Shell);
         assert!(d.can_respond);
         assert_eq!(d.keys.allow_once.as_deref(), Some("y"));
-        assert_eq!(d.keys.allow_task.as_deref(), Some("p"));
+        // Option 2 here is "don't ask again for commands that start with
+        // `touch …` (p)": a saved prefix rule, not "for this task".
+        assert_eq!(d.keys.allow_task, None);
     }
 
     #[test]
@@ -727,9 +794,72 @@ mod tests {
         );
         assert_eq!(keys.allow_once.as_deref(), Some("y"));
         assert_eq!(keys.allow_task.as_deref(), Some("a"));
+        // A prefix rule is persistent: no allow-task, whatever its hotkey.
         let keys = codex_hotkeys(" 1. Yes, proceed (y) 2. Yes, and don't ask again for commands that start with `printf (q)` ( p ) 3. No, (esc)");
-        assert_eq!(keys.allow_task.as_deref(), Some("p"));
+        assert_eq!(keys.allow_once.as_deref(), Some("y"));
+        assert_eq!(keys.allow_task, None);
         assert_eq!(codex_hotkeys("no options here"), KeyOverrides::default());
+    }
+
+    /// Second review #8, with the reviewer's examples: option 2 counts as
+    /// "allow for this task" only when it is genuinely session-scoped.
+    #[test]
+    fn only_genuinely_session_scoped_options_are_allow_task() {
+        for persistent in [
+            // Claude: a permanent project rule, though both the command
+            // and the path contain "session".
+            "Yes, and don't ask again for `tmux new-session` commands in /code/session-service",
+            "Yes, and don't ask again for tmux new-session commands in /code/session-service",
+            "Yes,anddon'taskagainfortmuxnew-sessioncommandsin/code/session-service",
+            "Yes, and always allow access to /Users/me/wt from this project",
+            "Yes, and always allow this session's project",
+            "Yes, and don't ask again for `echo this session` commands in /w",
+            "Yes, and switch to auto mode",
+            // Codex prefix rule; Gemini "always" / future sessions.
+            "Yes, and don't ask again for commands that start with `git` (p)",
+            "Yes, allow always",
+            "Allow for all future sessions",
+            "Yes, proceed (y)",
+            "Allow once",
+        ] {
+            assert!(!is_session_scoped(persistent), "{persistent}");
+        }
+        for session in [
+            "Yes, allow all edits during this session (shift+tab)",
+            "Yes,allowalleditsduringthissession",
+            "Yes, and don't ask again for this command in this session (a)",
+            "Allow for this session",
+            "Yes, and don't ask again this session",
+            "Yes, and approve `ls` for the rest of the running session",
+        ] {
+            assert!(is_session_scoped(session), "{session}");
+        }
+    }
+
+    #[test]
+    fn claude_permanent_rule_with_session_in_its_command_is_not_allow_task() {
+        let keys = claude_option_keys(
+            " ❯ 1. Yes  2. Yes, and don't ask again for tmux new-session commands in /code/session-service  3. No, and tell Claude what to do differently (esc)",
+        );
+        assert_eq!(keys.allow_once.as_deref(), Some("1"));
+        assert_eq!(keys.allow_task, None);
+        let t = tail(&[b"Bash command\r\n\r\n  tmux new-session -d\r\n\r\nDo you want to proceed?\r\n\xe2\x9d\xaf 1. Yes\r\n  2. Yes, and don't ask again for tmux new-session commands in /code/session-service\r\n  3. No, and tell Claude what to do differently (esc)\r\n"]);
+        let d = t.detect(Agent::Claude).unwrap();
+        assert!(d.can_respond);
+        assert_eq!(d.keys.allow_task, None);
+    }
+
+    /// Gemini's options are read off the screen too: its session grant is
+    /// answered with that option's own number; "allow always" isn't one.
+    #[test]
+    fn gemini_allow_task_is_its_session_option_number() {
+        let t = tail(&[b"\x1b[33m?\x1b[39m Shell rm -rf dist\r\n\r\nAllow execution of: 'rm'?\r\n\r\n\x1b[32m\xe2\x97\x8f\x1b[39m 1. Allow once\r\n  2. Allow for this session\r\n  3. No, suggest changes (esc)\r\n"]);
+        let d = t.detect(Agent::Gemini).unwrap();
+        assert_eq!(d.keys.allow_task.as_deref(), Some("2"));
+        let t = tail(&[b"Allow execution of: 'rm'?\r\n\xe2\x97\x8f 1. Allow once\r\n  2. Allow always\r\n  3. Modify with external editor\r\n  4. No, suggest changes (esc)\r\n"]);
+        let d = t.detect(Agent::Gemini).unwrap();
+        assert!(d.can_respond);
+        assert_eq!(d.keys.allow_task, None);
     }
 
     // ---- false positives ----------------------------------------------

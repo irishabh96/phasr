@@ -72,8 +72,9 @@ impl PermissionMode {
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalKeys {
     pub allow_once: &'static str,
-    /// "Yes, and don't ask again" for the rest of this task's session.
-    pub allow_task: &'static str,
+    // No static "allow for this task" key: what option 2 grants varies per
+    // dialog (often a persistent rule), so it is only ever the
+    // session-scoped option read off the screen (`agent_signals::heuristics`).
     pub deny: &'static str,
 }
 
@@ -241,21 +242,17 @@ impl Agent {
     /// no ask mode (nothing would ever prompt).
     pub fn approval_keys(self) -> Option<ApprovalKeys> {
         match self {
-            // "1. Yes / 2. Yes, and don't ask again … / 3. No (esc)"
+            // "1. Yes / 2. Yes, and … / 3. No (esc)"
             Agent::Claude | Agent::Copilot | Agent::Gemini => Some(ApprovalKeys {
                 allow_once: "1",
-                allow_task: "2",
                 deny: "\x1b",
             }),
             // Codex labels its choices with letter hotkeys. Verified live on
             // codex-cli 0.165: "1. Yes, proceed (y) / 2. Yes, and don't ask
             // again for commands that start with `…` (p) / 3. No … (esc)",
-            // and `y` ran the command. The "don't ask again" letter varies by
-            // variant, so M6 reads it off the rendered dialog when it can;
-            // `p` is only the fallback.
+            // and `y` ran the command.
             Agent::Codex => Some(ApprovalKeys {
                 allow_once: "y",
-                allow_task: "p",
                 deny: "\x1b",
             }),
             Agent::OpenCode => None,
