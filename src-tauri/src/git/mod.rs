@@ -9,6 +9,7 @@ mod error;
 mod files;
 pub mod fs_guard;
 mod hunks;
+mod ignore;
 mod init;
 mod log;
 mod merge;
@@ -29,6 +30,7 @@ pub use error::GitError;
 pub use files::list_files;
 pub use fs_guard::{is_within_roots, resolve_in_worktree};
 pub use hunks::{revert_hunk, RevertHunkError};
+pub use ignore::check_ignored;
 pub use init::init_repo;
 pub use log::{commit_files, log as git_log_query, Commit, CommitFileChange, LogOptions};
 pub use merge::{
