@@ -268,8 +268,16 @@ async function seedColouredScreen(page: Page) {
  * PANE has stopped animating, and the grid has caught up with it. The
  * second half is the pane-fit invariant, which means every test that
  * changes a width is enforcing it whether it asks or not.
+ *
+ * Panels slide with a transform now (spec P1): a collapse keeps its width
+ * for the whole slide and the pane changes once, at the end. A steady pane
+ * width alone is therefore not "done" — the shell dropping
+ * `data-panel-animating` is, so that is waited on first.
  */
 async function settle(page: Page) {
+  await expect
+    .poll(() => page.evaluate(() => !document.querySelector("[data-panel-animating]")), { timeout: 5_000 })
+    .toBe(true);
   let last = -1;
   let steady = 0;
   for (let i = 0; i < 60 && steady < 2; i++) {
