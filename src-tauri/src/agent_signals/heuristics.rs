@@ -106,28 +106,119 @@ fn rules() -> &'static [Rule] {
         vec![
             // Claude: "<header>\n…\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and
             // don't ask again…\n  3. No, and tell Claude what to do differently (esc)"
-            rule(CLAUDE, r"Do you want to make this edit to \S+?\?", Some(r"1\. Yes"), Edit, "Edit a file", true),
-            rule(CLAUDE, r"Do you want to create \S+?\?", Some(r"1\. Yes"), Edit, "Create a file", true),
-            rule(CLAUDE, r"Do you want to proceed\?", Some(r"1\. Yes"), Tool, "Approve a tool call", true),
+            rule(
+                CLAUDE,
+                r"Do you want to make this edit to \S+?\?",
+                Some(r"1\. Yes"),
+                Edit,
+                "Edit a file",
+                true,
+            ),
+            rule(
+                CLAUDE,
+                r"Do you want to create \S+?\?",
+                Some(r"1\. Yes"),
+                Edit,
+                "Create a file",
+                true,
+            ),
+            rule(
+                CLAUDE,
+                r"Do you want to proceed\?",
+                Some(r"1\. Yes"),
+                Tool,
+                "Approve a tool call",
+                true,
+            ),
             // Workspace trust, shown on the first run in every fresh worktree
             // and BEFORE any hook can fire. 2.1.x focuses "No, exit", so the
             // generic approval keys would quit Claude: the answer keys are
             // read off the option layout instead (`trust_keys`), and the
             // card is detect-only when the layout can't be read.
-            rule(CLAUDE, r"one you trust\?", Some(r"Yes, I trust this folder"), Trust, "Trust this folder?", true),
-            rule(CLAUDE, r"Do you trust the files in this folder\?", Some(r"Yes, proceed"), Trust, "Trust this folder?", true),
+            rule(
+                CLAUDE,
+                r"one you trust\?",
+                Some(r"Yes, I trust this folder"),
+                Trust,
+                "Trust this folder?",
+                true,
+            ),
+            rule(
+                CLAUDE,
+                r"Do you trust the files in this folder\?",
+                Some(r"Yes, proceed"),
+                Trust,
+                "Trust this folder?",
+                true,
+            ),
             // Codex (ratatui overlay; y / a / esc hotkeys).
-            rule(CODEX, r"Would you like to run the following command\?", Some(r"Yes, proceed"), Shell, "Run a shell command", true),
-            rule(CODEX, r"Would you like to make the following edits\?", Some(r"Yes, proceed"), Edit, "Apply file edits", true),
+            rule(
+                CODEX,
+                r"Would you like to run the following command\?",
+                Some(r"Yes, proceed"),
+                Shell,
+                "Run a shell command",
+                true,
+            ),
+            rule(
+                CODEX,
+                r"Would you like to make the following edits\?",
+                Some(r"Yes, proceed"),
+                Edit,
+                "Apply file edits",
+                true,
+            ),
             // Different option set (session/host grants): don't guess keys.
-            rule(CODEX, r"Would you like to grant these permissions\?", None, Tool, "Grant permissions", false),
+            rule(
+                CODEX,
+                r"Would you like to grant these permissions\?",
+                None,
+                Tool,
+                "Grant permissions",
+                false,
+            ),
             // Gemini: "Allow once / Allow for this session / … / No, suggest changes (esc)".
-            rule(GEMINI, r"Allow execution of MCP tool", Some(r"Allow once"), Tool, "Use an MCP tool", true),
-            rule(GEMINI, r"Allow execution of", Some(r"Allow once"), Shell, "Run a shell command", true),
-            rule(GEMINI, r"Apply this change\?", Some(r"Allow once"), Edit, "Apply a file change", true),
-            rule(GEMINI, r"Do you want to proceed\?", Some(r"Allow once"), Tool, "Approve a tool call", true),
+            rule(
+                GEMINI,
+                r"Allow execution of MCP tool",
+                Some(r"Allow once"),
+                Tool,
+                "Use an MCP tool",
+                true,
+            ),
+            rule(
+                GEMINI,
+                r"Allow execution of",
+                Some(r"Allow once"),
+                Shell,
+                "Run a shell command",
+                true,
+            ),
+            rule(
+                GEMINI,
+                r"Apply this change\?",
+                Some(r"Allow once"),
+                Edit,
+                "Apply a file change",
+                true,
+            ),
+            rule(
+                GEMINI,
+                r"Do you want to proceed\?",
+                Some(r"Allow once"),
+                Tool,
+                "Approve a tool call",
+                true,
+            ),
             // Copilot: strings unverified (see module doc) — detect only.
-            rule(COPILOT, r"Do you want to (run|allow|use|proceed)", Some(r"\bYes\b"), Tool, "Approve a tool call", false),
+            rule(
+                COPILOT,
+                r"Do you want to (run|allow|use|proceed)",
+                Some(r"\bYes\b"),
+                Tool,
+                "Approve a tool call",
+                false,
+            ),
         ]
     })
 }
@@ -135,19 +226,27 @@ fn rules() -> &'static [Rule] {
 /// A shell-style `[y/N]` prompt at the very end, any agent.
 fn yes_no_prompt() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)(\[y/n\]|\(y/n\)|\[yes/no\])\s*:?\s*$").expect("y/n regex")
-    })
+    RE.get_or_init(|| Regex::new(r"(?i)(\[y/n\]|\(y/n\)|\[yes/no\])\s*:?\s*$").expect("y/n regex"))
 }
 
 /// Header lines that tell a generic Claude "Do you want to proceed?" apart.
 fn claude_kind_from_context(before: &str) -> Option<(AttentionKind, &'static str)> {
     // The header sits above the command block and two full-width rules
     // (~250 chars on a 120-col terminal, more on wider ones).
-    let tail: String = before.chars().rev().take(1500).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = before
+        .chars()
+        .rev()
+        .take(1500)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     if tail.contains("Bash command") {
         Some((AttentionKind::Shell, "Run a shell command"))
-    } else if tail.contains("Edit file") || tail.contains("Create file") || tail.contains("Write file") {
+    } else if tail.contains("Edit file")
+        || tail.contains("Create file")
+        || tail.contains("Write file")
+    {
         Some((AttentionKind::Edit, "Edit a file"))
     } else if tail.contains("Fetch") {
         Some((AttentionKind::Tool, "Fetch a web page"))
@@ -244,20 +343,19 @@ fn codex_hotkeys(after_question: &str) -> KeyOverrides {
     static OPTION: OnceLock<Regex> = OnceLock::new();
     static KEY: OnceLock<Regex> = OnceLock::new();
     let option = OPTION.get_or_init(|| {
-        Regex::new(r"(?s)([12])\.\s*Yes,(.*?)(?:[23]\.\s*(?:Yes|No),|$)").expect("codex option regex")
+        Regex::new(r"(?s)([12])\.\s*Yes,(.*?)(?:[23]\.\s*(?:Yes|No),|$)")
+            .expect("codex option regex")
     });
     let key = KEY.get_or_init(|| Regex::new(r"\(\s*([a-z])\s*\)").expect("codex key regex"));
-    let span = &after_question[..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
+    let span = &after_question
+        [..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
     let mut keys = KeyOverrides::default();
     let mut rest = span;
     while let Some(c) = option.captures(rest) {
         let whole = c.get(0).map(|m| m.end()).unwrap_or(rest.len());
         // The option's own label ends at its last `(x)`: a command quoted in
         // the label can't contribute a key that comes before it.
-        let found = key
-            .captures_iter(&c[2])
-            .last()
-            .map(|k| k[1].to_string());
+        let found = key.captures_iter(&c[2]).last().map(|k| k[1].to_string());
         match &c[1] {
             "1" => keys.allow_once = found,
             _ if is_session_scoped(&c[2]) => keys.allow_task = found,
@@ -283,7 +381,8 @@ fn codex_hotkeys(after_question: &str) -> KeyOverrides {
 /// "Allow for this task" is unavailable rather than silently saving a rule.
 fn claude_option_keys(after_question: &str) -> KeyOverrides {
     static OPTION: OnceLock<Regex> = OnceLock::new();
-    let option = OPTION.get_or_init(|| Regex::new(r"([1-9])\.\s*(Yes|No)\b").expect("claude option regex"));
+    let option =
+        OPTION.get_or_init(|| Regex::new(r"([1-9])\.\s*(Yes|No)\b").expect("claude option regex"));
     let starts: Vec<(usize, usize, String)> = option
         .captures_iter(after_question)
         .filter_map(|c| {
@@ -293,7 +392,9 @@ fn claude_option_keys(after_question: &str) -> KeyOverrides {
         .collect();
     let mut keys = KeyOverrides::default();
     for (i, (start, label_from, number)) in starts.iter().enumerate() {
-        let label_to = starts.get(i + 1).map_or(after_question.len(), |next| next.0);
+        let label_to = starts
+            .get(i + 1)
+            .map_or(after_question.len(), |next| next.0);
         let full = &after_question[*start..label_to];
         if !full.contains("Yes") {
             continue;
@@ -314,14 +415,20 @@ fn claude_option_keys(after_question: &str) -> KeyOverrides {
 fn numbered_option_keys(after_question: &str) -> KeyOverrides {
     static OPTION: OnceLock<Regex> = OnceLock::new();
     let option = OPTION.get_or_init(|| {
-        Regex::new(r"(?:^|[\s\u{276f}\u{203a}\u{25cf}>])([1-9])\.\s*[A-Za-z]").expect("numbered option regex")
+        Regex::new(r"(?:^|[\s\u{276f}\u{203a}\u{25cf}>])([1-9])\.\s*[A-Za-z]")
+            .expect("numbered option regex")
     });
-    let span = &after_question[..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
+    let span = &after_question
+        [..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
     let starts: Vec<(usize, usize, String)> = option
         .captures_iter(span)
         .filter_map(|c| {
             let number = c.get(1)?;
-            Some((number.start(), number.end() + 1, number.as_str().to_string()))
+            Some((
+                number.start(),
+                number.end() + 1,
+                number.as_str().to_string(),
+            ))
         })
         .collect();
     let mut keys = KeyOverrides::default();
@@ -351,7 +458,8 @@ fn numbered_option_keys(after_question: &str) -> KeyOverrides {
 /// of printing a space still read.
 pub(crate) fn is_session_scoped(label: &str) -> bool {
     static QUOTED: OnceLock<Regex> = OnceLock::new();
-    let quoted = QUOTED.get_or_init(|| Regex::new(r#"`[^`]*`|"[^"]*"|'[^'\s]*'"#).expect("quoted regex"));
+    let quoted =
+        QUOTED.get_or_init(|| Regex::new(r#"`[^`]*`|"[^"]*"|'[^'\s]*'"#).expect("quoted regex"));
     let unquoted = quoted.replace_all(label, " ");
     let words: String = unquoted
         .split_whitespace()
@@ -374,7 +482,12 @@ pub(crate) fn is_session_scoped(label: &str) -> bool {
     if PERSISTENT.iter().any(|m| words.contains(m)) {
         return false;
     }
-    const SESSION: &[&str] = &["thissession", "currentsession", "runningsession", "restofthesession"];
+    const SESSION: &[&str] = &[
+        "thissession",
+        "currentsession",
+        "runningsession",
+        "restofthesession",
+    ];
     SESSION.iter().any(|m| words.contains(m))
 }
 
@@ -405,7 +518,8 @@ fn trust_keys(after_question: &str) -> Option<KeyOverrides> {
     // The selector sits right before its option's label (a cursor move
     // and maybe the option's number in between).
     const SELECTOR_REACH: usize = 12;
-    let span = &after_question[..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
+    let span = &after_question
+        [..floor_char_boundary(after_question, after_question.len().min(OPTIONS_SPAN))];
     let yes = yes_re.find(span)?.start();
     let no = no_re.find(span)?.start();
     // The LAST selector: an earlier `❯` would be from a previous frame.
@@ -417,7 +531,11 @@ fn trust_keys(after_question: &str) -> Option<KeyOverrides> {
         return None;
     }
     let target = options.iter().position(|(_, is_yes)| *is_yes)?;
-    let arrow = if target > selected { "\x1b[B" } else { "\x1b[A" };
+    let arrow = if target > selected {
+        "\x1b[B"
+    } else {
+        "\x1b[A"
+    };
     let mut accept = arrow.repeat(target.abs_diff(selected));
     accept.push('\r');
     Some(KeyOverrides {
@@ -577,8 +695,8 @@ impl AnsiStripper {
                         let params = std::mem::take(&mut self.csi);
                         match b {
                             // Cursor movement: a visual gap → a space.
-                            b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'f'
-                            | b'd' | b'`' => text.push(b' '),
+                            b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'f' | b'd'
+                            | b'`' => text.push(b' '),
                             // Erase display 2/3 = everything is gone.
                             b'J' if params == b"2" || params == b"3" => {
                                 flush(&mut text, &mut out);
@@ -745,7 +863,9 @@ mod tests {
     /// ("1. Yes … 4. No", "Esc to cancel · Tab to amend").
     #[test]
     fn real_claude_bash_permission_dialog_is_recognised() {
-        let t = tail(&[include_bytes!("fixtures/claude-2.1.319-bash-permission.ansi")]);
+        let t = tail(&[include_bytes!(
+            "fixtures/claude-2.1.319-bash-permission.ansi"
+        )]);
         let d = t.detect(Agent::Claude).unwrap();
         assert_eq!(d.kind, AttentionKind::Shell);
         assert_eq!(d.title, "Run a shell command");
@@ -763,7 +883,12 @@ mod tests {
         assert_eq!(keys.allow_once.as_deref(), Some("1"));
         assert_eq!(keys.allow_task.as_deref(), Some("2"));
         // Glued words still read.
-        assert_eq!(claude_option_keys("1.Yes 2.Yes,allowalleditsduringthissession 3.No").allow_task.as_deref(), Some("2"));
+        assert_eq!(
+            claude_option_keys("1.Yes 2.Yes,allowalleditsduringthissession 3.No")
+                .allow_task
+                .as_deref(),
+            Some("2")
+        );
         for persistent in [
             " ❯ 1. Yes  2. Yes, and always allow access to /w from this project  3. Yes, and switch to auto mode  4. No",
             " ❯ 1. Yes  2. Yes, and don't ask again for git commands in /w  3. No",
@@ -866,7 +991,9 @@ mod tests {
 
     #[test]
     fn prose_quoting_the_question_without_options_is_ignored() {
-        let t = tail(&[b"I'll add a confirm step that asks \"Do you want to proceed?\" before deleting.\r\n> "]);
+        let t = tail(&[
+            b"I'll add a confirm step that asks \"Do you want to proceed?\" before deleting.\r\n> ",
+        ]);
         assert!(t.detect(Agent::Claude).is_none());
     }
 

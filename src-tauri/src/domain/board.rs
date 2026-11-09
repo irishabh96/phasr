@@ -235,7 +235,10 @@ mod tests {
     fn local_workspaces_have_no_lane() {
         let mut local = ws(WorkspaceStatus::Running);
         local.workspace_kind = WorkspaceKind::Local;
-        assert_eq!(derive_lane(&local, Some(AgentPhase::Idle), Some(&CHANGES)), None);
+        assert_eq!(
+            derive_lane(&local, Some(AgentPhase::Idle), Some(&CHANGES)),
+            None
+        );
     }
 
     /// Stopped by an app quit (startup recovery) or by Stop: not finished,
@@ -246,11 +249,20 @@ mod tests {
         let started = Utc::now() - chrono::Duration::minutes(10);
         let mut recovered = ws(WorkspaceStatus::Stopped);
         recovered.started_at = Some(started);
-        assert_eq!(derive_lane(&recovered, None, Some(&CHANGES)), Some(Lane::NeedsReview));
+        assert_eq!(
+            derive_lane(&recovered, None, Some(&CHANGES)),
+            Some(Lane::NeedsReview)
+        );
         assert!(!dependency_satisfied(&recovered, None));
         recovered.last_turn_ended_at = Some(started + chrono::Duration::minutes(5));
-        assert!(!dependency_satisfied(&recovered, None), "turn ended, then a follow-up was stopped");
-        assert!(!dependency_satisfied(&recovered, Some(AgentPhase::Exited)), "Stop marks it exited");
+        assert!(
+            !dependency_satisfied(&recovered, None),
+            "turn ended, then a follow-up was stopped"
+        );
+        assert!(
+            !dependency_satisfied(&recovered, Some(AgentPhase::Exited)),
+            "Stop marks it exited"
+        );
     }
 
     #[test]
@@ -259,7 +271,10 @@ mod tests {
         let started = Utc::now() - chrono::Duration::minutes(10);
         let mut running = ws(WorkspaceStatus::Running);
         running.started_at = Some(started);
-        assert!(!dependency_satisfied(&running, Some(Idle)), "no turn ended yet");
+        assert!(
+            !dependency_satisfied(&running, Some(Idle)),
+            "no turn ended yet"
+        );
         // A turn from a PREVIOUS run (before this run's start) doesn't count.
         running.last_turn_ended_at = Some(started - chrono::Duration::minutes(1));
         assert!(!dependency_satisfied(&running, Some(Idle)));
@@ -285,15 +300,24 @@ mod tests {
         gemini.exit_code = Some(0);
         assert!(dependency_satisfied(&gemini, None));
         assert!(dependency_satisfied(&gemini, Some(AgentPhase::Exited)));
-        assert!(dependency_satisfied(&with_outcome(ws(WorkspaceStatus::Stopped)), None));
+        assert!(dependency_satisfied(
+            &with_outcome(ws(WorkspaceStatus::Stopped)),
+            None
+        ));
         assert!(dependency_satisfied(&ws(WorkspaceStatus::Archived), None));
-        assert!(!dependency_satisfied(&ws(WorkspaceStatus::Failed), Some(AgentPhase::Exited)));
+        assert!(!dependency_satisfied(
+            &ws(WorkspaceStatus::Failed),
+            Some(AgentPhase::Exited)
+        ));
         assert!(!dependency_satisfied(&queued(), None));
     }
 
     #[test]
     fn wire_shapes() {
-        assert_eq!(serde_json::to_value(Lane::NeedsReview).unwrap(), "needs-review");
+        assert_eq!(
+            serde_json::to_value(Lane::NeedsReview).unwrap(),
+            "needs-review"
+        );
         assert_eq!(serde_json::to_value(Lane::NeedsYou).unwrap(), "needs-you");
         assert_eq!(
             serde_json::to_value(CHANGES).unwrap(),

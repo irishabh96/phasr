@@ -301,7 +301,8 @@ impl TaskSignalState {
                     input: tool_input.clone(),
                 };
                 if !(self.has_hook_attention() && self.attention_tool.as_ref() == Some(&call)) {
-                    let attention = tool_attention(self.agent, tool_name, tool_input, &self.cwd, now);
+                    let attention =
+                        tool_attention(self.agent, tool_name, tool_input, &self.cwd, now);
                     self.raise(attention, Some(call), now);
                 }
             }
@@ -326,7 +327,8 @@ impl TaskSignalState {
                     if self.card_is_for(&call) {
                         self.set_kind(AgentStateKind::Working, now);
                     }
-                } else if self.kind == AgentStateKind::NeedsYou || self.kind == AgentStateKind::Idle {
+                } else if self.kind == AgentStateKind::NeedsYou || self.kind == AgentStateKind::Idle
+                {
                     self.set_kind(AgentStateKind::Working, now);
                 }
             }
@@ -605,7 +607,10 @@ fn new_id() -> String {
 }
 
 fn str_input<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
-    input.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 /// `/work/tree/src/x.ts` → `src/x.ts` when inside `cwd`.
@@ -725,7 +730,13 @@ pub fn tool_attention(
         ),
         other => (
             AttentionKind::Tool,
-            format!("Use {}", other.strip_prefix("mcp__").unwrap_or(other).replace("__", " ")),
+            format!(
+                "Use {}",
+                other
+                    .strip_prefix("mcp__")
+                    .unwrap_or(other)
+                    .replace("__", " ")
+            ),
             compact_json(input),
             has_keys,
         ),
@@ -828,7 +839,11 @@ mod tests {
     fn pre_tool_use_then_permission_notification_needs_you_with_command() {
         let mut s = state(Agent::Claude);
         let now = Utc::now();
-        s.apply_hook(&pre("Bash", json!({"command": "pnpm test"})), &no_session(), now);
+        s.apply_hook(
+            &pre("Bash", json!({"command": "pnpm test"})),
+            &no_session(),
+            now,
+        );
         assert_eq!(s.kind, AgentStateKind::Working);
         assert_eq!(s.last_activity.as_deref(), Some("Running pnpm test"));
 
@@ -841,7 +856,11 @@ mod tests {
         assert!(a.can_respond);
 
         // PostToolUse = the dialog was answered and the tool ran.
-        s.apply_hook(&post("Bash", json!({"command": "pnpm test"})), &no_session(), now);
+        s.apply_hook(
+            &post("Bash", json!({"command": "pnpm test"})),
+            &no_session(),
+            now,
+        );
         assert_eq!(s.kind, AgentStateKind::Working);
         assert!(s.attention.is_none());
     }
@@ -886,7 +905,11 @@ mod tests {
         assert_eq!(s.attention.as_ref().unwrap().id, id);
         // A different (parallel / subagent) tool starting says nothing
         // about the dialog: the card stays.
-        s.apply_hook(&pre("Read", json!({"file_path": "/work/a"})), &no_session(), now);
+        s.apply_hook(
+            &pre("Read", json!({"file_path": "/work/a"})),
+            &no_session(),
+            now,
+        );
         assert_eq!(s.attention.as_ref().unwrap().id, id);
     }
 
@@ -962,7 +985,10 @@ mod tests {
         let id = s.attention.as_ref().unwrap().id.clone();
         assert!(s.on_user_input(b"1", now));
         assert_eq!(s.kind, AgentStateKind::Working);
-        assert_eq!(s.claim_attention(&id, AttentionResponse::AllowOnce, now), Err(ClaimError::Stale));
+        assert_eq!(
+            s.claim_attention(&id, AttentionResponse::AllowOnce, now),
+            Err(ClaimError::Stale)
+        );
     }
 
     #[test]
@@ -1026,7 +1052,9 @@ mod tests {
             &session,
             Utc::now(),
         );
-        assert!(!effects.iter().any(|e| matches!(e, Effect::PersistSession(_))));
+        assert!(!effects
+            .iter()
+            .any(|e| matches!(e, Effect::PersistSession(_))));
         assert_eq!(s.kind, AgentStateKind::Working);
     }
 
@@ -1136,7 +1164,9 @@ mod tests {
         );
         assert_eq!(s.kind, AgentStateKind::NeedsYou);
 
-        let claimed = s.claim_attention(&id, AttentionResponse::AllowOnce, now).unwrap();
+        let claimed = s
+            .claim_attention(&id, AttentionResponse::AllowOnce, now)
+            .unwrap();
         assert_eq!(claimed.id, id);
         assert_eq!(s.kind, AgentStateKind::Working);
         // Second click on the same card: already consumed.
@@ -1148,7 +1178,8 @@ mod tests {
         // Deny → idle.
         s.apply_hook(&permission_notification(), &no_session(), now);
         let id = s.attention.as_ref().unwrap().id.clone();
-        s.claim_attention(&id, AttentionResponse::Deny, now).unwrap();
+        s.claim_attention(&id, AttentionResponse::Deny, now)
+            .unwrap();
         assert_eq!(s.kind, AgentStateKind::Idle);
 
         // A question can't be answered with approval keys.
@@ -1225,7 +1256,11 @@ mod tests {
             s.claim_attention(&a.id, AttentionResponse::AllowTask, now),
             Err(ClaimError::NoTaskScope)
         );
-        assert_eq!(s.kind, AgentStateKind::NeedsYou, "a refused claim changes nothing");
+        assert_eq!(
+            s.kind,
+            AgentStateKind::NeedsYou,
+            "a refused claim changes nothing"
+        );
         // Screen: "2. Yes, and always allow access to … from this project".
         s.apply_heuristic(Some(claude_options(None)), now);
         assert!(!s.attention.as_ref().unwrap().can_allow_for_task);
@@ -1234,7 +1269,9 @@ mod tests {
         let a = s.attention.clone().unwrap();
         assert!(a.can_allow_for_task);
         assert_eq!(a.id, s.attention.as_ref().unwrap().id, "same card, refined");
-        let claimed = s.claim_attention(&a.id, AttentionResponse::AllowTask, now).unwrap();
+        let claimed = s
+            .claim_attention(&a.id, AttentionResponse::AllowTask, now)
+            .unwrap();
         assert_eq!(claimed.keys.allow_task.as_deref(), Some("2"));
 
         // Codex reads its own hotkeys: a session-scoped option on screen
@@ -1250,7 +1287,10 @@ mod tests {
         for agent in [Agent::Codex, Agent::Gemini, Agent::Copilot] {
             let mut c = state(agent);
             c.apply_heuristic(Some(claude_options(None)), now);
-            assert!(!c.attention.as_ref().unwrap().can_allow_for_task, "{agent:?}");
+            assert!(
+                !c.attention.as_ref().unwrap().can_allow_for_task,
+                "{agent:?}"
+            );
         }
     }
 

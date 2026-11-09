@@ -153,8 +153,11 @@ pub async fn create_workspace(
     // in the user's default permission mode — the same resolution
     // start_task uses, so this path can't quietly launch skip-all.
     let agent = input.agent.unwrap_or_else(Agent::default);
-    let (mode, command) =
-        launch::resolve_launch(agent, None, &crate::settings_trust::launch_settings(&settings, &meta).await?)?;
+    let (mode, command) = launch::resolve_launch(
+        agent,
+        None,
+        &crate::settings_trust::launch_settings(&settings, &meta).await?,
+    )?;
     let mut workspace = Workspace::new(
         input.repository_id.clone(),
         input.name,

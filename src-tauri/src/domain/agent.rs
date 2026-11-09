@@ -23,7 +23,9 @@ pub enum Agent {
 ///
 /// Ordered strictest → most permissive; `Agent::clamp_permission_mode`
 /// relies on that order.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     /// Ask before editing files and before running shell commands.
@@ -233,7 +235,13 @@ impl Agent {
             .iter()
             .copied()
             .find(|mode| *mode > requested)
-            .or_else(|| supported.iter().copied().rev().find(|mode| *mode < requested))
+            .or_else(|| {
+                supported
+                    .iter()
+                    .copied()
+                    .rev()
+                    .find(|mode| *mode < requested)
+            })
             // Every agent supports at least one mode (table above).
             .unwrap_or(PermissionMode::SkipAll)
     }
@@ -278,7 +286,9 @@ impl Agent {
     pub fn render_default(self, mode: PermissionMode) -> Option<String> {
         let args = self.permission_args(mode)?;
         Some(collapse_whitespace(
-            &self.default_template().replace(PERMISSIONS_PLACEHOLDER, args),
+            &self
+                .default_template()
+                .replace(PERMISSIONS_PLACEHOLDER, args),
         ))
     }
 
@@ -370,11 +380,27 @@ mod tests {
     fn permission_args_table() {
         let table: &[(Agent, PermissionMode, Option<&str>)] = &[
             (Agent::Claude, AskEdits, Some("")),
-            (Agent::Claude, AskShell, Some("--permission-mode acceptEdits")),
-            (Agent::Claude, SkipAll, Some("--dangerously-skip-permissions")),
+            (
+                Agent::Claude,
+                AskShell,
+                Some("--permission-mode acceptEdits"),
+            ),
+            (
+                Agent::Claude,
+                SkipAll,
+                Some("--dangerously-skip-permissions"),
+            ),
             (Agent::Codex, AskEdits, Some("-s read-only -a on-request")),
-            (Agent::Codex, AskShell, Some("-s workspace-write -a on-request")),
-            (Agent::Codex, SkipAll, Some("--dangerously-bypass-approvals-and-sandbox")),
+            (
+                Agent::Codex,
+                AskShell,
+                Some("-s workspace-write -a on-request"),
+            ),
+            (
+                Agent::Codex,
+                SkipAll,
+                Some("--dangerously-bypass-approvals-and-sandbox"),
+            ),
             (Agent::Copilot, AskEdits, Some("")),
             (Agent::Copilot, AskShell, Some("--allow-tool=write")),
             (Agent::Copilot, SkipAll, Some("--allow-all")),
@@ -399,12 +425,24 @@ mod tests {
     fn rendered_defaults_per_agent_and_mode() {
         let table: &[(Agent, PermissionMode, Option<&str>)] = &[
             (Agent::Claude, AskEdits, Some("claude")),
-            (Agent::Claude, AskShell, Some("claude --permission-mode acceptEdits")),
-            (Agent::Codex, AskShell, Some(
-                r#"codex -c model_reasoning_effort="high" -s workspace-write -a on-request -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#,
-            )),
+            (
+                Agent::Claude,
+                AskShell,
+                Some("claude --permission-mode acceptEdits"),
+            ),
+            (
+                Agent::Codex,
+                AskShell,
+                Some(
+                    r#"codex -c model_reasoning_effort="high" -s workspace-write -a on-request -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#,
+                ),
+            ),
             (Agent::Copilot, AskEdits, Some("copilot")),
-            (Agent::Gemini, AskShell, Some("gemini --approval-mode auto_edit")),
+            (
+                Agent::Gemini,
+                AskShell,
+                Some("gemini --approval-mode auto_edit"),
+            ),
             (Agent::OpenCode, SkipAll, Some("opencode")),
             (Agent::OpenCode, AskShell, None),
         ];
@@ -421,7 +459,10 @@ mod tests {
     /// modes, so legacy rows/callers launch identically.
     #[test]
     fn command_shim_is_the_legacy_skip_all_command() {
-        assert_eq!(Agent::Claude.command(), "claude --dangerously-skip-permissions");
+        assert_eq!(
+            Agent::Claude.command(),
+            "claude --dangerously-skip-permissions"
+        );
         assert_eq!(
             Agent::Codex.command(),
             r#"codex -c model_reasoning_effort="high" --dangerously-bypass-approvals-and-sandbox -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true"#
@@ -459,7 +500,10 @@ mod tests {
     #[test]
     fn collapse_whitespace_keeps_quoted_runs() {
         assert_eq!(collapse_whitespace("  claude   --x  "), "claude --x");
-        assert_eq!(collapse_whitespace(r#"a -c x="p  q"  b"#), r#"a -c x="p  q" b"#);
+        assert_eq!(
+            collapse_whitespace(r#"a -c x="p  q"  b"#),
+            r#"a -c x="p  q" b"#
+        );
         assert_eq!(collapse_whitespace("a 'x  y' b"), "a 'x  y' b");
         assert_eq!(collapse_whitespace(""), "");
     }

@@ -60,7 +60,9 @@ pub async fn start_session_terminal(
     // machine lacks mean the login shell, never a failed terminal.
     // A synced shell not confirmed on this machine isn't used either.
     let shell = match settings.get_or_default().await {
-        Ok(s) => usable_shell_override(&crate::settings_trust::usable(&meta, s).await.terminal_shell),
+        Ok(s) => {
+            usable_shell_override(&crate::settings_trust::usable(&meta, s).await.terminal_shell)
+        }
         Err(_) => None,
     };
 

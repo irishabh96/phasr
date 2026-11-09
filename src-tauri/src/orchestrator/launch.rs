@@ -120,7 +120,8 @@ pub async fn trust_task_mode(
     task_id: &str,
     mode: PermissionMode,
 ) -> Result<(), crate::store::StoreError> {
-    meta.trust_scoped(&task_mode_scope(task_id), mode.as_str()).await
+    meta.trust_scoped(&task_mode_scope(task_id), mode.as_str())
+        .await
 }
 
 /// Whether `stored` (the row's mode; `None` = a legacy row, which ran
@@ -168,24 +169,55 @@ mod tests {
     fn skip_all_is_honoured_only_when_chosen_here() {
         let settings = UserSettings::default();
         let default = Agent::Claude.clamp_permission_mode(settings.default_permission_mode);
-        assert_ne!(default, PermissionMode::SkipAll, "test assumes a safer default");
+        assert_ne!(
+            default,
+            PermissionMode::SkipAll,
+            "test assumes a safer default"
+        );
         assert_eq!(
-            effective_mode(Agent::Claude, Some(PermissionMode::SkipAll), false, &settings),
+            effective_mode(
+                Agent::Claude,
+                Some(PermissionMode::SkipAll),
+                false,
+                &settings
+            ),
             (default, true)
         );
         assert_eq!(
-            effective_mode(Agent::Claude, Some(PermissionMode::SkipAll), true, &settings),
+            effective_mode(
+                Agent::Claude,
+                Some(PermissionMode::SkipAll),
+                true,
+                &settings
+            ),
             (PermissionMode::SkipAll, false)
         );
         assert_eq!(
-            effective_mode(Agent::Claude, Some(PermissionMode::AskEdits), false, &settings),
+            effective_mode(
+                Agent::Claude,
+                Some(PermissionMode::AskEdits),
+                false,
+                &settings
+            ),
             (PermissionMode::AskEdits, false)
         );
-        assert_eq!(effective_mode(Agent::Claude, None, false, &settings), (default, true));
-        assert_eq!(effective_mode(Agent::Claude, None, true, &settings), (PermissionMode::SkipAll, false));
+        assert_eq!(
+            effective_mode(Agent::Claude, None, false, &settings),
+            (default, true)
+        );
+        assert_eq!(
+            effective_mode(Agent::Claude, None, true, &settings),
+            (PermissionMode::SkipAll, false)
+        );
         // OpenCode only has skip-all: the fallback can't go lower.
         assert_eq!(
-            effective_mode(Agent::OpenCode, Some(PermissionMode::SkipAll), false, &settings).0,
+            effective_mode(
+                Agent::OpenCode,
+                Some(PermissionMode::SkipAll),
+                false,
+                &settings
+            )
+            .0,
             PermissionMode::SkipAll
         );
     }
@@ -193,14 +225,20 @@ mod tests {
     #[tokio::test]
     async fn task_mode_trust_is_per_task_and_per_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let pool = crate::store::init_pool(&dir.path().join("t.sqlite")).await.unwrap();
+        let pool = crate::store::init_pool(&dir.path().join("t.sqlite"))
+            .await
+            .unwrap();
         let meta = crate::store::AppMetaRepo::new(pool);
         assert!(!is_task_mode_trusted(&meta, "t1", Some(PermissionMode::SkipAll)).await);
-        trust_task_mode(&meta, "t1", PermissionMode::AskShell).await.unwrap();
+        trust_task_mode(&meta, "t1", PermissionMode::AskShell)
+            .await
+            .unwrap();
         // Chosen here as ask-shell; sync later flips it to skip-all.
         assert!(is_task_mode_trusted(&meta, "t1", Some(PermissionMode::AskShell)).await);
         assert!(!is_task_mode_trusted(&meta, "t1", Some(PermissionMode::SkipAll)).await);
-        trust_task_mode(&meta, "t1", PermissionMode::SkipAll).await.unwrap();
+        trust_task_mode(&meta, "t1", PermissionMode::SkipAll)
+            .await
+            .unwrap();
         assert!(is_task_mode_trusted(&meta, "t1", Some(PermissionMode::SkipAll)).await);
         assert!(!is_task_mode_trusted(&meta, "t2", Some(PermissionMode::SkipAll)).await);
     }
@@ -292,9 +330,16 @@ mod tests {
 
     #[test]
     fn unsupported_mode_is_an_error() {
-        let err = resolve_command(Agent::OpenCode, PermissionMode::AskShell, &UserSettings::default())
-            .unwrap_err();
-        assert!(matches!(err, OrchestratorError::UnsupportedPermissionMode { .. }));
+        let err = resolve_command(
+            Agent::OpenCode,
+            PermissionMode::AskShell,
+            &UserSettings::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            OrchestratorError::UnsupportedPermissionMode { .. }
+        ));
         assert!(err.to_string().contains("OpenCode"), "{err}");
     }
 
@@ -347,8 +392,13 @@ mod tests {
         );
         // An explicit mode wins over the stored one.
         assert_eq!(
-            relaunch(Agent::Claude, Some(PermissionMode::AskEdits), Some(PermissionMode::SkipAll), &s)
-                .unwrap(),
+            relaunch(
+                Agent::Claude,
+                Some(PermissionMode::AskEdits),
+                Some(PermissionMode::SkipAll),
+                &s
+            )
+            .unwrap(),
             (Some(PermissionMode::AskEdits), "claude".to_string())
         );
         assert!(relaunch(Agent::OpenCode, Some(PermissionMode::AskShell), None, &s).is_err());
@@ -356,8 +406,14 @@ mod tests {
 
     #[test]
     fn run_in_deserializes_kebab_case() {
-        assert_eq!(serde_json::from_str::<RunIn>(r#""worktree""#).unwrap(), RunIn::Worktree);
-        assert_eq!(serde_json::from_str::<RunIn>(r#""in-place""#).unwrap(), RunIn::InPlace);
+        assert_eq!(
+            serde_json::from_str::<RunIn>(r#""worktree""#).unwrap(),
+            RunIn::Worktree
+        );
+        assert_eq!(
+            serde_json::from_str::<RunIn>(r#""in-place""#).unwrap(),
+            RunIn::InPlace
+        );
         assert_eq!(RunIn::default(), RunIn::Worktree);
     }
 }

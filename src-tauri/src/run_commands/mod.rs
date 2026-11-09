@@ -178,7 +178,12 @@ impl RunCommandRuntime {
         let key = pty_key(&rc.id, target.workspace_id.as_deref());
         // An exited PTY its monitor hasn't unregistered yet must not block
         // an explicit re-run with "already running".
-        if self.inner.runtime.get(&key).is_some_and(|h| h.exit_code().is_some()) {
+        if self
+            .inner
+            .runtime
+            .get(&key)
+            .is_some_and(|h| h.exit_code().is_some())
+        {
             self.inner.runtime.drop_task(&key);
         }
         let handle = self.inner.runtime.spawn(
@@ -285,12 +290,20 @@ impl RunCommandRuntime {
     }
 
     fn has_port(&self, key: &str) -> bool {
-        self.inner.entries.lock().get(key).is_some_and(|e| e.state.port.is_some())
+        self.inner
+            .entries
+            .lock()
+            .get(key)
+            .is_some_and(|e| e.state.port.is_some())
     }
 
     #[cfg(test)]
     pub fn is_running(&self, key: &str) -> bool {
-        self.inner.entries.lock().get(key).is_some_and(|e| e.state.running)
+        self.inner
+            .entries
+            .lock()
+            .get(key)
+            .is_some_and(|e| e.state.running)
     }
 
     fn update(&self, key: &str, handle: &Weak<PtyHandle>, f: impl FnOnce(&mut Entry)) {
@@ -337,7 +350,9 @@ impl RunCommandRuntime {
                                 let key = key.clone();
                                 let weak = weak.clone();
                                 tokio::spawn(async move {
-                                    if ports::confirm(port).await && this.owns_port(&weak, port).await {
+                                    if ports::confirm(port).await
+                                        && this.owns_port(&weak, port).await
+                                    {
                                         this.update(&key, &weak, |e| {
                                             if e.state.running && e.state.port.is_none() {
                                                 e.state.port = Some(port);
@@ -389,7 +404,12 @@ impl RunCommandRuntime {
         let Ok(workspace) = workspaces.get_for_user(task_id, user_id).await else {
             return Vec::new();
         };
-        let Some(cwd) = workspace.worktree_path.as_deref().map(PathBuf::from).filter(|p| p.exists()) else {
+        let Some(cwd) = workspace
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+        else {
             return Vec::new();
         };
         let Ok(commands) = run_commands
@@ -399,7 +419,10 @@ impl RunCommandRuntime {
             return Vec::new();
         };
         let mut started = Vec::new();
-        for rc in commands.into_iter().filter(|rc| rc.run_when == RunWhen::TaskStart) {
+        for rc in commands
+            .into_iter()
+            .filter(|rc| rc.run_when == RunWhen::TaskStart)
+        {
             if !meta.is_run_command_trusted(&rc).await.unwrap_or(false) {
                 continue;
             }
@@ -440,8 +463,14 @@ impl RunCommandRuntime {
                 match status.recv().await {
                     Ok(event) if event.status == WorkspaceStatus::Running => {
                         if let Some(user_id) = current_user() {
-                            this.auto_start_for_task(&event.task_id, &user_id, &workspaces, &run_commands, &meta)
-                                .await;
+                            this.auto_start_for_task(
+                                &event.task_id,
+                                &user_id,
+                                &workspaces,
+                                &run_commands,
+                                &meta,
+                            )
+                            .await;
                         }
                     }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -464,7 +493,10 @@ mod tests {
     async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !done() {
-            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -497,15 +529,26 @@ mod tests {
         assert!(rt.handle(&key).is_none(), "attach must not spawn");
 
         std::fs::write(dir.path().join("count"), "").unwrap();
-        rt.start(&rc("once", "echo x >> count"), target(Some("ws"), dir.path())).unwrap();
+        rt.start(
+            &rc("once", "echo x >> count"),
+            target(Some("ws"), dir.path()),
+        )
+        .unwrap();
         wait_for("exit", || !rt.is_running(&key)).await;
-        assert!(rt.attachable(&key).is_none(), "an exited exec command is not attachable");
-        assert!(rt.handle(&key).is_none(), "and attaching did not respawn it");
+        assert!(
+            rt.attachable(&key).is_none(),
+            "an exited exec command is not attachable"
+        );
+        assert!(
+            rt.handle(&key).is_none(),
+            "and attaching did not respawn it"
+        );
         tokio::time::sleep(Duration::from_millis(300)).await;
         let runs = std::fs::read_to_string(dir.path().join("count")).unwrap();
         assert_eq!(runs.lines().count(), 1, "ran exactly once");
 
-        rt.start(&rc("long", "sleep 30"), target(Some("ws"), dir.path())).unwrap();
+        rt.start(&rc("long", "sleep 30"), target(Some("ws"), dir.path()))
+            .unwrap();
         assert!(rt.attachable(&pty_key("long", Some("ws"))).is_some());
         rt.stop(&pty_key("long", Some("ws"))).unwrap();
     }
@@ -522,8 +565,11 @@ mod tests {
         let key = pty_key("tests", Some("ws"));
         assert!(rt.exited_replay(&key).is_none(), "never ran");
 
-        rt.start(&rc("tests", "printf 'FAILED: %s' summary; exit 3"), target(Some("ws"), dir.path()))
-            .unwrap();
+        rt.start(
+            &rc("tests", "printf 'FAILED: %s' summary; exit 3"),
+            target(Some("ws"), dir.path()),
+        )
+        .unwrap();
         wait_for("exit", || !rt.is_running(&key)).await;
         assert!(rt.attachable(&key).is_none(), "nothing live to attach to");
         let events = rt.exited_replay(&key).unwrap();
@@ -536,13 +582,23 @@ mod tests {
             .collect();
         assert!(output.contains("FAILED: summary"), "{output:?}");
         assert!(
-            matches!(events.last(), Some(PtyEvent::Exit { exit_code: Some(3), .. })),
+            matches!(
+                events.last(),
+                Some(PtyEvent::Exit {
+                    exit_code: Some(3),
+                    ..
+                })
+            ),
             "the exit comes last: {events:?}"
         );
         assert!(rt.handle(&key).is_none(), "replaying spawned nothing");
 
-        rt.start(&rc("tests", "sleep 30"), target(Some("ws"), dir.path())).unwrap();
-        assert!(rt.exited_replay(&key).is_none(), "a running command has no exit to replay");
+        rt.start(&rc("tests", "sleep 30"), target(Some("ws"), dir.path()))
+            .unwrap();
+        assert!(
+            rt.exited_replay(&key).is_none(),
+            "a running command has no exit to replay"
+        );
         rt.stop(&key).unwrap();
     }
 
@@ -572,7 +628,10 @@ mod tests {
         assert_eq!(rt.list("u", None).len(), 2);
         assert!(rt.list("someone-else", None).is_empty());
 
-        wait_for("both exits", || rt.list("u", None).iter().all(|r| !r.running)).await;
+        wait_for("both exits", || {
+            rt.list("u", None).iter().all(|r| !r.running)
+        })
+        .await;
         let a_state = &rt.list("u", Some("ws-a"))[0];
         let b_state = &rt.list("u", Some("ws-b"))[0];
         assert_eq!(a_state.exit_code, Some(3));
@@ -592,7 +651,8 @@ mod tests {
         let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(logs.path().to_path_buf())));
         let dir = tempfile::tempdir().unwrap();
         let mut events = rt.subscribe();
-        rt.start(&rc("rc2", "sleep 30"), target(Some("ws"), dir.path())).unwrap();
+        rt.start(&rc("rc2", "sleep 30"), target(Some("ws"), dir.path()))
+            .unwrap();
         assert!(rt.stop("run:rc2@ws").unwrap());
         wait_for("exit", || !rt.is_running("run:rc2@ws")).await;
         let mut last = None;
@@ -616,7 +676,10 @@ mod tests {
         let logs = tempfile::tempdir().unwrap();
         let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(logs.path().to_path_buf())));
         let dir = tempfile::tempdir().unwrap();
-        let mut cmd = rc("other", &format!("printf 'http://localhost:{port}/\\n'; sleep 30"));
+        let mut cmd = rc(
+            "other",
+            &format!("printf 'http://localhost:{port}/\\n'; sleep 30"),
+        );
         cmd.detect_port = true;
         rt.start(&cmd, target(Some("ws"), dir.path())).unwrap();
         tokio::time::sleep(Duration::from_secs(4)).await;
@@ -645,7 +708,11 @@ mod tests {
         wait_for("port", || rt.list("u", Some("ws"))[0].port == Some(port)).await;
         rt.stop("run:dev@ws").unwrap();
         wait_for("exit", || !rt.is_running("run:dev@ws")).await;
-        assert_eq!(rt.list("u", Some("ws"))[0].port, None, "a stopped server has no port");
+        assert_eq!(
+            rt.list("u", Some("ws"))[0].port,
+            None,
+            "a stopped server has no port"
+        );
     }
 
     /// `task_start` commands auto-start in the task's worktree only when
@@ -662,7 +729,10 @@ mod tests {
         .await
         .unwrap();
         let repo = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert_for_user(&repo, "u").await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert_for_user(&repo, "u")
+            .await
+            .unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let wt = dir.path().join("wt");
         std::fs::create_dir_all(&wt).unwrap();
@@ -671,7 +741,11 @@ mod tests {
         workspaces.insert_for_user(&ws, "u").await.unwrap();
         let run_commands = RunCommandRepo::new(pool.clone());
         let meta = AppMetaRepo::new(pool.clone());
-        let mut dev = RunCommand::new(repo.id.clone(), "dev".into(), "pwd > started; sleep 30".into());
+        let mut dev = RunCommand::new(
+            repo.id.clone(),
+            "dev".into(),
+            "pwd > started; sleep 30".into(),
+        );
         dev.run_when = RunWhen::TaskStart;
         run_commands.insert_for_user(&dev, "u").await.unwrap();
         let mut manual = RunCommand::new(repo.id.clone(), "test".into(), "true".into());
@@ -679,13 +753,26 @@ mod tests {
         run_commands.insert_for_user(&manual, "u").await.unwrap();
 
         let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(dir.path().join("logs"))));
-        assert!(rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta).await.is_empty());
+        assert!(rt
+            .auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta)
+            .await
+            .is_empty());
         meta.trust_run_command(&dev).await.unwrap();
-        assert_eq!(rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta).await, vec![dev.id.clone()]);
+        assert_eq!(
+            rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta)
+                .await,
+            vec![dev.id.clone()]
+        );
         // Already running → not started twice.
-        assert!(rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta).await.is_empty());
+        assert!(rt
+            .auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta)
+            .await
+            .is_empty());
         // Another user can't start it.
-        assert!(rt.auto_start_for_task(&ws.id, "x", &workspaces, &run_commands, &meta).await.is_empty());
+        assert!(rt
+            .auto_start_for_task(&ws.id, "x", &workspaces, &run_commands, &meta)
+            .await
+            .is_empty());
         wait_for("cwd marker", || wt.join("started").exists()).await;
         rt.stop_for_workspace(&ws.id);
         wait_for("stop", || !rt.is_running(&pty_key(&dev.id, Some(&ws.id)))).await;

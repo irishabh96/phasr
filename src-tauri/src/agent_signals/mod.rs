@@ -41,8 +41,8 @@ use crate::pty::{PromptGate, PromptGateDecision, PtyEvent};
 use crate::store::{TaskUsageRepo, WorkspaceRepo};
 
 use heuristics::{Detection, TailBuffer, QUIET};
-use hook_bridge::HookBridge;
 pub use hook_bridge::AgentPolicy;
+use hook_bridge::HookBridge;
 use launch::Resume;
 use signal::{AgentSignal, SessionInfo};
 use state::{AgentStateKind, AttentionKind, ClaimError, Effect, TaskSignalState};
@@ -89,7 +89,10 @@ impl serde::Serialize for AgentSignalError {
 #[derive(Debug, Clone)]
 pub enum AgentSignalEvent {
     State(TaskAgentState),
-    Usage { task_id: String, usage: TaskUsage },
+    Usage {
+        task_id: String,
+        usage: TaskUsage,
+    },
     /// `last_turn_ended_at` was written (a synced column): push it.
     TurnEnded,
     /// A tool call finished (`PostToolUse`): the worktree may have changed,
@@ -222,7 +225,11 @@ pub struct AgentSignals {
 impl AgentSignals {
     /// Installs the hook script. Never fails: without it, launches add no
     /// hook extras and heuristics carry the signal alone.
-    pub fn new(config: SignalsConfig, workspaces: WorkspaceRepo, usage_repo: TaskUsageRepo) -> Self {
+    pub fn new(
+        config: SignalsConfig,
+        workspaces: WorkspaceRepo,
+        usage_repo: TaskUsageRepo,
+    ) -> Self {
         let (events, _rx) = broadcast::channel(EVENT_CAPACITY);
         Self {
             inner: Arc::new(Inner {
@@ -303,7 +310,12 @@ impl AgentSignals {
     async fn resume_mode(&self, task: &LaunchTask) -> Resume {
         match task.agent {
             Agent::Claude => {
-                if let Ok(Some(id)) = self.inner.workspaces.get_agent_session_id(&task.task_id).await {
+                if let Ok(Some(id)) = self
+                    .inner
+                    .workspaces
+                    .get_agent_session_id(&task.task_id)
+                    .await
+                {
                     if launch::is_valid_session_id(&id) {
                         return Resume::ClaudeSession(id);
                     }
@@ -380,14 +392,25 @@ impl AgentSignals {
         let Some((agent, tail, usage_dirty)) = self.inner.tasks.lock().get(task_id).and_then(|e| {
             (e.generation == generation).then(|| {
                 // Agents without readable usage never need a re-read.
-                let dirty = e.state.agent.usage_supported().then(|| e.usage_dirty.clone());
+                let dirty = e
+                    .state
+                    .agent
+                    .usage_supported()
+                    .then(|| e.usage_dirty.clone());
                 (e.state.agent, e.tail.clone(), dirty)
             })
         }) else {
             return;
         };
         let rx = handle.subscribe();
-        tokio::spawn(self.clone().run_detector(task_id.to_string(), generation, agent, tail, usage_dirty, rx));
+        tokio::spawn(self.clone().run_detector(
+            task_id.to_string(),
+            generation,
+            agent,
+            tail,
+            usage_dirty,
+            rx,
+        ));
     }
 
     /// `task_id` is being set up to launch (see `Inner::starting`). Until
@@ -452,7 +475,11 @@ impl AgentSignals {
 
     /// What `task_id`'s agent is doing, as the board's domain sees it.
     pub fn phase(&self, task_id: &str) -> Option<crate::domain::board::AgentPhase> {
-        self.inner.tasks.lock().get(task_id).map(|e| e.state.kind.into())
+        self.inner
+            .tasks
+            .lock()
+            .get(task_id)
+            .map(|e| e.state.kind.into())
     }
 
     /// The agent's PTY exited (or was killed).
@@ -496,7 +523,12 @@ impl AgentSignals {
                 return;
             };
             entry.tail.lock().mark_consumed();
-            if entry.state.attention.as_ref().is_some_and(|a| a.kind == AttentionKind::Trust) {
+            if entry
+                .state
+                .attention
+                .as_ref()
+                .is_some_and(|a| a.kind == AttentionKind::Trust)
+            {
                 // Answered in the terminal. Esc / Ctrl-C is "No, exit"
                 // whatever the selector is on; anything else, wait for the
                 // screen to show what it did.
@@ -525,7 +557,9 @@ impl AgentSignals {
     ) -> Result<String, AgentSignalError> {
         let (keys, wire) = {
             let mut tasks = self.inner.tasks.lock();
-            let entry = tasks.get_mut(task_id).ok_or(AgentSignalError::StaleAttention)?;
+            let entry = tasks
+                .get_mut(task_id)
+                .ok_or(AgentSignalError::StaleAttention)?;
             let keys = entry
                 .state
                 .agent
@@ -570,10 +604,9 @@ impl AgentSignals {
                     .keys
                     .allow_task
                     .ok_or(AgentSignalError::AllowTaskUnavailable)?,
-                AttentionResponse::Deny => attention
-                    .keys
-                    .deny
-                    .unwrap_or_else(|| keys.deny.to_string()),
+                AttentionResponse::Deny => {
+                    attention.keys.deny.unwrap_or_else(|| keys.deny.to_string())
+                }
             };
             (keys, entry.state.to_wire())
         };
@@ -666,7 +699,9 @@ impl AgentSignals {
             .tasks
             .lock()
             .values()
-            .filter(|e| !starting.contains(&e.state.task_id) || e.state.kind != AgentStateKind::Exited)
+            .filter(|e| {
+                !starting.contains(&e.state.task_id) || e.state.kind != AgentStateKind::Exited
+            })
             .map(|e| e.state.to_wire())
             .collect();
         for task_id in &starting {
@@ -680,7 +715,11 @@ impl AgentSignals {
 
     #[cfg(test)]
     pub fn state(&self, task_id: &str) -> Option<TaskAgentState> {
-        self.inner.tasks.lock().get(task_id).map(|e| e.state.to_wire())
+        self.inner
+            .tasks
+            .lock()
+            .get(task_id)
+            .map(|e| e.state.to_wire())
     }
 
     // ── hooks ───────────────────────────────────────────────────────────
@@ -695,7 +734,10 @@ impl AgentSignals {
             }
         })
         .and_then(|mut w| {
-            w.watch(self.inner.bridge.hook_dir(), notify::RecursiveMode::Recursive)?;
+            w.watch(
+                self.inner.bridge.hook_dir(),
+                notify::RecursiveMode::Recursive,
+            )?;
             Ok(w)
         })
         .map_err(|err| eprintln!("agent hook watcher unavailable, polling: {err}"))
@@ -757,7 +799,8 @@ impl AgentSignals {
         if let Some(wire) = changed {
             self.emit(AgentSignalEvent::State(wire));
         }
-        if matches!(signal, AgentSignal::PostToolUse { tool_name, .. } if tool_may_modify_files(tool_name)) {
+        if matches!(signal, AgentSignal::PostToolUse { tool_name, .. } if tool_may_modify_files(tool_name))
+        {
             self.emit(AgentSignalEvent::ToolFinished {
                 task_id: task_id.to_string(),
                 repository_id,
@@ -766,12 +809,22 @@ impl AgentSignals {
         for effect in effects {
             match effect {
                 Effect::PersistSession(id) if launch::is_valid_session_id(&id) => {
-                    if let Err(err) = self.inner.workspaces.set_agent_session_id(task_id, &id).await {
+                    if let Err(err) = self
+                        .inner
+                        .workspaces
+                        .set_agent_session_id(task_id, &id)
+                        .await
+                    {
                         eprintln!("failed to record agent session for {task_id}: {err}");
                     }
                 }
                 Effect::TurnEnded(at) => {
-                    match self.inner.workspaces.set_last_turn_ended_at(task_id, at).await {
+                    match self
+                        .inner
+                        .workspaces
+                        .set_last_turn_ended_at(task_id, at)
+                        .await
+                    {
                         Ok(()) => self.emit(AgentSignalEvent::TurnEnded),
                         Err(err) => eprintln!("failed to record turn end for {task_id}: {err}"),
                     }
@@ -880,7 +933,11 @@ impl AgentSignals {
         })
     }
 
-    fn reader_for(&self, task_id: &str, target: &TranscriptTarget) -> Option<Arc<Mutex<TranscriptReader>>> {
+    fn reader_for(
+        &self,
+        task_id: &str,
+        target: &TranscriptTarget,
+    ) -> Option<Arc<Mutex<TranscriptReader>>> {
         let key = ReaderKey::of(target);
         let mut readers = self.inner.readers.lock();
         if let Some(slot) = readers.get(task_id) {
@@ -888,7 +945,10 @@ impl AgentSignals {
                 return Some(slot.reader.clone());
             }
         }
-        let reader = Arc::new(Mutex::new(TranscriptReader::new(target.clone(), &self.inner.roots)?));
+        let reader = Arc::new(Mutex::new(TranscriptReader::new(
+            target.clone(),
+            &self.inner.roots,
+        )?));
         readers.insert(
             task_id.to_string(),
             ReaderSlot {
@@ -919,7 +979,12 @@ impl AgentSignals {
     }
 
     async fn known_session_ids(&self, workspace: &Workspace, target: &mut TranscriptTarget) {
-        if let Ok(Some(id)) = self.inner.workspaces.get_agent_session_id(&workspace.id).await {
+        if let Ok(Some(id)) = self
+            .inner
+            .workspaces
+            .get_agent_session_id(&workspace.id)
+            .await
+        {
             if !target.session_ids.contains(&id) {
                 target.session_ids.push(id);
             }
@@ -929,7 +994,13 @@ impl AgentSignals {
     /// Current usage for a task, persisting a changed snapshot. Falls back
     /// to the stored snapshot when the transcript isn't readable here.
     pub async fn usage_for(&self, workspace: &Workspace) -> Option<TaskUsage> {
-        let stored = self.inner.usage_repo.get(&workspace.id).await.ok().flatten();
+        let stored = self
+            .inner
+            .usage_repo
+            .get(&workspace.id)
+            .await
+            .ok()
+            .flatten();
         let Some(mut target) = self.target_for(workspace) else {
             return stored;
         };
@@ -1088,7 +1159,8 @@ pub fn split_keystrokes(keys: &str) -> Vec<&str> {
     let mut i = 0;
     while i < bytes.len() {
         let start = i;
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && (bytes[i + 1] == b'[' || bytes[i + 1] == b'O') {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && (bytes[i + 1] == b'[' || bytes[i + 1] == b'O')
+        {
             let csi = bytes[i + 1] == b'[';
             i += 2;
             if csi {
@@ -1211,7 +1283,6 @@ fn csi_report_len(b: &[u8]) -> Option<usize> {
     report.then_some(len)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,7 +1301,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let repo = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert(&repo).await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert(&repo)
+            .await
+            .unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let mut workspace = Workspace::new(repo.id.clone(), "w".into(), agent.binary().into());
         workspace.agent = Some(agent);
@@ -1259,7 +1333,12 @@ mod tests {
     /// Run the installed hook script exactly as Claude would: the hook
     /// command from the settings file, through a shell, JSON on stdin.
     fn fire_claude_hook(f: &Fixture, json: &str) {
-        let script = f.dir.path().join("App Support").join("bin").join("phasr-hook.sh");
+        let script = f
+            .dir
+            .path()
+            .join("App Support")
+            .join("bin")
+            .join("phasr-hook.sh");
         let mut child = Command::new(script)
             .arg("claude")
             .envs(f.signals.inner.bridge.task_env(&f.workspace.id))
@@ -1267,7 +1346,12 @@ mod tests {
             .spawn()
             .unwrap();
         use std::io::Write;
-        child.stdin.take().unwrap().write_all(json.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(json.as_bytes())
+            .unwrap();
         assert!(child.wait().unwrap().success());
     }
 
@@ -1286,17 +1370,36 @@ mod tests {
         let f = fixture(Agent::Claude).await;
         let mut rx = f.signals.subscribe();
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        f.signals.register_task(&f.workspace, Agent::Claude, &cwd, f.signals.target_for(&f.workspace));
-        assert_eq!(drain_states(&mut rx).last().unwrap().state, AgentStateKind::Working);
+        f.signals.register_task(
+            &f.workspace,
+            Agent::Claude,
+            &cwd,
+            f.signals.target_for(&f.workspace),
+        );
+        assert_eq!(
+            drain_states(&mut rx).last().unwrap().state,
+            AgentStateKind::Working
+        );
 
         let sid = "0f0e0d0c-0b0a-4908-8706-050403020100";
-        fire_claude_hook(&f, &format!(r#"{{"hook_event_name":"SessionStart","session_id":"{sid}","transcript_path":"/t.jsonl","source":"startup"}}"#));
-        fire_claude_hook(&f, &format!(
-            r#"{{"hook_event_name":"PreToolUse","session_id":"{sid}","tool_name":"Bash","tool_input":{{"command":"cargo test"}},"tool_use_id":"t"}}"#
-        ));
-        fire_claude_hook(&f, &format!(
-            r#"{{"hook_event_name":"Notification","session_id":"{sid}","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}}"#
-        ));
+        fire_claude_hook(
+            &f,
+            &format!(
+                r#"{{"hook_event_name":"SessionStart","session_id":"{sid}","transcript_path":"/t.jsonl","source":"startup"}}"#
+            ),
+        );
+        fire_claude_hook(
+            &f,
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","session_id":"{sid}","tool_name":"Bash","tool_input":{{"command":"cargo test"}},"tool_use_id":"t"}}"#
+            ),
+        );
+        fire_claude_hook(
+            &f,
+            &format!(
+                r#"{{"hook_event_name":"Notification","session_id":"{sid}","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}}"#
+            ),
+        );
         f.signals.drain_hooks().await;
 
         let last = drain_states(&mut rx).pop().unwrap();
@@ -1304,21 +1407,30 @@ mod tests {
         let attention = last.attention.unwrap();
         assert_eq!(attention.detail.as_deref(), Some("cargo test"));
         assert_eq!(
-            f.workspaces.get_agent_session_id(&f.workspace.id).await.unwrap().as_deref(),
+            f.workspaces
+                .get_agent_session_id(&f.workspace.id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some(sid)
         );
 
         // Stale id: refused, state untouched.
         assert!(matches!(
-            f.signals.claim_attention(&f.workspace.id, "nope", AttentionResponse::AllowOnce),
+            f.signals
+                .claim_attention(&f.workspace.id, "nope", AttentionResponse::AllowOnce),
             Err(AgentSignalError::StaleAttention)
         ));
-        assert_eq!(f.signals.state(&f.workspace.id).unwrap().state, AgentStateKind::NeedsYou);
+        assert_eq!(
+            f.signals.state(&f.workspace.id).unwrap().state,
+            AgentStateKind::NeedsYou
+        );
         // No dialog on screen to read options from: Claude's option 2 may
         // be a persistent project rule, so "allow for this task" is refused…
         assert!(!attention.can_allow_for_task);
         assert!(matches!(
-            f.signals.claim_attention(&f.workspace.id, &attention.id, AttentionResponse::AllowTask),
+            f.signals
+                .claim_attention(&f.workspace.id, &attention.id, AttentionResponse::AllowTask),
             Err(AgentSignalError::AllowTaskUnavailable)
         ));
         // …without consuming the card: allow once still works.
@@ -1329,7 +1441,10 @@ mod tests {
             "1"
         );
 
-        fire_claude_hook(&f, r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#);
+        fire_claude_hook(
+            &f,
+            r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#,
+        );
         f.signals.drain_hooks().await;
         let mut saw_turn_end = false;
         while let Ok(event) = rx.try_recv() {
@@ -1339,7 +1454,10 @@ mod tests {
         let row = f.workspaces.get(&f.workspace.id).await.unwrap();
         assert!(row.last_turn_ended_at.is_some());
         let summary = f.signals.summary_for(&row).await.unwrap();
-        assert_eq!((summary.text.as_str(), summary.source), ("Done.", SummarySource::Hook));
+        assert_eq!(
+            (summary.text.as_str(), summary.source),
+            ("Done.", SummarySource::Hook)
+        );
     }
 
     /// A hook card survives the terminal's own replies (focus, DA1, …) and
@@ -1349,15 +1467,28 @@ mod tests {
     async fn hook_card_ignores_auto_replies_and_moves_on_real_input() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
-        fire_claude_hook(&f, r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}"#);
-        fire_claude_hook(&f, r#"{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/x"}}"#);
+        f.signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
+        fire_claude_hook(
+            &f,
+            r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}"#,
+        );
+        fire_claude_hook(
+            &f,
+            r#"{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/x"}}"#,
+        );
         f.signals.drain_hooks().await;
-        assert_eq!(f.signals.state(&f.workspace.id).unwrap().state, AgentStateKind::NeedsYou);
+        assert_eq!(
+            f.signals.state(&f.workspace.id).unwrap().state,
+            AgentStateKind::NeedsYou
+        );
         for reply in [&b"\x1b[I"[..], b"\x1b[?1;2c", b"\x1b[12;40R\x1b[O"] {
             f.signals.note_user_input(&f.workspace.id, reply);
         }
-        assert_eq!(f.signals.state(&f.workspace.id).unwrap().state, AgentStateKind::NeedsYou);
+        assert_eq!(
+            f.signals.state(&f.workspace.id).unwrap().state,
+            AgentStateKind::NeedsYou
+        );
         f.signals.note_user_input(&f.workspace.id, b"1");
         let state = f.signals.state(&f.workspace.id).unwrap();
         assert_eq!(state.state, AgentStateKind::Working);
@@ -1371,19 +1502,33 @@ mod tests {
         f.signals.drain_hooks().await;
         assert!(f.signals.states().is_empty());
         // The file was consumed regardless.
-        assert!(f.signals.inner.bridge.drain_task_dir(&f.workspace.id).is_empty());
+        assert!(f
+            .signals
+            .inner
+            .bridge
+            .drain_task_dir(&f.workspace.id)
+            .is_empty());
     }
 
     #[tokio::test]
     async fn forget_task_cleans_files_and_reports_exit() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
-        let args = f.signals.inner.bridge.claude_args(&f.workspace.id, &AgentPolicy::default()).unwrap();
+        f.signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let args = f
+            .signals
+            .inner
+            .bridge
+            .claude_args(&f.workspace.id, &AgentPolicy::default())
+            .unwrap();
         assert!(args.contains("claude-settings.json"));
         let mut rx = f.signals.subscribe();
         f.signals.forget_task(&f.workspace.id);
-        assert_eq!(drain_states(&mut rx).pop().unwrap().state, AgentStateKind::Exited);
+        assert_eq!(
+            drain_states(&mut rx).pop().unwrap().state,
+            AgentStateKind::Exited
+        );
         assert!(f.signals.states().is_empty());
         assert!(!f
             .dir
@@ -1397,11 +1542,13 @@ mod tests {
     async fn usage_poller_persists_emits_and_throttles() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        let project = f
-            .dir
-            .path()
-            .join("claude/projects")
-            .join(transcripts::claude::encode_project_dir(&cwd.to_string_lossy()));
+        let project =
+            f.dir
+                .path()
+                .join("claude/projects")
+                .join(transcripts::claude::encode_project_dir(
+                    &cwd.to_string_lossy(),
+                ));
         std::fs::create_dir_all(&project).unwrap();
         let line = |id: &str, out: i64| {
             serde_json::json!({"type":"assistant","timestamp":"2026-11-09T10:00:00Z","message":{
@@ -1413,7 +1560,12 @@ mod tests {
         let path = project.join("s.jsonl");
         std::fs::write(&path, line("m1", 10)).unwrap();
 
-        f.signals.register_task(&f.workspace, Agent::Claude, &cwd, f.signals.target_for(&f.workspace));
+        f.signals.register_task(
+            &f.workspace,
+            Agent::Claude,
+            &cwd,
+            f.signals.target_for(&f.workspace),
+        );
         let mut rx = f.signals.subscribe();
         f.signals.poll_usage_once().await;
         let usage = loop {
@@ -1424,7 +1576,14 @@ mod tests {
         };
         assert_eq!(usage.output_tokens, 10);
         // Persisted for get_task_usage after a restart.
-        let stored = f.signals.inner.usage_repo.get(&f.workspace.id).await.unwrap().unwrap();
+        let stored = f
+            .signals
+            .inner
+            .usage_repo
+            .get(&f.workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.output_tokens, 10);
 
         // More usage + dirty, but inside the 5s window: no second event.
@@ -1464,12 +1623,24 @@ mod tests {
         let f = fixture(Agent::Claude).await;
         let fresh = f
             .signals
-            .prepare_launch(&launch_task(&f, Agent::Claude, "claude --permission-mode acceptEdits", false))
+            .prepare_launch(&launch_task(
+                &f,
+                Agent::Claude,
+                "claude --permission-mode acceptEdits",
+                false,
+            ))
             .await;
-        assert!(fresh.command.starts_with("claude --settings '"), "{}", fresh.command);
+        assert!(
+            fresh.command.starts_with("claude --settings '"),
+            "{}",
+            fresh.command
+        );
         assert!(fresh.command.ends_with("--permission-mode acceptEdits"));
         assert!(fresh.send_prompt);
-        assert!(fresh.env.iter().any(|(k, v)| k == hook_bridge::ENV_TASK_ID && *v == f.workspace.id));
+        assert!(fresh
+            .env
+            .iter()
+            .any(|(k, v)| k == hook_bridge::ENV_TASK_ID && *v == f.workspace.id));
 
         // Resume with no session and no transcript: a fresh start.
         let plan = f
@@ -1488,7 +1659,8 @@ mod tests {
             .prepare_launch(&launch_task(&f, Agent::Claude, "claude", true))
             .await;
         assert!(
-            plan.command.starts_with("claude --resume 8f0c6f3e-1111-4222-8333-944455556666 --settings "),
+            plan.command
+                .starts_with("claude --resume 8f0c6f3e-1111-4222-8333-944455556666 --settings "),
             "{}",
             plan.command
         );
@@ -1497,14 +1669,22 @@ mod tests {
         // A wrapper we can't inject into: unchanged, prompt still sent.
         let plan = f
             .signals
-            .prepare_launch(&launch_task(&f, Agent::Claude, "./my-claude-wrapper.sh", true))
+            .prepare_launch(&launch_task(
+                &f,
+                Agent::Claude,
+                "./my-claude-wrapper.sh",
+                true,
+            ))
             .await;
         assert_eq!(plan.command, "./my-claude-wrapper.sh");
         assert!(plan.send_prompt && plan.env.is_empty());
 
         // A template that embeds the prompt gets it on the command line
         // only — never typed again (fresh launch or resume).
-        let embedded = crate::orchestrator::launch::interpolate_for_task("claude {{prompt}}", Some("fix the bug"));
+        let embedded = crate::orchestrator::launch::interpolate_for_task(
+            "claude {{prompt}}",
+            Some("fix the bug"),
+        );
         let plan = f
             .signals
             .prepare_launch(&launch_task(&f, Agent::Claude, &embedded, false))
@@ -1522,7 +1702,11 @@ mod tests {
             .signals
             .prepare_launch(&launch_task(&f, Agent::Codex, "codex -s read-only", false))
             .await;
-        assert!(plan.command.starts_with("codex -c 'notify=["), "{}", plan.command);
+        assert!(
+            plan.command.starts_with("codex -c 'notify=["),
+            "{}",
+            plan.command
+        );
         let plan = f
             .signals
             .prepare_launch(&launch_task(&f, Agent::Gemini, "gemini --yolo", true))
@@ -1534,10 +1718,16 @@ mod tests {
     #[test]
     fn keystrokes_split_on_escape_sequences_and_chars() {
         assert_eq!(split_keystrokes("\x1b[B\r"), vec!["\x1b[B", "\r"]);
-        assert_eq!(split_keystrokes("\x1b[B\x1b[B\r"), vec!["\x1b[B", "\x1b[B", "\r"]);
+        assert_eq!(
+            split_keystrokes("\x1b[B\x1b[B\r"),
+            vec!["\x1b[B", "\x1b[B", "\r"]
+        );
         assert_eq!(split_keystrokes("\x1b"), vec!["\x1b"]);
         assert_eq!(split_keystrokes("1"), vec!["1"]);
-        assert_eq!(split_keystrokes("\x1bOB\x1b[1;5A"), vec!["\x1bOB", "\x1b[1;5A"]);
+        assert_eq!(
+            split_keystrokes("\x1bOB\x1b[1;5A"),
+            vec!["\x1bOB", "\x1b[1;5A"]
+        );
         assert_eq!(split_keystrokes("é\r"), vec!["é", "\r"]);
         assert!(split_keystrokes("").is_empty());
     }
@@ -1567,12 +1757,17 @@ mod tests {
     async fn prompt_gate_holds_for_trust_raises_a_card_and_opens_after_allow() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        let generation = f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let generation = f
+            .signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
         let gate = f.signals.prompt_gate(&f.workspace.id, generation).unwrap();
 
         push_output(&f, TRUST_FIXTURE);
         // Held well past the settle period, with the card up immediately.
-        assert_eq!(gate_after(&gate, Duration::from_millis(900)).await, PromptGateDecision::Wait);
+        assert_eq!(
+            gate_after(&gate, Duration::from_millis(900)).await,
+            PromptGateDecision::Wait
+        );
         let state = f.signals.state(&f.workspace.id).unwrap();
         assert_eq!(state.state, AgentStateKind::NeedsYou);
         let attention = state.attention.unwrap();
@@ -1588,20 +1783,31 @@ mod tests {
             .unwrap();
         assert_eq!(keys, "\x1b[B\r");
         // Nothing has repainted yet: still held.
-        assert_eq!(gate_after(&gate, Duration::from_millis(600)).await, PromptGateDecision::Wait);
+        assert_eq!(
+            gate_after(&gate, Duration::from_millis(600)).await,
+            PromptGateDecision::Wait
+        );
         // The composer replaces the dialog → open once it settles.
         push_output(&f, b"\x1b[2J\x1b[H> \x1b[?25l");
-        assert_eq!(gate_after(&gate, Duration::from_secs(3)).await, PromptGateDecision::Proceed);
+        assert_eq!(
+            gate_after(&gate, Duration::from_secs(3)).await,
+            PromptGateDecision::Proceed
+        );
     }
 
     #[tokio::test]
     async fn prompt_gate_drops_the_prompt_when_trust_is_denied() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        let generation = f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let generation = f
+            .signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
         let gate = f.signals.prompt_gate(&f.workspace.id, generation).unwrap();
         push_output(&f, TRUST_FIXTURE);
-        assert_eq!(gate_after(&gate, Duration::from_millis(900)).await, PromptGateDecision::Wait);
+        assert_eq!(
+            gate_after(&gate, Duration::from_millis(900)).await,
+            PromptGateDecision::Wait
+        );
         let attention = f.signals.state(&f.workspace.id).unwrap().attention.unwrap();
         let keys = f
             .signals
@@ -1615,10 +1821,15 @@ mod tests {
     async fn prompt_gate_answered_in_the_terminal_with_esc_drops_the_prompt() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        let generation = f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let generation = f
+            .signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
         let gate = f.signals.prompt_gate(&f.workspace.id, generation).unwrap();
         push_output(&f, TRUST_FIXTURE);
-        assert_eq!(gate_after(&gate, Duration::from_millis(900)).await, PromptGateDecision::Wait);
+        assert_eq!(
+            gate_after(&gate, Duration::from_millis(900)).await,
+            PromptGateDecision::Wait
+        );
         f.signals.note_user_input(&f.workspace.id, b"\x1b");
         assert_eq!(gate.check(), PromptGateDecision::Abandon);
     }
@@ -1627,20 +1838,31 @@ mod tests {
     async fn prompt_gate_opens_without_a_dialog_and_only_exists_for_trust_agents() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        let generation = f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let generation = f
+            .signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
         let gate = f.signals.prompt_gate(&f.workspace.id, generation).unwrap();
         // Nothing seen yet: held (bounded), not waved through.
         assert_eq!(gate.check(), PromptGateDecision::Wait);
         push_output(&f, b"\x1b[?25l> Try \"fix lint errors\"\r\n");
-        assert_eq!(gate_after(&gate, Duration::from_secs(3)).await, PromptGateDecision::Proceed);
+        assert_eq!(
+            gate_after(&gate, Duration::from_secs(3)).await,
+            PromptGateDecision::Proceed
+        );
         // A re-registration (new PTY) retires the old gate.
-        f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        f.signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
         assert_eq!(gate.check(), PromptGateDecision::Abandon);
 
         let codex = fixture(Agent::Codex).await;
         let cwd = PathBuf::from(codex.workspace.worktree_path.clone().unwrap());
-        let generation = codex.signals.register_task(&codex.workspace, Agent::Codex, &cwd, None);
-        assert!(codex.signals.prompt_gate(&codex.workspace.id, generation).is_none());
+        let generation = codex
+            .signals
+            .register_task(&codex.workspace, Agent::Codex, &cwd, None);
+        assert!(codex
+            .signals
+            .prompt_gate(&codex.workspace.id, generation)
+            .is_none());
     }
 
     #[test]
@@ -1656,19 +1878,36 @@ mod tests {
         assert!(!is_meaningful_input(b"\x1b[>0;276;0c"), "DA2");
         assert!(!is_meaningful_input(b"\x1b[?0u"), "kitty keyboard flags");
         assert!(!is_meaningful_input(b"\x1b[?2026;2$y"), "DECRPM");
-        assert!(!is_meaningful_input(b"\x1bP>|xterm.js(5.5.0)\x1b\\"), "XTVERSION (DCS)");
-        assert!(!is_meaningful_input(b"\x1b]11;rgb:1e1e/1e1e/1e1e\x07"), "OSC (BEL)");
-        assert!(!is_meaningful_input(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"), "OSC (ST)");
+        assert!(
+            !is_meaningful_input(b"\x1bP>|xterm.js(5.5.0)\x1b\\"),
+            "XTVERSION (DCS)"
+        );
+        assert!(
+            !is_meaningful_input(b"\x1b]11;rgb:1e1e/1e1e/1e1e\x07"),
+            "OSC (BEL)"
+        );
+        assert!(
+            !is_meaningful_input(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"),
+            "OSC (ST)"
+        );
         // Several in one write.
-        assert!(!is_meaningful_input(b"\x1b[?0u\x1bP>|xterm.js(5.5.0)\x1b\\\x1b[?62;22c\x1b[I"));
+        assert!(!is_meaningful_input(
+            b"\x1b[?0u\x1bP>|xterm.js(5.5.0)\x1b\\\x1b[?62;22c\x1b[I"
+        ));
         // The user.
         assert!(is_meaningful_input(b"1"));
         assert!(is_meaningful_input(b"\x1b"));
         assert!(is_meaningful_input(b"\x1b[A"));
         assert!(is_meaningful_input(b"\x1b[B\r"));
         assert!(is_meaningful_input(b"\r"));
-        assert!(is_meaningful_input(b"\x1bP"), "Alt+P is not an unterminated DCS reply");
-        assert!(is_meaningful_input(b"\x1b[?1;2cy"), "a reply followed by a key is input");
+        assert!(
+            is_meaningful_input(b"\x1bP"),
+            "Alt+P is not an unterminated DCS reply"
+        );
+        assert!(
+            is_meaningful_input(b"\x1b[?1;2cy"),
+            "a reply followed by a key is input"
+        );
         assert!(is_meaningful_input(b"\x1b[3~"), "Delete key");
     }
 
@@ -1679,13 +1918,19 @@ mod tests {
     async fn trust_dialog_followed_by_a_da1_reply_still_raises_the_card() {
         let f = fixture(Agent::Claude).await;
         let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
-        let generation = f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let generation = f
+            .signals
+            .register_task(&f.workspace, Agent::Claude, &cwd, None);
         let gate = f.signals.prompt_gate(&f.workspace.id, generation).unwrap();
         push_output(&f, TRUST_FIXTURE);
         // Arrives within ms of the dialog, before GATE_SETTLE.
         f.signals.note_user_input(&f.workspace.id, b"\x1b[?1;2c");
-        f.signals.note_user_input(&f.workspace.id, b"\x1b[?0u\x1bP>|xterm.js(5.5.0)\x1b\\");
-        assert_eq!(gate_after(&gate, Duration::from_millis(900)).await, PromptGateDecision::Wait);
+        f.signals
+            .note_user_input(&f.workspace.id, b"\x1b[?0u\x1bP>|xterm.js(5.5.0)\x1b\\");
+        assert_eq!(
+            gate_after(&gate, Duration::from_millis(900)).await,
+            PromptGateDecision::Wait
+        );
         let state = f.signals.state(&f.workspace.id).unwrap();
         assert_eq!(state.state, AgentStateKind::NeedsYou);
         assert_eq!(state.attention.unwrap().kind, AttentionKind::Trust);

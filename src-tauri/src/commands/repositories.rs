@@ -92,8 +92,13 @@ pub async fn create_repository(
             .and_then(|p| crate::git::get_remote_url(std::path::Path::new(p)))
     });
 
-    if let Some(existing) =
-        resolve_existing_repository(&repo, &current_session.user_id, &input, resolved_remote_url.as_deref()).await?
+    if let Some(existing) = resolve_existing_repository(
+        &repo,
+        &current_session.user_id,
+        &input,
+        resolved_remote_url.as_deref(),
+    )
+    .await?
     {
         // Re-running this for a plain (a)-case hit is deliberate: after a
         // wiped DB the repo row may exist while its local workspace row

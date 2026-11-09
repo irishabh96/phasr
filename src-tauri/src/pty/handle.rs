@@ -742,7 +742,11 @@ fn terminate_session(shell: u32, tty: Option<&str>, grace: Duration) {
         return;
     };
     let mut seen = terminal_members(shell, tty);
-    for (signal, then_wait) in [(libc::SIGHUP, true), (libc::SIGTERM, true), (libc::SIGKILL, false)] {
+    for (signal, then_wait) in [
+        (libc::SIGHUP, true),
+        (libc::SIGTERM, true),
+        (libc::SIGKILL, false),
+    ] {
         for pid in terminal_members(shell, tty) {
             if !seen.contains(&pid) {
                 seen.push(pid);
@@ -778,7 +782,11 @@ fn is_zombie(pid: libc::pid_t) -> bool {
     std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim_start()
+                .starts_with('Z')
+        })
         .unwrap_or(false)
 }
 
@@ -1728,7 +1736,9 @@ mod tests {
     fn coalescer_merges_many_small_reads_into_one_event() {
         // 40 reads that would have been 40 separate IPC messages + 40
         // synchronous emulator writes.
-        let reads: Vec<Vec<u8>> = (0..40).map(|i| format!("line {i}\r\n").into_bytes()).collect();
+        let reads: Vec<Vec<u8>> = (0..40)
+            .map(|i| format!("line {i}\r\n").into_bytes())
+            .collect();
         let expected: Vec<u8> = (0..40)
             .map(|i| format!("line {i}\r\n"))
             .collect::<String>()
@@ -1817,10 +1827,7 @@ mod tests {
             chunk: vec![0x1b, b'[', b'2', b'K', 0xff],
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"output","taskId":"t","chunk":"G1syS/8="}"#
-        );
+        assert_eq!(json, r#"{"type":"output","taskId":"t","chunk":"G1syS/8="}"#);
     }
 
     #[test]

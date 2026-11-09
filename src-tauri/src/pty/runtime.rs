@@ -247,7 +247,10 @@ mod tests {
                 _ => std::thread::sleep(Duration::from_millis(20)),
             }
         }
-        assert!(!combined.contains("PWNED-42"), "prompt ran in the shell: {combined:?}");
+        assert!(
+            !combined.contains("PWNED-42"),
+            "prompt ran in the shell: {combined:?}"
+        );
         combined
     }
 
@@ -309,7 +312,10 @@ mod tests {
         // Typed on the blind path, after the 10 s TUI wait.
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while !output.contains("got-plain-prompt") {
-            assert!(std::time::Instant::now() < deadline, "never submitted: {output:?}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never submitted: {output:?}"
+            );
             match rx.try_recv() {
                 Ok(super::super::PtyEvent::Output { chunk, .. }) => {
                     output.push_str(&String::from_utf8_lossy(&chunk))
@@ -357,7 +363,10 @@ mod tests {
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
-                    runtime.spawn(SpawnSpec::new("race", std::env::temp_dir()).with_shell(Some("/bin/sh".into())))
+                    runtime.spawn(
+                        SpawnSpec::new("race", std::env::temp_dir())
+                            .with_shell(Some("/bin/sh".into())),
+                    )
                 })
             })
             .collect();
@@ -369,7 +378,10 @@ mod tests {
             .filter_map(|r| r.as_ref().err())
             .all(|e| matches!(e, PtyError::AlreadyRunning)));
         let held = runtime.get("race").unwrap();
-        assert!(Arc::ptr_eq(&held, won[0]), "the map holds the PTY that was spawned");
+        assert!(
+            Arc::ptr_eq(&held, won[0]),
+            "the map holds the PTY that was spawned"
+        );
         held.kill().unwrap();
     }
 
@@ -394,7 +406,10 @@ mod tests {
         runtime.terminate_all_blocking(Duration::from_millis(200));
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while old.exit_code().is_none() {
-            assert!(std::time::Instant::now() < deadline, "retired PTY survived quit");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retired PTY survived quit"
+            );
             let _ = rx.try_recv();
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -677,11 +692,17 @@ mod tests {
     async fn send_message_refuses_when_the_shell_is_back_in_the_foreground() {
         let (runtime, _dir) = fresh_runtime();
         let handle = runtime
-            .spawn(SpawnSpec::new("bare-shell", std::env::temp_dir()).with_shell(Some("/bin/sh".into())))
+            .spawn(
+                SpawnSpec::new("bare-shell", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into())),
+            )
             .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while handle.shell_in_foreground() != Some(true) {
-            assert!(std::time::Instant::now() < deadline, "shell never took the foreground");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell never took the foreground"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let err = handle.send_message("echo `id`", true).await.unwrap_err();
@@ -705,7 +726,10 @@ mod tests {
         let mut combined = String::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            assert!(std::time::Instant::now() < deadline, "no exit; output: {combined:?}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no exit; output: {combined:?}"
+            );
             match rx.try_recv() {
                 Ok(super::super::PtyEvent::Output { chunk, .. }) => {
                     combined.push_str(&String::from_utf8_lossy(&chunk))
@@ -720,7 +744,10 @@ mod tests {
                 Err(e) => panic!("unexpected recv error: {e:?}"),
             }
         }
-        assert!(combined.contains("summary-tail"), "output before Exit: {combined:?}");
+        assert!(
+            combined.contains("summary-tail"),
+            "output before Exit: {combined:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -731,7 +758,11 @@ mod tests {
             && !std::process::Command::new("ps")
                 .args(["-o", "stat=", "-p", &pid.to_string()])
                 .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim_start()
+                        .starts_with('Z')
+                })
                 .unwrap_or(false)
     }
 
@@ -772,7 +803,11 @@ mod tests {
         handle.terminate_blocking(Duration::from_millis(400));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while jobs.iter().any(|p| alive(*p)) {
-            assert!(std::time::Instant::now() < deadline, "survivors: {:?}", jobs.iter().filter(|p| alive(**p)).collect::<Vec<_>>());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "survivors: {:?}",
+                jobs.iter().filter(|p| alive(**p)).collect::<Vec<_>>()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
