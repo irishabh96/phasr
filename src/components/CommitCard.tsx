@@ -24,11 +24,11 @@ interface CommitCardProps {
 export function CommitCard({ workspaceId, commit }: CommitCardProps) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <article className="overflow-hidden rounded-md border border-(--color-border-default) bg-(--color-bg-surface)">
+    <article className="card-interactive overflow-hidden">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-start gap-2 px-2.5 py-2 text-left hover:bg-(--color-bg-hover)"
+        className="flex w-full items-start gap-2 px-2.5 py-2 text-left"
       >
         <span className="mt-[1px] text-(--color-text-muted)">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -47,13 +47,13 @@ export function CommitCard({ workspaceId, commit }: CommitCardProps) {
               </span>
             )}
           </div>
-          <p className="mt-0.5 text-[11px] text-(--color-text-muted)">
+          <p className="mt-0.5 text-[12px] tabular-nums text-(--color-text-muted)">
             {commit.authorName} • {formatRelative(commit.authorDate)}
           </p>
         </div>
       </button>
       {expanded && (
-        <div className={cn("border-t border-(--color-border-subtle) p-2")}>
+        <div className={cn("bg-(--color-bg-base) p-2")}>
           <CommitDiffList workspaceId={workspaceId} sha={commit.sha} />
         </div>
       )}

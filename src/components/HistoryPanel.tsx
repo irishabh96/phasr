@@ -32,7 +32,7 @@ export function HistoryPanel({ workspaceId }: HistoryPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-col gap-2 border-b border-(--color-border-subtle) p-2">
+      <div className="flex shrink-0 flex-col gap-2 p-2">
         <div className="relative">
           <Search
             size={11}
@@ -117,8 +117,8 @@ function ScopeToggle({
       type="button"
       onClick={onClick}
       className={cn(
-        "relative h-6 px-2 text-[11px]",
-        "transition-colors duration-100",
+        "relative h-6 px-2 text-[12px]",
+        "transition-colors duration-(--dur-1)",
         active
           ? "font-medium text-(--color-text-primary)"
           : "text-(--color-text-muted) hover:text-(--color-text-secondary)",
@@ -128,7 +128,7 @@ function ScopeToggle({
       {active && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-accent-500)"
+          className="pointer-events-none absolute inset-x-1 -bottom-px h-[2px] rounded-full bg-(--color-text-primary)"
         />
       )}
     </button>

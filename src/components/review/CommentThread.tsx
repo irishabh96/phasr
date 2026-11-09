@@ -29,10 +29,10 @@ export function CommentThread({
   const [body, setBody] = useState("");
   const now = useNow(false);
   return (
-    <div className="mx-3 my-1.5 flex flex-col gap-2 rounded-(--radius-card) border border-(--color-border-default) bg-(--color-bg-sheet) p-2.5 font-sans text-[12px]">
+    <div className="card mx-3 my-1.5 flex flex-col gap-2 px-3 py-2.5 font-sans text-[12px] leading-[1.5]">
       {comments.map((c) => (
         <div key={c.id} className="flex flex-col gap-1">
-          <span className="flex items-center gap-2 text-[11px] text-(--color-text-muted)">
+          <span className="flex items-center gap-2 text-[12px] text-(--color-text-muted)">
             <span className="font-medium text-(--color-text-secondary)">You</span>
             {formatAgo(c.createdAt, now)}
             {c.status !== "pending" ? <span className="rounded-(--radius-chip) bg-(--color-bg-elevated) px-1">{c.status}</span> : null}
@@ -77,7 +77,7 @@ export function CommentThread({
             className="resize-none rounded-(--radius-control) p-2 text-[12px]"
           />
           <span className="flex justify-end gap-1.5">
-            <Button size="sm" type="button" onClick={onCancel}>
+            <Button variant="ghost" size="sm" type="button" onClick={onCancel}>
               Cancel
             </Button>
             <Button size="sm" variant="primary" type="submit" disabled={busy || !body.trim()} shortcut="⌘↵">
