@@ -39,11 +39,11 @@ test("sidebar groups the running task under Running, and only it", async ({ page
   await expect(running.getByRole("link")).toContainText("add-feature");
 
   // The finished task (worktree has changes) waits for review — not Running.
-  const review = sidebar.getByRole("region", { name: "Needs review", exact: true });
+  const review = sidebar.getByRole("region", { name: "Review", exact: true });
   await expect(review.getByRole("link").filter({ hasText: "fix-bug" })).toBeVisible();
 
   // The in-place local checkout is not a task: it never appears in a group.
-  for (const group of ["Running", "Needs review", "Failed", "Queued", "Done · today"]) {
+  for (const group of ["Needs you", "Running", "Review", "Done"]) {
     await expect(
       sidebar.getByRole("region", { name: group, exact: true }).getByRole("link").filter({ hasText: /^local/ }),
     ).toHaveCount(0);
