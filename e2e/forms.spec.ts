@@ -85,31 +85,174 @@ test.describe("New task form (NewTaskModal)", () => {
     page,
   }) => {
     const { errors } = await boot(page);
+    // The restored task's terminal focuses itself once its PTY attaches
+    // (open_task_terminal, then resize_task), even over an open modal: a
+    // pre-existing app-side race. Let that land first, since this test
+    // asserts focus and drives a menu by keyboard.
+    await waitForCall(page, "open_task_terminal", 15_000);
+    await waitForCall(page, "resize_task", 15_000);
     const dialog = await openNewTask(page);
 
-    // Prompt first, then the (optional) name.
+    // Prompt first (focused), then the (optional) name above it.
     await expect(page.locator("#new-task-prompt")).toBeVisible();
+    await expect(page.locator("#new-task-prompt")).toBeFocused();
     await expect(page.locator("#new-task-name")).toBeVisible();
-    await expect(page.locator("#new-task-agent")).toBeVisible();
-    // Base branch seeded from the repo's default branch.
+    await expect(dialog.getByLabel("Task name")).toBeVisible();
+    // Base branch seeded from the repo's default branch (chip + its search).
+    const branchChip = dialog.getByRole("button", { name: "Base branch: main" });
+    await expect(branchChip).toBeVisible();
+    await branchChip.click();
     await expect(page.locator("#new-task-base-branch")).toHaveValue("main");
-    // The agent picker defaults to the default agent; the plan (behind
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#new-task-base-branch")).toHaveCount(0);
+    // The agent chip defaults to the default agent; the plan (behind
     // "Show commands") prints its command.
-    await expect(dialog.getByRole("radio", { name: "Claude" })).toHaveAttribute("aria-checked", "true");
+    const agentChip = dialog.getByRole("button", { name: "Agent: Claude" });
+    await expect(agentChip).toBeVisible();
     await expect(dialog.getByRole("list", { name: "What Phasr will run" })).toHaveCount(0);
     await dialog.getByRole("button", { name: "Show commands" }).click();
     await expect(
       dialog.getByRole("list", { name: "What Phasr will run" }).getByText("claude", { exact: true }),
     ).toBeVisible();
 
-    // The agent picker is a real radiogroup of buttons (keyboard-operable natively).
+    // The agent picker is a real radiogroup (menu radios) in the chip's
+    // popover, with the default checked, and keyboard-operable.
+    await agentChip.click();
     const agentGroup = page.locator("#new-task-agent");
+    await expect(agentGroup).toBeVisible();
     expect(await agentGroup.getAttribute("role")).toBe("radiogroup");
-    expect(
-      await agentGroup.getByRole("radio").evaluateAll((els) => els.map((el) => el.tagName)),
-    ).toEqual(["BUTTON", "BUTTON", "BUTTON"]);
+    await expect(agentGroup.getByRole("menuitemradio")).toHaveCount(3);
+    await expect(agentGroup.getByRole("menuitemradio", { name: "Claude" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    // Radix moves roving focus in a timeout: wait for each step to land.
+    await page.keyboard.press("ArrowDown");
+    await expect(agentGroup.getByRole("menuitemradio", { name: "Claude" })).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(agentGroup.getByRole("menuitemradio", { name: "Codex" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(agentGroup).toBeHidden();
+    await expect(dialog.getByRole("button", { name: "Agent: Codex" })).toBeVisible();
+    await expect(
+      dialog.getByRole("list", { name: "What Phasr will run" }).getByText("codex", { exact: true }),
+    ).toBeVisible();
 
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
+  });
+
+  test("permissions popover: mode pick and the notify switch are sent", async ({ page }) => {
+    await boot(page);
+    const dialog = await openNewTask(page);
+    await clearCalls(page);
+    await page.locator("#new-task-name").fill("careful task");
+
+    await dialog.getByRole("button", { name: /^Permissions:/ }).click();
+    await page.getByRole("menuitemradio", { name: /Ask for edits/ }).click();
+    await expect(dialog.getByRole("button", { name: "Permissions: Ask for edits" })).toBeVisible();
+
+    await dialog.getByRole("button", { name: /^Permissions:/ }).click();
+    const notify = page.getByRole("menuitemcheckbox", { name: /Notify me when it needs you/ });
+    await expect(notify).toHaveAttribute("aria-checked", "true");
+    await notify.click();
+    // A setting, not a pick: the popover stays open.
+    await expect(notify).toHaveAttribute("aria-checked", "false");
+    await page.keyboard.press("Escape");
+    await expect(notify).toBeHidden();
+    await expect(page.getByRole("dialog", { name: "New task · phasr" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
+    await waitForCall(page, "start_task");
+    const [args] = await argsFor(page, "start_task");
+    expect((args as { input: Record<string, unknown> }).input).toMatchObject({
+      permissionMode: "ask-edits",
+      notifyOnAttention: false,
+    });
+  });
+
+  test("Runs in → In place: base branch chip disabled, no base sent, footer says current branch", async ({
+    page,
+  }) => {
+    await boot(page);
+    const dialog = await openNewTask(page);
+    await clearCalls(page);
+    await page.locator("#new-task-name").fill("in place task");
+    await expect(dialog.getByText("phasr/in-place-task")).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Runs in: Worktree" }).click();
+    await page.getByRole("menuitemradio", { name: /In place/ }).click();
+    await expect(dialog.getByRole("button", { name: "Runs in: In place" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /^Base branch:/ })).toBeDisabled();
+    await expect(dialog.getByText("Current branch")).toBeVisible();
+
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
+    await waitForCall(page, "start_task");
+    const [args] = await argsFor(page, "start_task");
+    expect((args as { input: Record<string, unknown> }).input).toEqual({
+      repositoryId: "repo-1",
+      agent: "claude",
+      name: "in place task",
+      runIn: "in-place",
+    });
+  });
+
+  test("Run chip: the picked command starts in the new task's worktree", async ({ page }) => {
+    const { errors } = await boot(page);
+    const dialog = await openNewTask(page);
+    await clearCalls(page);
+    await page.locator("#new-task-name").fill("with dev server");
+
+    await dialog.getByRole("button", { name: "Run command: None" }).click();
+    await page.getByRole("menuitemradio", { name: /^dev/ }).click();
+    await expect(dialog.getByRole("button", { name: "Run command: dev" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
+    await waitForCall(page, "start_run_command_for_task");
+    const all = await calls(page);
+    const names = all.map((c) => c.cmd);
+    // After the task exists, for that task.
+    expect(names.indexOf("start_task")).toBeLessThan(names.indexOf("start_run_command_for_task"));
+    expect(all.find((c) => c.cmd === "start_run_command_for_task")?.args).toEqual({
+      id: "rc-1",
+      workspaceId: "ws-created",
+    });
+    await expect(page).toHaveURL(/workspaces\/ws-created/, { timeout: 10_000 });
+    expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
+  });
+
+  test("Run chip: a synced command not allowed on this Mac can't be picked", async ({ page }) => {
+    await boot(page);
+    await setResponse(page, "list_untrusted_run_commands", ["rc-1"]);
+    const dialog = await openNewTask(page);
+
+    await dialog.getByRole("button", { name: "Run command: None" }).click();
+    const dev = page.getByRole("menuitemradio", { name: /^dev/ });
+    await expect(dev).toHaveAttribute("aria-disabled", "true");
+    await expect(dev).toContainText("Allow on this Mac first");
+    await dev.click({ force: true });
+    await page.keyboard.press("Escape");
+    await expect(dialog.getByRole("button", { name: "Run command: None" })).toBeVisible();
+  });
+
+  test("Save as draft: ⌘⇧↵ and the Start task caret create a draft, never start", async ({ page }) => {
+    const f = makeFixtures();
+    await boot(page, f);
+    // An existing row, so the post-create navigation lands somewhere real.
+    await setResponse(page, "create_task_draft", f.workspaces[0]);
+    await openNewTask(page);
+    await clearCalls(page);
+    await page.locator("#new-task-prompt").fill("Draft me");
+    await page.locator("#new-task-prompt").press("Meta+Shift+Enter");
+    await waitForCall(page, "create_task_draft");
+    expect(await argsFor(page, "start_task")).toHaveLength(0);
+
+    const dialog = await openNewTask(page);
+    await clearCalls(page);
+    await page.locator("#new-task-name").fill("draft two");
+    await dialog.getByRole("button", { name: "More start options" }).click();
+    await page.getByRole("menuitem", { name: /Save as draft/ }).click();
+    await waitForCall(page, "create_task_draft");
+    expect(await argsFor(page, "start_task")).toHaveLength(0);
   });
 
   test("required-field: submit disabled until a name or prompt is present", async ({
@@ -140,8 +283,9 @@ test.describe("New task form (NewTaskModal)", () => {
 
     await page.locator("#new-task-prompt").fill("Repair the redirect loop");
     await page.locator("#new-task-name").fill("fix login redirect");
-    await dialog.getByRole("radio", { name: "Codex" }).click();
-    await expect(dialog.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true");
+    await dialog.getByRole("button", { name: "Agent: Claude" }).click();
+    await page.getByRole("menuitemradio", { name: "Codex" }).click();
+    await expect(dialog.getByRole("button", { name: "Agent: Codex" })).toBeVisible();
     // Enter inside the name input submits the form.
     await page.locator("#new-task-name").press("Enter");
 
@@ -338,7 +482,7 @@ test.describe("First task in an empty repository", () => {
     await cta.click();
     await expect(page.getByRole("dialog", { name: "New task · sidecar" })).toBeVisible();
     await page.locator("#new-task-name").fill("add dark mode");
-    await expect(page.locator("#new-task-base-branch")).toHaveValue("main");
+    await expect(page.getByRole("button", { name: "Base branch: main" })).toBeVisible();
     await clearCalls(page);
     await page.getByRole("button", { name: "Start task", exact: true }).click();
 

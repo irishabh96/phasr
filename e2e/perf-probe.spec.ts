@@ -97,8 +97,13 @@ test("perf probe across app states", async ({ page }) => {
     await page.waitForTimeout(8000);
   });
 
-  await page.getByRole("button", { name: "New workspace in phasr" }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
+  // The sidebar header's "+" (the per-repo "New workspace in …" button
+  // lives on the board, not in a task session).
+  await page
+    .getByRole("complementary", { name: "Sidebar" })
+    .getByRole("button", { name: "New task", exact: true })
+    .click();
+  await expect(page.getByRole("dialog", { name: /^New task/ })).toBeVisible();
   await page.locator("#new-task-name").fill("perf probe");
   await page.waitForTimeout(500);
 
@@ -106,6 +111,9 @@ test("perf probe across app states", async ({ page }) => {
     await page.waitForTimeout(8000);
   });
 
+  // The base branch search lives in its property chip's popover.
+  const branchChip = page.getByRole("button", { name: /^Base branch:/ });
+  if ((await branchChip.count()) > 0) await branchChip.click();
   const baseBranch = page.locator("#new-task-base-branch");
   const hasCombobox = (await baseBranch.count()) > 0;
   if (hasCombobox) {

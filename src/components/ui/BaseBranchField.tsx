@@ -17,6 +17,14 @@ interface BaseBranchFieldProps {
   disabled?: boolean;
   placeholder?: string;
   className?: string;
+  /**
+   * Render the list inline under the input, always open, instead of in its
+   * own popover: for hosts that already are a popover (New task's base
+   * branch chip). Escape is left to the host; `onDone` fires when a pick
+   * (or Enter / Tab) finishes, so the host can close itself.
+   */
+  inline?: boolean;
+  onDone?: () => void;
 }
 
 /**
@@ -44,6 +52,8 @@ export function BaseBranchField({
   disabled,
   placeholder,
   className,
+  inline = false,
+  onDone,
 }: BaseBranchFieldProps) {
   const branchesQuery = useGitBranches(repoPath);
   const branches = useMemo(
@@ -51,7 +61,8 @@ export function BaseBranchField({
     [branchesQuery.data],
   );
 
-  const [open, setOpen] = useState(false);
+  const [popoverOpen, setOpen] = useState(false);
+  const open = inline || popoverOpen;
   // When the field sits inside a modal Radix Dialog, a body-portalled
   // popover is pointer-dead: the dialog sets pointer-events:none on the
   // body and its scroll lock swallows wheel events outside its subtree.
@@ -118,7 +129,9 @@ export function BaseBranchField({
 
     const matches = (b: string) => b.toLowerCase().includes(query);
     const hasDefault =
-      !!defaultBranch && branches.includes(defaultBranch) && matches(defaultBranch);
+      !!defaultBranch &&
+      branches.includes(defaultBranch) &&
+      matches(defaultBranch);
     const rest = branches.filter((b) => b !== defaultBranch);
     const normal = rest.filter((b) => !b.startsWith("phasr/") && matches(b));
     const phasrAll = rest.filter((b) => b.startsWith("phasr/"));
@@ -141,12 +154,14 @@ export function BaseBranchField({
     }
     if (normal.length > 0) {
       out.push({ kind: "heading", label: "Branches" });
-      for (const name of normal) out.push({ kind: "branch", name, isDefault: false });
+      for (const name of normal)
+        out.push({ kind: "branch", name, isDefault: false });
     }
     if (query || phasrExpanded) {
       if (phasr.length > 0) {
         out.push({ kind: "heading", label: "Phasr task branches" });
-        for (const name of phasr) out.push({ kind: "branch", name, isDefault: false });
+        for (const name of phasr)
+          out.push({ kind: "branch", name, isDefault: false });
       }
     } else if (phasrAll.length > 0) {
       out.push({ kind: "expand", count: phasrAll.length });
@@ -166,7 +181,8 @@ export function BaseBranchField({
   ]);
 
   const isSelectable = (row: Row | undefined) =>
-    !!row && (row.kind === "branch" || row.kind === "custom" || row.kind === "expand");
+    !!row &&
+    (row.kind === "branch" || row.kind === "custom" || row.kind === "expand");
 
   const selectableIndexes = rows
     .map((row, i) => (isSelectable(row) ? i : -1))
@@ -190,13 +206,15 @@ export function BaseBranchField({
     setOpen(false);
     setQueryMode(false);
     setPhasrExpanded(false);
+    if (inline) onDone?.();
   };
 
   const openList = () => {
     if (disabled || open) return;
     setPortalContainer(
-      (containerRef.current?.closest('[role="dialog"]') as HTMLElement | null) ??
-        undefined,
+      (containerRef.current?.closest(
+        '[role="dialog"]',
+      ) as HTMLElement | null) ?? undefined,
     );
     setQueryMode(false);
     setPhasrExpanded(false);
@@ -219,7 +237,7 @@ export function BaseBranchField({
   // still runs first and keeps the modal open; stopPropagation here stops
   // later listeners from double-handling a list that is already closing.
   useEffect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const onDocKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -327,18 +345,23 @@ export function BaseBranchField({
       return;
     }
     if (e.key === "Escape") {
-      if (!open) return;
+      // Inline: the host popover owns Escape (it closes; the modal stays).
+      if (!open || inline) return;
       // Close the list only — must not bubble up and close the modal.
       e.preventDefault();
       e.stopPropagation();
       close();
       return;
     }
-    if (e.key === "Tab") close();
+    // Inline: Tab just moves focus; the host popover closes on focus-out.
+    if (e.key === "Tab" && !inline) close();
   };
 
-  const activeRowClasses =
-    "bg-[color-mix(in_oklab,var(--color-accent-500)_20%,transparent)] font-medium before:absolute before:bottom-1 before:left-0 before:top-1 before:w-[2px] before:rounded-full before:bg-(--color-focus-ring)";
+  // Inline (inside a chip popover): the popover rows' look, a background
+  // step (A-Polish: selection is never a coloured outline).
+  const activeRowClasses = inline
+    ? "bg-(--color-bg-hover)"
+    : "bg-[color-mix(in_oklab,var(--color-accent-500)_20%,transparent)] font-medium before:absolute before:bottom-1 before:left-0 before:top-1 before:w-[2px] before:rounded-full before:bg-(--color-focus-ring)";
   const rowBaseClasses =
     "relative flex cursor-pointer items-center gap-2 rounded-(--radius-control) px-2.5";
 
@@ -362,50 +385,231 @@ export function BaseBranchField({
     onClick: () => commit(index),
   });
 
+  const field = (
+    <div ref={containerRef} className="relative">
+      <input
+        id={id}
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-autocomplete="list"
+        aria-activedescendant={
+          open && active !== null ? optionId(active) : undefined
+        }
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        disabled={disabled}
+        placeholder={placeholder}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setQueryMode(true);
+          interactedRef.current = false;
+          if (!open && !disabled) setOpen(true);
+        }}
+        onFocus={openList}
+        onClick={openList}
+        onKeyDown={handleKeyDown}
+        className={cn(
+          inputBaseClasses,
+          "h-9 pl-3 pr-9 font-mono text-[13px]",
+          className,
+        )}
+      />
+      {inline ? null : (
+        <ChevronDown
+          size={14}
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--color-text-muted)",
+            "transition-transform duration-(--dur-2) ease-(--ease-out)",
+            open && "rotate-180",
+          )}
+        />
+      )}
+    </div>
+  );
+
+  const list = (
+    <>
+      {statusRow && (
+        <div role="status" aria-live="polite" className="px-2.5 py-2">
+          <span
+            className={cn(
+              "block text-[12px]",
+              statusRow.tone === "danger"
+                ? "text-(--color-danger-text)"
+                : "text-(--color-text-muted)",
+            )}
+          >
+            {statusRow.text}
+          </span>
+          {statusRow.hint && (
+            <span className="block pt-0.5 text-[11px] text-(--color-text-muted)">
+              {statusRow.hint}
+            </span>
+          )}
+        </div>
+      )}
+      {/* mousedown-preventDefault lives here, NOT on the scrollable
+              Content — on the Content it would also cancel native
+              scrollbar drags. Headings and gaps still keep input focus. */}
+      <div
+        role="listbox"
+        id={listboxId}
+        aria-label="Base branch"
+        onMouseDown={(e) => e.preventDefault()}
+      >
+        {rows.map((row, index) => {
+          if (row.kind === "status") return null;
+          if (row.kind === "heading") {
+            return (
+              <div
+                key={`heading-${row.label}`}
+                role="presentation"
+                className="group-header px-2.5 pb-1 pt-2"
+              >
+                {row.label}
+              </div>
+            );
+          }
+          if (row.kind === "expand") {
+            return (
+              <div
+                key="expand"
+                id={optionId(index)}
+                role="option"
+                aria-selected={false}
+                aria-label={`Show ${row.count} phasr task branches`}
+                {...rowInteractionProps(index)}
+                className={cn(
+                  rowBaseClasses,
+                  "h-8 text-[12px] text-(--color-text-secondary)",
+                  active === index && activeRowClasses,
+                )}
+              >
+                <span className="w-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">
+                  Phasr task branches
+                </span>
+                <span
+                  className={cn(
+                    "shrink-0 text-[11px]",
+                    // muted fails 4.5:1 on the accent-tinted active fill
+                    // in dark — promote to secondary while highlighted
+                    active === index
+                      ? "text-(--color-text-secondary)"
+                      : "text-(--color-text-muted)",
+                  )}
+                >
+                  {row.count}
+                </span>
+              </div>
+            );
+          }
+          if (row.kind === "custom") {
+            const isCurrent = row.ref === trimmedValue;
+            return (
+              <div
+                key="custom"
+                id={optionId(index)}
+                role="option"
+                aria-selected={isCurrent}
+                {...rowInteractionProps(index)}
+                className={cn(
+                  rowBaseClasses,
+                  "items-start py-1.5",
+                  active === index && activeRowClasses,
+                )}
+              >
+                <span className="flex w-4 shrink-0 justify-center pt-0.5">
+                  {isCurrent && (
+                    <Check
+                      size={13}
+                      aria-hidden
+                      className="text-(--color-accent-text)"
+                    />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] text-(--color-text-primary)">
+                    Use <span className="font-mono">&quot;{row.ref}&quot;</span>{" "}
+                    as a custom ref
+                  </span>
+                  <span
+                    className={cn(
+                      "block text-[11px]",
+                      active === index
+                        ? "text-(--color-text-secondary)"
+                        : "text-(--color-text-muted)",
+                    )}
+                  >
+                    Tag, SHA or origin/… — phasr can&apos;t verify this
+                  </span>
+                </span>
+              </div>
+            );
+          }
+          const isCurrent = row.name === trimmedValue;
+          return (
+            <div
+              key={row.name}
+              id={optionId(index)}
+              role="option"
+              aria-selected={isCurrent}
+              {...rowInteractionProps(index)}
+              className={cn(
+                rowBaseClasses,
+                "h-8 font-mono text-[12px] text-(--color-text-primary)",
+                active === index && activeRowClasses,
+              )}
+            >
+              <span className="flex w-4 shrink-0 justify-center">
+                {isCurrent && (
+                  <Check
+                    size={13}
+                    aria-hidden
+                    className="text-(--color-accent-text)"
+                  />
+                )}
+              </span>
+              <span className="min-w-0 flex-1 truncate" title={row.name}>
+                {row.name}
+              </span>
+              {row.isDefault && (
+                <span
+                  className={cn(
+                    "shrink-0 font-sans text-[11px]",
+                    active === index
+                      ? "text-(--color-text-secondary)"
+                      : "text-(--color-text-muted)",
+                  )}
+                >
+                  default
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <div className="flex min-w-0 flex-col gap-[6px]">
+        {field}
+        {/* The listbox's parent is the scroll container, as in the popover. */}
+        <div className="max-h-[min(280px,50vh)] overflow-y-auto overscroll-contain">
+          {list}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Popover.Root open={open} onOpenChange={(o) => (o ? openList() : close())}>
-      <Popover.Anchor asChild>
-        <div ref={containerRef} className="relative">
-          <input
-            id={id}
-            role="combobox"
-            aria-expanded={open}
-            aria-controls={open ? listboxId : undefined}
-            aria-autocomplete="list"
-            aria-activedescendant={
-              open && active !== null ? optionId(active) : undefined
-            }
-            autoComplete="off"
-            spellCheck={false}
-            value={value}
-            disabled={disabled}
-            placeholder={placeholder}
-            onChange={(e) => {
-              onChange(e.target.value);
-              setQueryMode(true);
-              interactedRef.current = false;
-              if (!open && !disabled) setOpen(true);
-            }}
-            onFocus={openList}
-            onClick={openList}
-            onKeyDown={handleKeyDown}
-            className={cn(
-              inputBaseClasses,
-              "h-9 pl-3 pr-9 font-mono text-[13px]",
-              className,
-            )}
-          />
-          <ChevronDown
-            size={14}
-            aria-hidden
-            className={cn(
-              "pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--color-text-muted)",
-              "transition-transform duration-(--dur-2) ease-(--ease-out)",
-              open && "rotate-180",
-            )}
-          />
-        </div>
-      </Popover.Anchor>
+      <Popover.Anchor asChild>{field}</Popover.Anchor>
       <Popover.Portal container={portalContainer}>
         <Popover.Content
           side="bottom"
@@ -427,169 +631,7 @@ export function BaseBranchField({
             "data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
           )}
         >
-          {statusRow && (
-            <div role="status" aria-live="polite" className="px-2.5 py-2">
-              <span
-                className={cn(
-                  "block text-[12px]",
-                  statusRow.tone === "danger"
-                    ? "text-(--color-danger-text)"
-                    : "text-(--color-text-muted)",
-                )}
-              >
-                {statusRow.text}
-              </span>
-              {statusRow.hint && (
-                <span className="block pt-0.5 text-[11px] text-(--color-text-muted)">
-                  {statusRow.hint}
-                </span>
-              )}
-            </div>
-          )}
-          {/* mousedown-preventDefault lives here, NOT on the scrollable
-              Content — on the Content it would also cancel native
-              scrollbar drags. Headings and gaps still keep input focus. */}
-          <div
-            role="listbox"
-            id={listboxId}
-            aria-label="Base branch"
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            {rows.map((row, index) => {
-              if (row.kind === "status") return null;
-              if (row.kind === "heading") {
-                return (
-                  <div
-                    key={`heading-${row.label}`}
-                    role="presentation"
-                    className="group-header px-2.5 pb-1 pt-2"
-                  >
-                    {row.label}
-                  </div>
-                );
-              }
-              if (row.kind === "expand") {
-                return (
-                  <div
-                    key="expand"
-                    id={optionId(index)}
-                    role="option"
-                    aria-selected={false}
-                    aria-label={`Show ${row.count} phasr task branches`}
-                    {...rowInteractionProps(index)}
-                    className={cn(
-                      rowBaseClasses,
-                      "h-8 text-[12px] text-(--color-text-secondary)",
-                      active === index && activeRowClasses,
-                    )}
-                  >
-                    <span className="w-4 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate">
-                      Phasr task branches
-                    </span>
-                    <span
-                      className={cn(
-                        "shrink-0 text-[11px]",
-                        // muted fails 4.5:1 on the accent-tinted active fill
-                        // in dark — promote to secondary while highlighted
-                        active === index
-                          ? "text-(--color-text-secondary)"
-                          : "text-(--color-text-muted)",
-                      )}
-                    >
-                      {row.count}
-                    </span>
-                  </div>
-                );
-              }
-              if (row.kind === "custom") {
-                const isCurrent = row.ref === trimmedValue;
-                return (
-                  <div
-                    key="custom"
-                    id={optionId(index)}
-                    role="option"
-                    aria-selected={isCurrent}
-                    {...rowInteractionProps(index)}
-                    className={cn(
-                      rowBaseClasses,
-                      "items-start py-1.5",
-                      active === index && activeRowClasses,
-                    )}
-                  >
-                    <span className="flex w-4 shrink-0 justify-center pt-0.5">
-                      {isCurrent && (
-                        <Check
-                          size={13}
-                          aria-hidden
-                          className="text-(--color-accent-text)"
-                        />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12px] text-(--color-text-primary)">
-                        Use{" "}
-                        <span className="font-mono">
-                          &quot;{row.ref}&quot;
-                        </span>{" "}
-                        as a custom ref
-                      </span>
-                      <span
-                        className={cn(
-                          "block text-[11px]",
-                          active === index
-                            ? "text-(--color-text-secondary)"
-                            : "text-(--color-text-muted)",
-                        )}
-                      >
-                        Tag, SHA or origin/… — phasr can&apos;t verify this
-                      </span>
-                    </span>
-                  </div>
-                );
-              }
-              const isCurrent = row.name === trimmedValue;
-              return (
-                <div
-                  key={row.name}
-                  id={optionId(index)}
-                  role="option"
-                  aria-selected={isCurrent}
-                  {...rowInteractionProps(index)}
-                  className={cn(
-                    rowBaseClasses,
-                    "h-8 font-mono text-[12px] text-(--color-text-primary)",
-                    active === index && activeRowClasses,
-                  )}
-                >
-                  <span className="flex w-4 shrink-0 justify-center">
-                    {isCurrent && (
-                      <Check
-                        size={13}
-                        aria-hidden
-                        className="text-(--color-accent-text)"
-                      />
-                    )}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate" title={row.name}>
-                    {row.name}
-                  </span>
-                  {row.isDefault && (
-                    <span
-                      className={cn(
-                        "shrink-0 font-sans text-[11px]",
-                        active === index
-                          ? "text-(--color-text-secondary)"
-                          : "text-(--color-text-muted)",
-                      )}
-                    >
-                      default
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          {list}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

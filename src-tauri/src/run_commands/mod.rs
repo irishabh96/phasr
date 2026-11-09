@@ -23,7 +23,7 @@ use crate::domain::{RunCommand, RunWhen, WorkspaceStatus};
 use crate::orchestrator::TaskStatusEvent;
 use crate::pty::handle::{PtyError, PtyHandle};
 use crate::pty::{LaunchMode, PtyEvent, SpawnSpec, TaskRuntime};
-use crate::store::{AppMetaRepo, RunCommandRepo, WorkspaceRepo};
+use crate::store::{AppMetaRepo, RunCommandRepo, StoreError, WorkspaceRepo};
 
 use ports::PortScanner;
 
@@ -44,6 +44,22 @@ pub fn pty_key(run_command_id: &str, workspace_id: Option<&str>) -> String {
         "{RUN_PTY_PREFIX}{run_command_id}@{}",
         workspace_id.unwrap_or(REPO_SCOPE)
     )
+}
+
+/// Why `start_trusted_for_task` didn't start a command.
+#[derive(Debug, thiserror::Error)]
+pub enum TaskRunError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Pty(#[from] PtyError),
+    /// The trusted-hash guard: the exact wording is what the UI shows.
+    #[error("allow this run command on this Mac first")]
+    Untrusted,
+    #[error("this task has no worktree on this machine")]
+    NoWorktree,
+    #[error("that run command belongs to another repository")]
+    WrongRepository,
 }
 
 /// `list_running_commands` / `phasr://run-command-state`.
@@ -444,6 +460,53 @@ impl RunCommandRuntime {
         started
     }
 
+    /// Start one run command headless in a task's worktree: the command
+    /// the user picked in New task's Run chip. They picked it by name and
+    /// never saw its text here, so it gets the same trusted-hash guard as
+    /// `auto_start_for_task`: a command synced from elsewhere and never
+    /// confirmed on this machine is refused, never run. `Ok(false)` when
+    /// it is already running for the task (a `task_start` command that
+    /// auto-started first).
+    pub async fn start_trusted_for_task(
+        &self,
+        run_command_id: &str,
+        task_id: &str,
+        user_id: &str,
+        workspaces: &WorkspaceRepo,
+        run_commands: &RunCommandRepo,
+        meta: &AppMetaRepo,
+    ) -> Result<bool, TaskRunError> {
+        let rc = run_commands.get_for_user(run_command_id, user_id).await?;
+        let workspace = workspaces.get_for_user(task_id, user_id).await?;
+        if workspace.repository_id != rc.repository_id {
+            return Err(TaskRunError::WrongRepository);
+        }
+        if !meta.is_run_command_trusted(&rc).await? {
+            return Err(TaskRunError::Untrusted);
+        }
+        let key = pty_key(&rc.id, Some(task_id));
+        if self.attachable(&key).is_some() {
+            return Ok(false);
+        }
+        let cwd = workspace
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+            .ok_or(TaskRunError::NoWorktree)?;
+        self.start(
+            &rc,
+            RunTarget {
+                workspace_id: Some(task_id.to_string()),
+                cwd,
+                user_id: user_id.to_string(),
+                rows: 24,
+                cols: 80,
+            },
+        )?;
+        Ok(true)
+    }
+
     /// Auto-start `task_start` commands whenever a task goes running.
     /// Call once, inside a Tokio runtime.
     pub fn start_task_hooks<F>(
@@ -774,6 +837,69 @@ mod tests {
             .await
             .is_empty());
         wait_for("cwd marker", || wt.join("started").exists()).await;
+        rt.stop_for_workspace(&ws.id);
+        wait_for("stop", || !rt.is_running(&pty_key(&dev.id, Some(&ws.id)))).await;
+    }
+
+    /// New task's Run chip: the picked command starts in the task's
+    /// worktree only once its text is trusted here; never twice; never for
+    /// another user or another repository's task.
+    #[tokio::test]
+    async fn start_for_task_needs_a_trusted_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
+             VALUES ('u', 'u', 'n', 'u@example.com', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repos = RepositoryRepo::new(pool.clone());
+        let repo = Repository::new("r".into(), None, None);
+        repos.insert_for_user(&repo, "u").await.unwrap();
+        let other_repo = Repository::new("o".into(), None, None);
+        repos.insert_for_user(&other_repo, "u").await.unwrap();
+        let workspaces = WorkspaceRepo::new(pool.clone());
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let mut ws = Workspace::new(repo.id.clone(), "t".into(), "c".into());
+        ws.worktree_path = Some(wt.to_string_lossy().into_owned());
+        workspaces.insert_for_user(&ws, "u").await.unwrap();
+        let run_commands = RunCommandRepo::new(pool.clone());
+        let meta = AppMetaRepo::new(pool.clone());
+        // Manual: the chip may start any command, not only `task_start`.
+        let dev = RunCommand::new(
+            repo.id.clone(),
+            "dev".into(),
+            "pwd > picked; sleep 30".into(),
+        );
+        run_commands.insert_for_user(&dev, "u").await.unwrap();
+        let foreign = RunCommand::new(other_repo.id.clone(), "x".into(), "true".into());
+        run_commands.insert_for_user(&foreign, "u").await.unwrap();
+        meta.trust_run_command(&foreign).await.unwrap();
+
+        let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(dir.path().join("logs"))));
+        macro_rules! start {
+            ($id:expr, $user:expr) => {
+                rt.start_trusted_for_task($id, &ws.id, $user, &workspaces, &run_commands, &meta)
+                    .await
+            };
+        }
+        // Synced, never confirmed here: refused, and nothing ran.
+        assert!(matches!(start!(&dev.id, "u"), Err(TaskRunError::Untrusted)));
+        assert!(rt.handle(&pty_key(&dev.id, Some(&ws.id))).is_none());
+        assert!(matches!(
+            start!(&foreign.id, "u"),
+            Err(TaskRunError::WrongRepository)
+        ));
+
+        meta.trust_run_command(&dev).await.unwrap();
+        assert!(matches!(start!(&dev.id, "x"), Err(TaskRunError::Store(_))));
+        assert!(start!(&dev.id, "u").unwrap());
+        // Already running (say it auto-started too) → not started twice.
+        assert!(!start!(&dev.id, "u").unwrap());
+        wait_for("cwd marker", || wt.join("picked").exists()).await;
         rt.stop_for_workspace(&ws.id);
         wait_for("stop", || !rt.is_running(&pty_key(&dev.id, Some(&ws.id)))).await;
     }

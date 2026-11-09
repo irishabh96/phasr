@@ -260,6 +260,8 @@ pub fn run() {
             commands::run_commands::send_run_command_input,
             commands::run_commands::resize_run_command,
             commands::run_commands::confirm_run_command,
+            commands::run_commands::list_untrusted_run_commands,
+            commands::run_commands::start_run_command_for_task,
             commands::run_commands::list_running_commands,
             commands::run_commands::detect_package_scripts,
             commands::notes::create_note,

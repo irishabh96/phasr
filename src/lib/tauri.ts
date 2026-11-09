@@ -499,6 +499,16 @@ export const tauri = {
   deleteRunCommand: (id: string) => invoke<void>("delete_run_command", { id }),
   /** "Allow on this machine": a synced command's text may auto-run here. */
   confirmRunCommand: (id: string) => invoke<RunCommand>("confirm_run_command", { id }),
+  /** Ids of the repository's run commands NOT trusted on this machine yet. */
+  listUntrustedRunCommands: (repositoryId: string) =>
+    invoke<string[]>("list_untrusted_run_commands", { repositoryId }),
+  /**
+   * Start a run command headless in a task's worktree with the task (New
+   * task's Run chip). Rejects a command not trusted on this machine; a
+   * no-op if it is already running there. The run pane attaches later.
+   */
+  startRunCommandForTask: (id: string, workspaceId: string) =>
+    invoke<void>("start_run_command_for_task", { id, workspaceId }),
   /** Running / exited-this-session run commands, one task or all. */
   listRunningCommands: (workspaceId?: string | null) =>
     invoke<RunningCommand[]>("list_running_commands", { workspaceId: workspaceId ?? null }),

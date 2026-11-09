@@ -211,6 +211,15 @@ export const SHORTCUTS = {
     display: ["⌘", "↵"],
     label: "Submit",
   },
+  // New task only (scoped to its form, like commitAndPush to Changes).
+  saveDraft: {
+    key: "enter",
+    meta: true,
+    metaOnly: true,
+    shift: true,
+    display: ["⌘", "⇧", "↵"],
+    label: "Save as draft",
+  },
 
   // Git
   commitAndPush: {

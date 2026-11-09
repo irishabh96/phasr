@@ -21,7 +21,7 @@ use crate::auth::{AuthError, SessionState};
 use crate::domain::{RunCommand, RunWhen};
 use crate::pty::{PtyEvent, TaskRuntime};
 use crate::run_commands::scripts::{self, DetectedScript};
-use crate::run_commands::{pty_key, RunCommandRuntime, RunTarget, RunningCommand};
+use crate::run_commands::{pty_key, RunCommandRuntime, RunTarget, RunningCommand, TaskRunError};
 use crate::store::{
     AppMetaRepo, RepositoryRepo, RunCommandRepo, RunCommandUpdate, StoreError, WorkspaceRepo,
 };
@@ -50,6 +50,8 @@ pub enum RunCommandError {
     /// Run button", not as a failure.
     #[error("not running")]
     NotAttached,
+    #[error(transparent)]
+    TaskRun(#[from] TaskRunError),
 }
 
 impl serde::Serialize for RunCommandError {
@@ -172,6 +174,55 @@ pub async fn confirm_run_command(
     let rc = repo.get_for_user(&id, &current.user_id).await?;
     meta.trust_run_command(&rc).await?;
     Ok(rc)
+}
+
+/// Ids of the repository's run commands whose current text is NOT trusted
+/// on this machine (synced from elsewhere, never confirmed here). New
+/// task's Run chip shows them disabled: "Allow on this Mac first".
+#[tauri::command]
+pub async fn list_untrusted_run_commands(
+    repository_id: String,
+    repo: State<'_, RunCommandRepo>,
+    meta: State<'_, AppMetaRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, RunCommandError> {
+    let current = require_user(&session)?;
+    let mut untrusted = Vec::new();
+    for rc in repo
+        .list_by_repository_for_user(&repository_id, &current.user_id)
+        .await?
+    {
+        if !meta.is_run_command_trusted(&rc).await? {
+            untrusted.push(rc.id);
+        }
+    }
+    Ok(untrusted)
+}
+
+/// Start a run command headless in a task's worktree, alongside the task
+/// (New task's Run chip). Refuses a command not trusted on this machine;
+/// a no-op if it is already running there. The run pane attaches later.
+#[tauri::command]
+pub async fn start_run_command_for_task(
+    id: String,
+    workspace_id: String,
+    run_commands: State<'_, RunCommandRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
+    meta: State<'_, AppMetaRepo>,
+    runs: State<'_, RunCommandRuntime>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), RunCommandError> {
+    let current = require_user(&session)?;
+    runs.start_trusted_for_task(
+        &id,
+        &workspace_id,
+        &current.user_id,
+        &workspaces,
+        &run_commands,
+        &meta,
+    )
+    .await?;
+    Ok(())
 }
 
 #[tauri::command]
