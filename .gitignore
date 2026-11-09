@@ -10,6 +10,7 @@ lerna-debug.log*
 # Node
 node_modules
 dist
+dist-sourcemaps
 dist-ssr
 .vercel
 *.local

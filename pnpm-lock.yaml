@@ -17,49 +17,49 @@ dependencies:
     specifier: ^6.6.6
     version: 6.6.6(react-dom@19.2.6)(react@19.2.6)
   '@codemirror/commands':
-    specifier: '6'
+    specifier: ^6.11.1
     version: 6.11.1
   '@codemirror/lang-css':
-    specifier: '6'
+    specifier: ^6.3.1
     version: 6.3.1
   '@codemirror/lang-html':
-    specifier: '6'
+    specifier: ^6.4.12
     version: 6.4.12
   '@codemirror/lang-javascript':
-    specifier: '6'
+    specifier: ^6.2.5
     version: 6.2.5
   '@codemirror/lang-json':
-    specifier: '6'
+    specifier: ^6.0.2
     version: 6.0.2
   '@codemirror/lang-markdown':
-    specifier: '6'
+    specifier: ^6.5.2
     version: 6.5.2
   '@codemirror/lang-python':
-    specifier: '6'
+    specifier: ^6.2.1
     version: 6.2.1
   '@codemirror/lang-rust':
-    specifier: '6'
+    specifier: ^6.0.2
     version: 6.0.2
   '@codemirror/language':
-    specifier: '6'
+    specifier: ^6.13.1
     version: 6.13.1
   '@codemirror/search':
-    specifier: '6'
+    specifier: ^6.7.2
     version: 6.7.2
   '@codemirror/state':
-    specifier: '6'
+    specifier: ^6.7.6
     version: 6.7.6
   '@codemirror/view':
-    specifier: '6'
+    specifier: ^6.43.15
     version: 6.43.15
   '@fontsource-variable/inter':
-    specifier: '5'
+    specifier: ^5.3.0
     version: 5.3.0
   '@fontsource/jetbrains-mono':
-    specifier: '5'
+    specifier: ^5.3.0
     version: 5.3.0
   '@lezer/highlight':
-    specifier: '1'
+    specifier: ^1.2.5
     version: 1.2.5
   '@radix-ui/react-context-menu':
     specifier: ^2.2.16
@@ -101,16 +101,16 @@ dependencies:
     specifier: ^1.131.0
     version: 1.170.4(react-dom@19.2.6)(react@19.2.6)
   '@tauri-apps/api':
-    specifier: ^2
+    specifier: ^2.11.0
     version: 2.11.0
   '@tauri-apps/plugin-dialog':
     specifier: ^2.7.1
     version: 2.7.1
   '@tauri-apps/plugin-notification':
-    specifier: ^2
+    specifier: ^2.3.3
     version: 2.3.3
   '@tauri-apps/plugin-opener':
-    specifier: ^2
+    specifier: ^2.5.4
     version: 2.5.4
   class-variance-authority:
     specifier: ^0.7.1
@@ -166,7 +166,7 @@ devDependencies:
     specifier: ^1.131.0
     version: 1.168.6(@tanstack/react-router@1.170.4)(vite@7.3.3)
   '@tauri-apps/cli':
-    specifier: ^2
+    specifier: ^2.11.2
     version: 2.11.2
   '@testing-library/jest-dom':
     specifier: ^6.6.3
