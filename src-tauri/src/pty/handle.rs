@@ -790,11 +790,7 @@ const COMMAND_DELAY: Duration = Duration::from_millis(300);
 /// How long to wait for the agent's TUI to take over the terminal
 /// before typing the prompt blind (the pre-readiness behavior, kept as
 /// a fallback for agents that never emit any TUI escape).
-#[cfg(not(test))]
 const TUI_WAIT_DEADLINE: Duration = Duration::from_secs(10);
-/// Short in tests, so the blind-fallback path runs in seconds.
-#[cfg(test)]
-const TUI_WAIT_DEADLINE: Duration = Duration::from_secs(3);
 
 /// Pause between the TUI appearing and the prompt being typed, so the
 /// first paint finishes and the input widget is mounted.

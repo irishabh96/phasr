@@ -284,8 +284,8 @@ mod tests {
                     .with_initial_prompt(Some("echo PWNED-$((6*7))".into())),
             )
             .unwrap();
-        // Past the (test-length) TUI wait, the blind write and its Enter gap.
-        let output = assert_prompt_never_ran(&handle, Duration::from_secs(6));
+        // Past the TUI wait (10 s), the blind write and its Enter gap.
+        let output = assert_prompt_never_ran(&handle, Duration::from_secs(12));
         assert!(!output.contains("PWNED"), "not even typed: {output:?}");
         handle.kill().unwrap();
     }
@@ -306,7 +306,17 @@ mod tests {
             .unwrap();
         let mut rx = handle.subscribe();
         let mut output = String::new();
-        drain_until(&mut rx, &mut output, "got-plain-prompt");
+        // Typed on the blind path, after the 10 s TUI wait.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !output.contains("got-plain-prompt") {
+            assert!(std::time::Instant::now() < deadline, "never submitted: {output:?}");
+            match rx.try_recv() {
+                Ok(super::super::PtyEvent::Output { chunk, .. }) => {
+                    output.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
         handle.kill().unwrap();
     }
 
