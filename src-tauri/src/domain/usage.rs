@@ -41,10 +41,13 @@ pub struct TaskUsage {
     pub cache_read_tokens: i64,
     pub cache_write_tokens: i64,
     /// Integer micro-dollars so totals don't drift; serialized as a plain
-    /// USD number (`costUsd`). `None` when any model used has no known price
-    /// — the UI hides cost rather than showing a wrong one.
+    /// USD number (`costUsd`). `None` only when no model used has a known
+    /// price; see `cost_partial` for "some did".
     #[serde(rename = "costUsd", serialize_with = "micros_as_usd")]
     pub cost_usd_micros: Option<i64>,
+    /// Some model used has no known price, so `costUsd` covers only the
+    /// priced part: a lower bound, not the total.
+    pub cost_partial: bool,
     pub updated_at: DateTime<Utc>,
     /// Newest transcript the snapshot read; local bookkeeping only.
     #[serde(skip)]
@@ -61,6 +64,7 @@ impl TaskUsage {
             && self.cache_read_tokens == other.cache_read_tokens
             && self.cache_write_tokens == other.cache_write_tokens
             && self.cost_usd_micros == other.cost_usd_micros
+            && self.cost_partial == other.cost_partial
     }
 }
 
@@ -85,6 +89,7 @@ mod tests {
             cache_read_tokens: 3,
             cache_write_tokens: 4,
             cost_usd_micros: Some(1_234_500),
+            cost_partial: false,
             updated_at: Utc::now(),
             transcript_path: Some("/secret".into()),
         };
@@ -93,6 +98,7 @@ mod tests {
         assert_eq!(v["inputTokens"], 1);
         assert_eq!(v["cacheWriteTokens"], 4);
         assert_eq!(v["costUsd"], 1.2345);
+        assert_eq!(v["costPartial"], false);
         assert!(v.get("transcriptPath").is_none());
 
         let unknown = TaskUsage {

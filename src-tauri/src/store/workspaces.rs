@@ -489,6 +489,50 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
+    /// `list_tasks` for the Board, with finished tasks (an outcome, or
+    /// archived) limited to those that finished at or after `since` plus
+    /// the `recent` most recently finished. Unfinished tasks always come
+    /// back. Every board refetch serializes every row it returns, and a
+    /// long-lived install accumulates hundreds of merged/archived tasks
+    /// that no lane shows. `user_id: None` = every owner (tests).
+    pub async fn list_board_tasks(
+        &self,
+        user_id: Option<&str>,
+        repository_id: Option<&str>,
+        since: DateTime<Utc>,
+        recent: i64,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        // Timestamps are RFC 3339 UTC text, so text order is time order.
+        let rows = sqlx::query(concat!(
+            "SELECT * FROM (
+                 SELECT ",
+            workspace_columns!(),
+            ",
+                     CASE WHEN outcome IS NOT NULL OR status = 'archived' THEN
+                         ROW_NUMBER() OVER (
+                             PARTITION BY (outcome IS NOT NULL OR status = 'archived')
+                             ORDER BY COALESCE(outcome_at, archived_at, finished_at, updated_at) DESC)
+                     END AS finished_rank,
+                     COALESCE(outcome_at, archived_at, finished_at, updated_at) AS finished_key
+                 FROM workspaces
+                 WHERE workspace_kind = 'agent' AND deleted_at IS NULL
+                   AND (? IS NULL OR user_id = ?)
+                   AND (? IS NULL OR repository_id = ?)
+             )
+             WHERE finished_rank IS NULL OR finished_rank <= ? OR finished_key >= ?
+             ORDER BY created_at DESC",
+        ))
+        .bind(user_id)
+        .bind(user_id)
+        .bind(repository_id)
+        .bind(repository_id)
+        .bind(recent)
+        .bind(since.to_rfc3339())
+        .fetch_all(&self.db)
+        .await?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
     /// Queued (never-launched) tasks QUEUED ON THIS MACHINE, oldest in the
     /// queue first — the scheduler's work list. A row queued on another
     /// machine (synced here) is excluded: it shows as queued on the board

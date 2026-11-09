@@ -14,7 +14,7 @@
 //!   id only the file with the largest total counts.
 //! - Day directories are local dates, so the scan starts a day early.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
@@ -43,6 +43,11 @@ pub struct CodexReader {
     sessions_root: PathBuf,
     /// Every rollout looked at: `Some(session id)` = ours, `None` = not.
     classified: HashMap<PathBuf, Option<String>>,
+    /// Day dirs up to this date were listed after they could still gain a
+    /// rollout; `discover` doesn't list them again.
+    closed_through: Option<NaiveDate>,
+    /// Rollouts whose first line wasn't complete when listed.
+    pending_headers: HashSet<PathBuf>,
     files: HashMap<PathBuf, RolloutFile>,
     last_model: Option<String>,
     summary: Option<(String, DateTime<Utc>)>,
@@ -60,6 +65,8 @@ impl CodexReader {
             target,
             sessions_root,
             classified: HashMap::new(),
+            closed_through: None,
+            pending_headers: HashSet::new(),
             files: HashMap::new(),
             last_model: None,
             summary: None,
@@ -74,8 +81,9 @@ impl CodexReader {
         !self.files.is_empty()
     }
 
-    fn day_dirs(&self) -> Vec<PathBuf> {
-        let today = Local::now().date_naive();
+    /// Day dirs from the task's start (or `after` the last closed day,
+    /// whichever is later) through tomorrow.
+    fn day_dirs(&self, today: NaiveDate, after: Option<NaiveDate>) -> Vec<PathBuf> {
         let start: NaiveDate = self
             .target
             .since
@@ -88,6 +96,9 @@ impl CodexReader {
         let floor = today - Duration::days(366);
         if day < floor {
             day = floor;
+        }
+        if let Some(closed) = after {
+            day = day.max(closed + Duration::days(1));
         }
         while day <= today + Duration::days(1) {
             out.push(
@@ -109,8 +120,14 @@ impl CodexReader {
             .any(|c| c == candidate || canonical.as_deref() == Some(c.as_path()))
     }
 
+    /// Find new rollouts. Runs every refresh (5 s), so only the first pass
+    /// walks every day since the task started; after it, days two or more
+    /// back are closed (Codex files a rollout under the day its session
+    /// started, and every file already there was classified), and only
+    /// yesterday through tomorrow are listed again.
     pub(super) fn discover(&mut self) {
-        for dir in self.day_dirs() {
+        let today = Local::now().date_naive();
+        for dir in self.day_dirs(today, self.closed_through) {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
@@ -121,23 +138,36 @@ impl CodexReader {
                 {
                     continue;
                 }
-                let Some(meta) = first_line(&path) else {
-                    // Header not fully written yet: look again next time.
-                    continue;
-                };
-                let ours = self.classify(&meta);
-                if let Some(id) = &ours {
-                    self.files.insert(
-                        path.clone(),
-                        RolloutFile {
-                            session_id: id.clone(),
-                            ..Default::default()
-                        },
-                    );
-                }
-                self.classified.insert(path, ours);
+                self.classify_file(path);
             }
         }
+        // A header caught mid-write sits in a dir that may close before it's
+        // complete: retry those by path, not by listing.
+        for path in std::mem::take(&mut self.pending_headers) {
+            if path.exists() && !self.classified.contains_key(&path) {
+                self.classify_file(path);
+            }
+        }
+        self.closed_through = Some(today - Duration::days(2));
+    }
+
+    fn classify_file(&mut self, path: PathBuf) {
+        let Some(meta) = first_line(&path) else {
+            // Header not fully written yet: look again next time.
+            self.pending_headers.insert(path);
+            return;
+        };
+        let ours = self.classify(&meta);
+        if let Some(id) = &ours {
+            self.files.insert(
+                path.clone(),
+                RolloutFile {
+                    session_id: id.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+        self.classified.insert(path, ours);
     }
 
     fn classify(&self, meta: &Value) -> Option<String> {
@@ -174,17 +204,14 @@ impl CodexReader {
                 continue;
             };
             let mut cursor = file.cursor.clone();
-            match read_new_lines(&path, &mut cursor) {
-                Ok(NewLines::Lines(lines)) => {
-                    if !lines.is_empty() {
+            match read_new_lines(&path, &mut cursor, |line| self.ingest(&path, line)) {
+                Ok(NewLines::Read(read)) => {
+                    if read > 0 {
                         if let Some(m) = mtime(&path) {
                             if self.newest.as_ref().is_none_or(|(t, _)| m >= *t) {
                                 self.newest = Some((m, path.clone()));
                             }
                         }
-                    }
-                    for line in &lines {
-                        self.ingest(&path, line);
                     }
                     if let Some(file) = self.files.get_mut(&path) {
                         file.cursor = cursor;
@@ -258,7 +285,9 @@ impl CodexReader {
                     .map(|blocks| {
                         blocks
                             .iter()
-                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("output_text"))
+                            .filter(|b| {
+                                b.get("type").and_then(Value::as_str) == Some("output_text")
+                            })
                             .filter_map(|b| b.get("text").and_then(Value::as_str))
                             .collect()
                     })
@@ -301,9 +330,11 @@ impl CodexReader {
             let Some((tokens, sum)) = &file.last_total else {
                 continue;
             };
-            let entry = best
-                .entry(file.session_id.as_str())
-                .or_insert((tokens, *sum, file.model.as_deref()));
+            let entry = best.entry(file.session_id.as_str()).or_insert((
+                tokens,
+                *sum,
+                file.model.as_deref(),
+            ));
             if *sum > entry.1 {
                 *entry = (tokens, *sum, file.model.as_deref());
             }
@@ -312,15 +343,12 @@ impl CodexReader {
             return None;
         }
         let mut totals = TokenCounts::default();
-        let mut cost: Option<i64> = Some(0);
+        let mut cost = pricing::CostSum::default();
         for (tokens, _, model) in best.values() {
             totals.add(tokens);
-            let session_cost = model.and_then(|m| pricing::cost_micros(m, tokens));
-            cost = match (cost, session_cost) {
-                (Some(a), Some(b)) => Some(a + b),
-                _ => None,
-            };
+            cost.add(*model, tokens);
         }
+        let (cost, cost_partial) = cost.total();
         Some(TaskUsage {
             source: UsageSource::Codex,
             model: self.last_model.clone(),
@@ -329,6 +357,7 @@ impl CodexReader {
             cache_read_tokens: totals.cache_read,
             cache_write_tokens: totals.cache_write(),
             cost_usd_micros: cost,
+            cost_partial,
             updated_at: now,
             transcript_path: self
                 .newest
@@ -433,7 +462,10 @@ mod tests {
             json!({"timestamp":"2026-11-09T10:00:02Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Patched lib.rs."}}).to_string(),
         ];
         std::fs::write(day.join("rollout-a.jsonl"), mine.join("\n") + "\n").unwrap();
-        let other = [meta("s2", "/elsewhere"), token_count(9_999_999, 0, 9_999_999)];
+        let other = [
+            meta("s2", "/elsewhere"),
+            token_count(9_999_999, 0, 9_999_999),
+        ];
         std::fs::write(day.join("rollout-b.jsonl"), other.join("\n") + "\n").unwrap();
 
         let mut reader = CodexReader::new(target("/w/task"), root);
@@ -487,15 +519,105 @@ mod tests {
         let mut reader = CodexReader::new(target("/w/x"), root);
         reader.refresh();
         assert!(reader.usage(Utc::now()).is_none());
-        std::fs::write(&path, meta("s", "/w/x") + "\n" + &token_count(10, 0, 1) + "\n").unwrap();
+        std::fs::write(
+            &path,
+            meta("s", "/w/x") + "\n" + &token_count(10, 0, 1) + "\n",
+        )
+        .unwrap();
         reader.refresh();
         assert_eq!(reader.usage(Utc::now()).unwrap().output_tokens, 1);
     }
 
     #[test]
+    fn a_session_on_an_unpriced_model_leaves_a_partial_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let day = day_dir(&root);
+        let model = |m: &str| json!({"type":"turn_context","payload":{"model": m}}).to_string();
+        std::fs::write(
+            day.join("rollout-1.jsonl"),
+            [meta("a", "/w/p"), model("gpt-5"), token_count(1000, 0, 0)].join("\n") + "\n",
+        )
+        .unwrap();
+        std::fs::write(
+            day.join("rollout-2.jsonl"),
+            [
+                meta("b", "/w/p"),
+                model("gpt-6-astra"),
+                token_count(1000, 0, 0),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let mut reader = CodexReader::new(target("/w/p"), root);
+        reader.refresh();
+        let usage = reader.usage(Utc::now()).unwrap();
+        assert_eq!(usage.input_tokens, 2000);
+        // gpt-5's 1000 input at $1.25/MTok; the other session is unpriced.
+        assert_eq!(usage.cost_usd_micros, Some(1250));
+        assert!(usage.cost_partial);
+    }
+
+    fn day_dir_ago(root: &Path, days: i64) -> PathBuf {
+        let day = Local::now().date_naive() - Duration::days(days);
+        let dir = root
+            .join(day.format("%Y").to_string())
+            .join(day.format("%m").to_string())
+            .join(day.format("%d").to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Only the first pass walks every day since the task started; later
+    /// passes list yesterday..tomorrow, and pick up a late header by path.
+    #[test]
+    fn discover_lists_old_days_once_then_only_recent_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let mut t = target("/w/d");
+        t.since = Some(Utc::now() - chrono::Duration::days(10));
+        let mut reader = CodexReader::new(t, root.clone());
+
+        let old = day_dir_ago(&root, 6);
+        std::fs::write(old.join("rollout-old.jsonl"), meta("old", "/w/d") + "\n").unwrap();
+        // A header still being written, in a day the first pass closes.
+        let late = day_dir_ago(&root, 3).join("rollout-late.jsonl");
+        std::fs::write(&late, meta("late", "/w/d")).unwrap();
+        reader.discover();
+        assert!(reader.files.contains_key(&old.join("rollout-old.jsonl")));
+        assert!(!reader.files.contains_key(&late));
+        assert_eq!(
+            reader.closed_through,
+            Some(Local::now().date_naive() - Duration::days(2))
+        );
+
+        // A file that appears in a closed day isn't listed again…
+        std::fs::write(
+            old.join("rollout-stray.jsonl"),
+            meta("stray", "/w/d") + "\n",
+        )
+        .unwrap();
+        // …while today's dir and the late header are.
+        let today = day_dir(&root);
+        std::fs::write(today.join("rollout-new.jsonl"), meta("new", "/w/d") + "\n").unwrap();
+        std::fs::write(&late, meta("late", "/w/d") + "\n").unwrap();
+        reader.discover();
+        assert!(!reader
+            .classified
+            .contains_key(&old.join("rollout-stray.jsonl")));
+        assert!(reader.files.contains_key(&today.join("rollout-new.jsonl")));
+        assert!(reader.files.contains_key(&late));
+        assert!(reader.pending_headers.is_empty());
+        assert_eq!(reader.files.len(), 3);
+    }
+
+    #[test]
     fn patch_paths_parse() {
         assert_eq!(
-            patch_paths("*** Begin Patch\n*** Add File: a.txt\n+x\n*** Delete File: b.txt\n*** End Patch"),
+            patch_paths(
+                "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Delete File: b.txt\n*** End Patch"
+            ),
             vec!["a.txt".to_string(), "b.txt".to_string()]
         );
     }
