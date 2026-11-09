@@ -87,16 +87,23 @@ pub struct SystemStatus {
 
 /// Every task card for the signed-in user — one repository, or all of them
 /// when `repository_id` is null. `phasr://task-cards-changed` says when to
-/// refetch.
+/// refetch. Finished (merged/closed/archived) tasks are limited to the last
+/// week plus the 50 latest unless `include_all_finished` (optional; omitted
+/// = false, so existing callers keep working).
 #[tauri::command]
 pub async fn list_task_cards(
     repository_id: Option<String>,
+    include_all_finished: Option<bool>,
     board: State<'_, TaskBoard>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<TaskCard>, OrchestratorError> {
     let current = require_user(&session)?;
     Ok(board
-        .cards(Some(&current.user_id), repository_id.as_deref())
+        .cards(
+            Some(&current.user_id),
+            repository_id.as_deref(),
+            include_all_finished.unwrap_or(false),
+        )
         .await?)
 }
 

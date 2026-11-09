@@ -99,16 +99,27 @@ pub struct TaskUsagePayload {
 #[serde(rename_all = "camelCase")]
 pub struct TaskCardsChangedPayload {
     pub repository_id: String,
+    /// The cards that changed, when the backend knows exactly; absent =
+    /// any card in the repository. Additive: a listener that ignores it
+    /// refetches the repository as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_ids: Option<Vec<String>>,
 }
 
 /// Re-emit the board's coalesced change notifications. Call once at
 /// startup.
 pub fn spawn_board_bridge(board: &TaskBoard, app: AppHandle) {
     spawn_forwarder(board.subscribe(), move |event| match event {
-        BoardEvent::CardsChanged { repository_id } => {
+        BoardEvent::CardsChanged {
+            repository_id,
+            task_ids,
+        } => {
             let _ = app.emit(
                 TASK_CARDS_CHANGED_EVENT,
-                TaskCardsChangedPayload { repository_id },
+                TaskCardsChangedPayload {
+                    repository_id,
+                    task_ids,
+                },
             );
         }
     });

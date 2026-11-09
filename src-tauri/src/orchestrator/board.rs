@@ -5,6 +5,11 @@
 //! Tauri-agnostic like the rest of the orchestrator: changes go out on a
 //! `tokio::broadcast` and `commands::events` re-emits them as
 //! `phasr://task-cards-changed`.
+//!
+//! A refetch follows every agent tool call, so `cards` must be cheap when
+//! nothing moved: settled tasks (merged, closed, archived) do no git work,
+//! a task whose HEAD and index are unchanged is served from the diff cache
+//! without spawning git (`git::DiffStatCache`), and usage is one query.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -26,14 +31,26 @@ use crate::store::{RepositoryRepo, StoreError, TaskUsageRepo, WorkspaceRepo};
 
 use super::service::TaskStatusEvent;
 
-/// How long a computed diff is trusted without an invalidating signal.
-const DIFF_TTL: Duration = Duration::from_secs(15);
+/// How long a running task's cached diff is trusted without an
+/// invalidating signal: an agent without tool hooks edits files with
+/// nothing telling the board, and neither HEAD nor the index moves.
+const LIVE_DIFF_TTL: Duration = Duration::from_secs(15);
+/// The same for a task nothing is running in. Its files change only by
+/// hand (the fs watcher sees that while it's open), so this only bounds
+/// edits made with the task closed.
+const SETTLED_DIFF_TTL: Duration = Duration::from_secs(5 * 60);
 /// Diffs computed at once on a cold cache (each is a few git processes).
 const DIFF_CONCURRENCY: usize = 4;
 /// Change notifications are coalesced per repository over this window, so
 /// a burst of agent events costs the UI one refetch.
 const CHANGE_COALESCE: Duration = Duration::from_millis(300);
 const EVENT_CAPACITY: usize = 256;
+/// Finished tasks (merged, closed, archived) on the board: those finished
+/// within this many days, plus the `FINISHED_RECENT` latest. The board
+/// shows finished cards from today (or its last few); the rest only cost
+/// every refetch. `cards(.., all_finished: true)` returns all of them.
+const FINISHED_DAYS: i64 = 7;
+const FINISHED_RECENT: i64 = 50;
 
 /// One task on the Board. `list_task_cards` returns these.
 #[derive(Debug, Clone, Serialize)]
@@ -41,8 +58,9 @@ const EVENT_CAPACITY: usize = 256;
 pub struct TaskCard {
     pub workspace: Workspace,
     pub lane: Lane,
-    /// Changes vs the task's base; `None` before launch, when archived, or
-    /// when the worktree isn't on this machine.
+    /// Changes vs the task's base; `None` before launch, when archived,
+    /// when the worktree isn't on this machine, or for a merged/closed
+    /// task whose diff wasn't computed since startup.
     pub diff: Option<DiffStats>,
     /// `None` when phasr hasn't tracked the agent since startup.
     pub agent_state: Option<TaskAgentState>,
@@ -54,10 +72,15 @@ pub struct TaskCard {
     pub depends_on_name: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardEvent {
-    /// A card in this repository may have moved lanes or changed.
-    CardsChanged { repository_id: String },
+    /// Cards in this repository may have moved lanes or changed.
+    /// `task_ids`: exactly which ones, when every coalesced cause named
+    /// its task; `None` = any card in the repository.
+    CardsChanged {
+        repository_id: String,
+        task_ids: Option<Vec<String>>,
+    },
 }
 
 struct Inner {
@@ -67,8 +90,9 @@ struct Inner {
     signals: Option<AgentSignals>,
     diffs: DiffStatCache,
     events: broadcast::Sender<BoardEvent>,
-    /// Repositories with a change not yet announced.
-    pending: Mutex<HashSet<String>>,
+    /// Repositories with a change not yet announced, with the tasks that
+    /// changed (`None` once anything repository-wide joins the batch).
+    pending: Mutex<HashMap<String, Option<HashSet<String>>>>,
     flush: Notify,
     /// `task_id → repository_id` for tasks a card was built for, so a
     /// file-change signal (which only knows the task) can be announced.
@@ -97,9 +121,9 @@ impl TaskBoard {
                 repositories,
                 usage,
                 signals,
-                diffs: DiffStatCache::new(DIFF_TTL),
+                diffs: DiffStatCache::new(),
                 events,
-                pending: Mutex::new(HashSet::new()),
+                pending: Mutex::new(HashMap::new()),
                 flush: Notify::new(),
                 task_repos: Mutex::new(HashMap::new()),
                 last_agent: Mutex::new(HashMap::new()),
@@ -114,26 +138,37 @@ impl TaskBoard {
     // ── cards ───────────────────────────────────────────────────────────
 
     /// Every task card, one repository or all, newest first. `user_id:
-    /// None` = every owner (the sessionless test path).
+    /// None` = every owner (the sessionless test path). Finished tasks are
+    /// limited to the recent ones (`FINISHED_DAYS` / `FINISHED_RECENT`)
+    /// unless `all_finished`.
     pub async fn cards(
         &self,
         user_id: Option<&str>,
         repository_id: Option<&str>,
+        all_finished: bool,
     ) -> Result<Vec<TaskCard>, StoreError> {
-        let tasks = match user_id {
-            Some(user_id) => {
-                self.inner
-                    .workspaces
-                    .list_tasks_for_user(user_id, repository_id)
+        let workspaces = &self.inner.workspaces;
+        let tasks = match (all_finished, user_id) {
+            (true, Some(user_id)) => workspaces.list_tasks_for_user(user_id, repository_id).await?,
+            (true, None) => workspaces.list_tasks(repository_id).await?,
+            (false, user_id) => {
+                let since = Utc::now() - chrono::Duration::days(FINISHED_DAYS);
+                workspaces
+                    .list_board_tasks(user_id, repository_id, since, FINISHED_RECENT)
                     .await?
             }
-            None => self.inner.workspaces.list_tasks(repository_id).await?,
         };
         {
             let mut repos = self.inner.task_repos.lock();
             for task in &tasks {
                 repos.insert(task.id.clone(), task.repository_id.clone());
             }
+        }
+        if repository_id.is_none() {
+            // Everything this user can see: drop cached diffs of deleted
+            // (or no longer listed) tasks.
+            let listed: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+            self.inner.diffs.retain(&listed);
         }
         let states: HashMap<String, TaskAgentState> = self
             .inner
@@ -143,6 +178,13 @@ impl TaskBoard {
             .unwrap_or_default();
         let diffs = self.diffs_for(&tasks).await;
         let names: HashMap<&str, &str> = tasks.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect();
+        let usage_ids: Vec<&str> = tasks
+            .iter()
+            .filter(|t| t.agent.is_some_and(|a| a.usage_supported()) && t.branch.is_some())
+            .map(|t| t.id.as_str())
+            .collect();
+        // One query for the whole board; a failed read just hides usage.
+        let mut usage = self.inner.usage.get_many(&usage_ids).await.unwrap_or_default();
 
         let mut cards = Vec::with_capacity(tasks.len());
         for task in &tasks {
@@ -156,14 +198,9 @@ impl TaskBoard {
                 None => None,
                 Some(id) => match names.get(id) {
                     Some(name) => Some((*name).to_string()),
-                    // Filtered to another repository, or gone.
+                    // Filtered to another repository, finished long ago, or gone.
                     None => self.inner.workspaces.get(id).await.ok().map(|w| w.name),
                 },
-            };
-            let usage = if task.agent.is_some_and(|a| a.usage_supported()) && task.branch.is_some() {
-                self.inner.usage.get(&task.id).await.ok().flatten()
-            } else {
-                None
             };
             cards.push(TaskCard {
                 finished_at: finished_at(task, lane, state.as_ref()),
@@ -171,7 +208,7 @@ impl TaskBoard {
                 lane,
                 diff,
                 agent_state: state,
-                usage,
+                usage: usage.remove(&task.id),
                 depends_on_name,
             });
         }
@@ -190,13 +227,23 @@ impl TaskBoard {
         derive_lane(task, phase, diff.as_ref())
     }
 
-    /// Diff stats for the tasks that have a worktree here, computed (or
-    /// served from the cache) a few at a time off the async runtime.
+    /// Diff stats for the tasks that have a worktree here, served from the
+    /// cache or computed a few at a time off the async runtime.
     async fn diffs_for(&self, tasks: &[Workspace]) -> HashMap<String, DiffStats> {
+        let mut out = HashMap::new();
         let mut bases: HashMap<String, String> = HashMap::new();
-        let mut jobs: Vec<(String, PathBuf, String)> = Vec::new();
+        let mut jobs: Vec<(String, PathBuf, String, Duration)> = Vec::new();
         for task in tasks {
             if task.status == WorkspaceStatus::Archived || task.branch.is_none() {
+                continue;
+            }
+            if task.outcome.is_some() {
+                // Merged or closed: the lane is Done whatever the diff, so
+                // no git at all. Its last diff (often the one it was merged
+                // with) still shows if this run computed one.
+                if let Some(stats) = self.inner.diffs.peek(&task.id) {
+                    out.insert(task.id.clone(), stats);
+                }
                 continue;
             }
             let Some(path) = task.worktree_path.as_deref().map(PathBuf::from) else {
@@ -215,12 +262,16 @@ impl TaskBoard {
                     }
                 },
             };
-            jobs.push((task.id.clone(), path, base));
+            let max_age = match task.status {
+                WorkspaceStatus::Running | WorkspaceStatus::Pending => LIVE_DIFF_TTL,
+                _ => SETTLED_DIFF_TTL,
+            };
+            jobs.push((task.id.clone(), path, base, max_age));
         }
 
         let limit = Arc::new(Semaphore::new(DIFF_CONCURRENCY));
         let mut set = tokio::task::JoinSet::new();
-        for (task_id, path, base) in jobs {
+        for (task_id, path, base, max_age) in jobs {
             let board = self.clone();
             let limit = limit.clone();
             set.spawn(async move {
@@ -229,13 +280,13 @@ impl TaskBoard {
                     if !path.exists() {
                         return None;
                     }
-                    let diffs = &board.inner.diffs;
-                    // A base that only exists on the remote (never checked
-                    // out locally) still has a merge-base there.
-                    let stats = diffs
-                        .stats(&task_id, &path, &base)
-                        .or_else(|_| diffs.stats(&task_id, &path, &format!("origin/{base}")))
-                        .ok()?;
+                    let stats = board.inner.diffs.get_or_compute(&task_id, &path, max_age, || {
+                        // A base that only exists on the remote (never
+                        // checked out locally) still has a merge-base there.
+                        crate::git::diff_stats_vs_base(&path, &base)
+                            .or_else(|_| crate::git::diff_stats_vs_base(&path, &format!("origin/{base}")))
+                            .ok()
+                    })?;
                     Some((task_id, stats))
                 })
                 .await
@@ -243,7 +294,6 @@ impl TaskBoard {
                 .flatten()
             });
         }
-        let mut out = HashMap::new();
         while let Some(done) = set.join_next().await {
             if let Ok(Some((task_id, stats))) = done {
                 out.insert(task_id, stats);
@@ -285,21 +335,70 @@ impl TaskBoard {
 
     // ── change notifications ────────────────────────────────────────────
 
-    /// A card in `repository_id` may have changed. Coalesced.
+    /// Some card in `repository_id` may have changed (the caller doesn't
+    /// know which). Coalesced.
     pub fn notify_changed(&self, repository_id: &str) {
-        let first = self.inner.pending.lock().insert(repository_id.to_string());
+        self.queue_change(repository_id, None);
+    }
+
+    /// `task_id`'s card in `repository_id` may have changed. Coalesced with
+    /// every other change to the repository in the same window.
+    pub fn notify_task_changed(&self, repository_id: &str, task_id: &str) {
+        self.queue_change(repository_id, Some(task_id));
+    }
+
+    fn queue_change(&self, repository_id: &str, task_id: Option<&str>) {
+        let first = {
+            let mut pending = self.inner.pending.lock();
+            let first = !pending.contains_key(repository_id);
+            let tasks = pending
+                .entry(repository_id.to_string())
+                .or_insert_with(|| Some(HashSet::new()));
+            match (task_id, tasks.as_mut()) {
+                (Some(id), Some(set)) => {
+                    set.insert(id.to_string());
+                }
+                (None, _) => *tasks = None,
+                (Some(_), None) => {}
+            }
+            first
+        };
         if first {
             self.inner.flush.notify_one();
         }
     }
 
-    /// The task's files changed (fs watcher, a finished tool call): drop
-    /// its cached diff and announce its card.
+    /// Take everything queued: one event per repository.
+    fn drain_changes(&self) -> Vec<BoardEvent> {
+        let mut events: Vec<BoardEvent> = self
+            .inner
+            .pending
+            .lock()
+            .drain()
+            .map(|(repository_id, tasks)| BoardEvent::CardsChanged {
+                repository_id,
+                task_ids: tasks.map(|set| {
+                    let mut ids: Vec<String> = set.into_iter().collect();
+                    ids.sort();
+                    ids
+                }),
+            })
+            .collect();
+        events.sort_by(|a, b| {
+            let (BoardEvent::CardsChanged { repository_id: a, .. }, BoardEvent::CardsChanged { repository_id: b, .. }) =
+                (a, b);
+            a.cmp(b)
+        });
+        events
+    }
+
+    /// The task's files changed (fs watcher, a finished tool call): mark
+    /// its cached diff stale and announce its card.
     pub fn invalidate_diff(&self, task_id: &str) {
         self.inner.diffs.invalidate(task_id);
         let repository_id = self.inner.task_repos.lock().get(task_id).cloned();
         if let Some(repository_id) = repository_id {
-            self.notify_changed(&repository_id);
+            self.notify_task_changed(&repository_id, task_id);
         }
     }
 
@@ -310,7 +409,7 @@ impl TaskBoard {
             .insert(event.task_id.clone(), event.repository_id.clone());
         // Stopping/finishing is exactly when the diff decides the lane.
         self.inner.diffs.invalidate(&event.task_id);
-        self.notify_changed(&event.repository_id);
+        self.notify_task_changed(&event.repository_id, &event.task_id);
     }
 
     fn on_agent_signal(&self, event: &AgentSignalEvent) {
@@ -332,12 +431,12 @@ impl TaskBoard {
                     if state.state == AgentStateKind::Idle {
                         self.inner.diffs.invalidate(&state.task_id);
                     }
-                    self.notify_changed(&state.repository_id);
+                    self.notify_task_changed(&state.repository_id, &state.task_id);
                 }
             }
             AgentSignalEvent::ToolFinished { task_id, repository_id } => {
                 self.inner.diffs.invalidate(task_id);
-                self.notify_changed(repository_id);
+                self.notify_task_changed(repository_id, task_id);
             }
             AgentSignalEvent::Usage { .. } | AgentSignalEvent::TurnEnded => {}
         }
@@ -380,12 +479,8 @@ impl TaskBoard {
             loop {
                 board.inner.flush.notified().await;
                 tokio::time::sleep(CHANGE_COALESCE).await;
-                let pending: Vec<String> = board.inner.pending.lock().drain().collect();
-                for repository_id in pending {
-                    let _ = board
-                        .inner
-                        .events
-                        .send(BoardEvent::CardsChanged { repository_id });
+                for event in board.drain_changes() {
+                    let _ = board.inner.events.send(event);
                 }
             }
         });
@@ -425,6 +520,7 @@ mod tests {
     struct Fixture {
         board: TaskBoard,
         workspaces: WorkspaceRepo,
+        usage: TaskUsageRepo,
         repo: Repository,
         dir: tempfile::TempDir,
     }
@@ -437,15 +533,12 @@ mod tests {
         repo.default_branch = "main".into();
         repositories.insert(&repo).await.unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
-        let board = TaskBoard::new(
-            workspaces.clone(),
-            repositories,
-            TaskUsageRepo::new(pool),
-            None,
-        );
+        let usage = TaskUsageRepo::new(pool);
+        let board = TaskBoard::new(workspaces.clone(), repositories, usage.clone(), None);
         Fixture {
             board,
             workspaces,
+            usage,
             repo,
             dir,
         }
@@ -481,6 +574,10 @@ mod tests {
         w
     }
 
+    async fn cards(f: &Fixture) -> Vec<TaskCard> {
+        f.board.cards(None, None, false).await.unwrap()
+    }
+
     #[tokio::test]
     async fn cards_carry_lanes_diffs_and_dependency_names() {
         let f = fixture().await;
@@ -504,7 +601,7 @@ mod tests {
         local.workspace_kind = crate::domain::WorkspaceKind::Local;
         f.workspaces.insert(&local).await.unwrap();
 
-        let cards = f.board.cards(None, Some(&f.repo.id)).await.unwrap();
+        let cards = f.board.cards(None, Some(&f.repo.id), false).await.unwrap();
         let by_name = |n: &str| cards.iter().find(|c| c.workspace.name == n).unwrap();
         assert_eq!(cards.len(), 5, "local workspaces are not cards");
         let r = by_name("review me");
@@ -515,6 +612,8 @@ mod tests {
         let m = by_name("merged");
         assert_eq!(m.lane, Lane::Done);
         assert_eq!(m.finished_at, merged.outcome_at);
+        // Merged: no git work, and nothing computed for it this run.
+        assert_eq!(m.diff, None);
         let q = by_name("after review");
         assert_eq!(q.lane, Lane::Queued);
         assert_eq!(q.depends_on_name.as_deref(), Some("review me"));
@@ -537,17 +636,147 @@ mod tests {
         let t = task(&f, "t", WorkspaceStatus::Stopped, Some(&path)).await;
         let mut rx = f.board.subscribe();
         f.board.start(broadcast::channel(1).1, None);
-        assert_eq!(f.board.cards(None, None).await.unwrap()[0].diff.unwrap().files, 1);
+        assert_eq!(cards(&f).await[0].diff.unwrap().files, 1);
 
         std::fs::write(path.join("more.txt"), "x\n").unwrap();
-        // Cached (same HEAD, inside the TTL)…
-        assert_eq!(f.board.cards(None, None).await.unwrap()[0].diff.unwrap().files, 1);
+        // Cached (same HEAD and index, inside the TTL)…
+        assert_eq!(cards(&f).await[0].diff.unwrap().files, 1);
         // …until the file signal lands.
         f.board.invalidate_diff(&t.id);
-        assert_eq!(f.board.cards(None, None).await.unwrap()[0].diff.unwrap().files, 2);
+        assert_eq!(cards(&f).await[0].diff.unwrap().files, 2);
         let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
-        let BoardEvent::CardsChanged { repository_id } = event;
-        assert_eq!(repository_id, f.repo.id);
+        assert_eq!(
+            event,
+            BoardEvent::CardsChanged {
+                repository_id: f.repo.id.clone(),
+                task_ids: Some(vec![t.id.clone()]),
+            }
+        );
+    }
+
+    /// A commit or `git add` is seen without any signal: HEAD and the
+    /// index are part of the cache key.
+    #[tokio::test]
+    async fn a_commit_or_staging_refreshes_the_diff_without_a_signal() {
+        let f = fixture().await;
+        let path = checkout(f.dir.path(), "wt", 1);
+        task(&f, "t", WorkspaceStatus::Stopped, Some(&path)).await;
+        assert_eq!(cards(&f).await[0].diff.unwrap().files, 1);
+        std::fs::write(path.join("staged.txt"), "x\n").unwrap();
+        git(&path, &["add", "staged.txt"]);
+        assert_eq!(cards(&f).await[0].diff.unwrap().files, 2);
+        std::fs::write(path.join("committed.txt"), "x\n").unwrap();
+        git(&path, &["add", "-A"]);
+        git(&path, &["commit", "-qm", "c"]);
+        assert_eq!(cards(&f).await[0].diff.unwrap().files, 3);
+    }
+
+    /// Settled tasks never touch git: a merged task's worktree can vanish
+    /// (or be anything) and its card still serves the last known diff.
+    #[tokio::test]
+    async fn merged_tasks_serve_their_last_diff_without_git() {
+        let f = fixture().await;
+        let path = checkout(f.dir.path(), "wt", 2);
+        let t = task(&f, "t", WorkspaceStatus::Stopped, Some(&path)).await;
+        let before = cards(&f).await[0].diff;
+        assert_eq!(before.unwrap().files, 2);
+        f.workspaces
+            .set_outcome(&t.id, Some(TaskOutcome::Merged), Some("main"))
+            .await
+            .unwrap();
+        f.board.invalidate_diff(&t.id);
+        std::fs::remove_dir_all(&path).unwrap();
+        let card = &cards(&f).await[0];
+        assert_eq!(card.lane, Lane::Done);
+        assert_eq!(card.diff, before);
+    }
+
+    /// Concurrent refetches share one computation per task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_refetches_compute_each_diff_once() {
+        let f = fixture().await;
+        let path = checkout(f.dir.path(), "wt", 3);
+        let t = task(&f, "t", WorkspaceStatus::Stopped, Some(&path)).await;
+        let calls: Vec<_> = (0..8)
+            .map(|_| {
+                let board = f.board.clone();
+                tokio::spawn(async move { board.cards(None, None, false).await.unwrap() })
+            })
+            .collect();
+        for call in calls {
+            assert_eq!(call.await.unwrap()[0].diff.unwrap().files, 3);
+        }
+        // Single-flight + cache: the eight callers left one entry, and it
+        // is fresh (no invalidation, same key), so a peek equals a hit.
+        assert_eq!(f.board.inner.diffs.peek(&t.id).unwrap().files, 3);
+    }
+
+    #[tokio::test]
+    async fn usage_comes_from_one_batched_read() {
+        let f = fixture().await;
+        let a = task(&f, "a", WorkspaceStatus::Stopped, Some(Path::new("/nowhere/a"))).await;
+        let b = task(&f, "b", WorkspaceStatus::Stopped, Some(Path::new("/nowhere/b"))).await;
+        // A draft (no branch) never shows usage, even with a stray row.
+        let draft = task(&f, "draft", WorkspaceStatus::Pending, None).await;
+        let usage = |n: i64| TaskUsage {
+            source: crate::domain::usage::UsageSource::Claude,
+            model: None,
+            input_tokens: n,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd_micros: None,
+            cost_partial: false,
+            updated_at: Utc::now(),
+            transcript_path: None,
+        };
+        f.usage.upsert(&a.id, &usage(7)).await.unwrap();
+        f.usage.upsert(&draft.id, &usage(9)).await.unwrap();
+        let cards = cards(&f).await;
+        let by_id = |id: &str| cards.iter().find(|c| c.workspace.id == id).unwrap();
+        assert_eq!(by_id(&a.id).usage.as_ref().unwrap().input_tokens, 7);
+        assert!(by_id(&b.id).usage.is_none());
+        assert!(by_id(&draft.id).usage.is_none());
+    }
+
+    /// Finished tasks are limited to the recent ones unless asked; open
+    /// work always shows.
+    #[tokio::test]
+    async fn old_finished_tasks_are_left_out_unless_asked_for() {
+        let f = fixture().await;
+        let old = |days: i64| Some(Utc::now() - chrono::Duration::days(days));
+        // Recent finished tasks: kept by the time window.
+        for i in 0..3 {
+            let mut w = Workspace::new(f.repo.id.clone(), format!("recent{i}"), "claude".into());
+            w.status = WorkspaceStatus::Archived;
+            w.archived_at = old(1);
+            f.workspaces.insert(&w).await.unwrap();
+        }
+        // Old finished tasks: only the FINISHED_RECENT newest are kept.
+        let extra = FINISHED_RECENT as usize - 3 + 5;
+        for i in 0..extra {
+            let mut w = Workspace::new(f.repo.id.clone(), format!("old{i}"), "claude".into());
+            w.status = WorkspaceStatus::Archived;
+            w.archived_at = old(30 + i as i64);
+            f.workspaces.insert(&w).await.unwrap();
+        }
+        // An old stopped task without an outcome: still open work.
+        let mut stale = Workspace::new(f.repo.id.clone(), "stale".into(), "claude".into());
+        stale.status = WorkspaceStatus::Stopped;
+        stale.branch = Some("phasr/stale".into());
+        stale.finished_at = old(400);
+        f.workspaces.insert(&stale).await.unwrap();
+
+        let shown = cards(&f).await;
+        let names: HashSet<String> = shown.iter().map(|c| c.workspace.name.clone()).collect();
+        assert_eq!(shown.len(), FINISHED_RECENT as usize + 1, "{names:?}");
+        assert!(names.contains("stale") && names.contains("recent0"));
+        // The newest old ones made the cut, the oldest didn't.
+        assert!(names.contains("old0"));
+        assert!(!names.contains(&format!("old{}", extra - 1)));
+
+        let all = f.board.cards(None, None, true).await.unwrap();
+        assert_eq!(all.len(), 3 + extra + 1);
     }
 
     #[tokio::test]
@@ -570,5 +799,56 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(700), rx.recv()).await.is_err());
         f.board.on_agent_signal(&AgentSignalEvent::State(state(AgentStateKind::Idle, "")));
         assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.is_ok());
+    }
+
+    /// A burst of causes is one event per repository, naming its tasks; a
+    /// repository-wide cause in the burst widens it to "any card".
+    #[tokio::test]
+    async fn changes_coalesce_per_repository_with_task_ids() {
+        let f = fixture().await;
+        f.board.notify_task_changed("r1", "b");
+        f.board.notify_task_changed("r1", "a");
+        f.board.notify_task_changed("r1", "a");
+        f.board.notify_task_changed("r2", "c");
+        f.board.notify_changed("r2");
+        f.board.notify_task_changed("r2", "d");
+        assert_eq!(
+            f.board.drain_changes(),
+            vec![
+                BoardEvent::CardsChanged {
+                    repository_id: "r1".into(),
+                    task_ids: Some(vec!["a".into(), "b".into()]),
+                },
+                BoardEvent::CardsChanged {
+                    repository_id: "r2".into(),
+                    task_ids: None,
+                },
+            ]
+        );
+        assert!(f.board.drain_changes().is_empty());
+
+        // A status change and the agent's matching state change (a task
+        // stopping fires both) are one event, not two.
+        let mut rx = f.board.subscribe();
+        f.board.start(broadcast::channel(1).1, None);
+        f.board.on_status(&TaskStatusEvent {
+            task_id: "t".into(),
+            repository_id: "r1".into(),
+            status: WorkspaceStatus::Stopped,
+            exit_code: None,
+        });
+        f.board.on_agent_signal(&AgentSignalEvent::ToolFinished {
+            task_id: "t".into(),
+            repository_id: "r1".into(),
+        });
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(
+            event,
+            BoardEvent::CardsChanged {
+                repository_id: "r1".into(),
+                task_ids: Some(vec!["t".into()]),
+            }
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(700), rx.recv()).await.is_err());
     }
 }

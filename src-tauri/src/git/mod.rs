@@ -24,7 +24,7 @@ mod workspace_files;
 pub use branch::{branch_status, BranchStatus};
 pub use clone::clone_repo;
 pub use commit::{commit, discard, push, stage, unstage, CommitOutput};
-pub use diff::{diff, diff_for_commit, DiffScope, DiffStatCache};
+pub use diff::{diff, diff_for_commit, diff_stats_vs_base, DiffScope, DiffStatCache};
 pub use error::GitError;
 pub use files::list_files;
 pub use fs_guard::{is_within_roots, resolve_in_worktree};

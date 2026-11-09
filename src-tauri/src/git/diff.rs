@@ -90,9 +90,20 @@ pub fn diff_stats_vs_base(worktree: &Path, base: &str) -> Result<DiffStats, GitE
     // whichever the branch was cut from).
     let merge_base = super::review::merge_base(worktree, base)?;
     let merge_base = merge_base.as_str();
+    // `--no-optional-locks`: a plain `git diff` refreshes the index and
+    // rewrites it when it can. That fights the agent's own git commands
+    // for `index.lock`, and it moves the index mtime that `WorktreeKey`
+    // watches, so the next board refetch would recompute for nothing.
     let numstat = run_git(
         worktree,
-        &["diff", "--numstat", "--no-renames", "--no-ext-diff", merge_base],
+        &[
+            "--no-optional-locks",
+            "diff",
+            "--numstat",
+            "--no-renames",
+            "--no-ext-diff",
+            merge_base,
+        ],
     )?;
     let mut stats = DiffStats::default();
     for line in numstat.lines() {
@@ -166,61 +177,193 @@ pub fn head_sha(worktree: &Path) -> Result<String, GitError> {
     Ok(run_git(worktree, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
-/// Recent `diff_stats_vs_base` results per task. An entry is used only for
-/// the same HEAD (a new commit is a different diff) and within the TTL
-/// (uncommitted edits don't move HEAD). File-change and tool-use signals
-/// invalidate a task outright, so the TTL only bounds what slips past them.
+/// What a cached diff was computed against: the checked-out commit and
+/// the index file's (mtime, size). A commit moves `head`; `git add` (or
+/// anything else that rewrites the index) moves `index`. Edits to the
+/// working tree move neither: those arrive as invalidations (fs watcher,
+/// a finished tool call) or age out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeKey {
+    head: String,
+    index: Option<(std::time::SystemTime, u64)>,
+}
+
+/// `WorktreeKey` for `worktree`, read straight from its git dir: no git
+/// process for the common layouts (`.git` dir or a linked worktree's
+/// `.git` file; HEAD on a loose or packed branch, or detached). Anything
+/// else (reftable, a symref chain, an unborn branch) falls back to
+/// `git rev-parse HEAD`.
+pub fn worktree_key(worktree: &Path) -> Result<WorktreeKey, GitError> {
+    let dirs = git_dirs(worktree);
+    let head = match dirs.as_ref().and_then(|(gitdir, common)| read_head(gitdir, common)) {
+        Some(head) => head,
+        None => head_sha(worktree)?,
+    };
+    let index = dirs
+        .and_then(|(gitdir, _)| std::fs::metadata(gitdir.join("index")).ok())
+        .and_then(|m| Some((m.modified().ok()?, m.len())));
+    Ok(WorktreeKey { head, index })
+}
+
+/// Largest git bookkeeping file read for `worktree_key`. HEAD and a loose
+/// ref are a line; `packed-refs` can be big but is rarely consulted.
+const GIT_META_READ_CAP: u64 = 8 * 1024 * 1024;
+
+/// A bookkeeping file's text, read the way untracked files are: regular
+/// files only, capped. The worktree (and its `.git` file) is agent-
+/// writable, so a FIFO here must not hang the board.
+fn read_git_meta(path: &Path) -> Option<String> {
+    let file = open_regular_untracked(path)?;
+    let mut text = String::new();
+    file.take(GIT_META_READ_CAP).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// `(git dir, common dir)`: the same dir for a plain checkout; for a linked
+/// worktree, `.git` is a `gitdir: …` file and branches live in the common dir.
+fn git_dirs(worktree: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let dot_git = worktree.join(".git");
+    if std::fs::symlink_metadata(&dot_git).ok()?.is_dir() {
+        return Some((dot_git.clone(), dot_git));
+    }
+    let text = read_git_meta(&dot_git)?;
+    let gitdir = worktree.join(text.trim().strip_prefix("gitdir:")?.trim());
+    let common = match read_git_meta(&gitdir.join("commondir")) {
+        Some(rel) => gitdir.join(rel.trim()),
+        None => gitdir.clone(),
+    };
+    Some((gitdir, common))
+}
+
+fn is_object_id(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// HEAD's commit from the files, or `None` to let git answer.
+fn read_head(gitdir: &Path, common: &Path) -> Option<String> {
+    let head = read_git_meta(&gitdir.join("HEAD"))?;
+    let head = head.trim();
+    let Some(name) = head.strip_prefix("ref:").map(str::trim) else {
+        return is_object_id(head).then(|| head.to_string());
+    };
+    // Branch names only: nothing that could walk out of the git dir.
+    let safe = name.starts_with("refs/heads/")
+        && !name.split('/').any(|part| part.is_empty() || part == "." || part == "..");
+    if !safe {
+        return None;
+    }
+    if let Some(loose) = read_git_meta(&common.join(name)) {
+        let id = loose.trim();
+        return is_object_id(id).then(|| id.to_string());
+    }
+    // Not loose: `git pack-refs` (or gc) moved it into packed-refs.
+    let packed = read_git_meta(&common.join("packed-refs"))?;
+    packed.lines().find_map(|line| {
+        let (id, refname) = line.split_once(' ')?;
+        (refname == name && is_object_id(id)).then(|| id.to_string())
+    })
+}
+
+/// Recent `diff_stats_vs_base` results per task, reused while the
+/// worktree's `WorktreeKey` is unchanged, no invalidation arrived, and the
+/// entry is younger than the caller's `max_age`. A hit costs a few `stat`s
+/// and small file reads, with no git process.
+///
+/// Each task's computation is single-flight: concurrent board refetches
+/// wait for the one in progress and share its result instead of each
+/// running the same git commands.
+#[derive(Default)]
 pub struct DiffStatCache {
-    ttl: Duration,
-    entries: Mutex<HashMap<String, CachedStats>>,
+    slots: Mutex<HashMap<String, Slot>>,
+}
+
+#[derive(Default)]
+struct Slot {
+    cached: Option<CachedStats>,
+    /// Bumped by `invalidate`. An entry computed under an older epoch
+    /// is stale: an invalidation landed while (or after) it was computed.
+    epoch: u64,
+    /// Held while computing; see `get_or_compute`.
+    flight: std::sync::Arc<Mutex<()>>,
 }
 
 struct CachedStats {
-    head: String,
-    stats: DiffStats,
+    key: WorktreeKey,
+    /// `None`: the diff failed (missing base, …). Cached too, so a broken
+    /// task isn't retried on every refetch.
+    stats: Option<DiffStats>,
     at: Instant,
+    epoch: u64,
 }
 
 impl DiffStatCache {
-    pub fn new(ttl: Duration) -> Self {
-        Self {
-            ttl,
-            entries: Mutex::new(HashMap::new()),
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The last stats computed for `task_id`, fresh or not, with no git
+    /// work at all: for tasks whose diff can no longer move their lane
+    /// (merged, closed).
+    pub fn peek(&self, task_id: &str) -> Option<DiffStats> {
+        self.slots.lock().get(task_id)?.cached.as_ref()?.stats
+    }
+
+    /// Mark `task_id`'s entry stale; `peek` still serves it. Returns
+    /// whether there was one.
+    pub fn invalidate(&self, task_id: &str) -> bool {
+        let mut slots = self.slots.lock();
+        let slot = slots.entry(task_id.to_string()).or_default();
+        slot.epoch += 1;
+        slot.cached.is_some()
+    }
+
+    /// Drop every task not in `keep` (deleted tasks).
+    pub fn retain(&self, keep: &std::collections::HashSet<&str>) {
+        self.slots.lock().retain(|id, _| keep.contains(id.as_str()));
+    }
+
+    fn fresh(&self, task_id: &str, key: &WorktreeKey, max_age: Duration) -> Option<Option<DiffStats>> {
+        let slots = self.slots.lock();
+        let slot = slots.get(task_id)?;
+        let c = slot.cached.as_ref()?;
+        (c.epoch == slot.epoch && c.key == *key && c.at.elapsed() < max_age).then_some(c.stats)
+    }
+
+    /// The cached stats for `task_id`, or `compute()`'s. Blocking (reads
+    /// the git dir, and `compute` shells out): call from `spawn_blocking`.
+    pub fn get_or_compute(
+        &self,
+        task_id: &str,
+        worktree: &Path,
+        max_age: Duration,
+        compute: impl FnOnce() -> Option<DiffStats>,
+    ) -> Option<DiffStats> {
+        let flight = self
+            .slots
+            .lock()
+            .entry(task_id.to_string())
+            .or_default()
+            .flight
+            .clone();
+        // A second caller blocks here, then finds the first one's result.
+        let _computing = flight.lock();
+        // Read before computing: a commit landing mid-diff then leaves an
+        // old key behind and the next call recomputes, never the reverse.
+        let key = worktree_key(worktree).ok()?;
+        if let Some(stats) = self.fresh(task_id, &key, max_age) {
+            return stats;
         }
-    }
-
-    pub fn get(&self, task_id: &str, head: &str) -> Option<DiffStats> {
-        let entries = self.entries.lock();
-        let entry = entries.get(task_id)?;
-        (entry.head == head && entry.at.elapsed() < self.ttl).then_some(entry.stats)
-    }
-
-    pub fn put(&self, task_id: &str, head: String, stats: DiffStats) {
-        self.entries.lock().insert(
-            task_id.to_string(),
-            CachedStats {
-                head,
+        let epoch = self.slots.lock().get(task_id).map_or(0, |s| s.epoch);
+        let stats = compute();
+        if let Some(slot) = self.slots.lock().get_mut(task_id) {
+            slot.cached = Some(CachedStats {
+                key,
                 stats,
                 at: Instant::now(),
-            },
-        );
-    }
-
-    /// Drop `task_id`'s entry. Returns whether there was one.
-    pub fn invalidate(&self, task_id: &str) -> bool {
-        self.entries.lock().remove(task_id).is_some()
-    }
-
-    /// `diff_stats_vs_base`, served from the cache when HEAD hasn't moved.
-    /// Blocking (shells out to git): call from `spawn_blocking`.
-    pub fn stats(&self, task_id: &str, worktree: &Path, base: &str) -> Result<DiffStats, GitError> {
-        let head = head_sha(worktree)?;
-        if let Some(stats) = self.get(task_id, &head) {
-            return Ok(stats);
+                epoch,
+            });
         }
-        let stats = diff_stats_vs_base(worktree, base)?;
-        self.put(task_id, head, stats);
-        Ok(stats)
+        stats
     }
 }
 
@@ -354,26 +497,130 @@ mod tests {
         assert!(diff_stats_vs_base(p, "no-such-branch").is_err());
     }
 
+    const LONG: Duration = Duration::from_secs(600);
+
     #[test]
-    fn cache_is_keyed_by_head_and_expires_and_invalidates() {
+    fn cache_is_keyed_by_head_and_index_and_expires_and_invalidates() {
         let dir = repo_with_task_branch();
-        let cache = DiffStatCache::new(Duration::from_secs(60));
-        let first = cache.stats("t", dir.path(), "main").unwrap();
+        let p = dir.path();
+        let cache = DiffStatCache::new();
+        let computed = std::cell::Cell::new(0);
+        let stats = |max_age| {
+            cache.get_or_compute("t", p, max_age, || {
+                computed.set(computed.get() + 1);
+                diff_stats_vs_base(p, "main").ok()
+            })
+        };
+        let first = stats(LONG).unwrap();
+        assert_eq!(computed.get(), 1);
         // A new uncommitted file isn't seen while the entry is fresh…
-        std::fs::write(dir.path().join("more.txt"), "m\n").unwrap();
-        assert_eq!(cache.stats("t", dir.path(), "main").unwrap(), first);
-        // …until invalidated.
+        std::fs::write(p.join("more.txt"), "m\n").unwrap();
+        assert_eq!(stats(LONG).unwrap(), first);
+        assert_eq!(computed.get(), 1, "a hit runs nothing");
+        // …until invalidated (and `peek` keeps serving the old value).
         assert!(cache.invalidate("t"));
-        assert_eq!(cache.stats("t", dir.path(), "main").unwrap().files, first.files + 1);
+        assert_eq!(cache.peek("t"), Some(first));
+        assert_eq!(stats(LONG).unwrap().files, first.files + 1);
+        assert_eq!(computed.get(), 2);
+        // Staging rewrites the index: a different key.
+        git(p, &["add", "more.txt"]);
+        stats(LONG);
+        assert_eq!(computed.get(), 3);
         // A commit moves HEAD: a different key.
-        git(dir.path(), &["add", "-A"]);
-        git(dir.path(), &["commit", "-qm", "more"]);
-        let head = head_sha(dir.path()).unwrap();
-        assert!(cache.get("t", &head).is_none());
-        // TTL.
-        let short = DiffStatCache::new(Duration::from_millis(0));
-        short.put("t", head.clone(), DiffStats::default());
-        assert!(short.get("t", &head).is_none());
+        git(p, &["commit", "-qm", "more"]);
+        stats(LONG);
+        assert_eq!(computed.get(), 4);
+        stats(LONG);
+        assert_eq!(computed.get(), 4, "our own diff must not move the index");
+        // max_age.
+        stats(Duration::ZERO);
+        assert_eq!(computed.get(), 5);
+    }
+
+    /// An invalidation that lands while a diff is being computed leaves the
+    /// result stale: it may predate the change.
+    #[test]
+    fn invalidation_during_a_compute_is_not_lost() {
+        let dir = repo_with_task_branch();
+        let cache = DiffStatCache::new();
+        cache.get_or_compute("t", dir.path(), LONG, || {
+            cache.invalidate("t");
+            Some(DiffStats::default())
+        });
+        let again = cache.get_or_compute("t", dir.path(), LONG, || Some(DiffStats { adds: 1, removes: 0, files: 1 }));
+        assert_eq!(again.unwrap().files, 1);
+    }
+
+    /// Concurrent callers for one task share one computation.
+    #[test]
+    fn concurrent_callers_share_one_compute() {
+        let dir = repo_with_task_branch();
+        let cache = std::sync::Arc::new(DiffStatCache::new());
+        let computed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                let (cache, computed, path) = (cache.clone(), computed.clone(), dir.path().to_path_buf());
+                std::thread::spawn(move || {
+                    cache.get_or_compute("t", &path, LONG, || {
+                        computed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(100));
+                        Some(DiffStats::default())
+                    })
+                })
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), Some(DiffStats::default()));
+        }
+        assert_eq!(computed.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The file-read HEAD agrees with git's for a plain checkout, a linked
+    /// worktree, a packed branch and a detached HEAD.
+    #[test]
+    fn worktree_key_reads_head_like_git_does() {
+        let dir = repo_with_task_branch();
+        let p = dir.path();
+        let agrees = |wt: &Path| {
+            let (gitdir, common) = git_dirs(wt).expect("git dirs");
+            assert_eq!(read_head(&gitdir, &common), Some(head_sha(wt).unwrap()), "{}", wt.display());
+            assert_eq!(worktree_key(wt).unwrap().head, head_sha(wt).unwrap());
+        };
+        agrees(p);
+        let linked = p.join("linked");
+        git(p, &["worktree", "add", "-q", "-b", "side", linked.to_str().unwrap(), "main"]);
+        agrees(&linked);
+        assert!(worktree_key(&linked).unwrap().index.is_some(), "a linked worktree's own index");
+        git(p, &["pack-refs", "--all"]);
+        assert!(!p.join(".git/refs/heads/side").exists());
+        agrees(&linked);
+        agrees(p);
+        git(&linked, &["checkout", "-q", "--detach"]);
+        agrees(&linked);
+    }
+
+    /// A `.git` file pointing at a FIFO, or a ref that walks out of the git
+    /// dir, falls back to git instead of hanging or reading elsewhere.
+    #[cfg(unix)]
+    #[test]
+    fn worktree_key_never_reads_through_hostile_git_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        let gitdir = dir.path().join("gitdir");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        let fifo = gitdir.join("HEAD");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        assert_eq!(git_dirs(&wt), Some((gitdir.clone(), gitdir.clone())));
+        // Returns at once (no writer will ever appear) instead of blocking.
+        assert_eq!(read_head(&gitdir, &gitdir), None);
+
+        let gd = dir.path().join("gd");
+        std::fs::create_dir_all(&gd).unwrap();
+        std::fs::write(gd.join("HEAD"), "ref: refs/heads/../../../etc/passwd\n").unwrap();
+        assert_eq!(read_head(&gd, &gd), None);
     }
 
     #[test]
