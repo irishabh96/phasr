@@ -15,7 +15,7 @@ use thiserror::Error;
 use tokio::sync::Notify;
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::{Repository, UserSettings};
+use crate::domain::{Agent, Repository, UserSettings, WorkspaceStatus};
 use crate::store::Db;
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(30);
@@ -762,6 +762,20 @@ async fn upsert_workspace_from_cloud(
         return Ok(());
     }
 
+    // A row a NEWER build wrote may carry a status or agent this build has
+    // no variant for. Landing it would poison every read of its repository
+    // (`row_to_workspace` rejects unknown values, so the whole workspace
+    // list — the sidebar — fails), so leave it in the cloud until this
+    // machine is upgraded. Nothing is lost, and the tombstone path above
+    // still applies because it doesn't depend on either field.
+    if !is_known_workspace_shape(row) {
+        eprintln!(
+            "[cloud-sync] skipping workspace {}: status `{}` / agent {:?} unknown to this build",
+            row.id, row.status, row.agent
+        );
+        return Ok(());
+    }
+
     // F2: `worktree_path` is machine-local and fully derivable from the
     // workspace id (`default_worktree_base_path().join(id)`), so we never
     // write the value that travelled through the cloud — on a second
@@ -840,6 +854,18 @@ async fn upsert_workspace_from_cloud(
         .await?;
     }
     Ok(())
+}
+
+/// Whether this build can represent `row` locally. Additive columns a
+/// newer build syncs (`permission_mode`, `queued_at`, `outcome`, …) never
+/// matter here — serde ignores fields `CloudWorkspaceRow` doesn't name —
+/// but a new VALUE in a column this build parses into an enum would.
+fn is_known_workspace_shape(row: &CloudWorkspaceRow) -> bool {
+    WorkspaceStatus::from_str(&row.status).is_some()
+        && row
+            .agent
+            .as_deref()
+            .is_none_or(|agent| Agent::from_str(agent).is_some())
 }
 
 async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
@@ -1890,6 +1916,185 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(agent.as_deref(), Some("codex"));
+    }
+
+    /// Rollback safety (0.4.4): rows the redesign pushes carry columns from
+    /// its cloud migrations 0010–0015 (permission mode, board/queue, PR,
+    /// turn-ended) and draft rows (`pending`, no branch). This build must
+    /// pull them without failing and keep them readable; and a row with a
+    /// status/agent VALUE it has no variant for must be skipped rather than
+    /// landed (it would break every read of its repository) or allowed to
+    /// abort the rest of the pull.
+    #[tokio::test]
+    async fn pull_tolerates_rows_from_newer_builds() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+
+        let now = Utc::now().to_rfc3339();
+        let row = |id: &str, status: &str, agent: &str, branch: Option<&str>| {
+            serde_json::json!({
+                "id": id,
+                "user_id": "user-a",
+                "repository_id": "repo-a",
+                "name": id,
+                "prompt": "do the thing",
+                "agent": agent,
+                "command": "claude --permission-mode acceptEdits",
+                "status": status,
+                "branch": branch,
+                "worktree_path": null,
+                "exit_code": null,
+                "created_at": now,
+                "started_at": null,
+                "finished_at": null,
+                "archived_at": null,
+                "updated_at": now,
+                "deleted_at": null,
+                // Redesign cloud columns (supabase 0010–0012).
+                "permission_mode": "ask-edits",
+                "notify_on_attention": false,
+                "last_turn_ended_at": now,
+                "base_branch": "develop",
+                "queued_at": now,
+                "depends_on_workspace_id": "8c1f4a3e-0000-0000-0000-000000000000",
+                "outcome": "merged",
+                "outcome_at": now,
+                "merged_into": "develop",
+                "pr_number": 12,
+                "pr_url": "https://github.com/o/r/pull/12",
+                "pr_state": "merged",
+            })
+        };
+        let body = serde_json::json!([
+            row("draft", "pending", "claude", None),
+            row("launched", "running", "codex", Some("phasr/launched")),
+            // Values a later build might add — skipped, not fatal.
+            row("future-status", "starting", "claude", Some("phasr/x")),
+            row("future-agent", "stopped", "cursor", Some("phasr/y")),
+            // …and the rows after them still land.
+            row("after", "stopped", "claude", Some("phasr/after")),
+        ]);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        pull_workspaces(&client, &db)
+            .await
+            .expect("a pull carrying a newer build's rows must not fail");
+
+        let workspaces = crate::store::WorkspaceRepo::new(db.clone());
+        let mut ids: Vec<String> = workspaces
+            .list_by_repository_for_user("repo-a", "user-a")
+            .await
+            .expect("the repository's workspaces must stay readable")
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["after", "draft", "launched"]);
+
+        let draft = workspaces.get("draft").await.unwrap();
+        assert!(draft.is_unlaunched(), "a synced draft lands as a draft");
+        assert_eq!(
+            draft.worktree_path, None,
+            "no path derived without a branch"
+        );
+        let launched = workspaces.get("launched").await.unwrap();
+        assert_eq!(launched.status, WorkspaceStatus::Running);
+        assert_eq!(launched.agent, Some(Agent::Codex));
+    }
+
+    /// The redesign's synced run-command and settings columns (supabase
+    /// 0013–0015) are ignored on pull, not rejected.
+    #[tokio::test]
+    async fn pull_tolerates_newer_run_command_and_settings_columns() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        let later = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/run_commands"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": "rc-1",
+                    "user_id": "user-a",
+                    "repository_id": "repo-a",
+                    "name": "test",
+                    "command": "pnpm test",
+                    "shortcut": null,
+                    "pinned": true,
+                    "sort_order": 0,
+                    "created_at": later,
+                    "updated_at": later,
+                    "run_when": "before_review",
+                    "detect_port": true,
+                    "required_for_approve": true,
+                }])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "user_id": "user-a",
+                    "theme": "light",
+                    "accent_color": "blue",
+                    "sans_font": "Inter",
+                    "mono_font": "JetBrains Mono",
+                    "base_font_size": 14,
+                    "cursor_style": "bar",
+                    "cursor_blink": false,
+                    "terminal_scrollback": 5000,
+                    "default_editor": "vscode",
+                    "default_terminal": "terminal",
+                    "keyboard_shortcuts": {},
+                    "branch_prefix_template": "phasr/",
+                    "worktree_base_path": "",
+                    "default_merge_strategy": "squash",
+                    "auto_fetch_seconds": 60,
+                    "honor_gpg_sign": true,
+                    "auto_push_on_commit": false,
+                    "updated_at": later,
+                    "default_permission_mode": "skip-all",
+                    "agent_commands": {"claude": "claude {{permissions}}"},
+                    "notification_prefs": {"backgroundOnly": true},
+                    "terminal_shell": "/bin/zsh",
+                    "copy_on_select": true,
+                }])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_at("user-a", &server.uri());
+        pull_run_commands(&client, &db).await.unwrap();
+        pull_user_settings(&client, &db).await.unwrap();
+
+        let rc = crate::store::RunCommandRepo::new(db.clone())
+            .get("rc-1")
+            .await
+            .unwrap();
+        assert_eq!(rc.command, "pnpm test");
+        let settings = crate::store::SettingsRepo::new(db.clone())
+            .get_or_init()
+            .await
+            .unwrap();
+        assert_eq!(settings.theme, "light");
+        assert_eq!(settings.cursor_style, "bar");
     }
 
     #[tokio::test]
