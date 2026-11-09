@@ -26,6 +26,15 @@ export function validateSettingsSearch(search: Record<string, unknown>): Setting
   return out;
 }
 
+/**
+ * Just the settings-sheet params of a search object — for redirects that
+ * change route but must keep the sheet (e.g. the cold-launch restore of the
+ * last task when the app was opened at `/?settings=agents`).
+ */
+export function keepSettingsSearch(prev: Record<string, unknown>): SettingsSearch {
+  return validateSettingsSearch(prev);
+}
+
 const LAST_SECTION_KEY = "phasr.settings.lastSection";
 
 export function lastSettingsSection(): SettingsSectionId {

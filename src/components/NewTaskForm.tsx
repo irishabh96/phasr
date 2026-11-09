@@ -8,6 +8,7 @@ import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { useAgentDetection, useAgents } from "@/lib/hooks/useAgents";
 import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
 import { useRepository } from "@/lib/hooks/useRepositories";
+import { useRepositoryConfig } from "@/lib/hooks/useRepositoryConfig";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useWorkspaces, workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { useCreateTaskDraft } from "@/lib/hooks/useTaskCards";
@@ -80,14 +81,16 @@ export function NewTaskForm({
   const localWs = workspaces?.find((w) => w.workspaceKind === "local") ?? null;
   const localBusy = localWs?.status === "running";
 
-  // Seed the base branch once (not value-guarded, so the user can clear it).
+  // Seed the base branch once (not value-guarded, so the user can clear it):
+  // the repository's "Default base branch" rule when set, else its default
+  // branch. Waits for the rule to load (or fail) so it isn't overwritten.
+  const repoConfig = useRepositoryConfig(repositoryId);
   const seededBaseBranchRef = useRef(false);
   useEffect(() => {
-    if (repository && !seededBaseBranchRef.current) {
-      seededBaseBranchRef.current = true;
-      setBaseBranch(repository.defaultBranch);
-    }
-  }, [repository]);
+    if (!repository || seededBaseBranchRef.current || repoConfig.isPending) return;
+    seededBaseBranchRef.current = true;
+    setBaseBranch(repoConfig.data?.defaultBaseBranch?.trim() || repository.defaultBranch);
+  }, [repository, repoConfig.isPending, repoConfig.data]);
 
   // The agent command for the chosen mode. When the mode is the default,
   // `list_agents` already rendered it; otherwise ask the backend.
