@@ -11,7 +11,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::error::{run_git, GitError};
+use super::error::{ensure_branch_name, git_command, run_git, GitError};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -82,7 +82,11 @@ pub fn has_unpushed_commits(repo_path: &Path, branch: &str) -> Result<bool, GitE
 /// its target (a local merge, which never pushes) has nothing to lose,
 /// unlike what `has_unpushed_commits` would say for it. Refs that don't
 /// exist are skipped. `false` when the branch itself doesn't exist.
-pub fn has_unsaved_commits(repo_path: &Path, branch: &str, kept_in: &[&str]) -> Result<bool, GitError> {
+pub fn has_unsaved_commits(
+    repo_path: &Path,
+    branch: &str,
+    kept_in: &[&str],
+) -> Result<bool, GitError> {
     let exists = |r: &str| run_git(repo_path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
     let head = format!("refs/heads/{branch}");
     if !exists(&head) {
@@ -112,45 +116,128 @@ pub fn merge_into(
     source_ref: &str,
     strategy: MergeStrategy,
 ) -> Result<MergeOutcome, GitError> {
+    // `origin/<base>` / `<base>`, from a synced base: never an option or a
+    // refspec (`rebase` takes no `--` before its upstream).
+    ensure_branch_name(source_ref)?;
     require_clean_index(worktree)?;
     let args = match strategy {
-        MergeStrategy::Merge => vec!["merge", "--no-ff", source_ref],
-        MergeStrategy::Squash => vec!["merge", "--squash", source_ref],
-        MergeStrategy::FastForward => vec!["merge", "--ff-only", source_ref],
+        MergeStrategy::Merge => vec!["merge", "--no-ff", "--", source_ref],
+        MergeStrategy::Squash => vec!["merge", "--squash", "--", source_ref],
+        MergeStrategy::FastForward => vec!["merge", "--ff-only", "--", source_ref],
         MergeStrategy::Rebase => vec!["rebase", source_ref],
     };
     run_or_conflict(worktree, &args, strategy)
 }
 
-/// Merges `source_branch` into `target_branch` from the main repo path.
-/// Used by Merge-to-main — checks out target first, then merges. Aborts
-/// up front if the main checkout has unstaged changes (a dirty working
-/// tree makes the checkout fail with a confusing error).
+/// What `merge_to` did: the outcome, and the branch it ACTUALLY merged
+/// into — the one checked out when the merge ran, which is what a
+/// `merged_into` record must name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalMerge {
+    pub outcome: MergeOutcome,
+    pub into: String,
+}
+
+/// Merges `source_branch` into `target_branch` in the repository's main
+/// checkout. Used by "Merge locally".
+///
+/// The merge lands on `target_branch` or nowhere — never on whatever the
+/// checkout happens to have checked out:
+/// - `target_branch` must exist locally, or as `origin/<target>` (then a
+///   local branch tracking it is created, as `git switch <target>` would);
+///   otherwise this refuses. (It used to fall back to the checkout's
+///   CURRENT branch, then record the requested base as `merged_into`.)
+/// - The checkout must be clean, and not mid-merge/rebase: switching
+///   branches under someone's uncommitted work, or committing it into the
+///   merge (a squash commits the whole index), is never safe.
+/// - It is switched to `target_branch` when it's on another branch; if the
+///   merge then fails outright (not conflicts) it's switched back.
+///
+/// Both names come from synced rows: validated, and passed after `--` /
+/// as `refs/heads/…` so neither can be an option or a refspec.
 pub fn merge_to(
     main_repo: &Path,
     target_branch: &str,
     source_branch: &str,
     strategy: MergeStrategy,
-) -> Result<MergeOutcome, GitError> {
-    for r in [target_branch, source_branch] {
-        if r.starts_with('-') {
-            return Err(GitError::CommandFailed(format!("`{r}` isn't a valid ref")));
+) -> Result<LocalMerge, GitError> {
+    ensure_branch_name(target_branch)?;
+    ensure_branch_name(source_branch)?;
+    if matches!(strategy, MergeStrategy::Rebase) {
+        return Err(GitError::CommandFailed(
+            "rebase is not a valid strategy for merge-to-main".into(),
+        ));
+    }
+    let exists = |r: &str| run_git(main_repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    let local_target = format!("refs/heads/{target_branch}");
+    let remote_target = format!("refs/remotes/origin/{target_branch}");
+    let target_exists = exists(&local_target);
+    if !target_exists && !exists(&remote_target) {
+        return Err(GitError::CommandFailed(format!(
+            "the base branch `{target_branch}` doesn't exist in this repository"
+        )));
+    }
+    if !exists(&format!("refs/heads/{source_branch}")) {
+        return Err(GitError::CommandFailed(format!(
+            "the task's branch `{source_branch}` doesn't exist in this repository"
+        )));
+    }
+    if !matches!(in_progress(main_repo)?, InProgress::None) {
+        return Err(GitError::CommandFailed(
+            "a merge or rebase is already in progress in the repository's checkout — finish or abort it first".into(),
+        ));
+    }
+    let original = current_branch(main_repo)?;
+    if !is_clean(main_repo)? {
+        return Err(GitError::CommandFailed(match original.as_deref() {
+            Some(current) if current != target_branch => format!(
+                "the repository's checkout is on `{current}` with uncommitted changes — commit or stash them before merging into `{target_branch}`"
+            ),
+            _ => format!(
+                "the repository's checkout has uncommitted changes — commit or stash them before merging into `{target_branch}`"
+            ),
+        }));
+    }
+    let switched = original.as_deref() != Some(target_branch);
+    if !target_exists {
+        run_git(
+            main_repo,
+            &["branch", "--track", "--", target_branch, &remote_target],
+        )?;
+    }
+    if switched {
+        // `<branch> --`: a branch, never a path; validated, so never an
+        // option either.
+        run_git(main_repo, &["checkout", "-q", target_branch, "--"])?;
+    }
+    if current_branch(main_repo)?.as_deref() != Some(target_branch) {
+        return Err(GitError::CommandFailed(format!(
+            "couldn't switch the repository's checkout to `{target_branch}`"
+        )));
+    }
+    let source_ref = format!("refs/heads/{source_branch}");
+    let flag = match strategy {
+        MergeStrategy::Merge => "--no-ff",
+        MergeStrategy::Squash => "--squash",
+        MergeStrategy::FastForward => "--ff-only",
+        MergeStrategy::Rebase => unreachable!("refused above"),
+    };
+    match run_or_conflict(main_repo, &["merge", flag, "--", &source_ref], strategy) {
+        Ok(outcome) => Ok(LocalMerge {
+            outcome,
+            into: target_branch.to_string(),
+        }),
+        Err(err) => {
+            // Nothing was merged (a failed ff-only, a refused merge, an
+            // aborted squash): put the checkout back where the user left it.
+            if let (true, Some(original)) = (switched, original.as_deref()) {
+                if matches!(in_progress(main_repo), Ok(InProgress::None)) {
+                    let _ = run_git(main_repo, &["checkout", "-q", original, "--"]);
+                }
+            }
+            Err(err)
         }
     }
-    require_clean_worktree(main_repo)?;
-    let resolved = resolve_target(main_repo, target_branch)?;
-    run_git(main_repo, &["checkout", &resolved])?;
-    let args = match strategy {
-        MergeStrategy::Merge => vec!["merge", "--no-ff", source_branch],
-        MergeStrategy::Squash => vec!["merge", "--squash", source_branch],
-        MergeStrategy::FastForward => vec!["merge", "--ff-only", source_branch],
-        MergeStrategy::Rebase => {
-            return Err(GitError::CommandFailed(
-                "rebase is not a valid strategy for merge-to-main".into(),
-            ));
-        }
-    };
-    run_or_conflict(main_repo, &args, strategy)
 }
 
 fn run_or_conflict(
@@ -158,11 +245,7 @@ fn run_or_conflict(
     args: &[&str],
     strategy: MergeStrategy,
 ) -> Result<MergeOutcome, GitError> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .map_err(GitError::Io)?;
+    let output = git_command(cwd).args(args).output().map_err(GitError::Io)?;
 
     if output.status.success() {
         // Squash leaves the changes staged but not committed; finish
@@ -172,6 +255,24 @@ fn run_or_conflict(
         }
         let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
         return Ok(MergeOutcome::Clean { message });
+    }
+
+    // A conflicted `--squash` writes no MERGE_HEAD, so it never shows up
+    // as a merge in progress: the conflict UI wouldn't appear, and the
+    // checkout would be left half-merged (`UU`) and dirty, blocking the
+    // next merge. There's nothing to "continue" either — so undo it.
+    if matches!(strategy, MergeStrategy::Squash) {
+        let conflicts = conflict_files(cwd).unwrap_or_default();
+        run_git(cwd, &["reset", "--merge"])?;
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(GitError::CommandFailed(if conflicts.is_empty() {
+            stderr
+        } else {
+            format!(
+                "squash merge stopped on conflicts in {} — nothing was changed; merge with the Merge strategy to resolve them",
+                conflicts.join(", ")
+            )
+        }));
     }
 
     // Non-zero. If it landed in a merge- or rebase-in-progress state
@@ -242,9 +343,8 @@ pub fn continue_after_resolution(cwd: &Path) -> Result<MergeOutcome, GitError> {
                 return Ok(MergeOutcome::Conflicts { files: conflicts });
             }
             // `rebase --continue` may stop on the next commit. Re-check.
-            let output = std::process::Command::new("git")
+            let output = git_command(cwd)
                 .args(["rebase", "--continue"])
-                .current_dir(cwd)
                 .env("GIT_EDITOR", "true")
                 .output()
                 .map_err(GitError::Io)?;
@@ -279,9 +379,20 @@ pub fn merge_head_branches(cwd: &Path) -> Result<Vec<String>, GitError> {
     };
     let out = run_git(
         cwd,
-        &["for-each-ref", "--format=%(refname:short)", "--points-at", sha.trim(), "refs/heads/"],
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--points-at",
+            sha.trim(),
+            "refs/heads/",
+        ],
     )?;
-    Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// The branch `cwd` has checked out; `None` when detached.
@@ -320,22 +431,6 @@ fn conflict_files(cwd: &Path) -> Result<Vec<String>, GitError> {
         .collect())
 }
 
-fn resolve_target(repo_path: &Path, requested: &str) -> Result<String, GitError> {
-    if run_git(
-        repo_path,
-        &["rev-parse", "--verify", &format!("refs/heads/{requested}")],
-    )
-    .is_ok()
-    {
-        return Ok(requested.to_string());
-    }
-    super::remote::get_default_branch(repo_path).ok_or_else(|| {
-        GitError::CommandFailed(format!(
-            "target branch `{requested}` doesn't exist and no default could be detected"
-        ))
-    })
-}
-
 fn resolve_git_dir(cwd: &Path) -> Result<std::path::PathBuf, GitError> {
     // Worktrees have a `.git` FILE pointing at the real gitdir under
     // the main repo's `.git/worktrees/<name>/`. `git rev-parse
@@ -350,15 +445,9 @@ fn resolve_git_dir(cwd: &Path) -> Result<std::path::PathBuf, GitError> {
     }
 }
 
-fn require_clean_worktree(cwd: &Path) -> Result<(), GitError> {
-    let stdout = run_git(cwd, &["status", "--porcelain"])?;
-    if stdout.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(GitError::CommandFailed(
-            "working tree has uncommitted changes — stash or commit first".into(),
-        ))
-    }
+/// No staged, unstaged or untracked (non-ignored) changes.
+fn is_clean(cwd: &Path) -> Result<bool, GitError> {
+    Ok(run_git(cwd, &["status", "--porcelain"])?.trim().is_empty())
 }
 
 fn require_clean_index(cwd: &Path) -> Result<(), GitError> {
@@ -594,7 +683,9 @@ mod tests {
         checkout(dir.path(), "feature", true);
         add_commit(dir.path(), "feat.txt", "feat\n", "feature work");
         checkout(dir.path(), "main", false);
-        let outcome = merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward).unwrap();
+        let outcome = merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward)
+            .unwrap()
+            .outcome;
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         assert!(dir.path().join("feat.txt").exists());
     }
@@ -618,8 +709,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(p).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@example.com"]);
@@ -635,12 +734,20 @@ mod tests {
         git(&["commit", "-qam", "main"]);
 
         assert!(merge_head_branches(p).unwrap().is_empty(), "no merge yet");
-        let outcome = merge_to(p, "main", "phasr/task", MergeStrategy::Merge).unwrap();
+        let outcome = merge_to(p, "main", "phasr/task", MergeStrategy::Merge)
+            .unwrap()
+            .outcome;
         assert!(matches!(outcome, MergeOutcome::Conflicts { .. }));
-        assert_eq!(merge_head_branches(p).unwrap(), vec!["phasr/task".to_string()]);
+        assert_eq!(
+            merge_head_branches(p).unwrap(),
+            vec!["phasr/task".to_string()]
+        );
         assert_eq!(current_branch(p).unwrap().as_deref(), Some("main"));
         set_resolution(p, "f.txt", ConflictSide::Theirs).unwrap();
-        assert!(matches!(continue_after_resolution(p).unwrap(), MergeOutcome::Clean { .. }));
+        assert!(matches!(
+            continue_after_resolution(p).unwrap(),
+            MergeOutcome::Clean { .. }
+        ));
         assert!(merge_head_branches(p).unwrap().is_empty());
     }
 
@@ -651,18 +758,220 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
         let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(dir.path()).status().unwrap().success());
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success());
         };
         git(&["checkout", "-qb", "phasr/t"]);
         add_commit(dir.path(), "t.txt", "t\n", "work");
-        assert!(has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(), "only on the branch");
+        assert!(
+            has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(),
+            "only on the branch"
+        );
         git(&["checkout", "-q", "main"]);
         git(&["merge", "-q", "--no-ff", "-m", "merge", "phasr/t"]);
-        assert!(!has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(), "merged into main");
+        assert!(
+            !has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(),
+            "merged into main"
+        );
         // …though it was never pushed.
         assert!(has_unpushed_commits(dir.path(), "phasr/t").unwrap());
         // A missing branch / missing keeper refs are fine.
         assert!(!has_unsaved_commits(dir.path(), "nope", &["main"]).unwrap());
         assert!(!has_unsaved_commits(dir.path(), "phasr/t", &["main", "no-such-base"]).unwrap());
+    }
+
+    fn git_out(path: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn on_branch(path: &Path, rev: &str, file: &str) -> bool {
+        Command::new("git")
+            .args(["cat-file", "-e", &format!("{rev}:{file}")])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// main, a `develop` branch, and a task branch `phasr/t` off develop
+    /// with t.txt; the checkout is left on `other`.
+    fn checkout_on_another_branch(dir: &Path) {
+        init_repo(dir);
+        checkout(dir, "develop", true);
+        checkout(dir, "phasr/t", true);
+        add_commit(dir, "t.txt", "t\n", "task work");
+        checkout(dir, "main", false);
+        checkout(dir, "other", true);
+    }
+
+    /// The second review's #1: the checkout is on another branch. The merge
+    /// must land on the TASK's base (switching to it), and report it.
+    #[test]
+    fn merge_to_switches_to_the_target_and_reports_where_it_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        checkout_on_another_branch(p);
+        let merged = merge_to(p, "develop", "phasr/t", MergeStrategy::Merge).unwrap();
+        assert!(matches!(merged.outcome, MergeOutcome::Clean { .. }));
+        assert_eq!(merged.into, "develop");
+        assert!(on_branch(p, "develop", "t.txt"), "merged into develop");
+        assert!(
+            !on_branch(p, "other", "t.txt"),
+            "the previously checked-out branch is untouched"
+        );
+        assert!(!on_branch(p, "main", "t.txt"));
+        assert_eq!(current_branch(p).unwrap().as_deref(), Some("develop"));
+    }
+
+    /// On another branch with uncommitted work: refused, nothing switched.
+    #[test]
+    fn merge_to_refuses_to_switch_away_from_uncommitted_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        checkout_on_another_branch(p);
+        std::fs::write(p.join("wip.txt"), "wip\n").unwrap();
+        let err = merge_to(p, "develop", "phasr/t", MergeStrategy::Merge).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`other`") && msg.contains("uncommitted"),
+            "{msg}"
+        );
+        assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));
+        assert!(!on_branch(p, "develop", "t.txt"));
+        assert!(p.join("wip.txt").exists());
+    }
+
+    /// The probe: a base that doesn't exist locally used to resolve to the
+    /// checkout's CURRENT branch and merge there. Now it refuses.
+    #[test]
+    fn merge_to_never_falls_back_to_the_current_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        checkout_on_another_branch(p);
+        let err = merge_to(p, "release", "phasr/t", MergeStrategy::Merge).unwrap_err();
+        assert!(err.to_string().contains("`release` doesn't exist"), "{err}");
+        assert!(
+            !on_branch(p, "other", "t.txt"),
+            "nothing merged into the current branch"
+        );
+        assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));
+    }
+
+    /// A base that only exists as `origin/<base>` gets a local branch
+    /// tracking it, and the merge lands there.
+    #[test]
+    fn merge_to_creates_a_local_base_from_origin() {
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        checkout(upstream.path(), "develop", true);
+        add_commit(upstream.path(), "d.txt", "d\n", "develop work");
+        checkout(upstream.path(), "main", false);
+        let clone_dir = tempfile::tempdir().unwrap();
+        git_out(
+            clone_dir.path(),
+            &["clone", "-q", &upstream.path().to_string_lossy(), "c"],
+        );
+        let c = clone_dir.path().join("c");
+        git_out(&c, &["config", "user.email", "t@example.com"]);
+        git_out(&c, &["config", "user.name", "t"]);
+        git_out(&c, &["checkout", "-qb", "phasr/t", "origin/develop"]);
+        add_commit(&c, "t.txt", "t\n", "task");
+        git_out(&c, &["checkout", "-q", "main"]);
+
+        let merged = merge_to(&c, "develop", "phasr/t", MergeStrategy::Merge).unwrap();
+        assert_eq!(merged.into, "develop");
+        assert!(on_branch(&c, "develop", "t.txt") && on_branch(&c, "develop", "d.txt"));
+        assert_eq!(
+            git_out(&c, &["rev-parse", "--abbrev-ref", "develop@{upstream}"]),
+            "origin/develop"
+        );
+    }
+
+    /// A ff-only merge that can't fast-forward changes nothing — and the
+    /// checkout goes back to the branch it was on.
+    #[test]
+    fn a_failed_merge_switches_the_checkout_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        checkout_on_another_branch(p);
+        checkout(p, "develop", false);
+        add_commit(p, "dev.txt", "x\n", "develop moves");
+        checkout(p, "other", false);
+        assert!(merge_to(p, "develop", "phasr/t", MergeStrategy::FastForward).is_err());
+        assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));
+        assert_eq!(in_progress(p).unwrap(), InProgress::None);
+    }
+
+    /// The should-fix probe: `--squash` with conflicts writes no
+    /// MERGE_HEAD, so it left `UU f` in the main checkout with no conflict
+    /// UI and every later merge blocked as dirty. Now it's undone.
+    #[test]
+    fn a_conflicted_squash_is_undone_with_a_clear_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        init_repo(p);
+        checkout(p, "phasr/t", true);
+        add_commit(p, "README.md", "task\n", "task edit");
+        checkout(p, "main", false);
+        add_commit(p, "README.md", "main\n", "main edit");
+        let head = git_out(p, &["rev-parse", "HEAD"]);
+
+        let err = merge_to(p, "main", "phasr/t", MergeStrategy::Squash).unwrap_err();
+        assert!(err.to_string().contains("conflicts in README.md"), "{err}");
+        assert_eq!(
+            git_out(p, &["status", "--porcelain"]),
+            "",
+            "nothing half-merged"
+        );
+        assert_eq!(git_out(p, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            std::fs::read_to_string(p.join("README.md")).unwrap(),
+            "main\n"
+        );
+        // The next merge isn't blocked.
+        assert!(matches!(
+            merge_to(p, "main", "phasr/t", MergeStrategy::Merge)
+                .unwrap()
+                .outcome,
+            MergeOutcome::Conflicts { .. }
+        ));
+        // Same for a squash sync inside a worktree.
+        abort(p).unwrap();
+        checkout(p, "phasr/t", false);
+        assert!(merge_into(p, "main", MergeStrategy::Squash).is_err());
+        assert_eq!(git_out(p, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn option_and_refspec_shaped_names_never_reach_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        checkout_on_another_branch(p);
+        for (target, source) in [
+            ("--no-verify", "phasr/t"),
+            ("develop", "--squash"),
+            ("develop", "phasr/t:develop"),
+        ] {
+            assert!(
+                merge_to(p, target, source, MergeStrategy::Merge).is_err(),
+                "{target} {source}"
+            );
+        }
+        assert!(merge_into(p, "--abort", MergeStrategy::Merge).is_err());
+        assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));
     }
 }

@@ -60,9 +60,28 @@ pub async fn run_with_timeout<S: AsRef<OsStr>>(
     env: &[(String, String)],
     timeout: Duration,
 ) -> Result<Output, ProcError> {
+    run_with_timeout_stdin(program, args, cwd, env, None, timeout).await
+}
+
+/// `run_with_timeout`, with `stdin` written to the child (then closed)
+/// instead of `/dev/null` — for text that must not go on the command line
+/// (`gh pr create --body-file -`: argv is visible to every local process
+/// and bounded by ARG_MAX).
+pub async fn run_with_timeout_stdin<S: AsRef<OsStr>>(
+    program: &str,
+    args: &[S],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<Output, ProcError> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Backstop for every early-return path (including the caller's
@@ -78,7 +97,7 @@ pub async fn run_with_timeout<S: AsRef<OsStr>>(
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let child = cmd.spawn().map_err(|source| ProcError::Spawn {
+    let mut child = cmd.spawn().map_err(|source| ProcError::Spawn {
         program: program.to_string(),
         source,
     })?;
@@ -86,6 +105,17 @@ pub async fn run_with_timeout<S: AsRef<OsStr>>(
     // before `wait_with_output` takes ownership of the child.
     #[cfg(unix)]
     let pgid = child.id();
+
+    // Written from its own task so a child that doesn't read stdin until
+    // it has written (a full stdout pipe) can't deadlock us; dropping the
+    // handle closes stdin (EOF).
+    if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        let data = data.to_vec();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = pipe.write_all(&data).await;
+        });
+    }
 
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(result) => result.map_err(|source| ProcError::Wait {

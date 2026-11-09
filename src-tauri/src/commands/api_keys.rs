@@ -1,9 +1,9 @@
 //! Settings → Agents & keys → API keys. Values go to the macOS Keychain
 //! (`secrets::ApiKeys`); the frontend only ever sees name / is-set / hint.
 //!
-//! The Keychain is per macOS user, not per phasr account: two accounts
-//! signed in on one machine share these keys (like the CLIs themselves,
-//! which read them from the environment).
+//! Keys are per phasr account: each is stored under the signed-in Clerk
+//! user's id, so a second account on the same Mac neither sees nor
+//! launches with the first one's keys.
 
 use std::sync::Arc;
 
@@ -53,8 +53,8 @@ pub async fn list_api_keys(
     keys: State<'_, ApiKeys>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<ApiKeyStatus>, ApiKeyCmdError> {
-    require_user(&session)?;
-    Ok(keys.list().await?)
+    let current = require_user(&session)?;
+    Ok(keys.list(&current.user_id).await?)
 }
 
 /// Store a key (trimmed). Only the three names above are accepted.
@@ -65,8 +65,8 @@ pub async fn set_api_key(
     keys: State<'_, ApiKeys>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<ApiKeyStatus, ApiKeyCmdError> {
-    require_user(&session)?;
-    Ok(keys.set(&name, &value).await?)
+    let current = require_user(&session)?;
+    Ok(keys.set(&current.user_id, &name, &value).await?)
 }
 
 #[tauri::command]
@@ -75,8 +75,8 @@ pub async fn delete_api_key(
     keys: State<'_, ApiKeys>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), ApiKeyCmdError> {
-    require_user(&session)?;
-    Ok(keys.delete(&name).await?)
+    let current = require_user(&session)?;
+    Ok(keys.delete(&current.user_id, &name).await?)
 }
 
 #[cfg(test)]
@@ -86,6 +86,9 @@ mod tests {
     #[test]
     fn errors_serialize_as_plain_strings() {
         let err = ApiKeyCmdError::from(SecretError::NotAllowed("PATH".into()));
-        assert_eq!(serde_json::to_value(&err).unwrap(), "`PATH` is not a key phasr stores");
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            "`PATH` is not a key phasr stores"
+        );
     }
 }

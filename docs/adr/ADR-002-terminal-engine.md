@@ -648,7 +648,7 @@ cargo check  --manifest-path src-tauri/Cargo.toml                     ✓
 cargo test   --manifest-path src-tauri/Cargo.toml   213 passed        ✓
 cargo check  --manifest-path src-tauri/Cargo.toml --features vt-alacritty  ✓
 cargo test   --manifest-path src-tauri/Cargo.toml --features vt-alacritty vt::  21 passed  ✓
-node .claude/skills/tauri-backend/scripts/check-command-contract.mjs --all
+node scripts/check-command-contract.mjs --all
                                              OK: 81/81 commands       ✓
 ```
 
@@ -1157,7 +1157,7 @@ pnpm test                                    28 files, 246 tests      ✓
 pnpm exec playwright test                    106 passed, 5 skipped    ✓
 cargo check --manifest-path src-tauri/Cargo.toml                      ✓
 cargo test  --manifest-path src-tauri/Cargo.toml   213 passed, 4 ignored  ✓
-node .claude/skills/tauri-backend/scripts/check-command-contract.mjs --all
+node scripts/check-command-contract.mjs --all
                                              OK: 81/81 commands       ✓
 ```
 

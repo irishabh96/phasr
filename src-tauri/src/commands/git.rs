@@ -15,7 +15,7 @@ use crate::git::{
 };
 use crate::orchestrator::TaskBoard;
 use crate::review::cleanup::MergeCleanup;
-use crate::review::{ReviewError, ReviewService};
+use crate::review::{CloseOutFlags, ReviewError, ReviewService};
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 
 use super::require_user;
@@ -160,7 +160,10 @@ pub async fn git_diff(
                 let repository = repositories
                     .get_for_user(&workspace.repository_id, &current.user_id)
                     .await?;
-                git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch)
+                git::resolve_base_branch(
+                    repository.local_path.as_deref(),
+                    &repository.default_branch,
+                )
             }
         };
         let path = input.path;
@@ -278,12 +281,12 @@ pub async fn git_push(
     {
         Ok(repository) => {
             let remote_hint = repository.remote_url.clone();
-            let local_path = repository.local_path.clone();
-            let default_branch = repository.default_branch.clone();
+            // The PR targets the TASK's base (what Approve opens it
+            // against), not the repository default.
+            let base = ReviewService::base_branch(&workspace, &repository).await;
             let branch = branch.clone();
             blocking_git(move || {
                 let remote_url = remote_hint.or_else(|| git::get_remote_url(&cwd));
-                let base = git::resolve_base_branch(local_path.as_deref(), &default_branch);
                 Ok(remote_url.and_then(|url| git::build_pull_request_target(&url, &base, &branch)))
             })
             .await
@@ -313,15 +316,19 @@ pub async fn git_branch_status(
         .as_ref()
         .map(PathBuf::from)
         .ok_or(GitCmdError::NoWorktree)?;
-    // Look up the repo's merge target so the BranchStatus carries
-    // ahead/behind vs `<target>` in addition to vs upstream. The
-    // SyncButton and MergeToMain gates use the target-relative counts;
-    // BranchChip continues to show upstream-relative counts.
-    let target = repositories
+    // The task's merge target — its base, the branch "Merge locally" merges
+    // into and Sync merges from — so the BranchStatus carries ahead/behind
+    // vs that (and names it in `baseBranch`) besides vs upstream. The
+    // SyncButton and Merge gates use the target-relative counts; BranchChip
+    // shows upstream-relative ones.
+    let target = match repositories
         .get_for_user(&workspace.repository_id, &current.user_id)
         .await
-        .ok()
-        .map(|r| r.default_branch);
+    {
+        Ok(repository) => Some(ReviewService::base_branch(&workspace, &repository).await),
+        Err(_) => workspace.base_branch.clone(),
+    }
+    .filter(|base| git::ensure_branch_name(base).is_ok());
     blocking_git(move || git::branch_status(&cwd, target.as_deref())).await
 }
 
@@ -369,22 +376,34 @@ pub async fn git_sync_with_main(
     let repository = repositories
         .get_for_user(&workspace.repository_id, &current.user_id)
         .await?;
-    // Use the local repo's tracking ref so offline users can still
-    // sync (no network round-trip needed when fetch fails). When a
-    // remote exists, the caller usually fetches first via git_fetch.
-    let has_remote = repository.remote_url.is_some();
-    let source_ref = if has_remote {
-        format!("origin/{}", repository.default_branch)
-    } else {
-        repository.default_branch.clone()
-    };
-    blocking_git(move || git::merge_into(&worktree, &source_ref, strategy)).await
+    // Sync from the TASK's base (what it was cut from and merges back
+    // into), not the repository default. Its remote-tracking ref when there
+    // is one (the caller usually fetches first via git_fetch); else the
+    // local branch, so offline users and never-pushed bases still sync.
+    let base = ReviewService::base_branch(&workspace, &repository).await;
+    git::ensure_branch_name(&base)?;
+    blocking_git(move || {
+        let source_ref = if git::ref_exists(&worktree, &format!("refs/remotes/origin/{base}")) {
+            format!("origin/{base}")
+        } else {
+            base
+        };
+        git::merge_into(&worktree, &source_ref, strategy)
+    })
+    .await
 }
 
+/// "Merge locally": the task's branch into its base in the repository's
+/// main checkout. Gated like Approve — `overrideChecks` / `commitDirty`
+/// answer the "required checks not passing: …" / "worktree has
+/// uncommitted changes" refusals and may be sent together.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn git_merge_to_main(
     workspace_id: String,
     strategy: MergeStrategy,
+    override_checks: Option<bool>,
+    commit_dirty: Option<bool>,
     workspaces: State<'_, WorkspaceRepo>,
     review: State<'_, ReviewService>,
     board: State<'_, TaskBoard>,
@@ -402,11 +421,25 @@ pub async fn git_merge_to_main(
     // against that same branch. A merge completed after resolving
     // conflicts is recorded by `git_continue_merge`.
     let outcome = review
-        .merge_locally(&workspace, &current.user_id, strategy, None)
+        .merge_locally(
+            &workspace,
+            &current.user_id,
+            strategy,
+            None,
+            CloseOutFlags {
+                override_checks: override_checks.unwrap_or(false),
+                commit_dirty: commit_dirty.unwrap_or(false),
+            },
+        )
         .await?;
-    if matches!(outcome, MergeOutcome::Clean { .. }) && workspace.workspace_kind == WorkspaceKind::Agent {
+    if matches!(outcome, MergeOutcome::Clean { .. })
+        && workspace.workspace_kind == WorkspaceKind::Agent
+    {
         if workspace.outcome != Some(TaskOutcome::Merged) {
-            if let Ok(merged) = workspaces.get_for_user(&workspace.id, &current.user_id).await {
+            if let Ok(merged) = workspaces
+                .get_for_user(&workspace.id, &current.user_id)
+                .await
+            {
                 cleanup.on_merged(&merged, &current.user_id).await;
             }
         }

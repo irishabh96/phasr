@@ -102,7 +102,11 @@ impl NotificationRepo {
     }
 
     /// Mark `ids` read, or every unread entry when `ids` is `None`.
-    pub async fn mark_read(&self, user_id: &str, ids: Option<&[String]>) -> Result<u64, StoreError> {
+    pub async fn mark_read(
+        &self,
+        user_id: &str,
+        ids: Option<&[String]>,
+    ) -> Result<u64, StoreError> {
         let now = Utc::now().to_rfc3339();
         let Some(ids) = ids else {
             let res = sqlx::query(
@@ -128,6 +132,26 @@ impl NotificationRepo {
             .rows_affected();
         }
         Ok(changed)
+    }
+
+    /// Whether the task already has a "merged — remove its worktree?"
+    /// suggestion (read or not): it's asked once per merge, however many
+    /// paths (merge, continued merge, PR refresh) report that merge.
+    pub async fn has_cleanup_suggestion(
+        &self,
+        user_id: &str,
+        workspace_id: &str,
+    ) -> Result<bool, StoreError> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications
+             WHERE user_id = ? AND workspace_id = ? AND kind = 'task_finished'
+               AND json_extract(payload, '$.suggestion') = 'cleanup'",
+        )
+        .bind(user_id)
+        .bind(workspace_id)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(n > 0)
     }
 
     /// Mark the task's unread entries of `kind` read — e.g. the approval
@@ -169,7 +193,9 @@ impl NotificationRepo {
     }
 }
 
-fn row_to_notification(row: &sqlx::sqlite::SqliteRow) -> Result<Option<AppNotification>, StoreError> {
+fn row_to_notification(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<Option<AppNotification>, StoreError> {
     let Some(kind) = NotificationKind::from_str(&row.try_get::<String, _>("kind")?) else {
         return Ok(None);
     };
@@ -208,24 +234,57 @@ mod tests {
         for n in [&old, &a, &b] {
             repo.insert(n, "user-a").await.unwrap();
         }
-        repo.insert(&AppNotification::new(NotificationKind::TaskFinished, "other"), "user-b")
-            .await
-            .unwrap();
+        repo.insert(
+            &AppNotification::new(NotificationKind::TaskFinished, "other"),
+            "user-b",
+        )
+        .await
+        .unwrap();
 
         assert_eq!(repo.unread_count("user-a").await.unwrap(), 3);
-        assert!(repo.has_unread("user-a", NotificationKind::NeedsApproval, "ws").await.unwrap());
-        assert!(!repo.has_unread("user-b", NotificationKind::NeedsApproval, "ws").await.unwrap());
+        assert!(repo
+            .has_unread("user-a", NotificationKind::NeedsApproval, "ws")
+            .await
+            .unwrap());
+        assert!(!repo
+            .has_unread("user-b", NotificationKind::NeedsApproval, "ws")
+            .await
+            .unwrap());
         let listed = repo.list_for_user("user-a", false, Some(2)).await.unwrap();
         assert_eq!(listed.len(), 2);
         assert!(listed[0].created_at >= listed[1].created_at, "newest first");
 
-        assert_eq!(repo.mark_read("user-a", Some(&[a.id.clone()])).await.unwrap(), 1);
-        assert!(!repo.has_unread("user-a", NotificationKind::NeedsApproval, "ws").await.unwrap());
-        assert_eq!(repo.list_for_user("user-a", true, None).await.unwrap().len(), 2);
+        assert_eq!(
+            repo.mark_read("user-a", Some(&[a.id.clone()]))
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!repo
+            .has_unread("user-a", NotificationKind::NeedsApproval, "ws")
+            .await
+            .unwrap());
+        assert_eq!(
+            repo.list_for_user("user-a", true, None)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
         // Another user's ids are untouched.
-        assert_eq!(repo.mark_read("user-b", Some(&[b.id.clone()])).await.unwrap(), 0);
+        assert_eq!(
+            repo.mark_read("user-b", Some(std::slice::from_ref(&b.id)))
+                .await
+                .unwrap(),
+            0
+        );
 
-        assert_eq!(repo.prune_before(Utc::now() - chrono::Duration::days(30)).await.unwrap(), 1);
+        assert_eq!(
+            repo.prune_before(Utc::now() - chrono::Duration::days(30))
+                .await
+                .unwrap(),
+            1
+        );
         assert_eq!(repo.mark_read("user-a", None).await.unwrap(), 1);
         assert_eq!(repo.unread_count("user-a").await.unwrap(), 0);
         assert_eq!(repo.clear("user-a").await.unwrap(), 2);

@@ -25,11 +25,6 @@ pub struct CheckRunFinish {
     pub finished_at: DateTime<Utc>,
     pub duration_ms: Option<i64>,
     pub output_tail: String,
-    /// The worktree's fingerprint AFTER the run, when it ran to an exit. A
-    /// check that rewrites files (a formatter, codegen) leaves the worktree
-    /// as its result describes it; tied to the pre-run state it was always
-    /// stale. `None` keeps the fingerprint recorded at queue time.
-    pub fingerprint: Option<String>,
 }
 
 /// `check_runs` — local-only, so no `dirty`/sync bookkeeping. Rows carry
@@ -71,18 +66,23 @@ impl CheckRunRepo {
         Ok(())
     }
 
-    /// `queued → running`. No-op (returns `None`) if the run already left
-    /// `queued` — a cancel that won the race.
+    /// `queued → running`, recording the worktree's fingerprint as the run
+    /// starts (`None` keeps the queue-time one). That is the fingerprint the
+    /// run keeps: `finish` never changes it. No-op (returns `None`) if the
+    /// run already left `queued` — a cancel that won the race.
     pub async fn mark_running(
         &self,
         id: &str,
         started_at: DateTime<Utc>,
+        fingerprint: Option<&str>,
     ) -> Result<Option<CheckRun>, StoreError> {
         let res = sqlx::query(
-            "UPDATE check_runs SET status = 'running', started_at = ?
+            "UPDATE check_runs SET status = 'running', started_at = ?,
+                fingerprint = COALESCE(?, fingerprint)
              WHERE id = ? AND status = 'queued'",
         )
         .bind(started_at.to_rfc3339())
+        .bind(fingerprint)
         .bind(id)
         .execute(&self.db)
         .await?;
@@ -96,7 +96,7 @@ impl CheckRunRepo {
     pub async fn finish(&self, id: &str, finish: CheckRunFinish) -> Result<CheckRun, StoreError> {
         sqlx::query(
             "UPDATE check_runs SET status = ?, exit_code = ?, finished_at = ?, duration_ms = ?,
-                output_tail = ?, fingerprint = COALESCE(?, fingerprint)
+                output_tail = ?
              WHERE id = ? AND status IN ('queued', 'running')",
         )
         .bind(finish.status.as_str())
@@ -104,7 +104,6 @@ impl CheckRunRepo {
         .bind(finish.finished_at.to_rfc3339())
         .bind(finish.duration_ms)
         .bind(&finish.output_tail)
-        .bind(&finish.fingerprint)
         .bind(id)
         .execute(&self.db)
         .await?;
@@ -112,11 +111,18 @@ impl CheckRunRepo {
     }
 
     pub async fn get(&self, id: &str) -> Result<CheckRun, StoreError> {
-        let row = sqlx::query(concat!("SELECT ", check_run_columns!(), " FROM check_runs WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&self.db)
-            .await?;
-        row.as_ref().map(row_to_check_run).transpose()?.ok_or(StoreError::NotFound)
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            check_run_columns!(),
+            " FROM check_runs WHERE id = ?"
+        ))
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+        row.as_ref()
+            .map(row_to_check_run)
+            .transpose()?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Owner-scoped `get`: another account's run is `not found`.
@@ -130,12 +136,18 @@ impl CheckRunRepo {
         .bind(user_id)
         .fetch_optional(&self.db)
         .await?;
-        row.as_ref().map(row_to_check_run).transpose()?.ok_or(StoreError::NotFound)
+        row.as_ref()
+            .map(row_to_check_run)
+            .transpose()?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Recent runs for a workspace, newest first. Callers have already
     /// checked the workspace is the user's.
-    pub async fn list_for_workspace(&self, workspace_id: &str) -> Result<Vec<CheckRun>, StoreError> {
+    pub async fn list_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<CheckRun>, StoreError> {
         let rows = sqlx::query(concat!(
             "SELECT ",
             check_run_columns!(),
@@ -154,10 +166,14 @@ impl CheckRunRepo {
     /// runs' log paths for the caller to remove. Active runs are never
     /// touched.
     ///
-    /// One statement: the startup prune (every workspace) runs before the
-    /// window appears, and a DELETE per row there cost one round trip and
-    /// one write transaction per stale run.
-    pub async fn prune(&self, keep: i64, workspace_id: Option<&str>) -> Result<Vec<String>, StoreError> {
+    /// One statement (`DELETE … RETURNING`): the startup prune runs before
+    /// the window appears, and deleting row by row there cost a round trip
+    /// (and an fsync) per pruned run.
+    pub async fn prune(
+        &self,
+        keep: i64,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<String>, StoreError> {
         let rows = sqlx::query(
             "DELETE FROM check_runs WHERE id IN (
                 SELECT id FROM (
@@ -248,7 +264,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let repository = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert(&repository).await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert(&repository)
+            .await
+            .unwrap();
         let ws = Workspace::new(repository.id, "t".into(), "c".into());
         WorkspaceRepo::new(pool.clone()).insert(&ws).await.unwrap();
         (CheckRunRepo::new(pool), ws, dir)
@@ -278,10 +297,23 @@ mod tests {
         let (repo, ws, _dir) = fresh().await;
         let run = queued(&ws.id);
         repo.insert(&run, Some("user-a")).await.unwrap();
-        let running = repo.mark_running(&run.id, Utc::now()).await.unwrap().unwrap();
+        let running = repo
+            .mark_running(&run.id, Utc::now(), Some("at-start"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.status, CheckStatus::Running);
+        assert_eq!(
+            running.fingerprint.as_deref(),
+            Some("at-start"),
+            "replaces the queue-time one"
+        );
         // Only once.
-        assert!(repo.mark_running(&run.id, Utc::now()).await.unwrap().is_none());
+        assert!(repo
+            .mark_running(&run.id, Utc::now(), Some("again"))
+            .await
+            .unwrap()
+            .is_none());
         let done = repo
             .finish(
                 &run.id,
@@ -291,12 +323,14 @@ mod tests {
                     finished_at: Utc::now(),
                     duration_ms: Some(12),
                     output_tail: "ok\n".into(),
-                    fingerprint: Some("after".into()),
                 },
             )
             .await
             .unwrap();
-        assert_eq!((done.status, done.exit_code, done.output_tail.as_str()), (CheckStatus::Passed, Some(0), "ok\n"));
+        assert_eq!(
+            (done.status, done.exit_code, done.output_tail.as_str()),
+            (CheckStatus::Passed, Some(0), "ok\n")
+        );
         // A settled run can't be re-settled (a late cancel).
         let again = repo
             .finish(
@@ -307,16 +341,25 @@ mod tests {
                     finished_at: Utc::now(),
                     duration_ms: None,
                     output_tail: String::new(),
-                    fingerprint: None,
                 },
             )
             .await
             .unwrap();
         assert_eq!(again.status, CheckStatus::Passed);
-        assert_eq!(again.fingerprint.as_deref(), Some("after"), "the post-run fingerprint is recorded");
+        assert_eq!(
+            again.fingerprint.as_deref(),
+            Some("at-start"),
+            "finishing never changes the fingerprint"
+        );
 
-        assert_eq!(repo.get_for_user(&run.id, "user-a").await.unwrap().id, run.id);
-        assert!(matches!(repo.get_for_user(&run.id, "user-b").await, Err(StoreError::NotFound)));
+        assert_eq!(
+            repo.get_for_user(&run.id, "user-a").await.unwrap().id,
+            run.id
+        );
+        assert!(matches!(
+            repo.get_for_user(&run.id, "user-b").await,
+            Err(StoreError::NotFound)
+        ));
         assert_eq!(repo.list_for_workspace(&ws.id).await.unwrap().len(), 1);
     }
 

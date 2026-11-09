@@ -47,6 +47,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags: the rollback guard below needs v0.4.4.
+          fetch-depth: 0
+
+      # Rollback guard (RELEASING.md → "Rollback safety"). Builds up to
+      # 0.4.3 refuse to open a database that has a migration they don't
+      # know ("migration 15 was previously applied but is missing" — the
+      # 0.3.7 incident). v0.4.4 is the first build that tolerates them, so
+      # nothing carrying migration 0015+ may ship unless v0.4.4 is already
+      # out — i.e. is an ancestor of what's being released.
+      - name: Guard against releasing migrations 0015+ before v0.4.4
+        run: |
+          latest=$(ls src-tauri/migrations | sed -n 's/^\([0-9][0-9]*\)_.*\.sql$/\1/p' | sort -n | tail -1)
+          echo "Latest migration: ${latest:-none}"
+          if [ -n "$latest" ] && [ "$((10#$latest))" -ge 15 ]; then
+            if ! git rev-parse -q --verify "refs/tags/v0.4.4^{commit}" >/dev/null; then
+              echo "::error::Migration $latest needs v0.4.4 released first, and there is no v0.4.4 tag. See RELEASING.md → Rollback safety."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor v0.4.4 HEAD; then
+              echo "::error::Migration $latest needs v0.4.4 released first, and v0.4.4 is not an ancestor of $GITHUB_REF_NAME. See RELEASING.md → Rollback safety."
+              exit 1
+            fi
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4

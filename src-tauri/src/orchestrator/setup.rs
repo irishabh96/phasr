@@ -226,6 +226,13 @@ pub async fn fetch_base(repository_path: &Path, base: &str, log: &mut SetupLog) 
     if base.starts_with("origin/") {
         return local;
     }
+    // `+main:victim` is a valid refspec: fetched as one it force-overwrites
+    // the local `victim` (exit 0) before anything else gets to refuse the
+    // name. Never fetch a name that isn't a branch name.
+    if let Err(err) = crate::git::ensure_branch_name(base) {
+        log.push(format!("phasr: not fetching: {err}"));
+        return local;
+    }
     let output = run_with_timeout(
         "git",
         // `--` before the remote/refspec: `base` must never be read as an
@@ -613,6 +620,29 @@ mod tests {
         let mut log = SetupLog::default();
         assert_eq!(fetch_base(lonely.path(), "main", &mut log).await, "main");
         assert!(!log.is_empty());
+    }
+
+    /// The reviewer's probe: a synced base of `+main:victim` reached `git
+    /// fetch origin <base>` as a refspec and force-overwrote the local
+    /// `victim` branch (exit 0); worktree creation only failed afterwards.
+    #[tokio::test]
+    async fn a_refspec_shaped_base_never_reaches_fetch() {
+        let upstream = repo();
+        std::fs::write(upstream.path().join("up.txt"), "u\n").unwrap();
+        git(upstream.path(), &["add", "-A"]);
+        git(upstream.path(), &["commit", "-qm", "upstream"]);
+        let clone_dir = tempfile::tempdir().unwrap();
+        let clone = clone_dir.path().join("c");
+        git(clone_dir.path(), &["clone", "-q", &upstream.path().to_string_lossy(), "c"]);
+        git(&clone, &["branch", "victim", "HEAD~1"]);
+        let victim = git(&clone, &["rev-parse", "victim"]);
+
+        for evil in ["+main:victim", "main:victim", "+main:refs/heads/victim", "--upload-pack=touch x"] {
+            let mut log = SetupLog::default();
+            fetch_base(&clone, evil, &mut log).await;
+            assert!(!log.is_empty(), "{evil}: refusal logged");
+            assert_eq!(git(&clone, &["rev-parse", "victim"]), victim, "{evil}: victim untouched");
+        }
     }
 
     #[tokio::test]

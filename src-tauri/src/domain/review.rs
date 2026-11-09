@@ -114,10 +114,18 @@ pub fn latest_by_command(runs: &[CheckRun]) -> HashMap<String, &CheckRun> {
     latest
 }
 
+/// Whether `run` (of `rc`) describes the code and the check as they are
+/// now: same worktree fingerprint AND the same command text. A pass of
+/// `true` says nothing about a check since edited to `pnpm test`.
+/// `current_fingerprint: None` (couldn't be computed) matches nothing.
+pub fn run_is_current(run: &CheckRun, rc: &RunCommand, current_fingerprint: Option<&str>) -> bool {
+    current_fingerprint.is_some() && run.fingerprint.as_deref() == current_fingerprint && run.command == rc.command
+}
+
 /// The approve gate: names of required checks that do NOT have a passing
-/// run on the worktree as it is now. A pass on an older state doesn't
-/// count — the agent may have broken it since. `current_fingerprint: None`
-/// (couldn't be computed) satisfies nothing.
+/// run on the worktree as it is now, of the command as it is now. A pass
+/// on an older state (or an older command) doesn't count — the agent may
+/// have broken it since.
 pub fn unsatisfied_required(
     commands: &[RunCommand],
     runs: &[CheckRun],
@@ -129,9 +137,7 @@ pub fn unsatisfied_required(
         .filter(|rc| rc.required_for_approve)
         .filter(|rc| {
             let ok = latest.get(&rc.id).is_some_and(|run| {
-                run.status == CheckStatus::Passed
-                    && current_fingerprint.is_some()
-                    && run.fingerprint.as_deref() == current_fingerprint
+                run.status == CheckStatus::Passed && run_is_current(run, rc, current_fingerprint)
             });
             !ok
         })
@@ -275,7 +281,7 @@ mod tests {
     use chrono::TimeZone;
 
     fn rc(id: &str, name: &str, required: bool) -> RunCommand {
-        let mut rc = RunCommand::new("repo".into(), name.into(), format!("npm run {name}"));
+        let mut rc = RunCommand::new("repo".into(), name.into(), format!("run-{id}"));
         rc.id = id.into();
         rc.required_for_approve = required;
         rc
@@ -287,7 +293,7 @@ mod tests {
             workspace_id: "ws".into(),
             run_command_id: Some(cmd.into()),
             name: cmd.into(),
-            command: cmd.into(),
+            command: format!("run-{cmd}"),
             status,
             exit_code: None,
             fingerprint: Some(fp.into()),
@@ -325,6 +331,18 @@ mod tests {
         assert_eq!(unsatisfied_required(&commands[..1], &runs, Some("fp1")), vec!["test"]);
         // No required checks → nothing to satisfy.
         assert!(unsatisfied_required(&commands[2..], &[], None).is_empty());
+    }
+
+    /// A pass of the OLD command doesn't satisfy an edited check: `true`
+    /// passing says nothing about `pnpm test`.
+    #[test]
+    fn gate_ignores_a_pass_of_a_since_edited_command() {
+        let mut commands = vec![rc("t", "test", true)];
+        let runs = vec![run("t", CheckStatus::Passed, "fp1", 1)];
+        assert!(unsatisfied_required(&commands, &runs, Some("fp1")).is_empty());
+        commands[0].command = "pnpm test".into();
+        assert_eq!(unsatisfied_required(&commands, &runs, Some("fp1")), vec!["test"]);
+        assert!(!run_is_current(&runs[0], &commands[0], Some("fp1")));
     }
 
     #[test]

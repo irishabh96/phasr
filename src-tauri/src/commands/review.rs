@@ -12,13 +12,14 @@ use tauri::{Manager, State};
 use crate::agent_signals::AgentSignals;
 use crate::auth::{AuthError, SessionState};
 use crate::checks::{CheckError, CheckService};
+use crate::domain::PrMode;
 use crate::domain::{
-    review::format_review_comments, CheckRun, CheckSummary, CommentSide, CommentStatus, ReviewComment, Workspace,
+    review::format_review_comments, CheckRun, CheckSummary, CommentSide, CommentStatus,
+    ReviewComment, Workspace,
 };
 use crate::fswatch::WorktreeWatchRegistry;
 use crate::git::{self, FileChange, GitError};
 use crate::orchestrator::{OrchestratorError, TaskBoard, TaskOrchestrator};
-use crate::domain::PrMode;
 use crate::review::cleanup::MergeCleanup;
 use crate::review::{ApproveInput, PullRequestOutcome, ReviewError, ReviewService};
 use crate::run_commands::RunCommandRuntime;
@@ -72,7 +73,9 @@ impl From<OrchestratorError> for ReviewCmdError {
     fn from(e: OrchestratorError) -> Self {
         match e {
             OrchestratorError::TaskNotRunning(_)
-            | OrchestratorError::Pty(crate::pty::handle::PtyError::AgentNotRunning) => Self::AgentNotRunning,
+            | OrchestratorError::Pty(crate::pty::handle::PtyError::AgentNotRunning) => {
+                Self::AgentNotRunning
+            }
             OrchestratorError::Store(e) => Self::Store(e),
             other => Self::Review(ReviewError::Other(other.to_string())),
         }
@@ -123,8 +126,10 @@ async fn base_branch_of(
     if let Some(base) = workspace.base_branch.clone() {
         return Ok(base);
     }
-    let repository = repositories.get_for_user(&workspace.repository_id, user_id).await?;
-    Ok(git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch))
+    let repository = repositories
+        .get_for_user(&workspace.repository_id, user_id)
+        .await?;
+    Ok(ReviewService::base_branch(workspace, &repository).await)
 }
 
 fn worktree_of(workspace: &Workspace) -> Result<PathBuf, ReviewCmdError> {
@@ -147,7 +152,9 @@ pub async fn git_review_files(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<FileChange>, ReviewCmdError> {
     let current = require_user(&session)?;
-    let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    let workspace = workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     let cwd = worktree_of(&workspace)?;
     let base = base_branch_of(&workspace, &repositories, &current.user_id).await?;
     blocking_git(move || git::review_files(&cwd, &base)).await
@@ -167,7 +174,9 @@ pub async fn run_checks(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<CheckRun>, ReviewCmdError> {
     let current = require_user(&session)?;
-    let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    let workspace = workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     Ok(checks
         .run(&workspace, &current.user_id, run_command_ids.as_deref())
         .await?)
@@ -182,7 +191,9 @@ pub async fn cancel_checks(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<usize, ReviewCmdError> {
     let current = require_user(&session)?;
-    workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     Ok(checks.cancel(&workspace_id))
 }
 
@@ -194,7 +205,9 @@ pub async fn list_check_runs(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<CheckSummary, ReviewCmdError> {
     let current = require_user(&session)?;
-    let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    let workspace = workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     Ok(checks.summary(&workspace, &current.user_id).await?)
 }
 
@@ -206,7 +219,9 @@ pub async fn get_check_output(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, ReviewCmdError> {
     let current = require_user(&session)?;
-    let run = checks.get_run_for_user(&check_run_id, &current.user_id).await?;
+    let run = checks
+        .get_run_for_user(&check_run_id, &current.user_id)
+        .await?;
     Ok(checks.output(&run).await)
 }
 
@@ -220,7 +235,9 @@ pub async fn list_review_comments(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<ReviewComment>, ReviewCmdError> {
     let current = require_user(&session)?;
-    workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     Ok(comments
         .list_for_workspace_for_user(&workspace_id, &current.user_id)
         .await?)
@@ -247,7 +264,9 @@ pub async fn create_review_comment(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<ReviewComment, ReviewCmdError> {
     let current = require_user(&session)?;
-    workspaces.get_for_user(&input.workspace_id, &current.user_id).await?;
+    workspaces
+        .get_for_user(&input.workspace_id, &current.user_id)
+        .await?;
     let mut comment = ReviewComment::new(
         input.workspace_id,
         input.path,
@@ -330,7 +349,9 @@ async fn send_to_agent(
         return Err(ReviewCmdError::NothingToSend);
     }
     let message = format_review_comments(intro, &pending);
-    orchestrator.send_message(workspace_id, &message, true).await?;
+    orchestrator
+        .send_message(workspace_id, &message, true)
+        .await?;
     let ids: Vec<String> = pending.iter().map(|c| c.id.clone()).collect();
     comments.mark_sent(&ids, user_id).await?;
     Ok(SendCommentsOutcome { sent: ids.len() })
@@ -350,8 +371,20 @@ pub async fn send_review_comments(
     session: State<'_, Arc<SessionState>>,
 ) -> Result<SendCommentsOutcome, ReviewCmdError> {
     let current = require_user(&session)?;
-    let intro = message.as_deref().filter(|m| !m.trim().is_empty()).unwrap_or(SEND_INTRO);
-    send_to_agent(&workspace_id, &current.user_id, Some(intro), true, &workspaces, &comments, &orchestrator).await
+    let intro = message
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or(SEND_INTRO);
+    send_to_agent(
+        &workspace_id,
+        &current.user_id,
+        Some(intro),
+        true,
+        &workspaces,
+        &comments,
+        &orchestrator,
+    )
+    .await
 }
 
 /// "Request changes": the same delivery, but a message alone (no line
@@ -370,8 +403,16 @@ pub async fn request_changes(
     // A lead-in only makes sense in front of a list; a bare message is sent
     // as written.
     let intro = custom.unwrap_or(REQUEST_CHANGES_INTRO);
-    send_to_agent(&workspace_id, &current.user_id, Some(intro), custom.is_none(), &workspaces, &comments, &orchestrator)
-        .await
+    send_to_agent(
+        &workspace_id,
+        &current.user_id,
+        Some(intro),
+        custom.is_none(),
+        &workspaces,
+        &comments,
+        &orchestrator,
+    )
+    .await
 }
 
 // ── closing out ──────────────────────────────────────────────────────
@@ -379,6 +420,7 @@ pub async fn request_changes(
 /// Gate on required checks (unless `overrideChecks`) → push → `gh pr
 /// create` (or the compare URL when `gh` isn't usable) → record the PR.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn approve_and_create_pr(
     workspace_id: String,
     input: Option<ApproveInput>,
@@ -391,7 +433,9 @@ pub async fn approve_and_create_pr(
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<PullRequestOutcome, ReviewCmdError> {
     let current = require_user(&session)?;
-    let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    let workspace = workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     // No explicit choice → the repository's PR mode (Settings → Branch rules).
     let mut input = input.unwrap_or_default();
     if input.draft.is_none() {
@@ -442,6 +486,7 @@ pub async fn refresh_pr_states(
 /// "Discard worktree": stop everything running for the task, remove its
 /// worktree and branch, and close it. The row and its notes are kept.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn discard_workspace(
     workspace_id: String,
     workspaces: State<'_, WorkspaceRepo>,
@@ -458,7 +503,9 @@ pub async fn discard_workspace(
     // Ownership — and discardability — before any side effect: refusing the
     // repository's own checkout AFTER stopping its agent, run commands and
     // checks would still have killed them.
-    let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    let workspace = workspaces
+        .get_for_user(&workspace_id, &current.user_id)
+        .await?;
     ReviewService::ensure_discardable(&workspace)?;
     watchers.stop(&workspace_id);
     // Row → stopped BEFORE the kill (see `quiesce_task`), so the exit isn't
@@ -470,6 +517,9 @@ pub async fn discard_workspace(
         .cancel_and_wait(&workspace_id, std::time::Duration::from_secs(5))
         .await;
     let closed = review.discard(&workspace, &current.user_id).await?;
+    if let Some(path) = workspace.worktree_path.as_deref() {
+        checks.forget_worktree(std::path::Path::new(path));
+    }
     board.notify_changed(&closed.repository_id);
     sync_state.request_sync();
     Ok(closed)

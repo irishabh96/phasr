@@ -137,7 +137,9 @@ impl SecretStore for MemorySecretStore {
         Ok(self.values.lock().get(name).cloned())
     }
     fn set(&self, name: &str, value: &str) -> Result<(), SecretError> {
-        self.values.lock().insert(name.to_string(), value.to_string());
+        self.values
+            .lock()
+            .insert(name.to_string(), value.to_string());
         Ok(())
     }
     fn delete(&self, name: &str) -> Result<(), SecretError> {
@@ -156,15 +158,43 @@ pub struct ApiKeyStatus {
     pub hint: Option<String>,
 }
 
+/// The signed-in user's Clerk id, re-read on every call (`None` signed
+/// out).
+pub type CurrentUser = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// The API-key service: whitelist, hints, and per-agent env at launch.
+///
+/// Per phasr ACCOUNT, not per macOS user: the Keychain account is
+/// `<clerk user id>/<ENV_NAME>` and the hint row is keyed the same way, so a
+/// second account signed in on the same Mac neither sees nor launches with
+/// the first one's keys. (Entries from builds that keyed by the env name
+/// alone are NOT adopted: nothing records which account stored them, and
+/// handing one account's key to another is the leak this prevents. That
+/// layout never shipped in a release.)
 #[derive(Clone)]
 pub struct ApiKeys {
     store: Arc<dyn SecretStore>,
     meta: AppMetaRepo,
+    /// Whose keys a launch gets (`env_for`). Unset = nobody's.
+    current_user: Option<CurrentUser>,
 }
 
-fn hint_key(name: &str) -> String {
-    format!("{HINT_PREFIX}{name}")
+/// The Keychain account for `user_id`'s `name`.
+fn account(user_id: &str, name: &str) -> String {
+    format!("{user_id}/{name}")
+}
+
+fn hint_key(user_id: &str, name: &str) -> String {
+    format!("{HINT_PREFIX}{user_id}:{name}")
+}
+
+/// A Clerk id is `user_…`; refuse anything that could make two users'
+/// accounts collide (an empty id, a separator inside it).
+fn ensure_user(user_id: &str) -> Result<&str, SecretError> {
+    if user_id.is_empty() || user_id.contains(['/', ':']) || user_id.chars().any(char::is_control) {
+        return Err(SecretError::Invalid("no signed-in account"));
+    }
+    Ok(user_id)
 }
 
 fn ensure_allowed(name: &str) -> Result<&'static str, SecretError> {
@@ -192,15 +222,27 @@ where
 
 impl ApiKeys {
     pub fn new(store: Arc<dyn SecretStore>, meta: AppMetaRepo) -> Self {
-        Self { store, meta }
+        Self {
+            store,
+            meta,
+            current_user: None,
+        }
     }
 
-    pub async fn list(&self) -> Result<Vec<ApiKeyStatus>, SecretError> {
+    /// Whose keys launches get: the signed-in account, re-read per launch.
+    pub fn with_current_user(mut self, current_user: CurrentUser) -> Self {
+        self.current_user = Some(current_user);
+        self
+    }
+
+    /// `user_id`'s keys: name / is-set / hint, never a value.
+    pub async fn list(&self, user_id: &str) -> Result<Vec<ApiKeyStatus>, SecretError> {
+        let user_id = ensure_user(user_id)?;
         let mut out = Vec::with_capacity(API_KEY_NAMES.len());
         for name in API_KEY_NAMES {
             // The hint row is the "is set" marker (empty string = set, but
             // too short to hint).
-            let hint = self.meta.get(&hint_key(name)).await?;
+            let hint = self.meta.get(&hint_key(user_id, name)).await?;
             out.push(ApiKeyStatus {
                 name: name.to_string(),
                 is_set: hint.is_some(),
@@ -210,7 +252,13 @@ impl ApiKeys {
         Ok(out)
     }
 
-    pub async fn set(&self, name: &str, value: &str) -> Result<ApiKeyStatus, SecretError> {
+    pub async fn set(
+        &self,
+        user_id: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<ApiKeyStatus, SecretError> {
+        let user_id = ensure_user(user_id)?;
         let name = ensure_allowed(name)?;
         let value = value.trim();
         if value.is_empty() {
@@ -220,11 +268,11 @@ impl ApiKeys {
             return Err(SecretError::Invalid("that doesn't look like an API key"));
         }
         let store = self.store.clone();
-        let owned = value.to_string();
-        blocking(move || store.set(name, &owned)).await?;
+        let (owned, entry) = (value.to_string(), account(user_id, name));
+        blocking(move || store.set(&entry, &owned)).await?;
         let hint = hint_of(value);
         self.meta
-            .set(&hint_key(name), hint.as_deref().unwrap_or(""))
+            .set(&hint_key(user_id, name), hint.as_deref().unwrap_or(""))
             .await?;
         Ok(ApiKeyStatus {
             name: name.to_string(),
@@ -233,28 +281,42 @@ impl ApiKeys {
         })
     }
 
-    pub async fn delete(&self, name: &str) -> Result<(), SecretError> {
+    pub async fn delete(&self, user_id: &str, name: &str) -> Result<(), SecretError> {
+        let user_id = ensure_user(user_id)?;
         let name = ensure_allowed(name)?;
         let store = self.store.clone();
-        blocking(move || store.delete(name)).await?;
-        self.meta.delete(&hint_key(name)).await?;
+        let entry = account(user_id, name);
+        blocking(move || store.delete(&entry)).await?;
+        self.meta.delete(&hint_key(user_id, name)).await?;
         Ok(())
     }
 
-    /// `[(ENV_NAME, value)]` for `agent`'s PTY, or nothing. Never fails a
-    /// launch: a Keychain error (locked, access denied) is logged — without
-    /// the value — and the agent starts with its own auth.
+    /// `[(ENV_NAME, value)]` for `agent`'s PTY — the signed-in account's
+    /// key — or nothing (signed out, no key). Never fails a launch: a
+    /// Keychain error (locked, access denied) is logged — without the
+    /// value — and the agent starts with its own auth.
     pub async fn env_for(&self, agent: Agent) -> Vec<(String, String)> {
+        match self.current_user.as_ref().and_then(|current| current()) {
+            Some(user_id) => self.env_for_user(&user_id, agent).await,
+            None => Vec::new(),
+        }
+    }
+
+    pub async fn env_for_user(&self, user_id: &str, agent: Agent) -> Vec<(String, String)> {
+        let Ok(user_id) = ensure_user(user_id) else {
+            return Vec::new();
+        };
         let Some(name) = env_key_for(agent) else {
             return Vec::new();
         };
         // Unset → don't touch the Keychain at all (no access prompt).
-        match self.meta.get(&hint_key(name)).await {
+        match self.meta.get(&hint_key(user_id, name)).await {
             Ok(Some(_)) => {}
             _ => return Vec::new(),
         }
         let store = self.store.clone();
-        match blocking(move || store.get(name)).await {
+        let entry = account(user_id, name);
+        match blocking(move || store.get(&entry)).await {
             Ok(Some(value)) if !value.is_empty() => vec![(name.to_string(), value)],
             Ok(_) => Vec::new(),
             Err(err) => {
@@ -274,65 +336,179 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let store = Arc::new(MemorySecretStore::default());
-        (ApiKeys::new(store.clone(), AppMetaRepo::new(pool)), store, dir)
+        (
+            ApiKeys::new(store.clone(), AppMetaRepo::new(pool)),
+            store,
+            dir,
+        )
+    }
+
+    const U: &str = "user_a";
+
+    /// Two phasr accounts on one Mac: each sees and launches with only its
+    /// own keys (the Keychain account was the env-var name alone, shared by
+    /// every account).
+    #[tokio::test]
+    async fn keys_are_per_account() {
+        let (keys, store, _dir) = keys().await;
+        keys.set("user_a", "ANTHROPIC_API_KEY", "sk-ant-aaaaaaaaaaaaAAAA")
+            .await
+            .unwrap();
+        assert!(
+            keys.list("user_b").await.unwrap().iter().all(|k| !k.is_set),
+            "b sees nothing of a's"
+        );
+        assert!(
+            keys.env_for_user("user_b", Agent::Claude).await.is_empty(),
+            "b launches without a's key"
+        );
+        keys.set("user_b", "ANTHROPIC_API_KEY", "sk-ant-bbbbbbbbbbbbBBBB")
+            .await
+            .unwrap();
+        assert_eq!(
+            keys.env_for_user("user_a", Agent::Claude).await[0].1,
+            "sk-ant-aaaaaaaaaaaaAAAA"
+        );
+        assert_eq!(
+            keys.env_for_user("user_b", Agent::Claude).await[0].1,
+            "sk-ant-bbbbbbbbbbbbBBBB"
+        );
+        assert_eq!(
+            store.get("user_a/ANTHROPIC_API_KEY").unwrap().as_deref(),
+            Some("sk-ant-aaaaaaaaaaaaAAAA")
+        );
+        // b deleting its key leaves a's alone.
+        keys.delete("user_b", "ANTHROPIC_API_KEY").await.unwrap();
+        assert!(keys.list("user_a").await.unwrap().iter().any(|k| k.is_set));
+        assert!(store.get("user_a/ANTHROPIC_API_KEY").unwrap().is_some());
+
+        // A pre-namespacing entry (keyed by the env name only) belongs to
+        // nobody we can name: never handed to an account.
+        store.set("OPENAI_API_KEY", "sk-legacy-0123456789").unwrap();
+        keys.meta
+            .set(&format!("{HINT_PREFIX}OPENAI_API_KEY"), "6789")
+            .await
+            .unwrap();
+        assert!(keys.env_for_user("user_a", Agent::Codex).await.is_empty());
+        assert!(!keys
+            .list("user_a")
+            .await
+            .unwrap()
+            .iter()
+            .any(|k| k.name == "OPENAI_API_KEY" && k.is_set));
+
+        // Launches use the signed-in account; signed out = no key.
+        let who = Arc::new(parking_lot::Mutex::new(Some("user_a".to_string())));
+        let current = who.clone();
+        let keys = keys.with_current_user(Arc::new(move || current.lock().clone()));
+        assert_eq!(
+            keys.env_for(Agent::Claude).await[0].1,
+            "sk-ant-aaaaaaaaaaaaAAAA"
+        );
+        *who.lock() = Some("user_b".into());
+        assert!(keys.env_for(Agent::Claude).await.is_empty());
+        *who.lock() = None;
+        assert!(keys.env_for(Agent::Claude).await.is_empty());
+        // No account → refused, not stored under an empty prefix.
+        assert!(keys
+            .set("", "ANTHROPIC_API_KEY", "sk-ant-cccccccccccc")
+            .await
+            .is_err());
+        assert!(keys
+            .set("a/b", "ANTHROPIC_API_KEY", "sk-ant-cccccccccccc")
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn set_list_delete_round_trip_with_hint_only_in_app_meta() {
         let (keys, store, _dir) = keys().await;
-        let listed = keys.list().await.unwrap();
+        let listed = keys.list(U).await.unwrap();
         assert_eq!(listed.len(), 3);
         assert!(listed.iter().all(|k| !k.is_set && k.hint.is_none()));
 
-        let status = keys.set("ANTHROPIC_API_KEY", "  sk-ant-0123456789abcd \n").await.unwrap();
+        let status = keys
+            .set(U, "ANTHROPIC_API_KEY", "  sk-ant-0123456789abcd \n")
+            .await
+            .unwrap();
         assert_eq!(status.hint.as_deref(), Some("abcd"));
-        assert_eq!(store.get("ANTHROPIC_API_KEY").unwrap().as_deref(), Some("sk-ant-0123456789abcd"));
-        let listed = keys.list().await.unwrap();
-        let anthropic = listed.iter().find(|k| k.name == "ANTHROPIC_API_KEY").unwrap();
+        assert_eq!(
+            store.get("user_a/ANTHROPIC_API_KEY").unwrap().as_deref(),
+            Some("sk-ant-0123456789abcd")
+        );
+        let listed = keys.list(U).await.unwrap();
+        let anthropic = listed
+            .iter()
+            .find(|k| k.name == "ANTHROPIC_API_KEY")
+            .unwrap();
         assert!(anthropic.is_set);
         assert_eq!(anthropic.hint.as_deref(), Some("abcd"));
         // The list carries no value.
         assert!(!serde_json::to_string(&listed).unwrap().contains("sk-ant"));
 
-        keys.delete("ANTHROPIC_API_KEY").await.unwrap();
-        assert!(store.get("ANTHROPIC_API_KEY").unwrap().is_none());
-        assert!(!keys.list().await.unwrap().iter().any(|k| k.is_set));
+        keys.delete(U, "ANTHROPIC_API_KEY").await.unwrap();
+        assert!(store.get("user_a/ANTHROPIC_API_KEY").unwrap().is_none());
+        assert!(!keys.list(U).await.unwrap().iter().any(|k| k.is_set));
         // Deleting again is fine.
-        keys.delete("ANTHROPIC_API_KEY").await.unwrap();
+        keys.delete(U, "ANTHROPIC_API_KEY").await.unwrap();
     }
 
     #[tokio::test]
     async fn only_whitelisted_names_and_sane_values_are_accepted() {
         let (keys, store, _dir) = keys().await;
-        let err = keys.set("AWS_SECRET_ACCESS_KEY", "x".repeat(20).as_str()).await.unwrap_err();
-        assert_eq!(serde_json::to_value(&err).unwrap(), "`AWS_SECRET_ACCESS_KEY` is not a key phasr stores");
-        assert!(keys.delete("PATH").await.is_err());
-        assert!(keys.set("OPENAI_API_KEY", "   ").await.is_err());
-        assert!(keys.set("OPENAI_API_KEY", "sk-abc\ndef-ghijklmnop").await.is_err());
-        assert!(store.get("OPENAI_API_KEY").unwrap().is_none());
+        let err = keys
+            .set(U, "AWS_SECRET_ACCESS_KEY", "x".repeat(20).as_str())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            "`AWS_SECRET_ACCESS_KEY` is not a key phasr stores"
+        );
+        assert!(keys.delete(U, "PATH").await.is_err());
+        assert!(keys.set(U, "OPENAI_API_KEY", "   ").await.is_err());
+        assert!(keys
+            .set(U, "OPENAI_API_KEY", "sk-abc\ndef-ghijklmnop")
+            .await
+            .is_err());
+        assert!(store.get("user_a/OPENAI_API_KEY").unwrap().is_none());
         // A short value is stored but not hinted.
-        let status = keys.set("GEMINI_API_KEY", "short").await.unwrap();
+        let status = keys.set(U, "GEMINI_API_KEY", "short").await.unwrap();
         assert!(status.is_set && status.hint.is_none());
-        assert!(keys.list().await.unwrap().iter().any(|k| k.name == "GEMINI_API_KEY" && k.is_set));
+        assert!(keys
+            .list(U)
+            .await
+            .unwrap()
+            .iter()
+            .any(|k| k.name == "GEMINI_API_KEY" && k.is_set));
     }
 
     #[tokio::test]
     async fn env_goes_only_to_the_matching_agent() {
         let (keys, _store, _dir) = keys().await;
-        keys.set("ANTHROPIC_API_KEY", "sk-ant-0123456789abcd").await.unwrap();
-        keys.set("OPENAI_API_KEY", "sk-openai-0123456789").await.unwrap();
+        keys.set(U, "ANTHROPIC_API_KEY", "sk-ant-0123456789abcd")
+            .await
+            .unwrap();
+        keys.set(U, "OPENAI_API_KEY", "sk-openai-0123456789")
+            .await
+            .unwrap();
         assert_eq!(
-            keys.env_for(Agent::Claude).await,
-            vec![("ANTHROPIC_API_KEY".to_string(), "sk-ant-0123456789abcd".to_string())]
+            keys.env_for_user(U, Agent::Claude).await,
+            vec![(
+                "ANTHROPIC_API_KEY".to_string(),
+                "sk-ant-0123456789abcd".to_string()
+            )]
         );
         assert_eq!(
-            keys.env_for(Agent::Codex).await,
-            vec![("OPENAI_API_KEY".to_string(), "sk-openai-0123456789".to_string())]
+            keys.env_for_user(U, Agent::Codex).await,
+            vec![(
+                "OPENAI_API_KEY".to_string(),
+                "sk-openai-0123456789".to_string()
+            )]
         );
         // Gemini's key isn't set; Copilot/OpenCode have none.
-        assert!(keys.env_for(Agent::Gemini).await.is_empty());
-        assert!(keys.env_for(Agent::Copilot).await.is_empty());
-        assert!(keys.env_for(Agent::OpenCode).await.is_empty());
+        assert!(keys.env_for_user(U, Agent::Gemini).await.is_empty());
+        assert!(keys.env_for_user(U, Agent::Copilot).await.is_empty());
+        assert!(keys.env_for_user(U, Agent::OpenCode).await.is_empty());
     }
 
     /// Talks to the real login Keychain (may prompt). Run by hand:
@@ -347,7 +523,10 @@ mod tests {
         store.delete("ANTHROPIC_API_KEY").unwrap();
         assert_eq!(store.get("ANTHROPIC_API_KEY").unwrap(), None);
         store.set("ANTHROPIC_API_KEY", "sk-test-value").unwrap();
-        assert_eq!(store.get("ANTHROPIC_API_KEY").unwrap().as_deref(), Some("sk-test-value"));
+        assert_eq!(
+            store.get("ANTHROPIC_API_KEY").unwrap().as_deref(),
+            Some("sk-test-value")
+        );
         store.delete("ANTHROPIC_API_KEY").unwrap();
         assert_eq!(store.get("ANTHROPIC_API_KEY").unwrap(), None);
     }
