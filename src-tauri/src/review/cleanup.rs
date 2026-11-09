@@ -210,9 +210,9 @@ impl MergeCleanup {
         if self.runtime.get(&task.id).is_some() || self.has_unsaved_work(task, user_id, worktree).await {
             return Ok(false);
         }
-        let (worktree, branch) = (worktree.to_path_buf(), task.branch.clone());
+        let (wt, branch) = (worktree.to_path_buf(), task.branch.clone());
         tokio::task::spawn_blocking(move || {
-            git::remove_worktree(&repo_path, &worktree)?;
+            git::remove_worktree(&repo_path, &wt)?;
             if let Some(branch) = branch.as_deref() {
                 git::branch_delete(&repo_path, branch)?;
             }
@@ -221,6 +221,9 @@ impl MergeCleanup {
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
+        if let Some(checks) = &self.checks {
+            checks.forget_worktree(worktree);
+        }
         Ok(true)
     }
 }

@@ -28,6 +28,56 @@ const DRAIN_GRACE: Duration = Duration::from_millis(500);
 /// runner to tear down its workers, short enough that Cancel feels instant.
 const TERM_GRACE: Duration = Duration::from_secs(2);
 
+/// The process groups of the checks running right now. Each check leads
+/// its own group (`process_group(0)`), outside any PTY, so nothing else
+/// would stop them when the app quits: `RunEvent::Exit` calls
+/// `terminate_all_blocking`.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessGroups(std::sync::Arc<parking_lot::Mutex<std::collections::HashSet<u32>>>);
+
+impl ProcessGroups {
+    fn add(&self, pgid: u32) {
+        self.0.lock().insert(pgid);
+    }
+
+    fn remove(&self, pgid: u32) {
+        self.0.lock().remove(&pgid);
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.lock().len()
+    }
+
+    /// SIGTERM every group, wait (≤ `grace`) for them to go, SIGKILL the
+    /// rest. Blocking.
+    pub fn terminate_all_blocking(&self, grace: Duration) {
+        let groups: Vec<u32> = self.0.lock().iter().copied().collect();
+        if groups.is_empty() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            for &pgid in &groups {
+                crate::util::proc::signal_process_group(pgid, libc::SIGTERM);
+            }
+            let deadline = Instant::now() + grace;
+            // `killpg(pgid, 0)` fails once no process is left in the group.
+            let alive = |pgid: u32| {
+                libc::pid_t::try_from(pgid).is_ok_and(|g| g > 1 && unsafe { libc::killpg(g, 0) } == 0)
+            };
+            while Instant::now() < deadline && groups.iter().any(|&g| alive(g)) {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            for &pgid in &groups {
+                crate::util::proc::signal_process_group(pgid, libc::SIGKILL);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = grace;
+        self.0.lock().clear();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CheckSpec {
     pub command: String,
@@ -39,6 +89,8 @@ pub struct CheckSpec {
     pub shell: String,
     /// Base environment (`pty::terminal_env`); `CI=1` is added on top.
     pub env: Vec<(OsString, OsString)>,
+    /// Where the run's process group is registered while it runs.
+    pub groups: ProcessGroups,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +160,9 @@ where
         Err(err) => return fail(format!("failed to start `{}`: {err}", spec.shell)),
     };
     let pgid = child.id();
+    if let Some(pgid) = pgid {
+        spec.groups.add(pgid);
+    }
 
     // Both pipes feed one channel: "merged" output, ordered by arrival.
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
@@ -172,6 +227,9 @@ where
     #[cfg(unix)]
     if let Some(pgid) = pgid {
         crate::util::proc::signal_process_group(pgid, libc::SIGKILL);
+    }
+    if let Some(pgid) = pgid {
+        spec.groups.remove(pgid);
     }
     batch.finish(&mut on_output);
     let _ = log.flush().await;
@@ -284,6 +342,7 @@ mod tests {
             timeout,
             shell: "/bin/sh".into(),
             env: std::env::vars_os().collect(),
+            groups: ProcessGroups::default(),
         }
     }
 
@@ -399,6 +458,36 @@ mod tests {
         assert_eq!(res.end, CheckEnd::Exited(Some(0)));
         assert!(started.elapsed() < Duration::from_secs(5), "hung on the pipe: {:?}", started.elapsed());
         assert_dead(&pid_file);
+    }
+
+    /// Quitting the app (`RunEvent::Exit`) kills a running check's whole
+    /// process group — it runs outside any PTY, so nothing else would.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quitting_terminates_running_checks_and_their_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut s = spec(
+            dir.path(),
+            &format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+            Duration::from_secs(120),
+        );
+        let groups = ProcessGroups::default();
+        s.groups = groups.clone();
+        let (_tx, rx) = watch::channel(false);
+        let check = tokio::spawn(run_check(s, rx, |_| {}));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while (groups.len() == 0 || !pid_file.exists()) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(groups.len(), 1, "the running check's group is registered");
+        let killer = groups.clone();
+        tokio::task::spawn_blocking(move || killer.terminate_all_blocking(Duration::from_millis(500)))
+            .await
+            .unwrap();
+        let res = tokio::time::timeout(Duration::from_secs(10), check).await.unwrap().unwrap();
+        assert!(matches!(res.end, CheckEnd::Exited(_)), "{:?}", res.end);
+        assert_dead(&pid_file);
+        assert_eq!(groups.len(), 0);
     }
 
     #[tokio::test]

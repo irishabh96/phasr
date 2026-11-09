@@ -155,6 +155,30 @@ pub(super) fn run_git(cwd: &std::path::Path, args: &[&str]) -> Result<String, Gi
     Ok(capture_stdout(output.stdout))
 }
 
+/// `run_git` with extra environment (e.g. `GIT_INDEX_FILE` for a scratch
+/// index).
+pub(super) fn run_git_env(
+    cwd: &std::path::Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<String, GitError> {
+    let mut cmd = git_command(cwd);
+    cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(GitError::CommandFailed(if stderr.is_empty() {
+            format!("git {} exited with {}", args.join(" "), output.status)
+        } else {
+            stderr
+        }));
+    }
+    Ok(capture_stdout(output.stdout))
+}
+
 /// Like `run_git` but accepts stdin (used for `git apply` etc).
 pub(super) fn run_git_with_stdin(
     cwd: &std::path::Path,

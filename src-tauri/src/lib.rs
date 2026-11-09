@@ -287,6 +287,10 @@ pub fn run() {
                 if let Some(runtime) = app_handle.try_state::<Arc<TaskRuntime>>() {
                     runtime.terminate_all_blocking(std::time::Duration::from_millis(500));
                 }
+                // Checks run in their own process groups, outside any PTY.
+                if let Some(checks) = app_handle.try_state::<checks::CheckService>() {
+                    checks.terminate_all_blocking(std::time::Duration::from_millis(500));
+                }
                 // Last chance before the process dies: fold the WAL into the
                 // main db file and close the pool. Tauri never drops managed
                 // state, so without this the WAL grows forever and the

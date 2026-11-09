@@ -25,11 +25,6 @@ pub struct CheckRunFinish {
     pub finished_at: DateTime<Utc>,
     pub duration_ms: Option<i64>,
     pub output_tail: String,
-    /// The worktree's fingerprint AFTER the run, when it ran to an exit. A
-    /// check that rewrites files (a formatter, codegen) leaves the worktree
-    /// as its result describes it; tied to the pre-run state it was always
-    /// stale. `None` keeps the fingerprint recorded at queue time.
-    pub fingerprint: Option<String>,
 }
 
 /// `check_runs` — local-only, so no `dirty`/sync bookkeeping. Rows carry
@@ -71,18 +66,23 @@ impl CheckRunRepo {
         Ok(())
     }
 
-    /// `queued → running`. No-op (returns `None`) if the run already left
-    /// `queued` — a cancel that won the race.
+    /// `queued → running`, recording the worktree's fingerprint as the run
+    /// starts (`None` keeps the queue-time one). That is the fingerprint the
+    /// run keeps: `finish` never changes it. No-op (returns `None`) if the
+    /// run already left `queued` — a cancel that won the race.
     pub async fn mark_running(
         &self,
         id: &str,
         started_at: DateTime<Utc>,
+        fingerprint: Option<&str>,
     ) -> Result<Option<CheckRun>, StoreError> {
         let res = sqlx::query(
-            "UPDATE check_runs SET status = 'running', started_at = ?
+            "UPDATE check_runs SET status = 'running', started_at = ?,
+                fingerprint = COALESCE(?, fingerprint)
              WHERE id = ? AND status = 'queued'",
         )
         .bind(started_at.to_rfc3339())
+        .bind(fingerprint)
         .bind(id)
         .execute(&self.db)
         .await?;
@@ -96,7 +96,7 @@ impl CheckRunRepo {
     pub async fn finish(&self, id: &str, finish: CheckRunFinish) -> Result<CheckRun, StoreError> {
         sqlx::query(
             "UPDATE check_runs SET status = ?, exit_code = ?, finished_at = ?, duration_ms = ?,
-                output_tail = ?, fingerprint = COALESCE(?, fingerprint)
+                output_tail = ?
              WHERE id = ? AND status IN ('queued', 'running')",
         )
         .bind(finish.status.as_str())
@@ -104,7 +104,6 @@ impl CheckRunRepo {
         .bind(finish.finished_at.to_rfc3339())
         .bind(finish.duration_ms)
         .bind(&finish.output_tail)
-        .bind(&finish.fingerprint)
         .bind(id)
         .execute(&self.db)
         .await?;
@@ -153,18 +152,25 @@ impl CheckRunRepo {
     /// adds rows, and nothing else ever removed them. Returns the deleted
     /// runs' log paths for the caller to remove. Active runs are never
     /// touched.
+    ///
+    /// One statement (`DELETE … RETURNING`): the startup prune runs before
+    /// the window appears, and deleting row by row there cost a round trip
+    /// (and an fsync) per pruned run.
     pub async fn prune(&self, keep: i64, workspace_id: Option<&str>) -> Result<Vec<String>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, log_path FROM (
-                SELECT id, log_path, status,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY workspace_id, COALESCE(run_command_id, name)
-                           ORDER BY created_at DESC, rowid DESC
-                       ) AS rn
-                FROM check_runs
-                WHERE (? IS NULL OR workspace_id = ?)
+            "DELETE FROM check_runs WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, status,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY workspace_id, COALESCE(run_command_id, name)
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS rn
+                    FROM check_runs
+                    WHERE (? IS NULL OR workspace_id = ?)
+                )
+                WHERE rn > ? AND status NOT IN ('queued', 'running')
              )
-             WHERE rn > ? AND status NOT IN ('queued', 'running')",
+             RETURNING log_path",
         )
         .bind(workspace_id)
         .bind(workspace_id)
@@ -173,11 +179,6 @@ impl CheckRunRepo {
         .await?;
         let mut logs = Vec::new();
         for row in &rows {
-            let id: String = row.try_get("id")?;
-            sqlx::query("DELETE FROM check_runs WHERE id = ?")
-                .bind(&id)
-                .execute(&self.db)
-                .await?;
             if let Some(path) = row.try_get::<Option<String>, _>("log_path")? {
                 logs.push(path);
             }
@@ -276,10 +277,11 @@ mod tests {
         let (repo, ws, _dir) = fresh().await;
         let run = queued(&ws.id);
         repo.insert(&run, Some("user-a")).await.unwrap();
-        let running = repo.mark_running(&run.id, Utc::now()).await.unwrap().unwrap();
+        let running = repo.mark_running(&run.id, Utc::now(), Some("at-start")).await.unwrap().unwrap();
         assert_eq!(running.status, CheckStatus::Running);
+        assert_eq!(running.fingerprint.as_deref(), Some("at-start"), "replaces the queue-time one");
         // Only once.
-        assert!(repo.mark_running(&run.id, Utc::now()).await.unwrap().is_none());
+        assert!(repo.mark_running(&run.id, Utc::now(), Some("again")).await.unwrap().is_none());
         let done = repo
             .finish(
                 &run.id,
@@ -289,7 +291,6 @@ mod tests {
                     finished_at: Utc::now(),
                     duration_ms: Some(12),
                     output_tail: "ok\n".into(),
-                    fingerprint: Some("after".into()),
                 },
             )
             .await
@@ -305,13 +306,12 @@ mod tests {
                     finished_at: Utc::now(),
                     duration_ms: None,
                     output_tail: String::new(),
-                    fingerprint: None,
                 },
             )
             .await
             .unwrap();
         assert_eq!(again.status, CheckStatus::Passed);
-        assert_eq!(again.fingerprint.as_deref(), Some("after"), "the post-run fingerprint is recorded");
+        assert_eq!(again.fingerprint.as_deref(), Some("at-start"), "finishing never changes the fingerprint");
 
         assert_eq!(repo.get_for_user(&run.id, "user-a").await.unwrap().id, run.id);
         assert!(matches!(repo.get_for_user(&run.id, "user-b").await, Err(StoreError::NotFound)));

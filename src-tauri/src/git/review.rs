@@ -1,24 +1,20 @@
 //! Git for the review flow: the task's diff measured from where its branch
 //! forked (committed + uncommitted + untracked), and a fingerprint of the
-//! worktree's exact state so a check result can be tied to the code it ran
+//! worktree's content so a check result can be tied to the code it ran
 //! against.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use super::diff::{count_lines_capped, open_regular_untracked, synthesise_new_file_diff};
-use super::error::{run_git, GitError};
+use super::diff::{count_lines_capped, synthesise_new_file_diff};
+use super::error::{run_git, run_git_env, GitError};
 use super::status::{parse_porcelain, FileChange, FileStatus};
 
 /// Untracked files folded into a whole-task diff (each synthesised as a
 /// new-file diff). Past this, an unignored build dir would flood the view.
 const UNTRACKED_DIFF_CAP: usize = 200;
-/// Untracked file contents hashed into the fingerprint, per file / count.
-const FINGERPRINT_READ_CAP: u64 = 2 * 1024 * 1024;
-const FINGERPRINT_FILE_CAP: usize = 2000;
 
 /// The commit the task's branch forked from `base`.
 ///
@@ -210,58 +206,59 @@ pub fn fingerprint_key(worktree: &Path) -> Result<String, GitError> {
     Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// sha256 over the worktree's exact state: HEAD, `git status --porcelain=v1
-/// -z`, `git diff HEAD`, and the contents of untracked files.
+/// A fingerprint of the worktree's CONTENT: the tree `git commit -a` (plus
+/// untracked, non-ignored files) would record, as a sha256 hex string.
 ///
 /// Two equal fingerprints mean the checks would see the same code, so a
 /// check's result stays valid exactly as long as the fingerprint does
-/// (`domain::review::unsatisfied_required`). The untracked contents are
-/// beyond the plan's HEAD + status + diff: without them an agent editing a
-/// NEW file (still untracked — its status line doesn't change) would leave
-/// a stale pass looking current. Capped like the board's diff stats.
+/// (`domain::review::unsatisfied_required`). It is deliberately NOT tied
+/// to HEAD, the index or the status letters: "Commit & push" commits the
+/// very content the checks ran on, and must not turn its own passing
+/// checks stale (it used to — HEAD, status and `diff HEAD` all change).
+/// Untracked files count, so an agent editing a new file still moves it.
+///
+/// How: `git add -A` into a throwaway index (`GIT_INDEX_FILE`, seeded from
+/// the real one so unchanged files keep their stat cache and aren't
+/// re-hashed), then `git write-tree`. The real index is never touched. As
+/// with `git stash`, blobs for changed files land in the object store as
+/// unreachable objects that `git gc` prunes. git itself skips FIFOs and
+/// devices and records a symlink as its target, so nothing here can block
+/// on or follow one.
 ///
 /// Blocking (several git processes): call from `spawn_blocking`.
 pub fn worktree_fingerprint(worktree: &Path) -> Result<String, GitError> {
+    let tree = worktree_tree(worktree)?;
     let mut hasher = Sha256::new();
-    // An unborn branch (no commits yet) has no HEAD; that's still a state.
-    let head = run_git(worktree, &["rev-parse", "HEAD"]).unwrap_or_default();
-    hasher.update(head.trim().as_bytes());
-    hasher.update([0]);
-    hasher.update(
-        run_git(worktree, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?.as_bytes(),
-    );
-    hasher.update([0]);
-    if !head.trim().is_empty() {
-        hasher.update(run_git(worktree, &["diff", "--no-color", "--no-ext-diff", "HEAD"])?.as_bytes());
-    }
-    for rel in untracked(worktree)?.into_iter().take(FINGERPRINT_FILE_CAP) {
-        hasher.update([0]);
-        hasher.update(rel.as_bytes());
-        hasher.update([0]);
-        let path = worktree.join(&rel);
-        // Only regular files are read (capped). A symlink contributes its
-        // TARGET (what git would commit), anything else (FIFO, device) just
-        // its type — following them could block forever or never end.
-        match open_regular_untracked(&path) {
-            Some(file) => {
-                let mut buf = Vec::new();
-                if file.take(FINGERPRINT_READ_CAP).read_to_end(&mut buf).is_ok() {
-                    hasher.update(&buf);
-                }
-            }
-            None => match std::fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    hasher.update(b"symlink:");
-                    if let Ok(target) = std::fs::read_link(&path) {
-                        hasher.update(target.to_string_lossy().as_bytes());
-                    }
-                }
-                Ok(meta) => hasher.update(format!("special:{:?}", meta.file_type()).as_bytes()),
-                Err(_) => hasher.update(b"missing"),
-            },
+    hasher.update(b"phasr-worktree-tree-v2\0");
+    hasher.update(tree.as_bytes());
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The tree object id of the worktree's content (see
+/// `worktree_fingerprint`).
+fn worktree_tree(worktree: &Path) -> Result<String, GitError> {
+    // Relative to `worktree` unless absolute (a linked worktree's index
+    // lives under the main repo's `.git/worktrees/<name>/`).
+    let real_index = worktree.join(run_git(worktree, &["rev-parse", "--git-path", "index"])?.trim());
+    let scratch = std::env::temp_dir().join(format!("phasr-fingerprint-{}.index", uuid::Uuid::new_v4()));
+    // Removed however this returns (git may also leave `<scratch>.lock`).
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let mut lock = self.0.clone().into_os_string();
+            lock.push(".lock");
+            let _ = std::fs::remove_file(lock);
         }
     }
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    let _cleanup = Cleanup(scratch.clone());
+    // No index yet (fresh repo) = start empty; git creates it.
+    let _ = std::fs::copy(&real_index, &scratch);
+    let index = scratch.as_os_str();
+    run_git_env(worktree, &["add", "-A"], &[("GIT_INDEX_FILE", index)])?;
+    Ok(run_git_env(worktree, &["write-tree"], &[("GIT_INDEX_FILE", index)])?
+        .trim()
+        .to_string())
 }
 
 #[cfg(test)]
@@ -382,10 +379,44 @@ mod tests {
         std::fs::write(p.join("new.rs"), "fn a() { panic!() }\n").unwrap();
         let untracked_edit = worktree_fingerprint(p).unwrap();
         assert_ne!(edited, untracked_edit);
-        // Committing the same content still moves HEAD → new state.
+        // Second review #3: committing the SAME content keeps the
+        // fingerprint — "Commit & push" must not stale its own checks.
+        let index_before = std::fs::read(p.join(".git/index")).unwrap();
+        assert_eq!(worktree_fingerprint(p).unwrap(), untracked_edit);
+        assert_eq!(std::fs::read(p.join(".git/index")).unwrap(), index_before, "real index untouched");
         git(p, &["add", "-A"]);
         git(p, &["commit", "-qm", "wip"]);
-        assert_ne!(untracked_edit, worktree_fingerprint(p).unwrap());
+        assert_eq!(untracked_edit, worktree_fingerprint(p).unwrap(), "same content, new HEAD");
+        // Deleting a file, or adding an empty one, is a change.
+        std::fs::remove_file(p.join("new.rs")).unwrap();
+        let deleted = worktree_fingerprint(p).unwrap();
+        assert_ne!(deleted, untracked_edit);
+        std::fs::write(p.join("empty.txt"), "").unwrap();
+        assert_ne!(worktree_fingerprint(p).unwrap(), deleted);
+        // Ignored files aren't code the checks vouch for.
+        std::fs::remove_file(p.join("empty.txt")).unwrap();
+        std::fs::write(p.join(".git/info/exclude"), "*.log\n").unwrap();
+        std::fs::write(p.join("debug.log"), "noise").unwrap();
+        assert_eq!(worktree_fingerprint(p).unwrap(), deleted);
+    }
+
+    /// A linked worktree (where tasks live) works too: its index lives
+    /// under the main repo's `.git/worktrees/<name>/`.
+    #[test]
+    fn fingerprint_works_in_a_linked_worktree() {
+        let dir = repo();
+        let p = dir.path();
+        git(p, &["stash", "-u", "-q"]);
+        git(p, &["checkout", "-q", "main"]);
+        let holder = tempfile::tempdir().unwrap();
+        let wt = holder.path().join("linked");
+        git(p, &["worktree", "add", "-q", wt.to_str().unwrap(), "task"]);
+        let in_wt = worktree_fingerprint(&wt).unwrap();
+        assert_eq!(in_wt.len(), 64);
+        std::fs::write(wt.join("x.txt"), "x\n").unwrap();
+        assert_ne!(worktree_fingerprint(&wt).unwrap(), in_wt);
+        std::fs::remove_file(wt.join("x.txt")).unwrap();
+        assert_eq!(worktree_fingerprint(&wt).unwrap(), in_wt);
     }
 
     /// Untracked symlinks are never followed: a link to /dev/zero must not

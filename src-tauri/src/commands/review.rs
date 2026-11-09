@@ -470,6 +470,9 @@ pub async fn discard_workspace(
         .cancel_and_wait(&workspace_id, std::time::Duration::from_secs(5))
         .await;
     let closed = review.discard(&workspace, &current.user_id).await?;
+    if let Some(path) = workspace.worktree_path.as_deref() {
+        checks.forget_worktree(std::path::Path::new(path));
+    }
     board.notify_changed(&closed.repository_id);
     sync_state.request_sync();
     Ok(closed)
