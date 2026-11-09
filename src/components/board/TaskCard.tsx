@@ -138,12 +138,28 @@ function CardShell({
   );
 }
 
-function CardFooter({ left, right }: { left: ReactNode; right: ReactNode }) {
+function CardFooter({
+  left,
+  right,
+  squeezeRight = false,
+}: {
+  left: ReactNode;
+  right: ReactNode;
+  /** Queued: the right side ("after <task>") gives way before the repo name. */
+  squeezeRight?: boolean;
+}) {
   return (
     <span className="flex min-w-0 items-center gap-[8px] text-[12px] text-(--color-text-muted)">
-      <span className="flex min-w-0 items-center gap-[8px]">{left}</span>
+      <span className={cn("flex min-w-0 items-center gap-[8px]", squeezeRight && "max-w-[60%] shrink-0")}>{left}</span>
       <span className="flex-1" />
-      <span className="flex shrink-0 items-center gap-[8px] whitespace-nowrap tabular-nums">{right}</span>
+      <span
+        className={cn(
+          "flex items-center gap-[8px] whitespace-nowrap tabular-nums",
+          squeezeRight ? "min-w-0" : "shrink-0",
+        )}
+      >
+        {right}
+      </span>
     </span>
   );
 }
@@ -342,9 +358,10 @@ function QueuedCard({ task, showRepo }: { task: BoardTask; showRepo: boolean }) 
             </>
           )
         }
+        squeezeRight
         right={
           <>
-            {after && !failed ? <span className="max-w-[9rem] truncate">after {after}</span> : null}
+            {after && !failed ? <span className="min-w-0 truncate">after {after}</span> : null}
             <button
               type="button"
               disabled={start.isPending}
@@ -362,7 +379,7 @@ function QueuedCard({ task, showRepo }: { task: BoardTask; showRepo: boolean }) 
                   },
                 )
               }
-              className="-my-[4px] -mr-[4px] flex items-center gap-[4px] rounded-(--radius-chip) px-[4px] py-[4px] text-(--color-text-secondary) transition-colors duration-(--dur-1) hover:text-(--color-text-primary) disabled:opacity-50 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+              className="-my-[4px] -mr-[4px] flex shrink-0 items-center gap-[4px] rounded-(--radius-chip) px-[4px] py-[4px] text-(--color-text-secondary) transition-colors duration-(--dur-1) hover:text-(--color-text-primary) disabled:opacity-50 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
             >
               {start.isPending ? "Starting…" : failed ? "Retry" : "Start now"}
               <ArrowRight className="size-[12px]" aria-hidden />
