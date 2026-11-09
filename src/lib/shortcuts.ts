@@ -13,6 +13,9 @@
  *  - `key` is lowercased KeyboardEvent.key (e.g. "t", "\\", "k").
  *  - `meta: true` means ⌘ on macOS / Ctrl on Windows + Linux. Always
  *    compare with `(e.metaKey || e.ctrlKey)`.
+ *  - `metaOnly: true` narrows that to ⌘ alone on macOS, so the Ctrl chord
+ *    still reaches the terminal (Ctrl+I is Tab, Ctrl+Shift+R is an app
+ *    binding in many TUIs, Ctrl+Y is readline yank).
  *  - `shift` matters: `meta` alone won't match a meta+shift press, and
  *    vice-versa. Add an explicit entry for both if both should bind.
  *  - Keys whose glyph changes under Shift (=/+, -/_) use `aliases` +
@@ -31,6 +34,12 @@ export interface Shortcut {
   aliases?: readonly string[];
   /** ⌘ on mac / Ctrl on Windows + Linux. */
   meta?: boolean;
+  /**
+   * On macOS, ⌘ only: a Ctrl press (with or without ⌘) does not match.
+   * Elsewhere `meta` keeps meaning Ctrl. For bindings whose Ctrl chord
+   * means something inside a terminal.
+   */
+  metaOnly?: boolean;
   /** Requires Shift in addition to meta (or alone). */
   shift?: boolean;
   /** Bind with or without Shift (for `aliases` keys whose glyph shifts). */
@@ -71,15 +80,33 @@ export const SHORTCUTS = {
   toggleRightPanel: {
     key: "i",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "I"],
     label: "Toggle inspector",
   },
   reviewChanges: {
     key: "r",
     meta: true,
+    metaOnly: true,
     shift: true,
     display: ["⌘", "⇧", "R"],
     label: "Review changes",
+  },
+  // Approval card (agent paused on a permission prompt). ⌘ only: Ctrl+Y is
+  // readline yank and Ctrl+⌫ deletes a word.
+  approveAgent: {
+    key: "y",
+    meta: true,
+    metaOnly: true,
+    display: ["⌘", "Y"],
+    label: "Allow once",
+  },
+  denyAgent: {
+    key: "backspace",
+    meta: true,
+    metaOnly: true,
+    display: ["⌘", "⌫"],
+    label: "Deny",
   },
   stopAgent: {
     key: ".",
@@ -189,6 +216,15 @@ export const SHORTCUTS = {
 
 export type ShortcutId = keyof typeof SHORTCUTS;
 
+/** Phasr ships for macOS; the check keeps `metaOnly` honest elsewhere. */
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/i.test(
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+      navigator.platform ??
+      navigator.userAgent,
+  );
+
 /**
  * Returns true if `e` matches `s` exactly. Meta and Shift must both
  * agree — an entry without `shift` will NOT match a meta+shift press,
@@ -199,9 +235,9 @@ export type ShortcutId = keyof typeof SHORTCUTS;
  * Does not stopPropagation or preventDefault — the caller decides what
  * to do once the match is confirmed.
  */
-export function matchShortcut(e: KeyboardEvent, s: Shortcut): boolean {
+export function matchShortcut(e: KeyboardEvent, s: Shortcut, mac: boolean = IS_MAC): boolean {
   const wantsMeta = !!s.meta;
-  const hasMeta = e.metaKey || e.ctrlKey;
+  const hasMeta = s.metaOnly && mac ? e.metaKey && !e.ctrlKey : e.metaKey || e.ctrlKey;
   if (wantsMeta !== hasMeta) return false;
   if (!s.ignoreShift && !!s.shift !== e.shiftKey) return false;
   const key = e.key.toLowerCase();

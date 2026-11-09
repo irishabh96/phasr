@@ -32,6 +32,7 @@ import { useRepositories } from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import { humanizeError } from "@/lib/humanizeError";
+import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { originFromWorkspace } from "@/lib/noteProvenance";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
@@ -107,9 +108,11 @@ function WorkspaceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runActive]);
 
-  // Session shortcuts: ⌘⇧R review, ⌘. stop, ⌘⌥1–9 focus pane N.
+  // Session shortcuts: ⌘⇧R review, ⌘. stop, ⌘⌥1–9 focus pane N. None of
+  // them act on the task while a dialog or the Settings sheet covers it.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || isOverlayOpen()) return;
       if (matchShortcut(e, SHORTCUTS.reviewChanges)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -165,6 +168,7 @@ function WorkspaceDetail() {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return; // ⌘⌥N focuses panes
       if (e.key < "1" || e.key > "9") return;
+      if (isOverlayOpen()) return;
       const pinned = [...(runCommands ?? [])]
         .filter((c) => c.pinned)
         .sort((a, b) => a.sortOrder - b.sortOrder);

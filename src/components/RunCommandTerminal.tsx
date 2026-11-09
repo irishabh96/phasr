@@ -218,6 +218,7 @@ export function RunCommandTerminal({
     <div
       onClick={() => surfaceRef.current?.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="run"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
       style={{

@@ -20,6 +20,7 @@ import {
   useSendReviewComments,
 } from "@/lib/hooks/useReview";
 import { humanizeError } from "@/lib/humanizeError";
+import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { useUiStore } from "@/lib/store";
 import { showToast } from "@/lib/toast";
 import type { CheckRun, Workspace } from "@/lib/types";
@@ -108,7 +109,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.key !== "Enter") return;
       if ((e.target as HTMLElement | null)?.closest("textarea, input")) return;
-      if (approve.isPending || workspace.outcome != null) return;
+      if (approve.isPending || workspace.outcome != null || isOverlayOpen()) return;
       e.preventDefault();
       doApprove(false);
     };

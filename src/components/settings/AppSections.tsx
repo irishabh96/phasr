@@ -600,7 +600,16 @@ const KEYBOARD_GROUPS: { title: string; ids: (keyof typeof SHORTCUTS)[] }[] = [
   },
   {
     title: "In a session",
-    ids: ["reviewChanges", "stopAgent", "toggleRightPanel", "toggleSidebarPin", "toggleSidebarHide", "closeActiveTab"],
+    ids: [
+      "reviewChanges",
+      "stopAgent",
+      "approveAgent",
+      "denyAgent",
+      "toggleRightPanel",
+      "toggleSidebarPin",
+      "toggleSidebarHide",
+      "closeActiveTab",
+    ],
   },
   {
     title: "Terminal",
