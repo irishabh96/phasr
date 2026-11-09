@@ -90,11 +90,32 @@ test.describe("Workspace & terminals", () => {
     await bootApp(page);
     await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
     await expect.poll(() => fired(page, "git_branch_status")).toBe(true);
-    // The branch chip became the inspector's TASK section: Branch, and Base
-    // with its behind/up-to-date state from git_branch_status.
+    // A-Workspace: the branch lives in the title bar, not the inspector. The
+    // inspector's Base row carries the base and its state from
+    // git_branch_status: up to date → no Sync action, state in the tooltip.
     const inspector = page.getByRole("complementary", { name: "Inspector" });
-    await expect(inspector.getByText("phasr/add-feature")).toBeVisible();
-    await expect(inspector.getByText("main · up to date")).toBeVisible();
+    const props = inspector.getByRole("region", { name: "Task" });
+    await expect(props.getByText("Base", { exact: true })).toBeVisible();
+    const base = props.locator("dd").filter({ hasText: /^main/ });
+    await expect(base).toHaveText("main");
+    await expect(base).toHaveAttribute("title", "Up to date with origin/main");
+    await expect(inspector.getByText("phasr/add-feature")).toHaveCount(0);
+    await expect(inspector.getByRole("button", { name: "Sync" })).toHaveCount(0);
+  });
+
+  test("inspector Base row shows how far behind it is, with a Sync action", async ({ page }) => {
+    const f = makeFixtures();
+    f.branchStatus = { ...f.branchStatus, behind: 3, behindOfTarget: 3 };
+    await bootApp(page, f);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    const props = page.getByRole("complementary", { name: "Inspector" }).getByRole("region", { name: "Task" });
+    const base = props.locator("dd").filter({ hasText: /^main/ });
+    await expect(base).toContainText("3 behind");
+    await expect(base).toHaveAttribute("title", "3 commits behind origin/main");
+    // The Sync text action opens the merge/rebase popover (portalled, so the
+    // inspector's scroll box can't clip it).
+    await base.getByRole("button", { name: "Sync" }).click();
+    await expect(page.getByText("Pull", { exact: false }).filter({ hasText: "into this branch" })).toBeVisible();
   });
 
   /**
