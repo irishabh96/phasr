@@ -488,6 +488,13 @@ export interface BranchStatus {
   aheadOfTarget: number;
   /** Commits on `targetRef` not reachable from this branch. */
   behindOfTarget: number;
+  /**
+   * The branch "Merge locally" merges into and `aheadOfTarget` /
+   * `behindOfTarget` are counted against: the task's base branch. Sent by
+   * newer backends; read it through `mergeTargetBranch()`, which falls back
+   * to the task's base, then the repository default.
+   */
+  baseBranch: string;
 }
 
 export type MergeStrategy = "merge" | "squash" | "fastForward" | "rebase";

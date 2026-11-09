@@ -21,6 +21,7 @@ export function portOf(running: RunningCommand[] | undefined | null, runCommandI
 import { useNow } from "@/lib/hooks/useNow";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
+import { mergeTargetBranch } from "@/lib/mergeTarget";
 import { runTabsForTask, runTarget } from "@/lib/runScope";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { RIGHT_PANEL_WIDTH_MAX, RIGHT_PANEL_WIDTH_MIN, useUiStore } from "@/lib/store";
@@ -246,7 +247,7 @@ function TaskSection({ workspace, onCollapse }: { workspace: Workspace; onCollap
   const running = workspace.status === "running";
   const now = useNow(running);
   const started = workspace.startedAt ? new Date(workspace.startedAt) : null;
-  const base = workspace.baseBranch ?? repo?.defaultBranch ?? "main";
+  const base = mergeTargetBranch(branch, workspace, repo);
   const baseState =
     !branch || branch.targetRef === null
       ? null

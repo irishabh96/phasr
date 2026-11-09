@@ -184,6 +184,8 @@ export function makeFixtures() {
     targetRef: "origin/main",
     aheadOfTarget: 2,
     behindOfTarget: 0,
+    // The task's base: what Merge locally merges into and the counts are against.
+    baseBranch: "main",
   };
   const commits = [
     {

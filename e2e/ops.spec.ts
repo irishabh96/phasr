@@ -240,7 +240,7 @@ test.describe("Git / diff / changes", () => {
     const menuBtn = page.getByRole("button", { name: /workspace actions/i }).first();
     await expect(menuBtn).toBeVisible({ timeout: 8000 });
     await menuBtn.click();
-    const merge = page.getByText(/merge to main/i).first();
+    const merge = page.getByText(/merge (to|into) main/i).first();
     if (await merge.count()) {
       await merge.click();
       await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5000 });
