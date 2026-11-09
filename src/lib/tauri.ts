@@ -608,9 +608,13 @@ export const tauri = {
     invoke<AgentFileEdit[]>("list_agent_file_edits", { taskId }),
 
   // ── board (M7) ───────────────────────────────────────────────────────
-  /** Every task card, one repository or (`null`) all, newest first. */
-  listTaskCards: (repositoryId: string | null) =>
-    invoke<TaskCard[]>("list_task_cards", { repositoryId }),
+  /**
+   * Every task card, one repository or (`null`) all, newest first.
+   * Finished (merged/closed/archived) tasks are limited to the last week
+   * plus the 50 latest unless `includeAllFinished`.
+   */
+  listTaskCards: (repositoryId: string | null, includeAllFinished?: boolean) =>
+    invoke<TaskCard[]>("list_task_cards", { repositoryId, includeAllFinished }),
   /** Save without starting: a draft, or (`queue: true`) a queued task. */
   createTaskDraft: (input: CreateTaskDraftInput) =>
     invoke<Workspace>("create_task_draft", { input }),

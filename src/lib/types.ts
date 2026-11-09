@@ -622,8 +622,14 @@ export interface TaskUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  /** USD. `null` when a model used has no known price — hide the cost. */
+  /** USD. `null` only when no model used has a known price — hide the cost. */
   costUsd: number | null;
+  /**
+   * Some model used has no known price: `costUsd` covers only the priced
+   * part (a lower bound — show it as "≥ $x"). Always sent by current
+   * backends; optional so older fixtures still type-check.
+   */
+  costPartial?: boolean;
   updatedAt: string;
 }
 
@@ -697,6 +703,8 @@ export interface TaskCard {
 /** Payload of `phasr://task-cards-changed`: refetch that repository's cards. */
 export interface TaskCardsChangedPayload {
   repositoryId: string;
+  /** Exactly which cards changed; absent = any card in the repository. */
+  taskIds?: string[];
 }
 
 /** Cloud-sync worker state. Matches `sync::SyncPhase` (lowercase). */
