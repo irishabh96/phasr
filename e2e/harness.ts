@@ -383,6 +383,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       case "git_init_from_template": return { ...f.repositories[0], id: "repo-new" };
       case "register_notification_route":
       case "activate_notification": return null;
+      // Per-task check summaries (`fixtures.checkRuns[workspaceId]`); none by default.
+      case "list_check_runs": return (f as any).checkRuns?.[a?.workspaceId] ?? null;
       default: return null;
     }
   };
