@@ -1,11 +1,13 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, ShieldAlert } from "lucide-react";
+import { memo } from "react";
 import { AGENT_META, AgentMark } from "@/components/ui/AgentMark";
 import { Chip, DiffCount } from "@/components/ui/Chip";
 import { RepoMark } from "@/components/ui/RepoMark";
 import { WorkspaceSidebarMenu } from "@/components/WorkspaceSidebarMenu";
 import { formatAgo, formatElapsed } from "@/lib/board";
 import type { BoardTask } from "@/lib/hooks/useBoardTasks";
+import { useNow } from "@/lib/hooks/useNow";
 import { useStartQueuedTask } from "@/lib/hooks/useTaskCards";
 import { humanizeError } from "@/lib/humanizeError";
 import { showToast } from "@/lib/toast";
@@ -16,9 +18,12 @@ import { cn } from "@/lib/utils";
  * agent · branch. The whole card opens the task (review lane opens on the
  * Changes pane). Done cards are quieter.
  */
-export function TaskCard({ task, now }: { task: BoardTask; now: number }) {
+export const TaskCard = memo(function TaskCard({ task }: { task: BoardTask }) {
   const ws = task.workspace;
   const done = task.lane === "done";
+  // Each card owns its clock: per second only while its own timer is live,
+  // else per minute ("finished 18m ago"). The board above never ticks.
+  const now = useNow(task.lane === "running" || task.lane === "needs-you");
   const agentLabel = ws.agent ? AGENT_META[ws.agent].label : "Agent";
   const finished = task.finishedAt ?? ws.finishedAt ?? ws.updatedAt;
 
@@ -36,7 +41,7 @@ export function TaskCard({ task, now }: { task: BoardTask; now: number }) {
           <span className="font-medium text-(--color-text-secondary)">{ws.name}</span>
           <span className="text-[11px]">
             {ws.outcome === "merged"
-              ? `merged into ${ws.mergedInto ?? "main"}${ws.prNumber ? ` · PR #${ws.prNumber}` : ""}`
+              ? `merged into ${ws.mergedInto ?? ws.baseBranch ?? "main"}${ws.prNumber ? ` · PR #${ws.prNumber}` : ""}`
               : ws.outcome === "closed"
                 ? "closed without merge · notes kept"
                 : `${ws.status === "archived" ? "archived" : "finished"} ${formatAgo(ws.archivedAt ?? finished, now)}`}
@@ -126,7 +131,7 @@ export function TaskCard({ task, now }: { task: BoardTask; now: number }) {
       </Link>
     </WorkspaceSidebarMenu>
   );
-}
+});
 
 /**
  * Queued / draft card: never started, so it opens nothing yet. "Start now"

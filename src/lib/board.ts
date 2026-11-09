@@ -70,3 +70,29 @@ export function isToday(iso: string | null | undefined, now: number): boolean {
   const n = new Date(now);
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
 }
+
+/** How many Done tasks the board keeps when none finished today. */
+export const RECENT_DONE = 5;
+
+/**
+ * The board's tasks after the agent filter, with Done narrowed to "done
+ * recently": finished today, or among the first `RECENT_DONE` Done tasks
+ * (in board order). Linear: the recent set is built once, not an
+ * `indexOf` scan per task.
+ */
+export function visibleBoardTasks<
+  T extends { lane: string; workspace: Pick<Workspace, "agent" | "archivedAt" | "finishedAt" | "updatedAt"> },
+>(tasks: readonly T[], agentFilter: string | null, now: number): T[] {
+  const recentDone = new Set<T>();
+  for (const t of tasks) {
+    if (recentDone.size >= RECENT_DONE) break;
+    if (t.lane === "done") recentDone.add(t);
+  }
+  return tasks.filter(
+    (t) =>
+      (!agentFilter || t.workspace.agent === agentFilter) &&
+      (t.lane !== "done" ||
+        recentDone.has(t) ||
+        isToday(t.workspace.archivedAt ?? t.workspace.finishedAt ?? t.workspace.updatedAt, now)),
+  );
+}

@@ -1,6 +1,6 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { ChevronsLeft, ChevronsRight, GitBranch, Plus } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { RepositorySidebarMenu } from "@/components/RepositorySidebarMenu";
 import { WorkspaceSidebarMenu } from "@/components/WorkspaceSidebarMenu";
 import { AgentMark, AGENT_META } from "@/components/ui/AgentMark";
@@ -57,8 +57,9 @@ export function TaskSidebar() {
   const [filter, setFilter] = useState<Filter>("all");
   const params = useParams({ strict: false }) as { repositoryId?: string; workspaceId?: string };
   const { tasks, localWorkspaces, repositories, isLoading } = useBoardTasks(repoFilter);
-  const hasRunning = tasks.some((t) => t.lane === "running" || t.lane === "needs-you");
-  const now = useNow(hasRunning);
+  // Minute clock for "is it still today"; live timers tick in TaskMeta only,
+  // so the sidebar and its rows don't re-render every second.
+  const now = useNow(false);
 
   if (sidebarMode === "hidden") return null;
   // First run (no repositories yet) is a full-width screen (A-FirstRun).
@@ -164,7 +165,7 @@ export function TaskSidebar() {
                 {title}
               </GroupHeader>
               {rows.map((t) => (
-                <TaskRow key={t.workspace.id} task={t} now={now} active={t.workspace.id === params.workspaceId} />
+                <TaskRow key={t.workspace.id} task={t} active={t.workspace.id === params.workspaceId} />
               ))}
             </section>
           );
@@ -202,8 +203,9 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
   );
 }
 
-function TaskMeta({ task, now }: { task: BoardTask; now: number }) {
+function TaskMeta({ task }: { task: BoardTask }) {
   const ws = task.workspace;
+  const now = useNow(task.lane === "running" || task.lane === "needs-you");
   switch (task.lane) {
     case "running":
       return <span className="font-mono text-[11px] text-(--color-text-muted)">{formatElapsed(ws.startedAt, now)}</span>;
@@ -228,7 +230,7 @@ function TaskMeta({ task, now }: { task: BoardTask; now: number }) {
   }
 }
 
-function TaskRow({ task, now, active }: { task: BoardTask; now: number; active: boolean }) {
+const TaskRow = memo(function TaskRow({ task, active }: { task: BoardTask; active: boolean }) {
   const ws = task.workspace;
   const done = task.lane === "done";
   return (
@@ -249,7 +251,7 @@ function TaskRow({ task, now, active }: { task: BoardTask; now: number; active: 
         <span className="flex items-center gap-2">
           <StatusGlyph kind={LANE_STATUS[task.lane]} halo={active && task.lane === "running"} />
           <span className={cn("min-w-0 flex-1 truncate leading-[1.35]", !done && "font-medium")}>{ws.name}</span>
-          <TaskMeta task={task} now={now} />
+          <TaskMeta task={task} />
         </span>
         {!done ? (
           <span className="flex min-w-0 items-center gap-1.5 pl-4 text-[11px] text-(--color-text-muted)">
@@ -266,7 +268,7 @@ function TaskRow({ task, now, active }: { task: BoardTask; now: number; active: 
       </Link>
     </WorkspaceSidebarMenu>
   );
-}
+});
 
 /** In a task session: the repo's in-place workspace ("local · main clean"). */
 function InPlaceGroup({

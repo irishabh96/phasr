@@ -8,7 +8,7 @@ import { DiffCount } from "@/components/ui/Chip";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "@/components/ui/Menu";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { StatusBadge, StatusGlyph } from "@/components/ui/StatusBadge";
-import { formatAgo, formatElapsed, isToday, type TaskLane } from "@/lib/board";
+import { formatAgo, formatElapsed, visibleBoardTasks, type TaskLane } from "@/lib/board";
 import { useBoardTasks, type BoardTask } from "@/lib/hooks/useBoardTasks";
 import { useNow } from "@/lib/hooks/useNow";
 import { SHORTCUTS } from "@/lib/shortcuts";
@@ -51,22 +51,14 @@ export function BoardPage() {
     }
   };
   const [agentFilter, setAgentFilter] = useState<Agent | null>(null);
-  const live = tasks.some((t) => t.lane === "running" || t.lane === "needs-you");
-  const now = useNow(live);
+  // Minute clock: only "is it still today" depends on time here. The live
+  // per-second timers live in the leaves (TaskCard, ElapsedCell), so the
+  // board and every card no longer re-render each second.
+  const today = useNow(false);
   const repo = repositories.find((r) => r.id === repoFilter) ?? null;
   const newTaskRepo = repo?.id ?? repositories[0]?.id ?? null;
 
-  const visible = useMemo(
-    () =>
-      tasks.filter(
-        (t) =>
-          (!agentFilter || t.workspace.agent === agentFilter) &&
-          // Done is "done recently": today, or the last few when nothing finished today.
-          (t.lane !== "done" || isToday(t.workspace.archivedAt ?? t.workspace.finishedAt ?? t.workspace.updatedAt, now) ||
-            tasks.filter((x) => x.lane === "done").indexOf(t) < 5),
-      ),
-    [tasks, agentFilter, now],
-  );
+  const visible = useMemo(() => visibleBoardTasks(tasks, agentFilter, today), [tasks, agentFilter, today]);
   const running = tasks.filter((t) => t.lane === "running" || t.lane === "needs-you").length;
   const failed = visible.filter((t) => t.lane === "failed");
   const agents = [...new Set(tasks.map((t) => t.workspace.agent).filter((a): a is Agent => !!a))];
@@ -158,7 +150,7 @@ export function BoardPage() {
               return (
                 <Column key={col.id} title={col.title} status={col.status} count={cards.length}>
                   {cards.map((t) => (
-                    <TaskCard key={t.workspace.id} task={t} now={now} />
+                    <TaskCard key={t.workspace.id} task={t} />
                   ))}
                   {col.id === "queued" ? (
                     <Button
@@ -178,13 +170,13 @@ export function BoardPage() {
             {failed.length > 0 ? (
               <Column title="Failed" status="failed" count={failed.length}>
                 {failed.map((t) => (
-                  <TaskCard key={t.workspace.id} task={t} now={now} />
+                  <TaskCard key={t.workspace.id} task={t} />
                 ))}
               </Column>
             ) : null}
           </div>
         ) : (
-          <TaskList tasks={visible} now={now} />
+          <TaskList tasks={visible} />
         )}
       </div>
     </div>
@@ -214,7 +206,19 @@ function Column({
   );
 }
 
-function TaskList({ tasks, now }: { tasks: BoardTask[]; now: number }) {
+/** Live "4m 12s": the only thing that ticks each second, so only it re-renders. */
+function ElapsedSince({ iso }: { iso: string | null | undefined }) {
+  const now = useNow(true);
+  return <span className="font-mono">{formatElapsed(iso ?? null, now)}</span>;
+}
+
+/** "18m ago", on the minute clock. */
+function AgoSince({ iso }: { iso: string | null | undefined }) {
+  const now = useNow(false);
+  return <>{formatAgo(iso ?? null, now)}</>;
+}
+
+function TaskList({ tasks }: { tasks: BoardTask[] }) {
   const order: TaskLane[] = ["needs-you", "running", "review", "failed", "queued", "done"];
   const sorted = [...tasks].sort((a, b) => order.indexOf(a.lane) - order.indexOf(b.lane));
   return (
@@ -255,11 +259,11 @@ function TaskList({ tasks, now }: { tasks: BoardTask[]; now: number }) {
               <td className="px-6 py-2 text-[12px] text-(--color-text-secondary)">{t.repository?.name}</td>
               <td className="px-6 py-2 text-[12px] text-(--color-text-muted)">
                 {t.lane === "running" || t.lane === "needs-you" ? (
-                  <span className="font-mono">{formatElapsed(ws.startedAt, now)}</span>
+                  <ElapsedSince iso={ws.startedAt} />
                 ) : t.diff ? (
                   <DiffCount adds={t.diff.adds} removes={t.diff.removes} />
                 ) : (
-                  formatAgo(ws.finishedAt ?? ws.updatedAt, now)
+                  <AgoSince iso={ws.finishedAt ?? ws.updatedAt} />
                 )}
               </td>
             </tr>
