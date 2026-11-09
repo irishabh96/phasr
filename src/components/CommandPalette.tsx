@@ -127,7 +127,7 @@ export function CommandPalette() {
         keywords: `${ws.branch ?? ""} ${ws.prompt ?? ""} ${t.repository?.name ?? ""}`,
         icon: <StatusGlyph kind={LANE_STATUS[t.lane]} halo={t.lane === "running"} />,
         meta: (
-          <span className="truncate text-[11px] text-(--color-text-muted)">
+          <span className="truncate text-[12px] text-(--color-text-muted)">
             {ws.agent ? AGENT_META[ws.agent].label : "Agent"} · {LANE_STATUS[t.lane].replace("-", " ")}
             {ws.branch ? (
               <>
@@ -158,7 +158,7 @@ export function CommandPalette() {
           mono: true,
           icon: <FileText className="size-3.5 text-(--color-text-muted)" aria-hidden />,
           meta: (
-            <span className="flex items-center gap-2 text-[11px] text-(--color-text-muted)">
+            <span className="flex items-center gap-2 text-[12px] text-(--color-text-muted)">
               {badge ? <span style={{ color: badge.color }}>{badge.letter}</span> : null}
               Open in Files
             </span>
@@ -291,7 +291,7 @@ export function CommandPalette() {
           label: `${section.label} › ${row.label}`,
           keywords: `settings ${row.keywords ?? ""}`,
           icon: <Settings className="size-3.5 text-(--color-text-muted)" aria-hidden />,
-          ...(value ? { meta: <span className="text-[11px] capitalize text-(--color-text-muted)">{value}</span> } : {}),
+          ...(value ? { meta: <span className="text-[12px] capitalize text-(--color-text-muted)">{value}</span> } : {}),
           run: () =>
             settingsRoute.open(section.id, { row: row.id, ...(scopeRepoId ? { repositoryId: scopeRepoId } : {}) }),
         });
@@ -356,8 +356,9 @@ export function CommandPalette() {
     >
       <RadixDialog.Title className="sr-only">Command palette</RadixDialog.Title>
       <div className="flex flex-col overflow-hidden glass-modal animate-modal-in">
-        <div className="flex h-[52px] items-center gap-2.5 border-b border-(--color-border-subtle) px-4">
-          <span className="flex h-[22px] shrink-0 items-center rounded-(--radius-chip) bg-(--color-bg-elevated) px-[7px] font-mono text-[11px] text-(--color-text-muted)">
+        {/* Input row and list separate by spacing; the footer by tone. */}
+        <div className="flex h-[52px] items-center gap-2.5 px-4">
+          <span className="flex h-[22px] shrink-0 items-center rounded-(--radius-chip) bg-(--color-bg-elevated) px-[7px] text-[12px] text-(--color-text-muted)">
             {scopeRepo?.name ?? "all repos"}
           </span>
           <Command.Input
@@ -373,7 +374,7 @@ export function CommandPalette() {
           </span>
         </div>
 
-        <Command.List className="max-h-[min(520px,60vh)] overflow-y-auto p-1.5">
+        <Command.List className="max-h-[min(520px,60vh)] overflow-y-auto px-1.5 pb-1.5">
           {mode === "help" ? (
             <HelpList />
           ) : (
@@ -393,7 +394,8 @@ export function CommandPalette() {
                       value={e.id}
                       disabled={!!e.disabled}
                       onSelect={() => go(e.run)}
-                      className="flex h-9 cursor-pointer items-center gap-2.5 rounded-(--radius-control) px-2.5 text-(--color-text-primary) aria-selected:bg-(--color-bg-elevated) data-[disabled=true]:opacity-40"
+                      // Selected = a background step (A-Polish), no outline.
+                      className="flex h-9 cursor-pointer items-center gap-2.5 rounded-(--radius-control) px-2.5 text-(--color-text-primary) transition-colors duration-(--dur-1) aria-selected:bg-(--color-bg-elevated) data-[disabled=true]:opacity-40"
                     >
                       <span className="grid size-3.5 shrink-0 place-items-center">{e.icon}</span>
                       <span className={e.mono ? "min-w-0 flex-1 truncate font-mono text-[12px]" : "min-w-0 flex-1 truncate"}>
@@ -409,7 +411,7 @@ export function CommandPalette() {
           )}
         </Command.List>
 
-        <div className="flex h-9 items-center gap-3.5 border-t border-(--color-border-subtle) bg-(--color-bg-sidebar) px-3.5 text-[11px] text-(--color-text-muted)">
+        <div className="flex h-9 items-center gap-3.5 bg-(--color-bg-sidebar) px-3.5 text-[12px] text-(--color-text-muted)">
           <span>
             <Kbd>↑↓</Kbd> move
           </span>
@@ -422,7 +424,7 @@ export function CommandPalette() {
             </span>
           ) : null}
           <span className="flex-1" />
-          <span>
+          <span className="tabular-nums">
             {count} {count === 1 ? "result" : "results"} · {ms} ms
           </span>
         </div>

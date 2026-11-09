@@ -179,9 +179,9 @@ function Worktrees({ repositoryId }: { repositoryId: string }) {
                 {w.orphaned ? <span className="text-(--color-warning)">orphaned</span> : (w.taskName ?? "—")}
                 {w.lane && !w.orphaned ? <span className="text-(--color-text-muted)"> · {w.lane.replace("-", " ")}</span> : null}
               </span>
-              <span className="text-right font-mono text-[11px] text-(--color-text-muted)">{formatBytes(sizeOf(w.path))}</span>
+              <span className="text-right text-[12px] tabular-nums text-(--color-text-muted)">{formatBytes(sizeOf(w.path))}</span>
               <span className="flex justify-end">
-                <Button size="sm" className="h-6" onClick={() => setConfirm([w.path])}>
+                <Button variant="ghost" size="sm" className="h-6" onClick={() => setConfirm([w.path])}>
                   Remove
                 </Button>
               </span>
@@ -316,7 +316,7 @@ function BranchRules({ repositoryId }: { repositoryId: string }) {
           onCommit={(v) => save({ protectedPaths: splitList(v) })}
         />
       </SettingsRow>
-      <p className="m-0 px-3.5 py-2.5 text-[11px] text-(--color-text-muted)" data-settings-row>
+      <p className="m-0 px-3.5 py-2.5 text-[12px] text-(--color-text-muted)" data-settings-row>
         Required checks before Approve come from run commands marked “Before review” in Run commands.
       </p>
     </SettingsCard>

@@ -3,9 +3,9 @@ import { cn } from "@/lib/utils";
 
 /**
  * Settings row (A-SettingsPages): label + help on the left, one control on
- * the right, 1px dividers between rows inside a card. Under A-Polish the card
- * rings instead of bordering and its title is a plain sentence-case label
- * (12px, muted, 500) with no tinted strip or divider.
+ * the right. Under A-Polish the card rings instead of bordering, rows
+ * separate by spacing (no 1px dividers), and the title is a plain
+ * sentence-case label (12px, muted, 500) with no tinted strip.
  */
 export function SettingsCard({
   title,
@@ -19,13 +19,12 @@ export function SettingsCard({
   return (
     <section
       className={cn(
-        "overflow-hidden rounded-(--radius-card) shadow-(--shadow-card)",
-        "[&>[data-settings-row]+[data-settings-row]]:border-t [&>[data-settings-row]+[data-settings-row]]:border-(--color-border-subtle)",
+        "overflow-hidden rounded-(--radius-card) py-1 shadow-(--shadow-card)",
         className,
       )}
     >
       {title ? (
-        <div className="group-header px-3.5 pb-1 pt-3">
+        <div className="group-header px-3.5 pb-1 pt-2.5">
           {title}
         </div>
       ) : null}
@@ -65,7 +64,7 @@ export function SettingsRow({
         <Label {...(htmlFor ? { htmlFor } : {})} className="text-[12px] font-medium text-(--color-text-primary)">
           {label}
         </Label>
-        {help ? <span className="text-[11px] text-(--color-text-muted)">{help}</span> : null}
+        {help ? <span className="text-[12px] text-(--color-text-muted)">{help}</span> : null}
       </div>
       {children ? <div className="flex shrink-0 items-center gap-3">{children}</div> : null}
     </div>

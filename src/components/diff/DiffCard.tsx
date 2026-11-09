@@ -212,8 +212,8 @@ export function DiffCard({
   return (
     <article
       className={cn(
-        "relative overflow-hidden rounded-md border border-(--color-border-default)",
-        "bg-(--color-bg-surface)",
+        // A-Polish card: surface + hairline ring, no border.
+        "card relative overflow-hidden",
         className,
       )}
     >
@@ -243,7 +243,7 @@ export function DiffCard({
         <button
           type="button"
           onClick={onToggle}
-          className="min-w-0 flex-1 cursor-pointer truncate rounded text-left text-[12px] font-medium text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+          className="min-w-0 flex-1 cursor-pointer truncate rounded text-left font-mono text-[12px] text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
           title={pathLabel}
         >
           {renameLabel ? (
@@ -366,7 +366,7 @@ export function DiffCard({
       </header>
 
       {expanded && (
-        <div className="border-t border-(--color-border-subtle)">
+        <div className="bg-(--color-bg-base)">
           <DiffView
             raw={file.raw}
             filePath={file.path}
@@ -532,9 +532,9 @@ function DiscardConfirm({
         <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay)" />
         <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(420px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal overflow-hidden">
-            <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+            <header className="flex h-11 items-center gap-2 px-[18px]">
               <Dialog.Title asChild>
-                <h2 className="text-[13px] font-semibold leading-none">
+                <h2 className="text-[13px] font-medium leading-none">
                   {untracked ? "Delete untracked file?" : "Discard changes?"}
                 </h2>
               </Dialog.Title>
@@ -551,7 +551,7 @@ function DiscardConfirm({
               </div>
             </header>
             <Dialog.Description asChild>
-              <div className="px-4 py-3 text-[13px] text-(--color-text-secondary)">
+              <div className="px-[18px] pb-[18px] pt-1 text-[12px] leading-relaxed text-(--color-text-secondary)">
                 <code className="font-mono text-(--color-text-primary)">
                   {path}
                 </code>{" "}
@@ -560,8 +560,8 @@ function DiscardConfirm({
                   : "will be reset to HEAD, discarding all changes. This cannot be undone."}
               </div>
             </Dialog.Description>
-            <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="outline" size="sm" onClick={onCancel}>
+            <footer className="flex justify-end gap-2 px-[18px] pb-[18px]">
+              <GlassButton variant="ghost" size="sm" onClick={onCancel}>
                 Cancel
               </GlassButton>
               <GlassButton variant="danger-solid" size="sm" onClick={onConfirm}>
@@ -595,9 +595,9 @@ function ResolveConfirm({
         <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay)" />
         <Dialog.Content className="fixed left-1/2 top-[30vh] z-[190] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 outline-none">
           <div className="glass-modal overflow-hidden">
-            <header className="flex h-11 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+            <header className="flex h-11 items-center gap-2 px-[18px]">
               <Dialog.Title asChild>
-                <h2 className="text-[13px] font-semibold leading-none">
+                <h2 className="text-[13px] font-medium leading-none">
                   {action?.confirmTitle ?? ""}
                 </h2>
               </Dialog.Title>
@@ -614,15 +614,15 @@ function ResolveConfirm({
               </div>
             </header>
             <Dialog.Description asChild>
-              <div className="px-4 py-3 text-[13px] text-(--color-text-secondary)">
+              <div className="px-[18px] pb-[18px] pt-1 text-[12px] leading-relaxed text-(--color-text-secondary)">
                 <code className="font-mono text-(--color-text-primary)">
                   {basename}
                 </code>{" "}
                 — {action?.confirmBody}
               </div>
             </Dialog.Description>
-            <footer className="flex justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3">
-              <GlassButton variant="outline" size="sm" onClick={onCancel}>
+            <footer className="flex justify-end gap-2 px-[18px] pb-[18px]">
+              <GlassButton variant="ghost" size="sm" onClick={onCancel}>
                 Cancel
               </GlassButton>
               <GlassButton variant="primary" size="sm" onClick={onConfirm}>

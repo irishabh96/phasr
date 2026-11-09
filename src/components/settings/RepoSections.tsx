@@ -124,7 +124,7 @@ function DetectedScripts({ repositoryId }: { repositoryId: string }) {
           title={s.command}
           disabled={create.isPending}
           onClick={() => create.mutate({ name: s.name, command: s.command })}
-          className="rounded-(--radius-chip) border border-dashed border-(--color-border-strong) px-1.5 py-0.5 font-mono text-[11px] text-(--color-text-secondary) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+          className="rounded-(--radius-chip) bg-(--color-bg-elevated) px-1.5 py-0.5 font-mono text-[11px] text-(--color-text-secondary) transition-colors duration-(--dur-1) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
         >
           + {s.name}
         </button>

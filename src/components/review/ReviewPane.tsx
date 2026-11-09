@@ -124,7 +124,9 @@ export function ReviewPane({
   }, [files]);
   const viewedCount = (files ?? []).filter((f) => viewed.has(viewedKey(f.path, f.adds, f.removes))).length;
 
+  const [active, setActive] = useState<string | null>(null);
   const jump = (path: string) => {
+    setActive(path);
     // Jumping to a file past the seeded ones expands it.
     const i = (files ?? []).findIndex((f) => f.path === path);
     if (i >= SEED_OPEN) setCollapsed((prev) => new Set(prev).add(path));
@@ -136,39 +138,65 @@ export function ReviewPane({
   if (status.isError && !files)
     return <PanelState kind="error" title="Couldn't read the changes" error={status.error} onRetry={() => void status.refetch()} />;
 
+  const total = files?.length ?? 0;
   return (
-    <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)]">
+    <div className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)]">
+      {/* The file tree keeps its structural divider (it reads like the
+          sidebar edge); everything else separates by tone (A-Polish 01). */}
       <nav aria-label="Changed files" className="flex min-h-0 flex-col overflow-y-auto border-r border-(--color-border-subtle) bg-(--color-bg-sidebar)">
         <GroupHeader
           as="h2"
-          count={files?.length ?? 0}
-          className="px-3.5 pb-2 pt-3"
-          action={<span className="text-[11px] text-(--color-text-muted)">{viewedCount} viewed</span>}
+          count={total}
+          className="px-3 pb-1.5 pt-2.5"
+          action={<span className="text-[12px] tabular-nums text-(--color-text-muted)">{viewedCount} viewed</span>}
         >
           Files
         </GroupHeader>
-        <div className="flex flex-col gap-2 px-2 pb-3">
+        <div
+          role="progressbar"
+          aria-label="Files viewed"
+          aria-valuemin={0}
+          aria-valuemax={total}
+          aria-valuenow={viewedCount}
+          className="mx-3 mb-2 h-[3px] shrink-0 overflow-hidden rounded-full bg-(--color-bg-elevated)"
+        >
+          <div
+            className="h-full rounded-full bg-(--color-success) transition-[width] duration-(--dur-2) ease-(--ease-out)"
+            style={{ width: total ? `${Math.round((viewedCount / total) * 100)}%` : 0 }}
+          />
+        </div>
+        <div className="flex flex-col gap-px px-1.5 pb-3">
           {groups.map(([dir, items]) => (
-            <div key={dir} className="flex flex-col">
-              {dir ? <span className="truncate px-1.5 py-1 font-mono text-[11px] text-(--color-text-muted)">{dir}</span> : null}
+            <div key={dir} className="flex flex-col gap-px">
+              {dir ? <span className="truncate px-2 pb-0.5 pt-1.5 text-[12px] text-(--color-text-muted)">{dir}</span> : null}
               {items.map((f) => {
                 const { letter, color } = changeLetter(f);
                 const isViewed = viewed.has(viewedKey(f.path, f.adds, f.removes));
+                const isActive = active === f.path;
                 return (
                   <button
                     key={f.path}
                     type="button"
                     onClick={() => jump(f.path)}
+                    aria-current={isActive ? "true" : undefined}
+                    title={f.path}
                     className={cn(
-                      "flex h-7 items-center gap-2 rounded-(--radius-chip) px-1.5 text-left font-mono text-[12px] hover:bg-(--color-bg-hover)",
+                      "flex h-7 shrink-0 items-center gap-2 rounded-(--radius-control) pl-3.5 pr-2 text-left font-mono text-[11.5px]",
+                      "transition-colors duration-(--dur-1) ease-(--ease-out)",
                       "focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)",
-                      isViewed ? "text-(--color-text-muted)" : "text-(--color-text-secondary)",
+                      // Selected = a background step, never an outline.
+                      isActive
+                        ? "bg-(--color-bg-elevated) text-(--color-text-primary)"
+                        : "hover:bg-(--color-bg-elevated)/60",
+                      !isActive && (isViewed ? "text-(--color-text-muted)" : "text-(--color-text-secondary)"),
                     )}
                   >
                     <span className="w-2.5 shrink-0 text-[11px]" style={{ color }}>
                       {letter}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{baseName(f.path)}</span>
+                    <span className={cn("min-w-0 flex-1 truncate", isViewed && "line-through decoration-(--color-text-faint)")}>
+                      {baseName(f.path)}
+                    </span>
                     {isViewed ? <Check className="size-3 shrink-0 text-(--color-success)" aria-label="viewed" /> : null}
                     <DiffCount adds={f.adds ?? 0} removes={f.removes ?? 0} hideRemovesWhenZero />
                   </button>
@@ -177,15 +205,15 @@ export function ReviewPane({
             </div>
           ))}
           {files && files.length === 0 ? (
-            <p className="m-0 px-1.5 text-[12px] text-(--color-text-muted)">No changes.</p>
+            <p className="m-0 px-2 text-[12px] text-(--color-text-muted)">No changes.</p>
           ) : null}
         </div>
         <Commits workspaceId={workspaceId} />
         {aside}
       </nav>
 
-      <div ref={listRef} className="flex min-h-0 flex-col gap-3 overflow-y-auto p-4">
-        <div className="flex items-center justify-end">
+      <div ref={listRef} className="flex min-h-0 flex-col overflow-y-auto pb-6">
+        <div className="flex h-10 shrink-0 items-center justify-end px-4">
           <SegmentedControl
             label="Diff layout"
             value={mode}
@@ -213,44 +241,43 @@ export function ReviewPane({
             });
           const { letter, color } = changeLetter(f);
           return (
-            <section
-              key={f.path}
-              data-review-file={f.path}
-              aria-label={f.path}
-              className="overflow-hidden rounded-(--radius-card) border border-(--color-border-default) bg-(--color-bg-surface)"
-            >
-              <header className="flex h-10 items-center gap-2 border-b border-(--color-border-subtle) bg-(--color-bg-sidebar) px-3">
+            // One continuous scroll (A-Review): each file is a sticky header
+            // bar on the surface step over its diff, files spaced apart; no
+            // boxes or rules between them.
+            <section key={f.path} data-review-file={f.path} aria-label={f.path} className="flex flex-col [&+&]:mt-3">
+              <header className="sticky top-0 z-[2] flex h-[34px] shrink-0 items-center gap-2 bg-(--color-bg-surface) pl-2 pr-3">
                 <button
                   type="button"
                   aria-expanded={open}
                   aria-label={open ? `Collapse ${f.path}` : `Expand ${f.path}`}
                   onClick={flip}
-                  className="grid size-5 place-items-center rounded-(--radius-chip) text-(--color-text-muted) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+                  className="grid size-6 place-items-center rounded-(--radius-control) text-(--color-text-muted) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
                 >
                   {open ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
                 </button>
-                <span className="text-[11px] font-semibold" style={{ color }}>
+                <span className="font-mono text-[12px]" style={{ color }}>
                   {letter}
                 </span>
                 <button
                   type="button"
                   tabIndex={-1}
                   onClick={flip}
-                  className="min-w-0 flex-1 truncate text-left font-mono text-[12px] focus-visible:outline-none"
+                  className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-(--color-text-primary) focus-visible:outline-none"
                 >
                   {f.path}
                 </button>
-                <DiffCount adds={f.adds ?? 0} removes={f.removes ?? 0} />
+                <DiffCount adds={f.adds ?? 0} removes={f.removes ?? 0} className="text-[12px]" />
                 <button
                   type="button"
                   aria-pressed={isViewed}
                   onClick={() => toggle(key)}
                   className={cn(
-                    "ml-2 flex h-6 items-center gap-1.5 rounded-(--radius-control) border px-2 text-[11px] transition-colors duration-100",
+                    "ml-1 flex h-6 items-center gap-1.5 rounded-(--radius-control) px-2 text-[12px]",
+                    "transition-colors duration-(--dur-1) ease-(--ease-out)",
                     "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
                     isViewed
-                      ? "border-(--color-success) text-(--color-success)"
-                      : "border-(--color-border-default) text-(--color-text-secondary) hover:border-(--color-border-strong)",
+                      ? "text-(--color-success) hover:bg-(--color-bg-elevated)"
+                      : "text-(--color-text-secondary) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
                   )}
                 >
                   {isViewed ? <Check className="size-3" aria-hidden /> : <Eye className="size-3" aria-hidden />}
@@ -263,7 +290,7 @@ export function ReviewPane({
                     workspaceId={workspaceId}
                     scope={diffScope as DiffScope}
                     filePath={f.path}
-                    className="rounded-none border-0"
+                    className="h-auto"
                     noHeader
                     mode={mode}
                     onModeChange={pickMode}
@@ -283,13 +310,13 @@ function Commits({ workspaceId }: { workspaceId: string }) {
   const commits = log.data?.pages.flat() ?? [];
   if (commits.length === 0) return null;
   return (
-    <section aria-label="Commits" className="mt-auto flex flex-col gap-1 border-t border-(--color-border-subtle) px-2 py-3">
-      <GroupHeader as="h2" count={commits.length} className="px-1.5 pb-1">
+    <section aria-label="Commits" className="mt-auto flex flex-col gap-0.5 px-1.5 pb-3 pt-4">
+      <GroupHeader as="h2" count={commits.length} className="px-2 pb-1">
         Commits
       </GroupHeader>
       {commits.slice(0, 20).map((c) => (
-        <div key={c.sha} className="flex h-6 items-center gap-2 px-1.5 text-[12px]" title={c.subject}>
-          <span className="shrink-0 font-mono text-[11px] text-(--color-text-muted)">{c.shortSha}</span>
+        <div key={c.sha} className="flex h-6 items-center gap-2 px-2 text-[12px]" title={c.subject}>
+          <span className="shrink-0 font-mono text-[11px] text-(--color-text-faint)">{c.shortSha}</span>
           <span className="min-w-0 truncate text-(--color-text-secondary)">{c.subject}</span>
         </div>
       ))}

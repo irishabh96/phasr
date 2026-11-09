@@ -12,8 +12,9 @@ export const ITEM_CLS = [
   "flex cursor-pointer items-center gap-3 rounded-(--radius-control) px-3 py-2.5",
   "scroll-my-2",
   "text-(--color-text-primary)",
-  "transition-colors duration-100",
-  "aria-selected:bg-(--color-bg-hover)",
+  "transition-colors duration-(--dur-1)",
+  // Selected = one background step, the same as the ⌘K palette.
+  "aria-selected:bg-(--color-bg-elevated)",
 ].join(" ");
 
 export const KBD_CLS =
@@ -39,5 +40,6 @@ export const PALETTE_INPUT_CLS =
 export const PALETTE_LIST_CLS =
   "max-h-[60vh] overflow-y-auto px-3 pb-2";
 
+// Footer separates by tone, not a rule (A-Polish 01).
 export const PALETTE_FOOTER_CLS =
-  "flex items-center gap-4 border-t border-(--color-border-subtle) px-4 py-2.5 text-[11px] text-(--color-text-muted)";
+  "flex items-center gap-4 bg-(--color-bg-sidebar) px-4 py-2.5 text-[12px] text-(--color-text-muted)";

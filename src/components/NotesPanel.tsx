@@ -247,13 +247,13 @@ export function NotesPanel({ repositoryId, getOrigin }: NotesPanelProps) {
         )}
 
         {doneNotes.length > 0 && (
-          <div className="mt-1 border-t border-(--color-border-subtle) pt-1">
+          <div className="mt-3">
             <button
               type="button"
               onClick={() => setDoneOpen((v) => !v)}
               aria-expanded={doneOpen}
               className={cn(
-                "mx-[4px] flex h-[24px] w-[calc(100%-8px)] items-center gap-[8px] rounded-[6px] px-[8px] text-[11px] font-medium",
+                "mx-[4px] flex h-[24px] w-[calc(100%-8px)] items-center gap-[8px] rounded-[6px] px-[8px] text-[12px] font-medium",
                 "text-(--color-text-muted) hover:text-(--color-text-secondary)",
                 "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
               )}

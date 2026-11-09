@@ -41,7 +41,8 @@ function CheckIcon({ run, stale }: { run: CheckRun; stale: boolean }) {
 
 function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section aria-label={title} className="flex flex-col gap-2.5 border-b border-(--color-border-subtle) px-4 py-3.5">
+    // Sections separate by spacing, not rules (A-Polish 01).
+    <section aria-label={title} className="flex flex-col gap-2.5 px-4 py-3.5">
       <GroupHeader as="h3" action={aside}>
         {title}
       </GroupHeader>
@@ -146,13 +147,13 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         aside={
           <span className="flex items-center gap-2">
             {checks && checks.required.length > 0 ? (
-              <span className="text-[11px] text-(--color-text-muted)">required for approve</span>
+              <span className="text-[12px] text-(--color-text-muted)">required for approve</span>
             ) : null}
             <button
               type="button"
               aria-label="Collapse inspector"
               onClick={collapse}
-              className="grid size-[22px] place-items-center rounded-(--radius-chip) border border-(--color-border-default) text-(--color-text-muted) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+              className="grid size-[22px] place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
             >
               <ChevronsRight className="size-3.5" aria-hidden />
             </button>
@@ -173,10 +174,10 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
                 >
                   {r.name}
                   {r.runCommandId && required.has(r.runCommandId) ? (
-                    <span className="ml-1 text-[11px] text-(--color-text-muted)">required</span>
+                    <span className="ml-1 text-[12px] text-(--color-text-muted)">required</span>
                   ) : null}
                 </button>
-                <span className="font-mono text-[11px] text-(--color-text-muted)">
+                <span className="text-[12px] tabular-nums text-(--color-text-muted)">
                   {r.status === "running" || r.status === "queued"
                     ? r.status
                     : stale.has(r.id)
@@ -196,18 +197,20 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
           </p>
         )}
         {checks && checks.needsConfirmation.length > 0 ? (
-          <p className="m-0 text-[11px] text-(--color-warning)">
+          <p className="m-0 text-[12px] text-(--color-warning)">
             {checks.needsConfirmation.length} synced command{checks.needsConfirmation.length === 1 ? "" : "s"} need
             confirming on this Mac before they auto-run.
           </p>
         ) : null}
         {anyRunning ? (
-          <Button size="sm" disabled={cancelChecks.isPending} onClick={() => cancelChecks.mutate()}>
+          <Button variant="ghost" size="sm" className="-ml-2.5 self-start" disabled={cancelChecks.isPending} onClick={() => cancelChecks.mutate()}>
             Cancel checks
           </Button>
         ) : (
         <Button
+          variant="ghost"
           size="sm"
+          className="self-start"
           disabled={runChecks.isPending}
           onClick={() =>
             runChecks.mutate(undefined, {
@@ -230,17 +233,17 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
 
       <Section
         title="Comments"
-        aside={pending.length > 0 ? <span className="text-[11px] text-(--color-text-muted)">{pending.length} pending</span> : null}
+        aside={pending.length > 0 ? <span className="text-[12px] tabular-nums text-(--color-text-muted)">{pending.length} pending</span> : null}
       >
         {comments && comments.length > 0 ? (
           <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[12px]">
             {comments.map((c) => (
               <li key={c.id} className={cn("flex gap-2", c.status !== "pending" && "text-(--color-text-muted)")}>
-                <span className="shrink-0 font-mono text-[11px] text-(--color-text-muted)">L{c.line}</span>
+                <span className="shrink-0 tabular-nums text-(--color-text-muted)">L{c.line}</span>
                 <span className="min-w-0 truncate" title={`${c.path}: ${c.body}`}>
                   {c.body}
                 </span>
-                {c.status !== "pending" ? <span className="ml-auto shrink-0 text-[11px]">{c.status}</span> : null}
+                {c.status !== "pending" ? <span className="ml-auto shrink-0">{c.status}</span> : null}
               </li>
             ))}
           </ul>
@@ -254,7 +257,9 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         ) : null}
       </Section>
 
-      <div className="flex flex-col gap-1.5 px-4 py-3.5">
+      {/* Close-out actions pinned to the foot (A-Review). One filled primary;
+          the rest are ghost, Discard in the danger style (A-Polish 02). */}
+      <div className="mt-auto flex flex-col gap-2 px-4 pb-4 pt-3.5">
         <Button
           variant="primary"
           size="md"
@@ -265,21 +270,22 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
         >
           {approve.isPending ? "Creating PR…" : workspace.prNumber ? `PR #${workspace.prNumber} open` : "Approve & create PR"}
         </Button>
-        <Button
-          size="md"
-          disabled={requestChanges.isPending}
-          onClick={() => requestChanges.mutate(undefined, { onError: sendError })}
-        >
-          Request changes
-        </Button>
-        <span className="flex gap-1.5">
-          <Button size="md" className="flex-1" disabled={workspace.outcome != null} onClick={() => setMergeOpen(true)}>
+        <span className="grid grid-cols-2 gap-2">
+          <Button
+            variant="ghost"
+            size="md"
+            disabled={requestChanges.isPending}
+            onClick={() => requestChanges.mutate(undefined, { onError: sendError })}
+          >
+            Request changes
+          </Button>
+          <Button variant="ghost" size="md" disabled={workspace.outcome != null} onClick={() => setMergeOpen(true)}>
             Merge locally
           </Button>
-          <Button variant="danger" size="md" className="flex-1" disabled={workspace.outcome != null} onClick={() => setDiscardOpen(true)}>
-            Discard worktree
-          </Button>
         </span>
+        <Button variant="danger" size="md" disabled={workspace.outcome != null} onClick={() => setDiscardOpen(true)}>
+          Discard worktree
+        </Button>
       </div>
 
       <MergeToMainDialog workspace={workspace} open={mergeOpen} onClose={() => setMergeOpen(false)} />
@@ -331,7 +337,7 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
 function CheckOutput({ runId }: { runId: string }) {
   const { data, isLoading } = useCheckOutput(runId);
   return (
-    <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-(--radius-control) border border-(--color-border-subtle) bg-(--color-bg-base) p-2 font-mono text-[11px] leading-[1.5] text-(--color-text-secondary)">
+    <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-(--radius-control) bg-(--color-bg-input) p-2 font-mono text-[11px] leading-[1.5] text-(--color-text-secondary)">
       {isLoading ? "Loading…" : data?.trim() ? data.slice(-6000) : "No output."}
     </pre>
   );

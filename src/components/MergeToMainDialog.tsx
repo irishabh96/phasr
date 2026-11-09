@@ -134,7 +134,7 @@ export function MergeToMainDialog({
       size="480px"
       title={`Merge into ${targetBranch}`}
       description={
-        <div className="rounded-md border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-3 py-2 text-[12px] leading-relaxed text-(--color-text-secondary)">
+        <div className="rounded-(--radius-card) bg-(--color-bg-elevated) px-3 py-2 text-[12px] leading-relaxed text-(--color-text-secondary)">
           Merge{" "}
           <code className="font-mono text-(--color-text-primary)">
             {sourceBranch}
@@ -176,13 +176,13 @@ export function MergeToMainDialog({
     >
       <div className="space-y-3">
         {blockedReason && (
-          <div className="space-y-2 rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2.5">
+          <div className="space-y-2 rounded-(--radius-card) bg-(--color-warning-tint) px-3 py-2.5">
             <p className="text-[12px] text-(--color-text-primary)">
               {blockedReason}
             </p>
             {behind > 0 && (
               <GlassButton
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 disabled={sync.isPending}
                 onClick={async () => {
@@ -249,11 +249,11 @@ export function MergeToMainDialog({
         {gate && (
           <div
             role="alert"
-            className="space-y-2 rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2.5"
+            className="space-y-2 rounded-(--radius-card) bg-(--color-warning-tint) px-3 py-2.5"
           >
             <p className="text-[12px] text-(--color-text-primary)">{gate.message}</p>
             <GlassButton
-              variant="outline"
+              variant="ghost"
               size="sm"
               disabled={busy}
               onClick={() =>
@@ -265,23 +265,23 @@ export function MergeToMainDialog({
           </div>
         )}
         {error && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11px] text-(--color-danger)">
+          <p className="rounded-(--radius-card) bg-(--color-danger-tint) px-3 py-2 text-[12px] text-(--color-danger)">
             {error}
           </p>
         )}
         {conflictNote && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2 text-[11px] text-(--color-text-primary)">
+          <p className="rounded-(--radius-card) bg-(--color-warning-tint) px-3 py-2 text-[12px] text-(--color-text-primary)">
             {conflictNote}
           </p>
         )}
         {merge.isSuccess && merge.data?.kind === "clean" && (
-          <div className="flex items-center gap-2 rounded-md border border-[color-mix(in_oklab,var(--color-success)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-success)_8%,transparent)] px-3 py-2">
+          <div className="flex items-center gap-2 rounded-(--radius-card) bg-(--color-success-tint) px-3 py-2">
             <Check
               size={14}
               className="shrink-0 text-(--color-success)"
               aria-hidden
             />
-            <p className="text-[11px] text-(--color-text-primary)">
+            <p className="text-[12px] text-(--color-text-primary)">
               Merged into {targetBranch}.
             </p>
           </div>
@@ -335,7 +335,7 @@ function StrategyRow({
         <span className="text-[12px] leading-none text-(--color-text-primary)">
           {label}
         </span>
-        <span className="text-[11px] text-(--color-text-secondary)">
+        <span className="text-[12px] text-(--color-text-muted)">
           {hint}
         </span>
       </span>

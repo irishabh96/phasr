@@ -129,17 +129,19 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
               aria-current={selected === child.path ? "true" : undefined}
               style={{ paddingLeft: 8 + depth * 12 }}
               className={cn(
-                "flex h-6 w-full items-center gap-1.5 rounded-(--radius-chip) pr-2 text-left font-mono text-[12px]",
+                "flex h-6 w-full items-center gap-1.5 rounded-(--radius-control) pr-2 text-left text-[12px]",
+                "transition-colors duration-(--dur-1) ease-(--ease-out)",
                 "focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)",
+                // Selected = a background step, never an outline.
                 selected === child.path
                   ? "bg-(--color-bg-elevated) text-(--color-text-primary)"
-                  : "text-(--color-text-secondary) hover:bg-(--color-bg-hover)",
+                  : "text-(--color-text-secondary) hover:bg-(--color-bg-elevated)/60",
               )}
             >
-              <FileText className="size-3 shrink-0 text-(--color-text-muted)" aria-hidden />
+              <FileText className="size-3 shrink-0 text-(--color-text-faint)" aria-hidden />
               <span className="min-w-0 flex-1 truncate">{child.name}</span>
               {badge ? (
-                <span className="text-[11px]" style={{ color: badge.color }}>
+                <span className="font-mono text-[10px]" style={{ color: badge.color }}>
                   {badge.letter}
                 </span>
               ) : null}
@@ -155,7 +157,7 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
             aria-expanded={expanded}
             onClick={() => toggle(child.path)}
             style={{ paddingLeft: 4 + depth * 12 }}
-            className="flex h-6 w-full items-center gap-1 rounded-(--radius-chip) pr-2 text-left font-mono text-[12px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)"
+            className="flex h-6 w-full items-center gap-1 rounded-(--radius-control) pr-2 text-left text-[12px] text-(--color-text-secondary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-elevated)/60 focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)"
           >
             {expanded ? (
               <ChevronDown className="size-3 shrink-0 text-(--color-text-muted)" aria-hidden />
@@ -172,10 +174,17 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
   return (
     <div className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)]">
       <nav aria-label="Worktree files" className="flex min-h-0 flex-col border-r border-(--color-border-subtle) bg-(--color-bg-sidebar)">
-        <GroupHeader as="h2" className="px-3 pb-2 pt-3">
+        <GroupHeader as="h2" className="h-[34px] shrink-0 px-3">
           Worktree
+          {workspace.branch ? (
+            <span className="font-normal">
+              {" · "}
+              <span className="font-mono text-[11px]">{workspace.branch.slice(workspace.branch.lastIndexOf("/") + 1)}</span>
+            </span>
+          ) : null}
         </GroupHeader>
-        <label className="mx-2 mb-2 flex h-7 items-center gap-1.5 rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-base) px-2 text-(--color-text-muted) focus-within:border-(--color-focus-ring)">
+        {/* A-Polish input: inset fill + hairline ring, accent ring on focus. */}
+        <label className="mx-2.5 mb-1 flex h-[26px] shrink-0 items-center gap-1.5 rounded-(--radius-control) bg-(--color-bg-input) px-2 text-(--color-text-muted) shadow-(--ring-input) transition-shadow duration-(--dur-1) focus-within:shadow-(--ring-input-focus)">
           <Search className="size-3 shrink-0" aria-hidden />
           <input
             aria-label="Filter files"
@@ -185,7 +194,7 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
             className="w-full border-0 bg-transparent p-0 text-[12px] text-(--color-text-primary) shadow-none outline-none focus:shadow-none"
           />
         </label>
-        <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 pt-1">
           {isLoading ? <PanelState kind="loading" rows={6} /> : null}
           {error ? <PanelState kind="error" title="Couldn't list files" error={error} /> : null}
           <ul className="m-0 list-none p-0">{renderNode(tree, 0)}</ul>
@@ -193,7 +202,7 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
       </nav>
       <div className="relative flex min-h-0 flex-col">
         {openTabs.length > 0 ? (
-          <div role="tablist" aria-label="Open files" className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-(--color-border-subtle) bg-(--color-bg-sidebar)">
+          <div role="tablist" aria-label="Open files" className="flex h-[34px] shrink-0 items-stretch gap-1 overflow-x-auto px-2">
             {openTabs.map((p) => {
               const change = changeByPath.get(p);
               const badge = change ? changeLetter(change as FileChange) : null;
@@ -202,8 +211,12 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
                 <div
                   key={p}
                   className={cn(
-                    "group/ftab flex items-center gap-1.5 border-r border-(--color-border-subtle) pl-3 pr-1.5 font-mono text-[12px]",
-                    active ? "bg-(--color-bg-base) text-(--color-text-primary)" : "text-(--color-text-muted)",
+                    // Tabs are underlines: 2px in the text colour when active.
+                    "group/ftab flex shrink-0 items-center gap-1.5 border-b-2 pl-2 pr-1 font-mono text-[11.5px]",
+                    "transition-[color,border-color] duration-(--dur-1) ease-(--ease-out)",
+                    active
+                      ? "border-(--color-text-primary) text-(--color-text-primary)"
+                      : "border-transparent text-(--color-text-muted) hover:text-(--color-text-secondary)",
                   )}
                 >
                   <button
@@ -220,12 +233,12 @@ function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: 
                     ) : null}
                     {p.slice(p.lastIndexOf("/") + 1)}
                   </button>
-                  {dirtyPaths.includes(p) ? <span aria-label="unsaved" className="size-1.5 rounded-full bg-(--color-warning)" /> : null}
+                  {dirtyPaths.includes(p) ? <span aria-label="unsaved" className="size-1.5 rounded-full bg-(--color-text-primary)" /> : null}
                   <button
                     type="button"
                     aria-label={`Close ${p}`}
                     onClick={() => (dirtyPaths.includes(p) ? setConfirmClose(p) : closeTab(p))}
-                    className="grid size-4 place-items-center rounded-(--radius-chip) opacity-0 hover:bg-(--color-bg-hover) group-hover/ftab:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+                    className="grid size-4 place-items-center rounded-(--radius-chip) opacity-0 transition-opacity duration-(--dur-1) hover:bg-(--color-bg-elevated) group-hover/ftab:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
                   >
                     ×
                   </button>
