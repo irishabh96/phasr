@@ -196,11 +196,11 @@
 
   /* Layout (A-Workspace). */
   --layout-sidebar-width: 264px;
-  --layout-inspector-width: 300px;
+  --layout-inspector-width: 280px; /* A-Workspace inspector */
   --layout-rail-left: 48px;
   --layout-rail-right: 40px;
   --layout-header-height: 44px;
-  --layout-panetabs-height: 36px;
+  --layout-panetabs-height: 44px; /* A-Workspace pane tab bar */
   --layout-statusbar-height: 28px;
   --layout-toolbar-height: 52px;
 

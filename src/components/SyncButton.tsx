@@ -1,5 +1,6 @@
 import { ArrowDownToLine, ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
+import { useEffect, useState } from "react";
 import { GlassButton } from "@/components/ui/GlassButton";
 import {
   useGitBranchStatus,
@@ -12,6 +13,11 @@ import type { MergeStrategy } from "@/lib/types";
 
 interface SyncButtonProps {
   workspaceId: string;
+  /**
+   * `button` (default): the boxed "Sync (n) ▾" control. `link`: a plain
+   * "Sync" text action, as next to Base in the inspector (A-Workspace).
+   */
+  appearance?: "button" | "link";
 }
 
 /**
@@ -21,7 +27,7 @@ interface SyncButtonProps {
  * After firing, the result (clean or conflicts) lands automatically in
  * the ChangesPanel — no extra UI here.
  */
-export function SyncButton({ workspaceId }: SyncButtonProps) {
+export function SyncButton({ workspaceId, appearance = "button" }: SyncButtonProps) {
   const { data: status } = useGitBranchStatus(workspaceId);
   const { data: settings } = useUserSettings();
   const fetch = useGitFetch(workspaceId);
@@ -30,7 +36,6 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
   const [open, setOpen] = useState(false);
   const [strategy, setStrategy] = useState<MergeStrategy>("merge");
   const [error, setError] = useState<string | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   // Seed the strategy from settings the first time settings load. We
   // intentionally don't sync it on every settings change — once the
@@ -41,22 +46,6 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
       setStrategy(settingsStrategy);
     }
   }, [settingsStrategy]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   // SyncButton is gated on "behind the merge target," NOT "behind
   // upstream" — the upstream is usually `origin/<this-branch>`, which
@@ -93,27 +82,40 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
 
   const busy = fetch.isPending || sync.isPending;
 
-  return (
-    <div ref={containerRef} className="relative">
-      <GlassButton
-        variant="outline"
-        size="sm"
-        onClick={() => setOpen((v) => !v)}
-        title={
-          blockReason
-            ? blockReason
-            : `Sync with ${targetLabel} (${behind} commit${behind === 1 ? "" : "s"} behind)`
-        }
-        disabled={busy || !canSync}
-        className="gap-1"
-      >
-        <ArrowDownToLine size={11} />
-        Sync{behind > 0 ? ` (${behind})` : ""}
-        <ChevronDown size={11} className="opacity-60" />
-      </GlassButton>
+  const title = blockReason
+    ? blockReason
+    : `Sync with ${targetLabel} (${behind} commit${behind === 1 ? "" : "s"} behind)`;
 
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-72 overflow-hidden surface-floating animate-popover-in">
+  // A Radix popover (portalled) rather than an absolutely-positioned box:
+  // the inspector scrolls, and an in-flow popover would be clipped by it.
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        {appearance === "link" ? (
+          <button
+            type="button"
+            title={title}
+            disabled={busy || !canSync}
+            className="shrink-0 rounded-(--radius-chip) text-(--color-text-secondary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:text-(--color-text-primary) disabled:text-(--color-text-faint) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+          >
+            {busy ? "Syncing…" : "Sync"}
+          </button>
+        ) : (
+          <GlassButton variant="outline" size="sm" title={title} disabled={busy || !canSync} className="gap-1">
+            <ArrowDownToLine size={11} />
+            Sync{behind > 0 ? ` (${behind})` : ""}
+            <ChevronDown size={11} className="opacity-60" />
+          </GlassButton>
+        )}
+      </Popover.Trigger>
+
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-(--z-popover) w-72 overflow-hidden surface-floating data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out"
+        >
           <header className="border-b border-(--glass-border-hairline) px-3 py-2">
             <p className="group-header">
               Sync with {status?.baseBranch || targetLabel}
@@ -160,9 +162,9 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
               {busy ? "Syncing…" : "Sync"}
             </GlassButton>
           </footer>
-        </div>
-      )}
-    </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

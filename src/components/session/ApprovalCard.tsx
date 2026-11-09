@@ -8,9 +8,13 @@ import { useNow } from "@/lib/hooks/useNow";
 import { approvalKeyAllowed, isOverlayOpen } from "@/lib/keyboardGuards";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import type { Agent, Attention, AttentionResponse } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type ApprovalAttention = Attention;
 type ApprovalResponse = AttentionResponse;
+
+/** A-Polish 28px buttons in explicit px (1rem is 13px in this app). */
+const btn28 = "h-[28px] px-[10px]";
 
 const KIND_TITLE: Record<string, string> = {
   shell: "wants to run a shell command",
@@ -80,66 +84,79 @@ export function ApprovalCard({
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [attention.canRespond, attention.id, onRespond, busy]);
 
+  // A-States card under the Polish rules: a warm surface step with a soft
+  // amber ring instead of a border, no header divider, the command on an
+  // inset block (no border), buttons secondary/ghost except Allow.
   return (
     <section
       role="alertdialog"
       aria-label={`${name} ${KIND_TITLE[attention.kind] ?? "needs you"}`}
-      className="mx-[18px] mt-2 flex flex-col gap-2.5 rounded-(--radius-card) border border-(--color-warning) bg-(--color-warning-tint) p-3"
+      className="mx-[24px] mt-[12px] flex max-w-[640px] flex-col rounded-(--radius-card) bg-[color-mix(in_oklab,var(--color-warning)_6%,var(--color-bg-surface))] shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-warning)_32%,transparent)]"
     >
-      <header className="flex items-center gap-2 text-[13px]">
-        <ShieldAlert className="size-4 shrink-0 text-(--color-warning)" aria-hidden />
-        <span className="font-medium">
+      <header className="flex items-center gap-[10px] px-[14px] pt-[10px] text-[13px]">
+        <ShieldAlert className="size-[14px] shrink-0 text-(--color-warning)" aria-hidden />
+        <span className="min-w-0 truncate font-medium text-(--color-warning)">
           {name} {KIND_TITLE[attention.kind] ?? "needs you"}
         </span>
         <span className="flex-1" />
-        <span className="font-mono text-[11px] text-(--color-warning)">waiting {formatElapsed(attention.since, now)}</span>
+        <span className="shrink-0 text-[11px] tabular-nums text-(--color-text-muted)">
+          waiting {formatElapsed(attention.since, now)}
+        </span>
       </header>
-      {attention.detail ? (
-        <code className="block overflow-x-auto whitespace-pre rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-base) px-2.5 py-2 font-mono text-[12px] text-(--color-text-primary)">
-          {attention.detail}
-        </code>
-      ) : (
-        <p className="m-0 text-[12px] text-(--color-text-secondary)">{attention.title}</p>
-      )}
-      {worktree ? (
-        <span className="text-[11px] text-(--color-text-muted)">
-          in <span className="font-mono">{worktree.replace(/^\/Users\/[^/]+/, "~")}</span>
-        </span>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {attention.canRespond ? (
-          <>
-            <Button variant="primary" size="sm" disabled={busy} shortcut="⌘Y" onClick={() => onRespond("allow-once")}>
-              {isTrust ? "Trust folder" : "Allow once"}
-            </Button>
-            {allowForTask && !isTrust ? (
-              <Button size="sm" disabled={busy} onClick={() => onRespond("allow-task")}>
-                Allow for this task
-              </Button>
-            ) : null}
-            <Button variant="danger" size="sm" disabled={busy} shortcut="⌘⌫" onClick={() => onRespond("deny")}>
-              {isTrust ? "Exit agent" : "Deny"}
-            </Button>
-          </>
+      <div className="flex flex-col gap-[8px] px-[14px] pb-[12px] pt-[10px]">
+        {attention.detail ? (
+          <code className="block overflow-x-auto whitespace-pre rounded-(--radius-control) bg-(--color-bg-input) px-[10px] py-[8px] font-mono text-[12px] text-(--color-text-primary)">
+            {attention.detail}
+          </code>
         ) : (
-          <Button size="sm" onClick={onOpenTerminal}>
-            Answer in the terminal
-          </Button>
+          <p className="m-0 text-[12.5px] text-(--color-text-secondary)">{attention.title}</p>
         )}
-        <span className="flex-1" />
-        {isTrust ? null : <button
-          type="button"
-          onClick={onChangeDefault}
-          className="text-[11px] text-(--color-text-muted) underline-offset-2 hover:text-(--color-text-secondary) hover:underline focus-visible:outline-none focus-visible:underline"
-        >
-          Change default…
-        </button>}
+        {worktree || attention.source === "heuristic" ? (
+          <div className="flex flex-wrap gap-x-[14px] gap-y-[4px] text-[11px] text-(--color-text-muted)">
+            {worktree ? (
+              <span>
+                in <span className="font-mono text-(--color-text-secondary)">{worktree.replace(/^\/Users\/[^/]+/, "~")}</span>
+              </span>
+            ) : null}
+            {attention.source === "heuristic" ? (
+              <span>
+                Detected from the terminal output · <Kbd tone="bare">answers press the agent&apos;s own keys</Kbd>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-[8px] pt-[4px]">
+          {attention.canRespond ? (
+            <>
+              <Button variant="primary" size="sm" className={cn(btn28, "px-[12px]")} disabled={busy} shortcut="⌘Y" onClick={() => onRespond("allow-once")}>
+                {isTrust ? "Trust folder" : "Allow once"}
+              </Button>
+              {allowForTask && !isTrust ? (
+                <Button variant="secondary" size="sm" className={btn28} disabled={busy} onClick={() => onRespond("allow-task")}>
+                  Allow for this task
+                </Button>
+              ) : null}
+              <Button variant="danger" size="sm" className={btn28} disabled={busy} shortcut="⌘⌫" onClick={() => onRespond("deny")}>
+                {isTrust ? "Exit agent" : "Deny"}
+              </Button>
+            </>
+          ) : (
+            <Button variant="secondary" size="sm" className={btn28} onClick={onOpenTerminal}>
+              Answer in the terminal
+            </Button>
+          )}
+          <span className="flex-1" />
+          {isTrust ? null : (
+            <button
+              type="button"
+              onClick={onChangeDefault}
+              className="rounded-(--radius-chip) text-[11px] text-(--color-text-muted) transition-colors duration-(--dur-1) ease-(--ease-out) hover:text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+            >
+              Change default…
+            </button>
+          )}
+        </div>
       </div>
-      {attention.source === "heuristic" ? (
-        <span className="text-[11px] text-(--color-text-muted)">
-          Detected from the terminal output · <Kbd tone="bare">answers press the agent&apos;s own keys</Kbd>
-        </span>
-      ) : null}
     </section>
   );
 }
