@@ -1,11 +1,43 @@
-import { defineConfig, type ServerOptions } from "vite";
+import { defineConfig, type Plugin, type ServerOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
+
+/**
+ * Move the build's sourcemaps out of the output dir into a sibling
+ * `<outDir>-sourcemaps/` (i.e. `dist-sourcemaps/`).
+ *
+ * Tauri embeds everything under `frontendDist` (`../dist`) into the app
+ * binary, so maps left there shipped ~12 MB inside every install while
+ * doing nothing for Sentry, which can't fetch them from the app origin.
+ * With `sourcemap: "hidden"` the JS carries no `sourceMappingURL`, and
+ * the maps stay on disk next to `dist/` for a symbolication upload step.
+ */
+function relocateSourcemaps(): Plugin {
+  return {
+    name: "phasr:relocate-sourcemaps",
+    apply: "build",
+    writeBundle: {
+      order: "post",
+      sequential: true,
+      handler(options, bundle) {
+        if (!options.dir) return;
+        const mapsDir = `${path.resolve(options.dir)}-sourcemaps`;
+        rmSync(mapsDir, { recursive: true, force: true });
+        for (const fileName of Object.keys(bundle)) {
+          if (!fileName.endsWith(".map")) continue;
+          const target = path.join(mapsDir, fileName);
+          mkdirSync(path.dirname(target), { recursive: true });
+          renameSync(path.join(options.dir, fileName), target);
+        }
+      },
+    },
+  };
+}
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -39,6 +71,7 @@ export default defineConfig({
     }),
     react(),
     tailwindcss(),
+    relocateSourcemaps(),
   ],
 
   resolve: {
@@ -56,10 +89,13 @@ export default defineConfig({
     // parse them even when unicode-range would skip the file. Other assets
     // keep Vite's default 4 KB threshold.
     assetsInlineLimit: (filePath) => (/\.(woff2?|ttf|otf|eot)$/i.test(filePath) ? false : undefined),
-    // Keep readable stacks in Sentry despite minification.
-    sourcemap: true,
-    // The Shiki grammar chunks are legitimately large; raise the warning
-    // threshold so real regressions still surface.
+    // Emitted for symbolicating Sentry stacks, but "hidden" (no
+    // sourceMappingURL comment) and moved out of dist/ by
+    // relocateSourcemaps() so they never ship inside the app bundle.
+    // Nothing uploads them yet; Sentry needs an upload step for that.
+    sourcemap: "hidden",
+    // A few vendor chunks (CodeMirror, ghostty-web) are legitimately
+    // large; raise the warning threshold so real regressions still surface.
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
