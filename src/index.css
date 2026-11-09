@@ -3,6 +3,11 @@
 /* ---------- Design tokens (from the rebuild plan: Theming) ---------- */
 
 @theme {
+  /* Tailwind's spacing step is `0.25rem`, but the root font is 13px (the
+     body size), which made every h-7 / px-3 / gap-2 13/16 of the design's
+     px (a 28px button rendered 22.75px). Pin the step to 4px so utilities
+     mean what the artboards say. */
+  --spacing: 4px;
   /* Option A "Mission Control" — Inter 13/1.45 body, JetBrains Mono 12.
      Both are bundled (@fontsource files, declared in src/fonts.css) so the app renders
      the same offline; system stacks remain as fallbacks. */
@@ -195,8 +200,8 @@
   --radius-full: 999px;
 
   /* Layout (A-Workspace). */
-  --layout-sidebar-width: 264px;
-  --layout-inspector-width: 280px; /* A-Workspace inspector */
+  --layout-sidebar-width: 248px; /* Main / A-Workspace aside */
+  --layout-inspector-width: 320px; /* A-Workspace: 280px content + 20px padding each side */
   --layout-rail-left: 48px;
   --layout-rail-right: 40px;
   --layout-header-height: 44px;
