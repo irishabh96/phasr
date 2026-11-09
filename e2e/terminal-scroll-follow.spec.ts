@@ -7,7 +7,24 @@ import {
   ptyBurst,
   ptyOut,
   terminal,
+  waitForCall,
 } from "./harness";
+
+/**
+ * The surface can be ready before the agent's PTY channel is, and output
+ * sent in between goes nowhere. Wait for both before feeding it.
+ */
+async function ptyReady(page: Page) {
+  await expectBackend(page);
+  await waitForCall(page, "open_task_terminal", 15_000);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as any).__E2E__.channelKeys() as string[]).includes("ws-agent"),
+      ),
+    )
+    .toBe(true);
+}
 
 /**
  * Scrolling while an agent streams — the 0.4.0 field reports.
@@ -88,7 +105,7 @@ test("streaming output never moves a scrolled viewport; a keypress snaps it back
   page.on("pageerror", (e) => errors.push(e.message));
 
   const boot = await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
   const id = await surfaceId(page);
 
@@ -139,7 +156,7 @@ test("scrollback holds thousands of rows, not the old ~1,100-row byte floor", as
   page,
 }) => {
   const boot = await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   const id = await surfaceId(page);
 
   // 4,000 numbered lines. Before the units fix the engine's default
@@ -176,7 +193,7 @@ test("a double-click beside the grid neither starts a DOM selection nor eats typ
   page,
 }) => {
   const boot = await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
   const id = await surfaceId(page);
 

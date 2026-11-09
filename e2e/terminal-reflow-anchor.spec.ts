@@ -7,6 +7,7 @@ import {
   ptyBurst,
   ptyOut,
   terminal,
+  waitForCall,
 } from "./harness";
 
 /**
@@ -298,17 +299,18 @@ async function settle(page: Page) {
  * the recording showed the Changes panel, and the answer turned out to be
  * "either, it is the width that matters".
  */
+// The right-hand panel is the task Inspector now (it holds the Changes
+// summary); its collapse/expand control swaps between these two names.
+const INSPECTOR_TOGGLE = /^(Collapse|Show) inspector$/;
+
 const TRIGGERS = {
   "changes panel": async (page: Page) => {
-    await page
-      .getByRole("button", { name: /^(Show|Hide) changes$/ })
-      .first()
-      .click();
+    await page.getByRole("button", { name: INSPECTOR_TOGGLE }).first().click();
     await settle(page);
   },
   "left sidebar": async (page: Page) => {
-    // The collapse control is icon-only with a tooltip and no accessible
-    // name, so drive it the way the user does.
+    // ⌘B collapses the task list to its rail and back — the way the user
+    // does it.
     await page.keyboard.press("Meta+b");
     await settle(page);
   },
@@ -316,9 +318,26 @@ const TRIGGERS = {
 
 const toggleChangesPanel = TRIGGERS["changes panel"];
 
+/**
+ * The surface can be ready before the agent's PTY channel is: output sent
+ * in between goes nowhere, and a seed that silently loses its blank
+ * history no longer has the shape this spec is about. Wait for both.
+ */
+async function ptyReady(page: Page) {
+  await expectBackend(page);
+  await waitForCall(page, "open_task_terminal", 15_000);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as any).__E2E__.channelKeys() as string[]).includes("ws-agent"),
+      ),
+    )
+    .toBe(true);
+}
+
 async function boot(page: Page) {
   await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
   await seedDriftableScreen(page);
 }
@@ -486,9 +505,7 @@ test("an open/close faster than the settle is a no-op", async ({ page }) => {
   await clearCalls(page);
   const before = await read(page);
 
-  const changes = page
-    .getByRole("button", { name: /^(Show|Hide) changes$/ })
-    .first();
+  const changes = page.getByRole("button", { name: INSPECTOR_TOGGLE }).first();
   await changes.click();
   await changes.click();
   await settle(page);
@@ -816,7 +833,7 @@ test.describe("what a toggle looks like while it happens", () => {
     page,
   }) => {
     const { errors } = await bootApp(page);
-    await expectBackend(page);
+    await ptyReady(page);
     await terminal(page).click();
     await seedColouredScreen(page);
     await page.waitForTimeout(700); // past the mount's trailing refits

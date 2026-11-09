@@ -239,6 +239,18 @@ export function makeFixtures() {
 function installMock(cfg: ReturnType<typeof makeFixtures>) {
   const f = cfg;
   localStorage.setItem("phasr.auth.desktopSession", JSON.stringify(f.session.desktopSession));
+  // The suite runs at 1280px, the A-Compact width; specs assume both side
+  // panels open unless they fold them. A spec testing auto-collapse sets
+  // `fixtures.autoCollapse = true`.
+  if (!(f as any).autoCollapse) localStorage.setItem("phasr.autoCollapse", "off");
+  // Cold launch reopens the last task (the board is "/" otherwise). Specs
+  // that want the board set `fixtures.landing = "board"`.
+  if ((f as any).landing !== "board" && !localStorage.getItem("phasr.lastWorkspace")) {
+    localStorage.setItem(
+      "phasr.lastWorkspace",
+      JSON.stringify({ repositoryId: "repo-1", workspaceId: "ws-agent" }),
+    );
+  }
 
   const listeners: Record<string, Array<(e: unknown) => void>> = {};
   const channels: Record<string, { onmessage?: (m: unknown) => void }> = {};
@@ -390,6 +402,12 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       }
       if (cmd === "plugin:event|unlisten") return Promise.resolve();
       if (cmd.startsWith("plugin:")) {
+        // A spec can stand in for a native plugin (e.g. the folder picker,
+        // `plugin:dialog|open`) via setResponse/overrides.
+        if (cmd in overrides) {
+          calls.push({ cmd, args });
+          return Promise.resolve(overrides[cmd]);
+        }
         // opener/dialog/notification/etc — benign, resolve falsy
         if (cmd.includes("is_permission_granted")) return Promise.resolve("granted");
         return Promise.resolve(null);
@@ -421,7 +439,11 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
 export async function bootApp(page: Page, fixtures = makeFixtures()) {
   const errors: string[] = [];
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(m.text());
+    if (m.type() !== "error") return;
+    // A resource 404 names its URL only in the location (e.g. the dev
+    // server's missing /favicon.ico) — carry it so BENIGN filters can see it.
+    const text = m.text();
+    errors.push(text.startsWith("Failed to load resource") ? `${text} [${m.location().url}]` : text);
   });
   page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
   await page.addInitScript(installMock, fixtures);

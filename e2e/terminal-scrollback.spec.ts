@@ -9,6 +9,22 @@ import {
 } from "./harness";
 
 /**
+ * The surface can be ready before the agent's PTY channel is, and output
+ * sent in between goes nowhere. Wait for both before feeding it.
+ */
+async function ptyReady(page: Page) {
+  await expectBackend(page);
+  await waitForCall(page, "open_task_terminal", 15_000);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as any).__E2E__.channelKeys() as string[]).includes("ws-agent"),
+      ),
+    )
+    .toBe(true);
+}
+
+/**
  * A changed `terminalScrollback` applies to LIVE terminals.
  *
  * ghostty-web ignores a post-`open()` scrollback write (`handleOptionChange`
@@ -57,7 +73,7 @@ test("shrinking terminalScrollback truncates a live terminal's history", async (
   });
 
   const boot = await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
 
   const lines: string[] = [];

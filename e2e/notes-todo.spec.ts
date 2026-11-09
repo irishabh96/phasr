@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { bootApp, makeFixtures, calls } from "./harness";
 
+// Note rows in the Notes pane. The inspector has list items of its own
+// (changes, run commands), so rows are the list items holding a note.
+const noteRows = (page: Page) =>
+  page.getByRole("listitem").filter({ has: page.getByRole("article") });
+
 async function openNotes(page: Page, fixtures = makeFixtures()) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await bootApp(page, fixtures);
@@ -19,7 +24,7 @@ test("checking a note fires set_note_done and does NOT move the row", async ({
   page,
 }) => {
   await openNotes(page);
-  const rows = page.getByRole("listitem");
+  const rows = noteRows(page);
   const firstText = (await rows.nth(0).innerText()).slice(0, 30);
 
   const box = rows.nth(0).getByRole("checkbox");
@@ -40,7 +45,7 @@ test("the row settles into Done WITHOUT the pointer leaving", async ({
   page,
 }) => {
   await openNotes(page);
-  const rows = page.getByRole("listitem");
+  const rows = noteRows(page);
   await rows.nth(0).getByRole("checkbox").click();
 
   // Regression: settle used to wait for the pointer to leave the panel.
@@ -55,22 +60,25 @@ test("the row settles into Done WITHOUT the pointer leaving", async ({
   await page.waitForTimeout(300);
 });
 
-test("tab count shows open notes only", async ({ page }) => {
+test("notes count shows open notes only", async ({ page }) => {
   await openNotes(page);
-  const tab = page.getByRole("button", { name: /^Notes/ });
-  await expect(tab).toContainText("2");
-  await page.getByRole("listitem").nth(0).getByRole("checkbox").click();
-  await expect(tab).toContainText("1");
+  // The inspector's NOTES "View all N" link is where the count lives now.
+  const tab = page.getByRole("button", { name: "Repository notes" });
+  await expect(tab).toHaveText("View all 2");
+  await noteRows(page).nth(0).getByRole("checkbox").click();
+  await expect(tab).toHaveText("View all 1");
 });
 
 test("a done row shows exactly ONE stamp on hover", async ({ page }) => {
   await openNotes(page);
-  await page.getByRole("listitem").nth(0).getByRole("checkbox").click();
+  await noteRows(page).nth(0).getByRole("checkbox").click();
   await page.waitForTimeout(1000); // settle into Done
-  await page.getByRole("button", { name: /^Done/ }).click();
+  const doneToggle = page.getByRole("button", { name: /^Done/ });
+  await doneToggle.click();
+  await expect(doneToggle).toHaveAttribute("aria-expanded", "true");
   await page.waitForTimeout(250);
 
-  const doneRow = page.getByRole("listitem").last();
+  const doneRow = noteRows(page).last();
   await doneRow.hover();
   await page.waitForTimeout(250);
 
@@ -137,7 +145,7 @@ test("the editor is sized to its content, not inflated", async ({ page }) => {
     page.getByRole("button", { name: "New note" }).first(),
   ).toBeVisible();
 
-  const row = page.getByRole("listitem").nth(0);
+  const row = noteRows(page).nth(0);
   await row.getByText("hei").dblclick();
   await expect(row.getByRole("textbox")).toBeVisible();
 

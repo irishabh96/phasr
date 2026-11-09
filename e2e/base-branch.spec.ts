@@ -14,6 +14,7 @@ import {
   setResponse,
   clearCalls,
   waitForCall,
+  expectBackend,
 } from "./harness";
 
 const BENIGN =
@@ -26,6 +27,9 @@ function realErrors(errors: string[]) {
 async function boot(page: Page, fixtures = makeFixtures()) {
   const res = await bootApp(page, fixtures);
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  // The restored task's agent terminal takes focus once it is up; let that
+  // settle so it can't land mid-test (e.g. pull focus out of an open modal).
+  await expectBackend(page);
   return res;
 }
 
@@ -34,9 +38,14 @@ async function argsFor(page: Page, cmd: string) {
   return all.filter((c) => c.cmd === cmd).map((c) => c.args);
 }
 
+// In a task session the sidebar header's "+" opens New task for its repo
+// (the per-repo "+" lives in the board's Repositories footer).
 async function openModal(page: Page) {
-  await page.getByRole("button", { name: "New workspace in phasr" }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
+  await page
+    .getByRole("complementary", { name: "Sidebar" })
+    .getByRole("button", { name: "New task", exact: true })
+    .click();
+  await expect(page.getByRole("dialog", { name: "New task · phasr" })).toBeVisible();
 }
 
 const field = (page: Page) => page.locator("#new-task-base-branch");

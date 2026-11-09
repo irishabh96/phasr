@@ -30,7 +30,10 @@ test.describe("design-fix validation (/design-test)", () => {
       };
     });
     page.on("console", (m) => {
-      if (m.type() === "error" && !BENIGN.test(m.text())) consoleErrors.push(m.text());
+      // A resource 404 names its URL only in the location (e.g. the dev
+      // server's missing /favicon.ico), so filter on that too.
+      if (m.type() === "error" && !BENIGN.test(m.text()) && !BENIGN.test(m.location().url))
+        consoleErrors.push(m.text());
     });
     await page.goto("/design-test");
     await expect(page.getByRole("heading", { name: "Design test harness" })).toBeVisible();
@@ -47,27 +50,58 @@ test.describe("design-fix validation (/design-test)", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   });
 
-  // Batch 0 T1 — primary CTA text is the dark accent-onfill ink (#010409) in
-  // BOTH themes, so it clears AA on the theme-invariant coral fill.
-  test("T1: primary button uses accent-onfill (#010409) text in both themes", async ({
-    page,
-  }) => {
+  // A-System: primary CTA ink is --color-accent-onfill — dark bg-0 ink on the
+  // bright dark-theme coral, white on the darker light-theme coral (#C94F2E),
+  // each clearing 4.5:1 on its fill.
+  test("T1: primary button ink follows accent-onfill per theme", async ({ page }) => {
     const btn = page.getByTestId("btn-primary");
+    const expected = { dark: "rgb(11, 13, 16)", light: "rgb(255, 255, 255)" } as const;
     for (const theme of ["light", "dark"] as const) {
       await setTheme(page, theme);
-      const color = await btn.evaluate((el) => getComputedStyle(el).color);
-      expect(color, `primary text color in ${theme}`).toBe("rgb(1, 4, 9)");
+      // The button transitions its colours, so a single read right after the
+      // flip can land mid-fade — poll until it settles on the token.
+      await expect
+        .poll(() => btn.evaluate((el) => getComputedStyle(el).color), {
+          message: `primary text color in ${theme}`,
+        })
+        .toBe(expected[theme]);
     }
   });
 
-  // Batch 0 T2 — danger fill is the darker --color-danger-solid so white text
-  // clears AA. Dark theme = #c93c37 = rgb(201, 60, 55).
-  test("T2: danger button fill is danger-solid in dark theme", async ({ page }) => {
+  // A-System: Danger is a tint (Stop, Discard); the solid red fill is the
+  // confirm step of a destructive dialog, white text on #c93c37.
+  test("T2: danger is tinted; danger-solid keeps the solid fill", async ({ page }) => {
     await setTheme(page, "dark");
-    const bg = await page
-      .getByTestId("btn-danger")
-      .evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(bg).toBe("rgb(201, 60, 55)");
+    const tinted = page.getByTestId("btn-danger");
+    expect(await tinted.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(240, 107, 107)");
+    expect(await tinted.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(31, 21, 22)");
+    const solid = page.getByTestId("btn-danger-solid");
+    expect(await solid.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(201, 60, 55)");
+  });
+
+  test("accent picker recolours the accent tokens", async ({ page }) => {
+    await setTheme(page, "dark");
+    const accent500 = () =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--color-accent-500").trim().toLowerCase(),
+      );
+    await page.getByTestId("accent-blue").click();
+    await expect(page.locator("html")).toHaveAttribute("data-accent", "blue");
+    expect(await accent500()).toBe("#4f8cff");
+    await page.getByTestId("accent-coral").click();
+    expect(await accent500()).toBe("#e0674a");
+  });
+
+  test("surfaces are flat — nothing blurs what is behind it", async ({ page }) => {
+    await page.getByTestId("open-dialog").click();
+    const blurred = await page.evaluate(() =>
+      [...document.querySelectorAll("*")].filter((el) => {
+        const cs = getComputedStyle(el);
+        const f = cs.backdropFilter || (cs as unknown as { webkitBackdropFilter?: string }).webkitBackdropFilter;
+        return f && f !== "none";
+      }).length,
+    );
+    expect(blurred).toBe(0);
   });
 
   // Batch 1 — keyboard focus shows the standardized --ring-focus ring.

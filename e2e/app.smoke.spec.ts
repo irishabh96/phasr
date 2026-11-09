@@ -25,64 +25,53 @@ test("boots the authenticated shell to a workspace", async ({ page }) => {
   expect(real, real.join("\n---\n")).toHaveLength(0);
 });
 
-test("sidebar activity dot marks the running workspace, and only it", async ({ page }) => {
+test("sidebar groups the running task under Running, and only it", async ({ page }) => {
   await bootApp(page);
   const sidebar = page.getByRole("complementary", { name: "Sidebar" });
   await expect(
-    sidebar.getByText("add-feature", { exact: true }),
+    sidebar.getByRole("link").filter({ hasText: "add-feature" }),
   ).toBeVisible({ timeout: 20000 });
 
-  // Exactly one dot in the tree, and it lives in the running row.
-  await expect(sidebar.locator('[aria-label="running"]')).toHaveCount(1);
-  await expect(
-    sidebar
-      .getByRole("link")
-      .filter({ hasText: "add-feature" })
-      .locator('[aria-label="running"]'),
-  ).toBeVisible();
+  // The status glyph replaced the activity dot: the task list groups rows by
+  // what they need. Exactly one row is in Running, and it is the running one.
+  const running = sidebar.getByRole("region", { name: "Running", exact: true });
+  await expect(running.getByRole("link")).toHaveCount(1);
+  await expect(running.getByRole("link")).toContainText("add-feature");
 
-  // Resting workspaces get no dot at all — not a grey/green one.
-  for (const status of ["completed", "stopped", "failed", "pending"]) {
-    await expect(sidebar.locator(`[aria-label="${status}"]`)).toHaveCount(0);
+  // The finished task (worktree has changes) waits for review — not Running.
+  const review = sidebar.getByRole("region", { name: "Needs review", exact: true });
+  await expect(review.getByRole("link").filter({ hasText: "fix-bug" })).toBeVisible();
+
+  // The in-place local checkout is not a task: it never appears in a group.
+  for (const group of ["Running", "Needs review", "Failed", "Queued", "Done · today"]) {
+    await expect(
+      sidebar.getByRole("region", { name: group, exact: true }).getByRole("link").filter({ hasText: /^local/ }),
+    ).toHaveCount(0);
   }
 });
 
-test("repo row toggles its tree when it has workspaces, navigates when empty", async ({ page }) => {
-  await bootApp(page);
-  const sidebar = page.getByRole("complementary", { name: "Sidebar" });
-  const phasrRow = sidebar.getByRole("button", { name: "phasr", exact: true });
-  const workspace = sidebar.getByText("add-feature", { exact: true });
-
-  await expect(workspace).toBeVisible({ timeout: 20000 });
-
-  // With workspaces, the whole row is the tree toggle.
-  await phasrRow.click();
-  await expect(workspace).toBeHidden();
-  await expect(phasrRow).toHaveAttribute("aria-expanded", "false");
-  await phasrRow.click();
-  await expect(workspace).toBeVisible();
-  await expect(phasrRow).toHaveAttribute("aria-expanded", "true");
-
-  // Without workspaces, the row still navigates to the repo entry.
-  await sidebar
-    .getByRole("button", { name: "sidecar", exact: true })
-    .click();
-  await expect(page).toHaveURL(/repositories\/repo-2/);
-});
-
-test("sidebar activity dot goes out after prolonged terminal silence", async ({ page }) => {
+test("repository footer row toggles the repo filter on the board", async ({ page }) => {
   const f = makeFixtures();
-  // Still `running`, but its terminal has been silent past the 10-minute
-  // activity timeout — the dot must not show.
-  (f as { overrides?: Record<string, unknown> }).overrides = {
-    list_task_activity: [
-      { taskId: "ws-agent", lastOutputAt: Date.now() - 11 * 60_000 },
-    ],
-  };
+  (f as { landing?: string }).landing = "board";
   await bootApp(page, f);
   const sidebar = page.getByRole("complementary", { name: "Sidebar" });
-  await expect(
-    sidebar.getByText("add-feature", { exact: true }),
-  ).toBeVisible({ timeout: 20000 });
-  await expect(sidebar.locator('[aria-label="running"]')).toHaveCount(0);
+  const repos = sidebar.getByRole("navigation", { name: "Repositories" });
+  const phasrRow = repos.getByRole("button", { name: "phasr", exact: true });
+  const task = sidebar.getByRole("navigation", { name: "Tasks" }).getByText("add-feature", { exact: true });
+
+  await expect(task).toBeVisible({ timeout: 20000 });
+
+  // A repo with tasks: the row narrows the list to it, and toggles back off.
+  await phasrRow.click();
+  await expect(phasrRow).toHaveAttribute("aria-pressed", "true");
+  await expect(task).toBeVisible();
+  await phasrRow.click();
+  await expect(phasrRow).toHaveAttribute("aria-pressed", "false");
+
+  // A repo with no tasks: its filter empties the list instead of navigating.
+  const sidecar = repos.getByRole("button", { name: "sidecar", exact: true });
+  await sidecar.click();
+  await expect(sidecar).toHaveAttribute("aria-pressed", "true");
+  await expect(task).toBeHidden();
+  await expect(page).not.toHaveURL(/repositories\//);
 });

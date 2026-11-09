@@ -20,6 +20,7 @@ import {
   callNames,
   clearCalls,
   emit,
+  expectBackend,
   setResponse,
   waitForCall,
 } from "./harness";
@@ -37,7 +38,35 @@ function realErrors(errors: string[]) {
 async function boot(page: Page, fixtures = makeFixtures()) {
   const res = await bootApp(page, fixtures);
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
+  // The restored task's agent terminal takes focus once it is up; let that
+  // settle so it can't land mid-test (e.g. pull focus out of an open modal).
+  await expectBackend(page);
   return res;
+}
+
+/** Sidebar header "+" → New task modal for the current task's repository. */
+async function openNewTask(page: Page, repo = "phasr") {
+  await page
+    .getByRole("complementary", { name: "Sidebar" })
+    .getByRole("button", { name: "New task", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: `New task · ${repo}` });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+/** Settings is a sheet over any route (`?settings=<section>`). Land on the
+ *  board (not the restored task) so the sheet is the only thing loading. */
+async function gotoSettings(page: Page, section: string) {
+  const f = makeFixtures();
+  (f as { landing?: string }).landing = "board";
+  const res = await bootApp(page, f);
+  await page.goto(`/?settings=${section}`);
+  const sheet = page.getByRole("dialog", { name: "Settings" });
+  await expect(sheet.getByRole("navigation", { name: "Settings sections" })).toBeVisible({
+    timeout: 20_000,
+  });
+  return { ...res, sheet };
 }
 
 /** All recorded args for a given command, newest-last. */
@@ -48,66 +77,74 @@ async function argsFor(page: Page, cmd: string) {
 
 // ───────────────────────────────────────────────────────────────────────────
 // NEW TASK FORM  (sidebar "+" → NewTaskModal → start_task)
-// The app shell mounts NewTaskModal (NOT NewWorkspaceModal), so the per-repo
-// "+" opens the task form which calls start_task.
+// The app shell mounts NewTaskModal, so the sidebar's "+" (and ⌘N) opens
+// the task form which calls start_task.
 // ───────────────────────────────────────────────────────────────────────────
 test.describe("New task form (NewTaskModal)", () => {
   test("renders all fields; base branch pre-filled; agent command shown", async ({
     page,
   }) => {
     const { errors } = await boot(page);
-    await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    const dialog = await openNewTask(page);
 
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByText("New task · phasr")).toBeVisible();
-
+    // Prompt first, then the (optional) name.
+    await expect(page.locator("#new-task-prompt")).toBeVisible();
     await expect(page.locator("#new-task-name")).toBeVisible();
     await expect(page.locator("#new-task-agent")).toBeVisible();
-    await expect(page.locator("#new-task-prompt")).toBeVisible();
     // Base branch seeded from the repo's default branch.
     await expect(page.locator("#new-task-base-branch")).toHaveValue("main");
-    // Agent select defaults to the default agent and prints its command.
-    await expect(page.locator("#new-task-agent")).toHaveValue("claude");
-    await expect(dialog.getByText("claude", { exact: true })).toBeVisible();
+    // The agent picker defaults to the default agent; the plan prints its command.
+    await expect(dialog.getByRole("radio", { name: "Claude" })).toHaveAttribute("aria-checked", "true");
+    await expect(
+      dialog.getByRole("list", { name: "What Phasr will run" }).getByText("claude", { exact: true }),
+    ).toBeVisible();
 
-    // GlassSelect is a real <select> (keyboard-operable natively).
+    // The agent picker is a real radiogroup of buttons (keyboard-operable natively).
+    const agentGroup = page.locator("#new-task-agent");
+    expect(await agentGroup.getAttribute("role")).toBe("radiogroup");
     expect(
-      await page.locator("#new-task-agent").evaluate((el) => el.tagName),
-    ).toBe("SELECT");
+      await agentGroup.getByRole("radio").evaluateAll((els) => els.map((el) => el.tagName)),
+    ).toEqual(["BUTTON", "BUTTON", "BUTTON"]);
 
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
 
-  test("required-field: submit disabled until name present", async ({
+  test("required-field: submit disabled until a name or prompt is present", async ({
     page,
   }) => {
     await boot(page);
-    await page.getByRole("button", { name: "New workspace in phasr" }).click();
-    const submit = page.getByRole("button", { name: "Start task" });
+    await openNewTask(page);
+    const submit = page.getByRole("button", { name: "Start task", exact: true });
     await expect(submit).toBeDisabled();
     await page.locator("#new-task-name").fill("fix login redirect");
     await expect(submit).toBeEnabled();
     // Whitespace-only is still "empty".
     await page.locator("#new-task-name").fill("   ");
     await expect(submit).toBeDisabled();
+    // The name is optional: a prompt alone names the task.
+    await page.locator("#new-task-prompt").fill("Repair the redirect loop");
+    await expect(submit).toBeEnabled();
+    await page.locator("#new-task-prompt").fill("   ");
+    await expect(submit).toBeDisabled();
   });
 
-  test("agent select + Enter submit → start_task with right args → navigates", async ({
+  test("agent pick + Enter submit → start_task with right args → navigates", async ({
     page,
   }) => {
     const { errors } = await boot(page);
-    await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    const dialog = await openNewTask(page);
     await clearCalls(page);
 
-    await page.locator("#new-task-name").fill("fix login redirect");
-    await page.locator("#new-task-agent").selectOption("codex");
     await page.locator("#new-task-prompt").fill("Repair the redirect loop");
+    await page.locator("#new-task-name").fill("fix login redirect");
+    await dialog.getByRole("radio", { name: "Codex" }).click();
+    await expect(dialog.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true");
     // Enter inside the name input submits the form.
     await page.locator("#new-task-name").press("Enter");
 
     await waitForCall(page, "start_task");
     const [args] = await argsFor(page, "start_task");
+    // Defaults (permissions / notify / runs-in) are not sent.
     expect(args).toEqual({
       input: {
         repositoryId: "repo-1",
@@ -126,13 +163,13 @@ test.describe("New task form (NewTaskModal)", () => {
     page,
   }) => {
     const { errors } = await boot(page);
-    await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    await openNewTask(page);
     await setResponse(page, "start_task", {
       __reject: "fatal: a branch already exists",
     });
 
     await page.locator("#new-task-name").fill("dup task");
-    await page.getByRole("button", { name: "Start task" }).click();
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
 
     // Humanized ("already exists" → destination copy), inline, non-crashing.
     await expect(page.getByText(/destination already exists/i)).toBeVisible();
@@ -150,7 +187,7 @@ test.describe("New task form (NewTaskModal)", () => {
     page,
   }) => {
     await boot(page);
-    await page.getByRole("button", { name: "New workspace in phasr" }).click();
+    await openNewTask(page);
     // Keep the modal open (no navigation) so both clicks land on the button.
     await setResponse(page, "start_task", { __reject: "held-open-unique" });
     await page.locator("#new-task-name").fill("race task");
@@ -158,7 +195,7 @@ test.describe("New task form (NewTaskModal)", () => {
 
     // Two synchronous clicks before React can disable the button.
     await page
-      .getByRole("button", { name: "Start task" })
+      .getByRole("button", { name: "Start task", exact: true })
       .evaluate((el: HTMLButtonElement) => {
         el.click();
         el.click();
@@ -174,12 +211,12 @@ test.describe("New task form (NewTaskModal)", () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// RENAME WORKSPACE  (sidebar right-click → Rename… → update_workspace)
+// RENAME WORKSPACE  (task list right-click → Rename… → update_workspace)
 // ───────────────────────────────────────────────────────────────────────────
 test.describe("Rename workspace modal", () => {
   async function openRename(page: Page) {
     const row = page
-      .locator('nav[aria-label="Repositories"]')
+      .locator('nav[aria-label="Tasks"]')
       .getByText("add-feature", { exact: true });
     await row.click({ button: "right" });
     await page.getByRole("menuitem", { name: "Rename…" }).click();
@@ -260,43 +297,47 @@ test.describe("Rename workspace modal", () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// ONBOARDING — Create-first-workspace pane (repo with zero workspaces)
+// ONBOARDING — a repository with no tasks yet (board empty state), and
+// opening an existing non-git folder (GitInitConfirmModal)
 // ───────────────────────────────────────────────────────────────────────────
-test.describe("Create first workspace pane", () => {
-  // Navigate CLIENT-SIDE to repo-2 (no workspaces) so we can also cover the
-  // git-init override without a reload wiping it.
-  async function gotoRepo2(page: Page) {
-    await page.locator('[aria-label="sidecar"]').first().click();
-  }
 
-  test("two-step flow → start_task with base branch; Esc on step 2 steps back", async ({
+/** Title bar "Board" — client-side, so live `setResponse` overrides survive. */
+async function gotoBoard(page: Page) {
+  // Let the restored task finish rendering first: leaving it while its route
+  // is still pending leaves "/" blank (see report — app-side race).
+  await expect(page.getByRole("tablist", { name: "Workspace tabs" })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Board" }).click();
+  await expect(page.getByRole("heading", { name: "Board", level: 1 })).toBeVisible({ timeout: 15_000 });
+}
+
+test.describe("First task in an empty repository", () => {
+  test("empty repo board → New task → start_task for that repo with its base branch; Esc closes", async ({
     page,
   }) => {
     const { errors } = await boot(page);
-    await gotoRepo2(page);
-    await expect(
-      page.getByRole("heading", { name: "Create your first workspace" }),
-    ).toBeVisible({ timeout: 15_000 });
+    await gotoBoard(page);
+    // Narrow the board to repo-2 (no tasks) from the Repositories footer.
+    await page
+      .getByRole("navigation", { name: "Repositories" })
+      .getByRole("button", { name: "sidecar", exact: true })
+      .click();
+    const empty = page.locator("main").getByRole("heading", { name: "Give an agent its first task" });
+    await expect(empty).toBeVisible({ timeout: 15_000 });
+    const cta = empty.locator("..").getByRole("button", { name: /^New task/ });
 
-    await page.locator("#first-task-name").fill("add dark mode");
-    const cont = page.getByRole("button", { name: /Continue/ });
-    await expect(cont).toBeEnabled(); // gated on confirmed git repo
-    await cont.click();
-
-    await expect(
-      page.getByRole("heading", { name: "Pick an agent and prompt" }),
-    ).toBeVisible();
-
-    // Esc steps back to step 1 (E4).
+    // Esc dismisses the modal without starting anything.
+    await cta.click();
+    await expect(page.getByRole("dialog", { name: "New task · sidecar" })).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(
-      page.getByRole("heading", { name: "Create your first workspace" }),
-    ).toBeVisible();
+    await expect(page.getByRole("dialog")).toBeHidden();
+    expect(await argsFor(page, "start_task")).toHaveLength(0);
 
-    // Forward again and start.
-    await page.getByRole("button", { name: /Continue/ }).click();
+    await cta.click();
+    await expect(page.getByRole("dialog", { name: "New task · sidecar" })).toBeVisible();
+    await page.locator("#new-task-name").fill("add dark mode");
+    await expect(page.locator("#new-task-base-branch")).toHaveValue("main");
     await clearCalls(page);
-    await page.getByRole("button", { name: "Start task" }).click();
+    await page.getByRole("button", { name: "Start task", exact: true }).click();
 
     await waitForCall(page, "start_task");
     const [args] = await argsFor(page, "start_task");
@@ -311,47 +352,48 @@ test.describe("Create first workspace pane", () => {
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
 
-  test("non-git repo shows banner → GitInitConfirmModal → git_init_repository; failure keeps dialog open", async ({
+  test("open existing non-git folder → GitInitConfirmModal → git_init_repository; failure keeps dialog open", async ({
     page,
   }) => {
     const { errors } = await boot(page);
-    // Override BEFORE client-side nav so the mount-time validate returns non-git.
+    await gotoBoard(page);
+    // The native folder picker returns a folder that isn't a git repo yet.
+    await setResponse(page, "plugin:dialog|open", "/Users/test/code/fresh");
     await setResponse(page, "validate_workspace_path", {
-      path: "/Users/test/code/sidecar",
-      absolutePath: "/Users/test/code/sidecar",
+      path: "/Users/test/code/fresh",
+      absolutePath: "/Users/test/code/fresh",
       exists: true,
       isDir: true,
       isGitRepo: false,
       message: null,
     });
-    await page.locator('[aria-label="sidecar"]').first().click();
+    await page.getByRole("button", { name: "Add repository" }).click();
+    await page.getByRole("dialog").getByText("Open existing").click();
 
-    await expect(page.getByText(/isn't a git repository/)).toBeVisible({
-      timeout: 15_000,
-    });
-    await page.getByRole("button", { name: "Initialize git" }).click();
-
-    const dialog = page.getByRole("dialog");
-    await expect(dialog.getByText("Initialize Git repository?")).toBeVisible();
+    const dialog = page.getByRole("dialog", { name: "Initialize Git repository?" });
+    await expect(dialog).toBeVisible({ timeout: 15_000 });
+    const [created] = await argsFor(page, "create_repository");
+    expect(created).toEqual({ input: { name: "fresh", localPath: "/Users/test/code/fresh" } });
 
     // Failure path first: inline humanized error, dialog stays open.
     await setResponse(page, "git_init_repository", {
       __reject: "could not resolve host github.com",
     });
-    await page.getByRole("button", { name: "Initialize Git" }).click();
+    await dialog.getByRole("button", { name: "Initialize Git" }).click();
     await expect(dialog.getByText(/Network error/i)).toBeVisible();
     await expect(dialog).toBeVisible();
 
-    // Success path: clear override → real git_init_repository fires.
+    // Success path: the real git_init_repository fires for the new repo.
     await setResponse(page, "git_init_repository", {
-      id: "repo-2",
-      name: "sidecar",
+      id: "repo-new",
+      name: "fresh",
     });
     await clearCalls(page);
-    await page.getByRole("button", { name: "Initialize Git" }).click();
+    await dialog.getByRole("button", { name: "Initialize Git" }).click();
     await waitForCall(page, "git_init_repository");
     const [args] = await argsFor(page, "git_init_repository");
-    expect(args).toEqual({ id: "repo-2" });
+    expect(args).toEqual({ id: "repo-new" });
+    await expect(dialog).toBeHidden();
 
     const bad = errors.filter((e) => e.startsWith("PAGEERROR:"));
     expect(bad, bad.join("\n")).toHaveLength(0);
@@ -359,14 +401,15 @@ test.describe("Create first workspace pane", () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// ADD REPOSITORY PICKER
+// ADD REPOSITORY PICKER  (board → Repositories footer → Add repository)
 // ───────────────────────────────────────────────────────────────────────────
 test.describe("Add repository picker", () => {
   test("fans out to New project (navigates) and closes on Esc", async ({
     page,
   }) => {
     await boot(page);
-    await page.getByRole("button", { name: "Add repository" }).first().click();
+    await gotoBoard(page);
+    await page.getByRole("button", { name: "Add repository" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByText("Add a repository")).toBeVisible();
     await expect(dialog.getByText("New project")).toBeVisible();
@@ -377,7 +420,7 @@ test.describe("Add repository picker", () => {
     await expect(page.getByRole("dialog")).toBeHidden();
 
     // Reopen → New project routes to the wizard.
-    await page.getByRole("button", { name: "Add repository" }).first().click();
+    await page.getByRole("button", { name: "Add repository" }).click();
     await page.getByRole("dialog").getByText("New project").click();
     await expect(page).toHaveURL(/\/new-project/, { timeout: 10_000 });
   });
@@ -480,111 +523,110 @@ test.describe("New project pane", () => {
 // SETTINGS — Appearance theme
 // ───────────────────────────────────────────────────────────────────────────
 test.describe("Settings · appearance", () => {
-  test("theme buttons update data-theme + persist to localStorage; rapid toggles don't crash", async ({
+  test("theme tiles update data-theme + persist to localStorage; rapid toggles don't crash", async ({
     page,
   }) => {
-    const { errors } = await bootApp(page);
-    await page.goto("/settings/appearance");
-    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
-      { timeout: 20_000 },
-    );
+    const { errors, sheet } = await gotoSettings(page, "appearance");
+    await expect(sheet.getByRole("heading", { name: "Appearance" })).toBeVisible();
+    const themes = sheet.getByRole("radiogroup", { name: "Theme" });
+    const tile = (name: string) => themes.getByRole("radio", { name, exact: true });
 
-    await page.getByRole("button", { name: "light" }).click();
+    await tile("Light").click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect(tile("Light")).toHaveAttribute("aria-checked", "true");
     expect(await page.evaluate(() => localStorage.getItem("phasr.theme"))).toBe(
       "light",
     );
 
-    await page.getByRole("button", { name: "dark" }).click();
+    await tile("Dark").click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     expect(await page.evaluate(() => localStorage.getItem("phasr.theme"))).toBe(
       "dark",
     );
 
     // system resolves to light/dark; the stored value must be "system".
-    await page.getByRole("button", { name: "system" }).click();
+    await tile("System").click();
     expect(await page.evaluate(() => localStorage.getItem("phasr.theme"))).toBe(
       "system",
     );
 
     // Rapid toggles.
     for (let i = 0; i < 6; i++) {
-      await page
-        .getByRole("button", { name: i % 2 ? "dark" : "light" })
-        .click();
+      await tile(i % 2 ? "Dark" : "Light").click();
     }
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
+});
 
+// Terminal font size lives in the sheet's Terminal section. ⌘0 is the reset.
+test.describe("Settings · terminal", () => {
   test("terminal font size: stepper + ⌘=/⌘-/⌘0 fire update_user_settings and the readout tracks", async ({
     page,
   }) => {
-    const { errors } = await bootApp(page);
-    await page.goto("/settings/appearance");
-    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
-      { timeout: 20_000 },
-    );
-    await expect(page.getByText("13 px")).toBeVisible();
-    // At the default size Reset has nothing to do.
-    await expect(page.getByRole("button", { name: "Reset" })).toBeDisabled();
+    const { errors, sheet } = await gotoSettings(page, "terminal");
+    const readout = sheet.getByRole("status");
+    await expect(readout).toHaveText("13 px");
     await clearCalls(page);
 
-    await page
+    await sheet
       .getByRole("button", { name: "Increase terminal font size" })
       .click();
-    await expect(page.getByText("14 px")).toBeVisible();
+    await expect(readout).toHaveText("14 px");
 
     // Global shortcuts — the dispatcher owns these, not the page.
     await page.keyboard.press("Meta+=");
-    await expect(page.getByText("15 px")).toBeVisible();
+    await expect(readout).toHaveText("15 px");
     await page.keyboard.press("Meta+-");
-    await expect(page.getByText("14 px")).toBeVisible();
+    await expect(readout).toHaveText("14 px");
     await page.keyboard.press("Meta+0");
-    await expect(page.getByText("13 px")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Reset" })).toBeDisabled();
+    await expect(readout).toHaveText("13 px");
 
     const updates = (await calls(page))
       .filter((c) => c.cmd === "update_user_settings")
       .map((c) => c.args?.settings?.baseFontSize);
     expect(updates).toEqual([14, 15, 14, 13]);
+
+    // At the default size the reset has nothing to do — no IPC.
+    await page.keyboard.press("Meta+0");
+    await page.waitForTimeout(250);
+    expect(
+      (await calls(page)).filter((c) => c.cmd === "update_user_settings"),
+    ).toHaveLength(4);
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
 
   test("terminal font size: bounds disable the stepper and edge presses fire no IPC", async ({
     page,
   }) => {
-    const { errors } = await bootApp(page);
-    await page.goto("/settings/appearance");
-    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
-      { timeout: 20_000 },
-    );
-    await expect(page.getByText("13 px")).toBeVisible();
+    const { errors, sheet } = await gotoSettings(page, "terminal");
+    const readout = sheet.getByRole("status");
+    await expect(readout).toHaveText("13 px");
     await clearCalls(page);
 
-    const increase = page.getByRole("button", {
+    const increase = sheet.getByRole("button", {
       name: "Increase terminal font size",
     });
-    const decrease = page.getByRole("button", {
+    const decrease = sheet.getByRole("button", {
       name: "Decrease terminal font size",
     });
 
     // Walk to the ceiling: 13 → 24 is 11 steps.
     for (let s = 14; s <= 24; s++) {
       await increase.click();
-      await expect(page.getByText(`${s} px`)).toBeVisible();
+      await expect(readout).toHaveText(`${s} px`);
     }
     await expect(increase).toBeDisabled();
     // At the bound the shortcut no-ops — the guard fires no IPC at all.
     await page.keyboard.press("Meta+=");
     await page.waitForTimeout(250);
 
-    await page.getByRole("button", { name: "Reset" }).click();
-    await expect(page.getByText("13 px")).toBeVisible();
+    await page.keyboard.press("Meta+0");
+    await expect(readout).toHaveText("13 px");
 
     // Walk to the floor: 13 → 9 is 4 steps.
     for (let s = 12; s >= 9; s--) {
       await decrease.click();
-      await expect(page.getByText(`${s} px`)).toBeVisible();
+      await expect(readout).toHaveText(`${s} px`);
     }
     await expect(decrease).toBeDisabled();
     await page.keyboard.press("Meta+-");
@@ -602,26 +644,25 @@ test.describe("Settings · appearance", () => {
   test("terminal font size: a failed update rolls the readout back", async ({
     page,
   }) => {
-    const { errors } = await bootApp(page);
-    await page.goto("/settings/appearance");
-    await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible(
-      { timeout: 20_000 },
-    );
-    await expect(page.getByText("13 px")).toBeVisible();
+    const { errors, sheet } = await gotoSettings(page, "terminal");
+    const readout = sheet.getByRole("status");
+    await expect(readout).toHaveText("13 px");
     // goto() re-ran the initScript, so the override must be set AFTER it.
     await setResponse(page, "update_user_settings", {
       __reject: "sqlite is on fire",
     });
     await clearCalls(page);
 
-    await page
+    await sheet
       .getByRole("button", { name: "Increase terminal font size" })
       .click();
     await waitForCall(page, "update_user_settings");
 
     // Optimistic 14 flashes, then the rejection rolls the cache back.
-    await expect(page.getByText("13 px")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Reset" })).toBeDisabled();
+    await expect(readout).toHaveText("13 px");
+    await expect(
+      sheet.getByRole("button", { name: "Decrease terminal font size" }),
+    ).toBeEnabled();
     expect(
       (await calls(page)).filter((c) => c.cmd === "update_user_settings"),
     ).toHaveLength(1);
@@ -637,13 +678,13 @@ test.describe("Settings · run commands", () => {
   // the seed rows), so each test asserts the IPC fired with the right args
   // rather than post-mutation UI state.
   async function gotoRepos(page: Page) {
-    await bootApp(page);
-    await page.goto("/settings/repositories");
+    const { sheet } = await gotoSettings(page, "run-commands");
     await expect(
-      page.getByRole("heading", { name: "Run commands", exact: true }),
-    ).toBeVisible({ timeout: 20_000 });
+      sheet.getByRole("heading", { name: "Run commands", exact: true }),
+    ).toBeVisible();
     // repo-1 seed commands render.
-    await expect(page.getByText("pnpm dev", { exact: true })).toBeVisible();
+    // (the "When they run" card repeats the command text — take the list)
+    await expect(sheet.getByRole("list").getByText("pnpm dev", { exact: true })).toBeVisible();
   }
 
   /** The add-command form (scopes the ambiguous "Add" submit). */
@@ -652,11 +693,7 @@ test.describe("Settings · run commands", () => {
 
   test("create → create_run_command with input", async ({ page }) => {
     await gotoRepos(page);
-    // exact:true avoids matching the sidebar's "Add repository". First = phasr.
-    await page
-      .getByRole("button", { name: "Add", exact: true })
-      .first()
-      .click();
+    await page.getByRole("button", { name: "Add command" }).click();
     await page.getByPlaceholder("Name (e.g. Dev)").fill("Lint");
     await page.getByPlaceholder("Command (e.g. npm run dev)").fill("pnpm lint");
     await clearCalls(page);
@@ -674,10 +711,7 @@ test.describe("Settings · run commands", () => {
     page,
   }) => {
     await gotoRepos(page);
-    await page
-      .getByRole("button", { name: "Add", exact: true })
-      .first()
-      .click();
+    await page.getByRole("button", { name: "Add command" }).click();
     const submit = addForm(page).getByRole("button", {
       name: "Add",
       exact: true,
@@ -731,13 +765,10 @@ test.describe("Settings · run commands", () => {
 // ───────────────────────────────────────────────────────────────────────────
 test.describe("Settings · account", () => {
   test("Sign out ends the session and lands on /sign-in", async ({ page }) => {
-    await bootApp(page);
-    await page.goto("/settings/account");
-    await expect(page.getByRole("heading", { name: "Account" })).toBeVisible({
-      timeout: 20_000,
-    });
+    const { sheet } = await gotoSettings(page, "account");
+    await expect(sheet.getByRole("heading", { name: "Account" })).toBeVisible();
 
-    await page.getByRole("button", { name: "Sign out" }).click();
+    await sheet.getByRole("button", { name: "Sign out" }).click();
     // signOutDesktopSession() → clear_session + navigation to the sign-in gate.
     await page.waitForURL(/\/sign-in/, { timeout: 15_000 });
   });
@@ -763,7 +794,7 @@ test.describe("Completion notifications", () => {
     // Ensure the sidebar workspace cache is populated so the name resolves.
     await expect(
       page
-        .locator('nav[aria-label="Repositories"]')
+        .locator('nav[aria-label="Tasks"]')
         .getByText("fix-bug", { exact: true }),
     ).toBeVisible();
 
@@ -786,7 +817,7 @@ test.describe("Completion notifications", () => {
     await boot(page);
     await expect(
       page
-        .locator('nav[aria-label="Repositories"]')
+        .locator('nav[aria-label="Tasks"]')
         .getByText("fix-bug", { exact: true }),
     ).toBeVisible();
 
@@ -830,7 +861,7 @@ test.describe("Completion notifications", () => {
     await boot(page);
     await expect(
       page
-        .locator('nav[aria-label="Repositories"]')
+        .locator('nav[aria-label="Tasks"]')
         .getByText("fix-bug", { exact: true }),
     ).toBeVisible();
 
