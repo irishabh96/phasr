@@ -225,6 +225,11 @@ pub async fn detect_package_scripts(
 /// calls this on mount; only an explicit Run calls `start_run_command`, so
 /// visiting a task (or returning after an exec command exited) can never
 /// start a command by itself.
+///
+/// A command that exited this session is NOT rejected: its final output and
+/// then an `exit` event are sent on `on_event` (already queued when this
+/// resolves). Only a command never started (or deleted) here rejects, with
+/// exactly "not running".
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn attach_run_command(
@@ -247,9 +252,17 @@ pub async fn attach_run_command(
             return Err(RunCommandError::WrongRepository);
         }
     }
-    let handle = runs
-        .attachable(&pty_key(&id, workspace_id.as_deref()))
-        .ok_or(RunCommandError::NotAttached)?;
+    let key = pty_key(&id, workspace_id.as_deref());
+    let Some(handle) = runs.attachable(&key) else {
+        // Exited this session: replay its output, then its `Exit` (the
+        // pane shows the result and the Run button). Never ran: "not
+        // running". Neither path spawns anything.
+        let events = runs.exited_replay(&key).ok_or(RunCommandError::NotAttached)?;
+        for event in events {
+            let _ = on_event.send(event);
+        }
+        return Ok(());
+    };
     if let (Some(rows), Some(cols)) = (rows, cols) {
         // Best effort: the viewer's size, so the replay reflows correctly.
         let _ = handle.resize(rows, cols);

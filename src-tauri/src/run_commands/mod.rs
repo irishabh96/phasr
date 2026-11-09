@@ -81,6 +81,12 @@ struct Entry {
     stopped_by_user: bool,
     /// Identity of the PTY this entry describes (a restart replaces it).
     handle: Weak<PtyHandle>,
+    /// Once it exited: its scrollback (the replay buffer — the failing
+    /// test summary an exec command printed last), so a viewer attaching
+    /// afterwards sees the output and the exit instead of a blank pane.
+    /// The PTY itself is gone; this is a snapshot, kept until the command
+    /// is started again or deleted.
+    exited_output: Option<Vec<PtyEvent>>,
 }
 
 impl Entry {
@@ -152,6 +158,20 @@ impl RunCommandRuntime {
             .filter(|handle| handle.exit_code().is_none())
     }
 
+    /// What a viewer attaching to an EXITED command under `key` gets: its
+    /// final output, then its `Exit`. `None` if it never ran (this
+    /// session), is still running, or was deleted. Never spawns.
+    pub fn exited_replay(&self, key: &str) -> Option<Vec<PtyEvent>> {
+        let entries = self.inner.entries.lock();
+        let entry = entries.get(key).filter(|e| !e.state.running)?;
+        let mut events = entry.exited_output.clone()?;
+        events.push(PtyEvent::Exit {
+            task_id: key.to_string(),
+            exit_code: entry.state.exit_code,
+        });
+        Some(events)
+    }
+
     /// Start `rc` for `target` in exec mode. Errors with `AlreadyRunning`
     /// if that key has a live PTY — callers re-attach instead.
     pub fn start(&self, rc: &RunCommand, target: RunTarget) -> Result<Arc<PtyHandle>, PtyError> {
@@ -180,6 +200,7 @@ impl RunCommandRuntime {
             name: rc.name.clone(),
             stopped_by_user: false,
             handle: Arc::downgrade(&handle),
+            exited_output: None,
         };
         let event = entry.event();
         self.inner.entries.lock().insert(key.clone(), entry);
@@ -332,6 +353,10 @@ impl RunCommandRuntime {
                     }
                 },
             };
+            // Snapshot before the PTY is unregistered (and dropped): the
+            // output pipeline drained before `Exit` was sent, so the replay
+            // buffer holds everything it printed.
+            let output = weak.upgrade().map(|h| h.subscribe_with_replay().0);
             let still_ours = this
                 .inner
                 .runtime
@@ -344,6 +369,7 @@ impl RunCommandRuntime {
                 e.state.running = false;
                 e.state.exit_code = exit_code;
                 e.state.port = None;
+                e.exited_output = Some(output.unwrap_or_default());
             });
         });
     }
@@ -482,6 +508,42 @@ mod tests {
         rt.start(&rc("long", "sleep 30"), target(Some("ws"), dir.path())).unwrap();
         assert!(rt.attachable(&pty_key("long", Some("ws"))).is_some());
         rt.stop(&pty_key("long", Some("ws"))).unwrap();
+    }
+
+    /// An exited command's pane isn't blank: attaching after the exit
+    /// replays what it printed, then reports the exit. A command that never
+    /// ran has no replay (the attach still says "not running"), and a
+    /// restart replaces the old output.
+    #[tokio::test]
+    async fn an_exited_command_replays_its_output_then_its_exit() {
+        let logs = tempfile::tempdir().unwrap();
+        let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(logs.path().to_path_buf())));
+        let dir = tempfile::tempdir().unwrap();
+        let key = pty_key("tests", Some("ws"));
+        assert!(rt.exited_replay(&key).is_none(), "never ran");
+
+        rt.start(&rc("tests", "printf 'FAILED: %s' summary; exit 3"), target(Some("ws"), dir.path()))
+            .unwrap();
+        wait_for("exit", || !rt.is_running(&key)).await;
+        assert!(rt.attachable(&key).is_none(), "nothing live to attach to");
+        let events = rt.exited_replay(&key).unwrap();
+        let output: String = events
+            .iter()
+            .filter_map(|e| match e {
+                PtyEvent::Output { chunk, .. } => Some(String::from_utf8_lossy(chunk).into_owned()),
+                PtyEvent::Exit { .. } => None,
+            })
+            .collect();
+        assert!(output.contains("FAILED: summary"), "{output:?}");
+        assert!(
+            matches!(events.last(), Some(PtyEvent::Exit { exit_code: Some(3), .. })),
+            "the exit comes last: {events:?}"
+        );
+        assert!(rt.handle(&key).is_none(), "replaying spawned nothing");
+
+        rt.start(&rc("tests", "sleep 30"), target(Some("ws"), dir.path())).unwrap();
+        assert!(rt.exited_replay(&key).is_none(), "a running command has no exit to replay");
+        rt.stop(&key).unwrap();
     }
 
     #[test]
