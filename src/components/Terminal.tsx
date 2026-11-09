@@ -187,7 +187,8 @@ export function Terminal({
           void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
         }),
       ];
-      surface.focus();
+      // Not over an open dialog (New task, Settings): it would steal its focus.
+      if (canTakeTerminalFocus()) surface.focus();
     };
 
     const startOrAttach = async (mode: StartMode = "initial") => {

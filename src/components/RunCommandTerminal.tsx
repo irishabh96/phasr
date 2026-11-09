@@ -182,7 +182,7 @@ export function RunCommandTerminal({
               .catch(() => {});
           }),
         );
-        surface.focus();
+        if (canTakeTerminalFocus()) surface.focus();
       } catch (err) {
         if (cancelled) return;
         setStatus({ state: "failed", error: String(err) });

@@ -194,7 +194,7 @@ export function SessionTerminalTab({
           void tauri.resizeSession(id, rows, cols).catch(() => {});
         }),
       ];
-      surface.focus();
+      if (canTakeTerminalFocus()) surface.focus();
     };
 
     const start = async (mode: StartMode = "initial") => {
