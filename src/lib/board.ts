@@ -1,13 +1,13 @@
 import type { Workspace } from "@/lib/types";
 
 /**
- * Board lane for a task (A: Queued / Running / Needs review / Done, plus a
- * Failed group). Derived — no new status values — so older synced clients
- * keep parsing every row.
+ * A task's lane: what it needs. The sidebar groups by lane; the board maps
+ * lanes onto its four columns (`boardColumnFor`). Derived — no new status
+ * values — so older synced clients keep parsing every row.
  *
- * Interim derivation from what the frontend can see today: the workspace
- * status plus whether its worktree has changes. The backend `derive_lane`
- * (task cards) replaces this once it lands; the column names stay.
+ * Backend cards (`TaskCard.lane`) are mapped onto these in
+ * `useBoardTasks`; `deriveTaskLane` is the fallback for a backend without
+ * task cards (status + whether the worktree has changes).
  */
 export type TaskLane = "queued" | "running" | "needs-you" | "review" | "failed" | "done";
 
@@ -69,6 +69,104 @@ export function isToday(iso: string | null | undefined, now: number): boolean {
   const d = new Date(iso);
   const n = new Date(now);
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+}
+
+/**
+ * Board columns (A-Polish Main): Queued · Needs you · Running · Review.
+ * Done is not a column (a "✓ N merged today · Show" line under Review), and
+ * Failed has no column of its own: a failed task needs the user, so it sits
+ * in Needs you with a red dot (A-States).
+ */
+export type BoardColumnId = "queued" | "needs-you" | "running" | "review";
+
+export const BOARD_COLUMNS: readonly { id: BoardColumnId; title: string }[] = [
+  { id: "queued", title: "Queued" },
+  { id: "needs-you", title: "Needs you" },
+  { id: "running", title: "Running" },
+  { id: "review", title: "Review" },
+];
+
+/** Which column a lane lands in; `null` = off the board (done). */
+export function boardColumnFor(lane: TaskLane): BoardColumnId | null {
+  switch (lane) {
+    case "queued":
+      return "queued";
+    case "needs-you":
+    case "failed":
+      return "needs-you";
+    case "running":
+      return "running";
+    case "review":
+      return "review";
+    case "done":
+      return null;
+  }
+}
+
+/** When a done task finished, for "merged today": outcome, then archive, then exit. */
+export function doneAt(ws: Pick<Workspace, "archivedAt" | "finishedAt" | "updatedAt" | "outcomeAt">): string {
+  return ws.outcomeAt ?? ws.archivedAt ?? ws.finishedAt ?? ws.updatedAt;
+}
+
+type GroupableTask = {
+  lane: TaskLane;
+  workspace: Pick<Workspace, "agent" | "archivedAt" | "finishedAt" | "updatedAt" | "outcome" | "outcomeAt">;
+};
+
+export interface BoardGroups<T> {
+  columns: Record<BoardColumnId, T[]>;
+  /** Every done task after the agent filter, newest first (the List's done filter). */
+  done: T[];
+  /** Done tasks that finished today. */
+  doneToday: number;
+  /** …of which merged: the Review footer says "merged" only when they all were. */
+  mergedToday: number;
+}
+
+/**
+ * Split the board's tasks into its four columns, in one pass. Input order
+ * is kept within a column, except that Needs you leads with the tasks
+ * blocked on an answer and follows with the failed ones: an approval
+ * unblocks an agent that is waiting right now.
+ */
+export function groupBoardTasks<T extends GroupableTask>(
+  tasks: readonly T[],
+  agentFilter: string | null,
+  now: number,
+): BoardGroups<T> {
+  const columns: Record<BoardColumnId, T[]> = { queued: [], "needs-you": [], running: [], review: [] };
+  const failed: T[] = [];
+  const done: T[] = [];
+  let doneToday = 0;
+  let mergedToday = 0;
+  for (const t of tasks) {
+    if (agentFilter && t.workspace.agent !== agentFilter) continue;
+    if (t.lane === "failed") {
+      failed.push(t);
+      continue;
+    }
+    const col = boardColumnFor(t.lane);
+    if (col) {
+      columns[col].push(t);
+      continue;
+    }
+    done.push(t);
+    if (isToday(doneAt(t.workspace), now)) {
+      doneToday++;
+      if (t.workspace.outcome === "merged") mergedToday++;
+    }
+  }
+  for (const t of failed) columns["needs-you"].push(t);
+  done.sort((a, b) => doneAt(b.workspace).localeCompare(doneAt(a.workspace)));
+  return { columns, done, doneToday, mergedToday };
+}
+
+/** "✓ 2 merged today" / "3 done today" / "12 done" — `null` when nothing is done. */
+export function doneSummary(g: Pick<BoardGroups<unknown>, "done" | "doneToday" | "mergedToday">): string | null {
+  if (g.doneToday > 0) {
+    return `${g.doneToday} ${g.mergedToday === g.doneToday ? "merged" : "done"} today`;
+  }
+  return g.done.length > 0 ? `${g.done.length} done` : null;
 }
 
 /** How many Done tasks the board keeps when none finished today. */
