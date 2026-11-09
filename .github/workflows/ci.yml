@@ -22,6 +22,9 @@ jobs:
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # Every Tauri command wired in all 3 places (tauri.ts, the
+      # #[tauri::command] fn, generate_handler!).
+      - run: pnpm check:commands
       - run: pnpm build
       - run: pnpm test
 
