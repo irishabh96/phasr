@@ -134,14 +134,15 @@ test.describe("Panel motion (P1/P2)", () => {
     await ready(page);
 
     await arm(page);
-    await inspector(page).getByRole("button", { name: "Collapse inspector" }).click();
+    // Collapse lives in the pane bar (A-Workspace); expand is on the rail.
+    await page.getByRole("button", { name: "Collapse inspector" }).click();
     expectOneFitAfter(await settled(page));
     await expect(inspector(page).getByRole("button", { name: "Show inspector" })).toBeVisible();
 
     await arm(page);
     await inspector(page).getByRole("button", { name: "Show inspector" }).click();
     expectOneFitAfter(await settled(page));
-    await expect(inspector(page).getByRole("button", { name: "Collapse inspector" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Collapse inspector" })).toBeVisible();
   });
 
   test("the panel slides with transform; will-change only while it moves", async ({ page }) => {

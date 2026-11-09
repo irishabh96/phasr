@@ -201,7 +201,7 @@
 
   /* Layout (A-Workspace). */
   --layout-sidebar-width: 248px; /* Main / A-Workspace aside */
-  --layout-inspector-width: 320px; /* A-Workspace: 280px content + 20px padding each side */
+  --layout-inspector-width: 280px; /* A-Workspace inspector (spec §4.5) */
   --layout-rail-left: 48px;
   --layout-rail-right: 40px;
   --layout-header-height: 44px;

@@ -160,7 +160,7 @@ export const SIDEBAR_WIDTH_MAX = 420;
 export const SIDEBAR_WIDTH_DEFAULT = 248;
 export const RIGHT_PANEL_WIDTH_MIN = 260;
 export const RIGHT_PANEL_WIDTH_MAX = 480;
-export const RIGHT_PANEL_WIDTH_DEFAULT = 320; // --layout-inspector-width (280 content + 2×20 padding)
+export const RIGHT_PANEL_WIDTH_DEFAULT = 280; // --layout-inspector-width
 
 function clampWidth(value: number, min: number, max: number, fallback: number) {
   return Number.isFinite(value)
