@@ -1356,6 +1356,22 @@ export class GhosttySurface implements TerminalSurface {
   // I/O
   // -------------------------------------------------------------------
 
+  /**
+   * Parse now; paint on the next frame. Deliberately NOT queued per
+   * animation frame on this side (polish spec §6.2, P3, measured
+   * 2026-11-10):
+   *
+   * - painting is already once per frame: `term.write` only parses into the
+   *   grid, and the patched render loop (`startRenderLoop`) is the only
+   *   thing that paints, so N chunks in a frame cost one render;
+   * - the Rust coalescer already frames output at 32 KiB / 8 ms, and the
+   *   per-write overhead left is ~0.1 ms per 32 KiB chunk (8 chunks: 7.8 ms
+   *   as 8 writes, 6.8 ms as one), parse cost being linear in bytes;
+   * - a rAF-flushed queue was prototyped: identical frames and no long
+   *   tasks over a 5 MB burst (`e2e/perf-smoothness.spec.ts`), but a frame
+   *   of added paint latency (median 6–11 ms → 16–17 ms), because its rAF
+   *   callback is queued after the render loop's for the same frame.
+   */
   write(data: string | Uint8Array): void {
     if (this.disposed) return;
     if (this.diag) diagWrite(this.id, data);

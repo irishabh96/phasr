@@ -7,6 +7,7 @@ import {
   RUN_COMMAND_STATE_EVENT,
   TASK_CARDS_CHANGED_EVENT,
 } from "@/lib/events";
+import { createKeyedCoalescer } from "@/lib/coalesce";
 import { taskCardKeys } from "@/lib/hooks/useTaskCards";
 import { runningIn } from "@/lib/runScope";
 import {
@@ -121,12 +122,22 @@ export function useCheckEvents() {
           prev === undefined ? prev : prev + chunk,
         );
       }).then(keep);
-      void listen(TASK_CARDS_CHANGED_EVENT, () => {
+      // The invalidation ignores the payload, so a burst of cards-changed
+      // (one per repository) is one refetch, not one per event. See
+      // `lib/coalesce.ts`.
+      const cardsChanged = createKeyedCoalescer<true>(() => {
         queryClient.invalidateQueries({
           predicate: (q) =>
             q.queryKey[0] === reviewKeys.all[0] &&
             (q.queryKey[1] === "checks" || q.queryKey[1] === "files"),
         });
+      });
+      keep(() => {
+        cardsChanged.flush();
+        cardsChanged.dispose();
+      });
+      void listen(TASK_CARDS_CHANGED_EVENT, () => {
+        cardsChanged.push("all", true);
       }).then(keep);
     },
     [queryClient],

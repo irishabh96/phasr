@@ -1,10 +1,16 @@
 import { listen } from "@tauri-apps/api/event";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  notifyManager,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useEffect } from "react";
+import { createKeyedCoalescer } from "@/lib/coalesce";
 import {
   CLOUD_SYNC_ERROR_EVENT,
   CLOUD_SYNC_UPDATED_EVENT,
-  TASK_AGENT_STATE_EVENT,
   TASK_CARDS_CHANGED_EVENT,
   TASK_STATUS_EVENT,
 } from "@/lib/events";
@@ -29,7 +35,8 @@ import type {
  * - `phasr://task-agent-state` patches the matching card's `agentState` in
  *   place, so the running card's activity line stays live without a
  *   refetch per tool call. (Lane changes it causes arrive as
- *   cards-changed.)
+ *   cards-changed.) That listener is `useAgentSignalEvents`, which
+ *   coalesces it and calls `applyAgentStatesToCards`.
  */
 
 export const taskCardKeys = {
@@ -45,13 +52,53 @@ export function patchCardAgentState(
   cards: TaskCard[] | undefined,
   state: TaskAgentState,
 ): TaskCard[] | undefined {
+  return patchCardAgentStates(cards, [state]);
+}
+
+/**
+ * Several tasks' agent states patched into ONE new list. Cards it does not
+ * touch keep their identity (so their memoised rows skip the render), and
+ * a list with nothing to patch is returned as-is. Pure; exported for tests.
+ */
+export function patchCardAgentStates(
+  cards: TaskCard[] | undefined,
+  states: Iterable<TaskAgentState>,
+): TaskCard[] | undefined {
   if (!cards) return cards;
-  const i = cards.findIndex((c) => c.workspace.id === state.taskId);
-  const card = cards[i];
-  if (!card) return cards;
-  const copy = cards.slice();
-  copy[i] = { ...card, agentState: state };
-  return copy;
+  let copy: TaskCard[] | null = null;
+  for (const state of states) {
+    const i = (copy ?? cards).findIndex((c) => c.workspace.id === state.taskId);
+    const card = (copy ?? cards)[i];
+    if (!card || card.agentState === state) continue;
+    copy ??= cards.slice();
+    copy[i] = { ...card, agentState: state };
+  }
+  return copy ?? cards;
+}
+
+/**
+ * Patch a batch of agent states into every cached card list it concerns
+ * (its repository's and the all-repositories one). Lists with no matching
+ * card are not written at all, so their subscribers are not notified.
+ */
+export function applyAgentStatesToCards(
+  queryClient: QueryClient,
+  states: TaskAgentState[],
+): void {
+  const byList = new Map<string | null, TaskAgentState[]>([[null, states]]);
+  for (const state of states) {
+    const list = byList.get(state.repositoryId) ?? [];
+    list.push(state);
+    byList.set(state.repositoryId, list);
+  }
+  notifyManager.batch(() => {
+    for (const [repo, forList] of byList) {
+      const key = taskCardKeys.list(repo);
+      const prev = queryClient.getQueryData<TaskCard[]>(key);
+      const next = patchCardAgentStates(prev, forList);
+      if (next !== prev) queryClient.setQueryData<TaskCard[]>(key, next);
+    }
+  });
 }
 
 /** Whether a change in `repositoryId` concerns the list for `listRepo`. */
@@ -59,10 +106,16 @@ function concerns(listRepo: string | null, repositoryId: string): boolean {
   return listRepo === null || listRepo === repositoryId;
 }
 
+/** Coalescer key for "the status bar counts are stale". */
+const SYSTEM_STATUS = "\0system-status";
+
 /**
- * Subscribe to the board's events for the caller's lifetime. Mounting it
- * more than once is harmless: every handler is an idempotent
- * invalidate/patch.
+ * Subscribe to the board's events for the caller's lifetime. Mounted once,
+ * by `useAppEvents`; a second mount would only invalidate twice.
+ *
+ * Invalidations are coalesced (`lib/coalesce.ts`): several repositories'
+ * cards-changed in one window cost ONE refetch of the all-repositories
+ * list instead of one cancelled-and-restarted refetch per event.
  */
 export function useTaskCardEvents() {
   const queryClient = useQueryClient();
@@ -74,18 +127,28 @@ export function useTaskCardEvents() {
       if (cancelled) fn();
       else unlisteners.push(fn);
     };
-    const invalidateRepo = (repositoryId: string) => {
-      queryClient.invalidateQueries({
-        predicate: (q) =>
-          q.queryKey[0] === taskCardKeys.all[0] &&
-          q.queryKey[1] === "list" &&
-          concerns(q.queryKey[2] === "*" ? null : (q.queryKey[2] as string), repositoryId),
+    const stale = createKeyedCoalescer<true>((batch) => {
+      const repos = [...batch.keys()].filter((k) => k !== SYSTEM_STATUS);
+      notifyManager.batch(() => {
+        if (repos.length > 0) {
+          queryClient.invalidateQueries({
+            predicate: (q) =>
+              q.queryKey[0] === taskCardKeys.all[0] &&
+              q.queryKey[1] === "list" &&
+              repos.some((repo) =>
+                concerns(q.queryKey[2] === "*" ? null : (q.queryKey[2] as string), repo),
+              ),
+          });
+        }
+        if (batch.has(SYSTEM_STATUS)) {
+          queryClient.invalidateQueries({ queryKey: taskCardKeys.systemStatus() });
+        }
       });
-    };
+    });
 
     void listen<TaskCardsChangedPayload>(TASK_CARDS_CHANGED_EVENT, (event) => {
-      invalidateRepo(event.payload.repositoryId);
-      queryClient.invalidateQueries({ queryKey: taskCardKeys.systemStatus() });
+      stale.push(event.payload.repositoryId, true);
+      stale.push(SYSTEM_STATUS, true);
     }).then(keep);
 
     // A status change also reaches the board as task-cards-changed (after
@@ -93,21 +156,14 @@ export function useTaskCardEvents() {
     // status bar counts are refreshed here; refetching the card list too
     // made every status change cost two full board loads.
     void listen<TaskStatusPayload>(TASK_STATUS_EVENT, () => {
-      queryClient.invalidateQueries({ queryKey: taskCardKeys.systemStatus() });
-    }).then(keep);
-
-    void listen<TaskAgentState>(TASK_AGENT_STATE_EVENT, (event) => {
-      const state = event.payload;
-      for (const repo of [state.repositoryId, null]) {
-        queryClient.setQueryData<TaskCard[]>(taskCardKeys.list(repo), (prev) =>
-          patchCardAgentState(prev, state),
-        );
-      }
+      stale.push(SYSTEM_STATUS, true);
     }).then(keep);
 
     return () => {
       cancelled = true;
       for (const fn of unlisteners) fn();
+      stale.flush();
+      stale.dispose();
     };
   }, [queryClient]);
 }
