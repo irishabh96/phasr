@@ -48,12 +48,24 @@ async function openModal(page: Page) {
   await expect(page.getByRole("dialog", { name: "New task · phasr" })).toBeVisible();
 }
 
+const modal = (page: Page) =>
+  page.getByRole("dialog", { name: "New task · phasr" });
 const field = (page: Page) => page.locator("#new-task-base-branch");
 const listbox = (page: Page) =>
   page.getByRole("listbox", { name: "Base branch" });
+// The base branch is a property chip (A-NewTask); its popover holds the
+// search field with the list open under it.
+const chip = (page: Page) =>
+  modal(page).getByRole("button", { name: /^Base branch:/ });
+
+async function openPicker(page: Page) {
+  await chip(page).click();
+  await expect(field(page)).toBeFocused();
+  await expect(listbox(page)).toBeVisible();
+}
 
 test.describe("Base branch combobox (NewTaskModal)", () => {
-  test("focus opens the grouped list; click commits; submit carries the pick", async ({
+  test("the chip opens the grouped list; click commits; submit carries the pick", async ({
     page,
   }) => {
     const { errors } = await boot(page);
@@ -61,8 +73,8 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     await page.locator("#new-task-name").fill("pick a base");
     await clearCalls(page);
 
-    await field(page).click();
-    await expect(listbox(page)).toBeVisible();
+    await expect(chip(page)).toHaveText(/main/);
+    await openPicker(page);
     // Grouping: default branch pinned with its badge, other branch listed.
     await expect(page.getByRole("option", { name: /main/ })).toBeVisible();
     // exact:true — case-insensitive substring matching would also hit the
@@ -72,8 +84,8 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     ).toBeVisible();
 
     await page.getByRole("option", { name: /^dev$/ }).click();
-    await expect(field(page)).toHaveValue("dev");
     await expect(listbox(page)).toBeHidden();
+    await expect(chip(page)).toHaveAccessibleName("Base branch: dev");
 
     await page.getByRole("button", { name: "Start task" }).click();
     await waitForCall(page, "start_task");
@@ -88,16 +100,17 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     const { errors } = await boot(page);
     await openModal(page);
 
-    await field(page).click();
-    await expect(listbox(page)).toBeVisible();
+    await openPicker(page);
 
     await field(page).press("Escape");
     await expect(listbox(page)).toBeHidden();
-    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(modal(page)).toBeVisible();
+    // Focus goes back to the chip, inside the modal.
+    await expect(chip(page)).toBeFocused();
 
     // A second Escape (list closed) dismisses the modal as usual.
-    await field(page).press("Escape");
-    await expect(page.getByRole("dialog")).toBeHidden();
+    await chip(page).press("Escape");
+    await expect(modal(page)).toBeHidden();
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });
 
@@ -109,20 +122,21 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     await page.locator("#new-task-name").fill("keyboard path");
     await clearCalls(page);
 
-    await field(page).click();
-    await expect(listbox(page)).toBeVisible();
+    await openPicker(page);
     // Cursor parks on "main" (current value); ↓ moves to "dev".
     await field(page).press("ArrowDown");
     await field(page).press("Meta+Enter");
 
     // Committed, closed — and start_task must NOT have fired with the
     // pre-commit value.
-    await expect(field(page)).toHaveValue("dev");
     await expect(listbox(page)).toBeHidden();
+    await expect(chip(page)).toHaveAccessibleName("Base branch: dev");
     expect(await argsFor(page, "start_task")).toHaveLength(0);
 
-    // Now that the list is closed, ⌘↵ submits with the committed ref.
-    await field(page).press("Meta+Enter");
+    // Now that the list is closed, ⌘↵ (focus is back on the chip) submits
+    // with the committed ref.
+    await expect(chip(page)).toBeFocused();
+    await chip(page).press("Meta+Enter");
     await waitForCall(page, "start_task");
     const [args] = await argsFor(page, "start_task");
     expect((args as { input: { baseBranch: string } }).input.baseBranch).toBe(
@@ -138,14 +152,15 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     await page.locator("#new-task-name").fill("custom ref");
     await clearCalls(page);
 
+    await openPicker(page);
     await field(page).fill("v1.2.0");
     await expect(
       listbox(page).getByText(/as a custom ref/),
     ).toBeVisible();
 
     await field(page).press("Enter");
-    await expect(field(page)).toHaveValue("v1.2.0");
     await expect(listbox(page)).toBeHidden();
+    await expect(chip(page)).toHaveAccessibleName("Base branch: v1.2.0");
     expect(await argsFor(page, "start_task")).toHaveLength(0);
   });
 
@@ -161,7 +176,7 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     ]);
     await openModal(page);
 
-    await field(page).click();
+    await openPicker(page);
     const expandRow = page.getByRole("option", {
       name: "Show 2 phasr task branches",
     });
@@ -186,10 +201,10 @@ test.describe("Base branch combobox (NewTaskModal)", () => {
     ]);
     await openModal(page);
 
-    await field(page).click();
-    await expect(listbox(page)).toBeVisible();
+    await openPicker(page);
 
-    // The scroll container is the popover content wrapping the listbox.
+    // The scroll container is the list under the field, inside the
+    // chip's popover.
     const content = listbox(page).locator("..");
     const box = await content.boundingBox();
     expect(box).not.toBeNull();
