@@ -115,6 +115,35 @@ export function runKey(runCommandId: string, workspaceId: string | null | undefi
   return `${runCommandId}@${workspaceId ?? "repo"}`;
 }
 
+// ---------- Files pane editor buffers ----------
+
+/**
+ * One open file's editor state, kept outside the editor component so it
+ * survives Edit ↔ Diff, closing the pane and switching tasks. Cleared only
+ * by a save (buffer → null), "Reload theirs", or a confirmed discard
+ * (closing the tab).
+ */
+export interface FileBuffer {
+  /** The disk version the edit is based on (save's `expectedHash`). */
+  base: { hash: string; contents: string };
+  /** The editor's text; null = the same as `base`. */
+  buffer: string | null;
+  /** Derived: `buffer` differs from `base.contents`. */
+  dirty: boolean;
+  /** The file moved on disk under unsaved edits (agent write). */
+  diskChanged: boolean;
+  /** Contents of the write in flight; null when idle (single-flight). */
+  saving: string | null;
+  /** ⌘S pressed during a save with newer edits: one follow-up save. */
+  saveQueued: { overwrite: boolean } | null;
+  /** Bumped when the editor must replace its document (a reload). */
+  rev: number;
+}
+
+export function fileBufferKey(workspaceId: string, path: string): string {
+  return `${workspaceId}:${path}`;
+}
+
 export type SidebarMode = "collapsed" | "pinned" | "hidden";
 export type SessionPane = "tabs" | "changes" | "files" | "notes" | "run";
 
@@ -197,7 +226,18 @@ interface UiState {
   setSessionPane: (workspaceId: string, pane: SessionPane) => void;
   /** Selected file in a task's Files pane (palette `@file` deep-links it). */
   sessionFile: Record<string, string>;
+  /** Open file tabs per task, in tab order. Opening selects and adds. */
+  openFiles: Record<string, string[]>;
   openSessionFile: (workspaceId: string, path: string) => void;
+  /**
+   * Close a file tab and drop its buffer (the caller has confirmed any
+   * discard). Selects the neighbouring tab when it was the selected one.
+   */
+  closeSessionFile: (workspaceId: string, path: string) => void;
+  /** Editor buffers keyed by {@link fileBufferKey}. */
+  fileBuffers: Record<string, FileBuffer>;
+  /** Replace one buffer; `undefined` from `fn` removes it. `dirty` is derived. */
+  updateFileBuffer: (key: string, fn: (prev: FileBuffer | undefined) => FileBuffer | undefined) => void;
   /** Title-bar repository switcher: null = all repositories. */
   repoFilter: string | null;
   setRepoFilter: (repositoryId: string | null) => void;
@@ -389,11 +429,45 @@ export const useUiStore = create<UiState>((set, get) => ({
   setSessionPane: (workspaceId, pane) =>
     set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: pane } })),
   sessionFile: {},
+  openFiles: {},
   openSessionFile: (workspaceId, path) =>
-    set((st) => ({
-      sessionFile: { ...st.sessionFile, [workspaceId]: path },
-      sessionPane: { ...st.sessionPane, [workspaceId]: "files" },
-    })),
+    set((st) => {
+      const tabs = st.openFiles[workspaceId] ?? [];
+      return {
+        sessionFile: { ...st.sessionFile, [workspaceId]: path },
+        sessionPane: { ...st.sessionPane, [workspaceId]: "files" },
+        openFiles: tabs.includes(path) ? st.openFiles : { ...st.openFiles, [workspaceId]: [...tabs, path] },
+      };
+    }),
+  closeSessionFile: (workspaceId, path) =>
+    set((st) => {
+      const tabs = st.openFiles[workspaceId] ?? [];
+      const at = tabs.indexOf(path);
+      const rest = tabs.filter((p) => p !== path);
+      const sessionFile = { ...st.sessionFile };
+      if (sessionFile[workspaceId] === path) {
+        const next = rest[Math.min(Math.max(at, 0), rest.length - 1)];
+        if (next) sessionFile[workspaceId] = next;
+        else delete sessionFile[workspaceId];
+      }
+      const fileBuffers = { ...st.fileBuffers };
+      delete fileBuffers[fileBufferKey(workspaceId, path)];
+      return { openFiles: { ...st.openFiles, [workspaceId]: rest }, sessionFile, fileBuffers };
+    }),
+  fileBuffers: {},
+  updateFileBuffer: (key, fn) =>
+    set((st) => {
+      const prev = st.fileBuffers[key];
+      const next = fn(prev);
+      if (next === prev) return {};
+      const fileBuffers = { ...st.fileBuffers };
+      if (next) {
+        fileBuffers[key] = { ...next, dirty: next.buffer !== null && next.buffer !== next.base.contents };
+      } else {
+        delete fileBuffers[key];
+      }
+      return { fileBuffers };
+    }),
   repoFilter: null,
   setRepoFilter: (repoFilter) => set({ repoFilter }),
   cloudSync: { state: "unknown", at: null },
