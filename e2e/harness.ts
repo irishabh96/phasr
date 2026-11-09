@@ -363,6 +363,10 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       // Like the backend: attach only succeeds for a live command; a tab
       // mount then starts it only on an explicit Run.
       case "attach_run_command": return { __reject: "not running" };
+      // Synced settings not yet trusted here: `{ key, value }[]`; confirm
+      // takes the exact keys and answers with the ones it confirmed.
+      case "list_unconfirmed_settings": return [];
+      case "confirm_settings_on_this_machine": return Array.isArray(a?.keys) ? a.keys : [];
       case "list_launchers": return [
         { id: "vscode", name: "VS Code", kind: "editor", available: true },
         { id: "terminal", name: "Terminal", kind: "terminal", available: true },

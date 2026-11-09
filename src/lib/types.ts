@@ -141,6 +141,16 @@ export interface EnvironmentCheck {
   checkedAt: string;
 }
 
+/**
+ * A synced setting not yet trusted on this machine (`list_unconfirmed_settings`).
+ * `key`: `"agentCommands.<agent>"`, `"terminalShell"` or
+ * `"defaultPermissionMode"`. `value`: exactly what would be trusted.
+ */
+export interface UnconfirmedSetting {
+  key: string;
+  value: string;
+}
+
 export interface UserSettings {
   theme: string;
   accentColor: string;

@@ -474,6 +474,7 @@ export function AgentsSection() {
       </SettingsCard>
       <SyncedSettingsBanner scope="agentCommands" />
       <ApiKeysCard />
+      <SyncedSettingsBanner scope="defaultPermissionMode" />
       <SettingsCard>
         <SettingsRow
           id="settings-row-permission-mode"

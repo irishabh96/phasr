@@ -56,6 +56,7 @@ import type {
   TaskAgentState,
   TaskCard,
   TaskUsage,
+  UnconfirmedSetting,
   UserSettings,
   Workspace,
   WorkspaceDeleteCheck,
@@ -328,13 +329,20 @@ export const tauri = {
   updateUserSettings: (settings: UserSettings) =>
     invoke<UserSettings>("update_user_settings", { settings }),
   /**
-   * Synced settings that would run as commands here but aren't confirmed on
-   * this machine (`"agentCommands.<agent>"`, `"terminalShell"`). Until
-   * confirmed, launches use the default template / login shell.
+   * Synced settings that would run (or loosen what runs) here but aren't
+   * confirmed on this machine, each with the value that would be trusted:
+   * `"agentCommands.<agent>"`, `"terminalShell"`, `"defaultPermissionMode"`.
+   * Until confirmed, launches use the default template / login shell /
+   * the safe default mode.
    */
-  listUnconfirmedSettings: () => invoke<string[]>("list_unconfirmed_settings"),
-  /** "Allow on this machine" for them all; resolves to what was confirmed. */
-  confirmSettingsOnThisMachine: () => invoke<string[]>("confirm_settings_on_this_machine"),
+  listUnconfirmedSettings: () => invoke<UnconfirmedSetting[]>("list_unconfirmed_settings"),
+  /**
+   * "Allow on this machine" for exactly these keys, at the values shown
+   * (the backend trusts the current value per key). Resolves to the keys
+   * it confirmed.
+   */
+  confirmSettingsOnThisMachine: (keys: string[]) =>
+    invoke<string[]>("confirm_settings_on_this_machine", { keys }),
   /** Shells from `/etc/shells` present on this machine. */
   listShells: () => invoke<string[]>("list_shells"),
 
