@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::error::{run_git, GitError};
+use super::error::{ensure_branch_name, run_git, GitError};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,12 +41,11 @@ pub fn create_worktree(
 
     let worktree_path_str = worktree_path.to_str().ok_or(GitError::InvalidPath)?;
     // Refs here can come from synced rows: never let one be parsed as an
-    // option. (`--` below covers `worktree add`; `rev-parse --verify`
-    // has no `--` for revisions, hence the explicit check.)
-    for r in [branch, base_ref] {
-        if r.starts_with('-') {
-            return Err(GitError::CommandFailed(format!("`{r}` isn't a valid ref")));
-        }
+    // option or a refspec. (`--` below covers `worktree add`; `rev-parse
+    // --verify` has no `--` for revisions, hence the explicit check.)
+    ensure_branch_name(branch)?;
+    if base_ref != "HEAD" {
+        ensure_branch_name(base_ref)?;
     }
 
     // If `branch` already exists locally, skip the `-b` flag.
@@ -145,15 +144,16 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeRef>, GitError> {
 
 /// Force-deletes a local branch. Idempotent: missing branches return Ok.
 pub fn branch_delete(repo_path: &Path, branch: &str) -> Result<(), GitError> {
+    ensure_branch_name(branch)?;
     if run_git(
         repo_path,
-        &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
     )
     .is_err()
     {
         return Ok(());
     }
-    run_git(repo_path, &["branch", "-D", branch])?;
+    run_git(repo_path, &["branch", "-D", "--", branch])?;
     Ok(())
 }
 
@@ -218,6 +218,31 @@ mod tests {
         let list_after = list_worktrees(repo_dir.path()).unwrap();
         assert!(!list_after.iter().any(|w| Path::new(&w.path) == canonical));
         assert!(!worktree_path.exists());
+    }
+
+    /// Synced branch / base names that git would read as an option or a
+    /// refspec never reach `worktree add` / `branch -D`.
+    #[test]
+    fn option_and_refspec_shaped_names_are_refused() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let worktree_base = tempfile::tempdir().unwrap();
+        init_repo(repo_dir.path());
+        Command::new("git").args(["branch", "victim"]).current_dir(repo_dir.path()).status().unwrap();
+        let wt = worktree_base.path().join("t");
+        for (branch, base) in [
+            ("--detach", "main"),
+            ("phasr/ok", "--orphan"),
+            ("main:victim", "main"),
+            ("phasr/ok", "+main:refs/heads/victim"),
+        ] {
+            assert!(create_worktree(repo_dir.path(), &wt, branch, base).is_err(), "{branch} / {base}");
+            assert!(!wt.exists(), "nothing created for {branch} / {base}");
+        }
+        assert!(branch_delete(repo_dir.path(), "--all").is_err());
+        assert!(branch_delete(repo_dir.path(), "x:victim").is_err());
+        // A plain delete still works, and a missing branch is fine.
+        branch_delete(repo_dir.path(), "victim").unwrap();
+        branch_delete(repo_dir.path(), "victim").unwrap();
     }
 
     #[test]

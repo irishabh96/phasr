@@ -130,6 +130,22 @@ impl NotificationRepo {
         Ok(changed)
     }
 
+    /// Whether the task already has a "merged — remove its worktree?"
+    /// suggestion (read or not): it's asked once per merge, however many
+    /// paths (merge, continued merge, PR refresh) report that merge.
+    pub async fn has_cleanup_suggestion(&self, user_id: &str, workspace_id: &str) -> Result<bool, StoreError> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications
+             WHERE user_id = ? AND workspace_id = ? AND kind = 'task_finished'
+               AND json_extract(payload, '$.suggestion') = 'cleanup'",
+        )
+        .bind(user_id)
+        .bind(workspace_id)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(n > 0)
+    }
+
     /// Mark the task's unread entries of `kind` read — e.g. the approval
     /// was answered, so its "needs approval" entry is no longer news.
     pub async fn mark_read_for_task(

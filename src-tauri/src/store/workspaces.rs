@@ -540,6 +540,36 @@ impl WorkspaceRepo {
         self.get(id).await
     }
 
+    /// `set_outcome`, but only while the task has NO outcome — for the
+    /// paths that infer it in the background (a PR seen merged/closed, a
+    /// continued merge). They read the row, then wait on `gh` / git; a
+    /// Discard (Closed) or a local merge recorded meanwhile must not be
+    /// overwritten. `None` = already had one (nothing changed).
+    pub async fn set_outcome_if_unset(
+        &self,
+        id: &str,
+        outcome: TaskOutcome,
+        merged_into: Option<&str>,
+    ) -> Result<Option<Workspace>, StoreError> {
+        let now = Utc::now();
+        let res = sqlx::query(
+            "UPDATE workspaces SET outcome = ?, outcome_at = ?, merged_into = ?, updated_at = ?,
+                dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
+             WHERE id = ? AND deleted_at IS NULL AND outcome IS NULL",
+        )
+        .bind(outcome.as_str())
+        .bind(now.to_rfc3339())
+        .bind(merged_into)
+        .bind(now.to_rfc3339())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get(id).await.map(Some)
+    }
+
     /// Record the task's pull request (`pr_state`: `open` | `draft` |
     /// `merged` | `closed`). `number` is `None` when only a URL is known.
     /// Synced: bumps `updated_at` and marks the row dirty.
@@ -1014,6 +1044,23 @@ mod tests {
         assert_eq!(read.depends_on_workspace_id.as_deref(), Some("other"));
         assert_eq!((read.pr_number, read.pr_state.as_deref()), (Some(142), Some("open")));
         assert_eq!(read.outcome, None);
+
+        // The conditional variant (PR refresh): a Discard that landed first
+        // (Closed) is not overwritten with Merged.
+        workspaces.set_outcome(&ws.id, Some(TaskOutcome::Closed), None).await.unwrap();
+        assert!(workspaces
+            .set_outcome_if_unset(&ws.id, TaskOutcome::Merged, Some("main"))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(workspaces.get(&ws.id).await.unwrap().outcome, Some(TaskOutcome::Closed));
+        workspaces.set_outcome(&ws.id, None, None).await.unwrap();
+        let set = workspaces
+            .set_outcome_if_unset(&ws.id, TaskOutcome::Merged, Some("develop"))
+            .await
+            .unwrap()
+            .expect("unset → recorded");
+        assert_eq!((set.outcome, set.merged_into.as_deref()), (Some(TaskOutcome::Merged), Some("develop")));
 
         let merged = workspaces
             .set_outcome(&ws.id, Some(TaskOutcome::Merged), Some("main"))

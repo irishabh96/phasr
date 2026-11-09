@@ -22,7 +22,8 @@ use crate::orchestrator::TaskStatusEvent;
 use crate::run_commands::RunCommandEvent;
 use crate::store::{NotificationRepo, StoreError, WorkspaceRepo};
 
-/// Entries older than this are pruned at startup.
+/// Entries older than this are pruned — at startup and then every
+/// `PRUNE_INTERVAL` while the app runs.
 pub const RETENTION_DAYS: i64 = 30;
 /// How often old notifications are pruned while the app runs.
 const PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -35,6 +36,9 @@ struct Inner {
     events: broadcast::Sender<AppNotification>,
     /// Last agent state per task: a turn ending is Working → Idle.
     last_agent: Mutex<HashMap<String, AgentStateKind>>,
+    /// Makes "already suggested?" + insert one step for cleanup
+    /// suggestions (two merge reports racing must not both insert).
+    cleanup_suggest: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -63,6 +67,7 @@ impl NotificationService {
                 checks,
                 events,
                 last_agent: Mutex::new(HashMap::new()),
+                cleanup_suggest: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -134,8 +139,14 @@ impl NotificationService {
     /// `payload.suggestion = "cleanup"`: a new kind would reach clients
     /// whose delivery matrix can't name it. Bypasses the task's
     /// `notify_on_attention` switch and the unread dedupe — it's a question
-    /// about the user's disk, asked once per merge.
-    pub async fn suggest_cleanup(&self, user_id: &str, task: &Workspace) -> Result<AppNotification, StoreError> {
+    /// about the user's disk, asked once per merge: `None` when the task
+    /// already has one (several paths can report the same merge — a local
+    /// merge, a continued merge, overlapping PR refreshes).
+    pub async fn suggest_cleanup(&self, user_id: &str, task: &Workspace) -> Result<Option<AppNotification>, StoreError> {
+        let _once = self.inner.cleanup_suggest.lock().await;
+        if self.inner.repo.has_cleanup_suggestion(user_id, &task.id).await? {
+            return Ok(None);
+        }
         let mut n = AppNotification::new(NotificationKind::TaskFinished, format!("{} merged", task.name));
         n.body = Some("Remove its worktree and local branch?".into());
         n.workspace_id = Some(task.id.clone());
@@ -149,7 +160,7 @@ impl NotificationService {
         });
         self.inner.repo.insert(&n, user_id).await?;
         let _ = self.inner.events.send(n.clone());
-        Ok(n)
+        Ok(Some(n))
     }
 
     async fn task(&self, user_id: &str, task_id: &str) -> Option<Workspace> {

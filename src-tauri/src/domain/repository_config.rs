@@ -137,19 +137,40 @@ impl RepositoryConfig {
     }
 }
 
-/// Whether `name` may be handed to git as a base branch. Branch names
-/// reach `git fetch` / `worktree add` / `merge-base` / `checkout` as
-/// arguments, and a per-task base is a SYNCED column — so another machine
-/// (or a crafted row) could supply `--upload-pack=…`. A leading `-` would
-/// be parsed as an option; whitespace and control characters are never
-/// part of a real branch name. (git's own `check-ref-format` rules are
-/// stricter still; git rejects the rest itself.)
+/// Whether `name` may be handed to git as a branch. Branch names reach
+/// `git fetch` / `push` / `worktree add` / `merge` / `checkout` /
+/// `branch -D` as arguments, and both a task's `branch` and its base are
+/// SYNCED columns — another machine (or a crafted row) could supply one.
+///
+/// `git check-ref-format --branch` semantics, so nothing git would accept
+/// as a branch is refused, plus what makes a name dangerous as an
+/// ARGUMENT rather than as a ref:
+/// - a leading `-` is parsed as an option (`--mirror` turned a push into a
+///   mirror push that deleted the remote's other branches);
+/// - `:` makes a refspec (`main:victim` fetches or pushes INTO another
+///   branch) and a leading `+` forces it. `:` is already illegal in a ref;
+///   `+` isn't, but only means something in front, so only that is refused.
 pub fn validate_branch_name(name: &str) -> Result<(), String> {
-    if name.is_empty()
-        || name.starts_with('-')
-        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+    let bad = || Err(format!("`{name}` isn't a branch name"));
+    if name.is_empty() || name == "@" || name == "HEAD" || name.starts_with(['-', '+']) {
+        return bad();
+    }
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
     {
-        return Err(format!("`{name}` isn't a branch name"));
+        return bad();
+    }
+    if name.contains("..") || name.contains("@{") || name.ends_with('.') {
+        return bad();
+    }
+    // Components: none empty (`//`, leading/trailing `/`), none starting
+    // with `.`, none ending in `.lock`.
+    if name
+        .split('/')
+        .any(|part| part.is_empty() || part.starts_with('.') || part.ends_with(".lock"))
+    {
+        return bad();
     }
     Ok(())
 }
@@ -265,7 +286,34 @@ mod tests {
         for bad in ["--upload-pack=touch /tmp/x", "-b", "", "has space", "tab\there", "nl\n"] {
             assert!(validate_branch_name(bad).is_err(), "{bad:?}");
         }
-        for ok in ["main", "release/1.2", "feature-x", "origin/main", "a-b-"] {
+        // Refspecs and everything `git check-ref-format --branch` refuses.
+        for bad in [
+            "--mirror",
+            "main:victim",
+            "+main:refs/heads/victim",
+            "+main",
+            "HEAD",
+            "@",
+            "a..b",
+            "a@{1}",
+            "a/",
+            "/a",
+            "a//b",
+            ".hidden",
+            "x/.y",
+            "x.lock",
+            "x/y.lock/z",
+            "dot.",
+            "q?",
+            "s*",
+            "b[",
+            "back\\slash",
+            "tilde~1",
+            "caret^",
+        ] {
+            assert!(validate_branch_name(bad).is_err(), "{bad:?}");
+        }
+        for ok in ["main", "release/1.2", "feature-x", "origin/main", "a-b-", "c++", "phasr/fix-it", "v1.0"] {
             assert!(validate_branch_name(ok).is_ok(), "{ok}");
         }
     }

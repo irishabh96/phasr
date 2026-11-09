@@ -32,6 +32,10 @@ pub struct BranchStatus {
     /// Commits on `target_ref` not reachable from the current branch.
     /// Drives the SyncButton visibility (when > 0, you're behind main).
     pub behind_of_target: u32,
+    /// Short name of the branch the target-* counts compare against — the
+    /// task's base, the one "Merge locally" merges into and "Sync" merges
+    /// from. `""` when no target was asked for.
+    pub base_branch: String,
 }
 
 /// Compute the branch status for `cwd`. When `target_branch` is set, also
@@ -138,6 +142,7 @@ pub fn branch_status(cwd: &Path, target_branch: Option<&str>) -> Result<BranchSt
         target_ref,
         ahead_of_target,
         behind_of_target,
+        base_branch: target_branch.unwrap_or_default().to_string(),
     })
 }
 
@@ -383,6 +388,9 @@ mod tests {
         assert_eq!(s.ahead_of_target, 2);
         assert_eq!(s.behind_of_target, 0);
         assert_eq!(s.target_ref.as_deref(), Some("main"));
+        assert_eq!(s.base_branch, "main");
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["baseBranch"], "main", "camelCase on the wire");
     }
 
     #[test]
@@ -431,6 +439,7 @@ mod tests {
         assert_eq!(s.ahead_of_target, 0);
         assert_eq!(s.behind_of_target, 0);
         assert!(s.target_ref.is_none());
+        assert_eq!(s.base_branch, "");
     }
 
     #[test]
@@ -443,6 +452,7 @@ mod tests {
         assert_eq!(s.ahead_of_target, 0);
         assert_eq!(s.behind_of_target, 0);
         assert!(s.target_ref.is_none());
+        assert_eq!(s.base_branch, "main", "still names the base it was asked about");
     }
 
     #[test]

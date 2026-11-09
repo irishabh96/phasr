@@ -124,7 +124,7 @@ async fn base_branch_of(
         return Ok(base);
     }
     let repository = repositories.get_for_user(&workspace.repository_id, user_id).await?;
-    Ok(git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch))
+    Ok(ReviewService::base_branch(workspace, &repository).await)
 }
 
 fn worktree_of(workspace: &Workspace) -> Result<PathBuf, ReviewCmdError> {

@@ -25,7 +25,7 @@ pub use branch::{branch_status, BranchStatus};
 pub use clone::clone_repo;
 pub use commit::{commit, discard, push, stage, unstage, CommitOutput};
 pub use diff::{diff, diff_for_commit, DiffScope, DiffStatCache};
-pub use error::GitError;
+pub use error::{ensure_branch_name, GitError};
 pub use files::list_files;
 pub use fs_guard::{is_within_roots, resolve_in_worktree};
 pub use hunks::{revert_hunk, RevertHunkError};
@@ -43,7 +43,7 @@ pub use naming::{
     unique_branch_name,
 };
 pub use pr::{build_pull_request_target, parse_remote_url, resolve_base_branch};
-pub use remote::{get_default_branch, get_remote_url, list_local_branches};
+pub use remote::{get_default_branch, get_remote_url, list_local_branches, ref_exists};
 pub use review::{diff_vs_base, fingerprint_key, review_files, worktree_fingerprint};
 pub use status::{is_dirty, status, FileChange};
 pub use template::init_from_template;

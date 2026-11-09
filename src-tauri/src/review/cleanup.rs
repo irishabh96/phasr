@@ -120,26 +120,33 @@ impl MergeCleanup {
         };
         match decide(policy, worktree.is_some(), running, unsaved) {
             CleanupAction::None => CleanupAction::None,
-            CleanupAction::Suggested => match &self.notifier {
-                Some(notifier) => match notifier.suggest_cleanup(user_id, task).await {
-                    Ok(_) => CleanupAction::Suggested,
-                    Err(err) => {
-                        eprintln!("cleanup suggestion for {} failed: {err}", task.id);
-                        CleanupAction::None
-                    }
-                },
-                None => CleanupAction::None,
-            },
+            CleanupAction::Suggested => self.suggest(task, user_id).await,
             CleanupAction::Removed => {
                 let Some(worktree) = worktree else { return CleanupAction::None };
                 match self.remove(task, user_id, &worktree).await {
-                    Ok(()) => CleanupAction::Removed,
+                    Ok(true) => CleanupAction::Removed,
+                    // Work appeared (or an agent started) between the probe
+                    // and the lock: ask instead.
+                    Ok(false) => self.suggest(task, user_id).await,
                     Err(err) => {
                         eprintln!("cleanup after merge for {} failed: {err}", task.id);
                         CleanupAction::None
                     }
                 }
             }
+        }
+    }
+
+    async fn suggest(&self, task: &Workspace, user_id: &str) -> CleanupAction {
+        match &self.notifier {
+            Some(notifier) => match notifier.suggest_cleanup(user_id, task).await {
+                Ok(_) => CleanupAction::Suggested,
+                Err(err) => {
+                    eprintln!("cleanup suggestion for {} failed: {err}", task.id);
+                    CleanupAction::None
+                }
+            },
+            None => CleanupAction::None,
         }
     }
 
@@ -173,7 +180,13 @@ impl MergeCleanup {
         .unwrap_or(true)
     }
 
-    async fn remove(&self, task: &Workspace, user_id: &str, worktree: &Path) -> Result<(), String> {
+    /// Remove the worktree and branch, unless — re-checked under the repo
+    /// lock, right before `worktree remove -f` — an agent is now running in
+    /// it or it now holds unsaved work. The probe in `on_merged` ran
+    /// outside the lock (and before stopping run commands / checks, which
+    /// can write files): what it saw could be stale by now. `Ok(false)` =
+    /// left alone.
+    async fn remove(&self, task: &Workspace, user_id: &str, worktree: &Path) -> Result<bool, String> {
         let repository = self
             .repositories
             .get_for_user(&task.repository_id, user_id)
@@ -194,6 +207,9 @@ impl MergeCleanup {
         // worktree add/remove and branch delete on this repository.
         let lock = self.repo_locks.for_repository(&task.repository_id);
         let _guard = lock.lock().await;
+        if self.runtime.get(&task.id).is_some() || self.has_unsaved_work(task, user_id, worktree).await {
+            return Ok(false);
+        }
         let (worktree, branch) = (worktree.to_path_buf(), task.branch.clone());
         tokio::task::spawn_blocking(move || {
             git::remove_worktree(&repo_path, &worktree)?;
@@ -204,7 +220,8 @@ impl MergeCleanup {
         })
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        Ok(true)
     }
 }
 
@@ -349,6 +366,33 @@ mod tests {
 
         set_policy(&f, CleanupAfterMerge::Never).await;
         assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::None);
+    }
+
+    /// The same merge reported again (overlapping PR refreshes, a local
+    /// merge then a refresh) — even concurrently — asks once.
+    #[tokio::test]
+    async fn the_cleanup_suggestion_is_made_once_per_task() {
+        let f = fixture().await;
+        let (a, b) = tokio::join!(f.cleanup.on_merged(&f.task, "u"), f.cleanup.on_merged(&f.task, "u"));
+        assert_eq!((a, b), (CleanupAction::Suggested, CleanupAction::Suggested));
+        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
+        let inbox = f.notifications.list_for_user("u", false, None).await.unwrap();
+        assert_eq!(inbox.iter().filter(|n| n.payload["suggestion"] == "cleanup").count(), 1);
+    }
+
+    /// The removal itself re-checks under the repo lock: work that appeared
+    /// after `on_merged`'s probe (outside the lock) is never force-removed.
+    #[tokio::test]
+    async fn removal_rechecks_for_unsaved_work_under_the_lock() {
+        let f = fixture().await;
+        let wt = PathBuf::from(f.task.worktree_path.as_deref().unwrap());
+        std::fs::write(wt.join("late.txt"), "written after the probe\n").unwrap();
+        assert!(!f.cleanup.remove(&f.task, "u", &wt).await.unwrap(), "left alone");
+        assert!(wt.join("late.txt").exists());
+        assert!(branch_exists(&f.repo_path, "phasr/task"));
+        std::fs::remove_file(wt.join("late.txt")).unwrap();
+        assert!(f.cleanup.remove(&f.task, "u", &wt).await.unwrap());
+        assert!(!wt.exists());
     }
 
     #[tokio::test]

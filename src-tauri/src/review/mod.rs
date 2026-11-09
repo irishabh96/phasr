@@ -48,6 +48,11 @@ pub enum ReviewError {
     /// The frontend matches this exact string to offer "Commit & push".
     #[error("worktree has uncommitted changes")]
     DirtyWorktree,
+    /// The worktree's HEAD isn't the task's branch (the agent switched):
+    /// committing there and pushing / merging the recorded branch would
+    /// close out something other than what was checked and reviewed.
+    #[error("the task's worktree is on `{actual}`, not its branch `{expected}` — switch back to `{expected}` first")]
+    BranchMismatch { expected: String, actual: String },
     /// Merging checks the target branch out in the repository's own
     /// checkout — the very directory an in-place agent is working in.
     #[error("an in-place agent is running in this repository's checkout; stop it before merging locally")]
@@ -81,6 +86,18 @@ pub struct ApproveInput {
     /// worktree is refused with "worktree has uncommitted changes".
     #[serde(default)]
     pub commit_dirty: Option<bool>,
+}
+
+/// The two confirmations closing a task out can need, for Approve and for
+/// Merge locally alike. Both are evaluated before anything happens, and
+/// both may be given at once — the UI adds each as the user confirms it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CloseOutFlags {
+    /// Go ahead although required checks aren't passing.
+    pub override_checks: bool,
+    /// Commit the worktree's uncommitted changes (message = the task's
+    /// name) first.
+    pub commit_dirty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -161,6 +178,11 @@ pub struct ReviewService {
     /// To see whether an in-place agent is live in the main checkout
     /// before a local merge checks a branch out under it.
     runtime: Option<Arc<TaskRuntime>>,
+    /// One PR refresh at a time. The 5-minute loop and the window-focus
+    /// refresh overlapped: both read the same open PRs, both recorded the
+    /// outcome and both suggested cleanup. Serialized, the second one
+    /// re-reads after the first and finds nothing left to do.
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 async fn blocking<T, F>(f: F) -> Result<T, ReviewError>
@@ -187,6 +209,7 @@ impl ReviewService {
             repo_locks,
             checks,
             runtime: None,
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -228,38 +251,69 @@ impl ReviewService {
 
     /// The branch a task merges into / opens its PR against: the base it
     /// was cut from, else the repository's default (resolved against the
-    /// checkout so a `main`-configured master repo still works).
-    fn base_of(ws: &Workspace, repository: &Repository) -> String {
+    /// checkout so a `main`-configured master repo still works — never the
+    /// checkout's current branch). Blocking (git): call off the runtime.
+    pub fn base_of(ws: &Workspace, repository: &Repository) -> String {
         ws.base_branch.clone().unwrap_or_else(|| {
             git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch)
         })
     }
 
-    /// Gate on required checks → push → `gh pr create` (or the compare URL)
-    /// → record the PR on the task. `summary` = the agent's last message.
-    pub async fn approve_and_create_pr(
+    /// `base_of`, off the async runtime.
+    pub async fn base_branch(ws: &Workspace, repository: &Repository) -> String {
+        if let Some(base) = ws.base_branch.clone() {
+            return base;
+        }
+        let fallback = repository.default_branch.clone();
+        let (ws, repository) = (ws.clone(), repository.clone());
+        tokio::task::spawn_blocking(move || Self::base_of(&ws, &repository))
+            .await
+            .unwrap_or(fallback)
+    }
+
+    /// What closing a task out (Approve, Merge locally) requires of its
+    /// worktree before acting on its branch, all evaluated before anything
+    /// changes:
+    /// - HEAD is the task's branch — what's pushed / merged is the BRANCH,
+    ///   while the checks vouch for HEAD;
+    /// - required checks pass on the worktree as it is, unless
+    ///   `override_checks`;
+    /// - it has no uncommitted changes, unless `commit_dirty` — then they
+    ///   are committed (message = the task's name) once both gates pass.
+    ///
+    /// Checks are reported before dirtiness. The fingerprint is the
+    /// worktree's CONTENT, so committing doesn't make a passing run stale.
+    async fn close_out_gate(
         &self,
         ws: &Workspace,
         user_id: &str,
-        input: ApproveInput,
-        summary: Option<String>,
-    ) -> Result<PullRequestOutcome, ReviewError> {
-        let failing = self.checks.unsatisfied_required(ws, user_id).await?;
-        if !failing.is_empty() && !input.override_checks.unwrap_or(false) {
-            return Err(ReviewError::ChecksNotPassing(failing));
+        cwd: &Path,
+        branch: &str,
+        flags: CloseOutFlags,
+    ) -> Result<(), ReviewError> {
+        let head = {
+            let cwd = cwd.to_path_buf();
+            blocking(move || git::current_branch(&cwd)).await?
+        };
+        if head.as_deref() != Some(branch) {
+            return Err(ReviewError::BranchMismatch {
+                expected: branch.to_string(),
+                actual: head.unwrap_or_else(|| "a detached HEAD".into()),
+            });
         }
-        let branch = ws.branch.clone().ok_or(ReviewError::NoBranch)?;
-        let cwd = Self::worktree(ws)?;
-        let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
+        let failing = self.checks.unsatisfied_required(ws, user_id).await?;
         let dirty = {
-            let cwd = cwd.clone();
+            let cwd = cwd.to_path_buf();
             blocking(move || git::is_dirty(&cwd)).await?
         };
+        if !failing.is_empty() && !flags.override_checks {
+            return Err(ReviewError::ChecksNotPassing(failing));
+        }
+        if dirty && !flags.commit_dirty {
+            return Err(ReviewError::DirtyWorktree);
+        }
         if dirty {
-            if !input.commit_dirty.unwrap_or(false) {
-                return Err(ReviewError::DirtyWorktree);
-            }
-            let (cwd, message) = (cwd.clone(), ws.name.clone());
+            let (cwd, message) = (cwd.to_path_buf(), ws.name.clone());
             blocking(move || {
                 git::stage(&cwd, &[])?;
                 git::commit(&cwd, &message)?;
@@ -267,6 +321,27 @@ impl ReviewService {
             })
             .await?;
         }
+        Ok(())
+    }
+
+    /// Gate (see `close_out_gate`) → push → `gh pr create` (or the compare
+    /// URL) → record the PR on the task. `summary` = the agent's last
+    /// message.
+    pub async fn approve_and_create_pr(
+        &self,
+        ws: &Workspace,
+        user_id: &str,
+        input: ApproveInput,
+        summary: Option<String>,
+    ) -> Result<PullRequestOutcome, ReviewError> {
+        let branch = ws.branch.clone().ok_or(ReviewError::NoBranch)?;
+        let cwd = Self::worktree(ws)?;
+        let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
+        let flags = CloseOutFlags {
+            override_checks: input.override_checks.unwrap_or(false),
+            commit_dirty: input.commit_dirty.unwrap_or(false),
+        };
+        self.close_out_gate(ws, user_id, &cwd, &branch, flags).await?;
         {
             let (cwd, branch) = (cwd.clone(), branch.clone());
             blocking(move || git::push(&cwd, "origin", &branch)).await?;
@@ -278,7 +353,7 @@ impl ReviewService {
                 blocking(move || Ok(git::get_remote_url(&cwd))).await?.ok_or(ReviewError::NoRemote)?
             }
         };
-        let base = Self::base_of(ws, &repository);
+        let base = Self::base_branch(ws, &repository).await;
         let title = input
             .title
             .as_deref()
@@ -351,6 +426,7 @@ impl ReviewService {
         user_id: &str,
         repository_id: Option<&str>,
     ) -> Result<PrRefresh, ReviewError> {
+        let _single_flight = self.refresh_lock.lock().await;
         let tasks: Vec<Workspace> = self
             .workspaces
             .list_tasks_for_user(user_id, repository_id)
@@ -396,11 +472,14 @@ impl ReviewService {
                 } else {
                     (TaskOutcome::Closed, None)
                 };
-                let row = self.workspaces.set_outcome(&task.id, Some(outcome), into).await?;
-                if outcome == TaskOutcome::Merged {
-                    newly_merged.push(row.clone());
+                // Only if still unset: a Discard (Closed) or a local merge
+                // that landed while `gh` was answering wins.
+                if let Some(row) = self.workspaces.set_outcome_if_unset(&task.id, outcome, into).await? {
+                    if outcome == TaskOutcome::Merged {
+                        newly_merged.push(row.clone());
+                    }
+                    updated = Some(row);
                 }
-                updated = Some(row);
             }
             if let Some(w) = updated {
                 changed.push(w);
@@ -410,16 +489,19 @@ impl ReviewService {
     }
 
     /// Merge the task's branch into `target` (default: its base) in the
-    /// repository's main checkout, under the repo lock. A clean merge
-    /// records the `merged` outcome; conflicts are left in the checkout
-    /// (finishing them via `git_continue_merge` records it too — see
-    /// `record_continued_merge`).
+    /// repository's main checkout, under the repo lock — gated like Approve
+    /// (`close_out_gate`: branch, required checks, uncommitted work) when
+    /// the task's worktree is still here. A clean merge records the
+    /// `merged` outcome against the branch it actually landed on; conflicts
+    /// are left in the checkout (finishing them via `git_continue_merge`
+    /// records it too — see `record_continued_merge`).
     pub async fn merge_locally(
         &self,
         ws: &Workspace,
         user_id: &str,
         strategy: MergeStrategy,
         target: Option<String>,
+        flags: CloseOutFlags,
     ) -> Result<MergeOutcome, ReviewError> {
         let branch = ws.branch.clone().ok_or(ReviewError::NoBranch)?;
         let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
@@ -428,7 +510,21 @@ impl ReviewService {
             .as_deref()
             .map(PathBuf::from)
             .ok_or(ReviewError::NoRepositoryPath)?;
-        let target = target.unwrap_or_else(|| Self::base_of(ws, &repository));
+        match Self::worktree(ws) {
+            Ok(cwd) => self.close_out_gate(ws, user_id, &cwd, &branch, flags).await?,
+            // No worktree left to vouch for: only the check gate applies
+            // (with nothing to fingerprint, a required check can't pass).
+            Err(_) => {
+                let failing = self.checks.unsatisfied_required(ws, user_id).await?;
+                if !failing.is_empty() && !flags.override_checks {
+                    return Err(ReviewError::ChecksNotPassing(failing));
+                }
+            }
+        }
+        let target = match target {
+            Some(target) => target,
+            None => Self::base_branch(ws, &repository).await,
+        };
         // Checks out `target` in the SHARED main checkout: serialize against
         // every worktree-add / branch-delete on this repo (F6).
         let lock = self.repo_locks.for_repository(&ws.repository_id);
@@ -438,17 +534,14 @@ impl ReviewService {
         if self.in_place_agent_running(&ws.repository_id).await? {
             return Err(ReviewError::InPlaceAgentRunning);
         }
-        let outcome = {
-            let target = target.clone();
-            blocking(move || git::merge_to(&main_repo, &target, &branch, strategy)).await?
-        };
+        let merged = blocking(move || git::merge_to(&main_repo, &target, &branch, strategy)).await?;
         drop(guard);
-        if matches!(outcome, MergeOutcome::Clean { .. }) && ws.workspace_kind == WorkspaceKind::Agent {
+        if matches!(merged.outcome, MergeOutcome::Clean { .. }) && ws.workspace_kind == WorkspaceKind::Agent {
             self.workspaces
-                .set_outcome(&ws.id, Some(TaskOutcome::Merged), Some(&target))
+                .set_outcome(&ws.id, Some(TaskOutcome::Merged), Some(&merged.into))
                 .await?;
         }
-        Ok(outcome)
+        Ok(merged.outcome)
     }
 
     /// A paused merge was just finished cleanly in `checkout` (a `local`
@@ -481,14 +574,18 @@ impl ReviewService {
             if task.outcome.is_some() || !merged_branches.iter().any(|b| b == branch) {
                 continue;
             }
-            if Self::base_of(&task, &repository) != target {
+            if Self::base_branch(&task, &repository).await != target {
                 continue;
             }
-            done.push(
-                self.workspaces
-                    .set_outcome(&task.id, Some(TaskOutcome::Merged), Some(target))
-                    .await?,
-            );
+            // Conditional: a Discard or a PR refresh may have recorded it
+            // since the list above was read.
+            if let Some(row) = self
+                .workspaces
+                .set_outcome_if_unset(&task.id, TaskOutcome::Merged, Some(target))
+                .await?
+            {
+                done.push(row);
+            }
         }
         Ok(done)
     }
@@ -668,7 +765,7 @@ mod tests {
     async fn merge_locally_records_merged_into_base_on_a_clean_merge() {
         let f = fx().await;
         let ws = task_with_worktree(&f, "feature").await;
-        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.unwrap();
+        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         let row = f.workspaces.get(&ws.id).await.unwrap();
         assert_eq!(row.outcome, Some(TaskOutcome::Merged));
@@ -693,7 +790,7 @@ mod tests {
         ws.base_branch = Some("develop".into());
         f.workspaces.insert_for_user(&ws, "u").await.unwrap();
 
-        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.unwrap();
+        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         let row = f.workspaces.get(&ws.id).await.unwrap();
         assert_eq!(row.merged_into.as_deref(), Some("develop"));
@@ -729,13 +826,13 @@ mod tests {
             .unwrap();
         let review = f.review.clone().with_runtime(runtime.clone());
 
-        let err = review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.unwrap_err();
+        let err = review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.unwrap_err();
         assert!(matches!(err, ReviewError::InPlaceAgentRunning), "{err}");
         assert!(!f.repo_path.join("busy.txt").exists(), "nothing was merged");
 
         handle.kill().unwrap();
         runtime.drop_task(&local.id);
-        assert!(review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.is_ok());
+        assert!(review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.is_ok());
     }
 
     #[test]
@@ -866,5 +963,167 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!err.to_string().starts_with("required checks"), "{err}");
+    }
+
+    fn with_origin(f: &Fx, ws: &Workspace) -> (PathBuf, PathBuf) {
+        let wt = PathBuf::from(ws.worktree_path.clone().unwrap());
+        let origin = f.repo_path.parent().unwrap().join(format!("origin-{}.git", ws.name));
+        git(f.repo_path.parent().unwrap(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        git(&wt, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        (wt, origin)
+    }
+
+    fn pushed(origin: &Path, branch: &str) -> bool {
+        Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+            .current_dir(origin)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    async fn require_check(f: &Fx, command: &str) -> crate::domain::RunCommand {
+        let mut rc = crate::domain::RunCommand::new(f.repository.id.clone(), "test".into(), command.into());
+        rc.required_for_approve = true;
+        f.run_commands.insert_for_user(&rc, "u").await.unwrap();
+        rc
+    }
+
+    fn approve(override_checks: bool, commit_dirty: bool) -> ApproveInput {
+        ApproveInput {
+            override_checks: Some(override_checks),
+            commit_dirty: Some(commit_dirty),
+            ..Default::default()
+        }
+    }
+
+    /// Second review #4: the gate was checked before dirtiness, and each
+    /// retry sent only the flag for the LAST refusal — a loop. Both are
+    /// evaluated up front, nothing happens until both are answered, and
+    /// the two flags work together.
+    #[tokio::test]
+    async fn approve_evaluates_checks_and_dirtiness_together() {
+        let f = fx().await;
+        let ws = task_with_worktree(&f, "both").await;
+        require_check(&f, "true").await;
+        let (wt, origin) = with_origin(&f, &ws);
+        std::fs::write(wt.join("wip.txt"), "wip\n").unwrap();
+
+        let err = f.review.approve_and_create_pr(&ws, "u", approve(false, false), None).await.unwrap_err();
+        assert!(err.to_string().starts_with("required checks not passing"), "{err}");
+        let err = f.review.approve_and_create_pr(&ws, "u", approve(false, true), None).await.unwrap_err();
+        assert!(err.to_string().starts_with("required checks not passing"), "{err}");
+        let err = f.review.approve_and_create_pr(&ws, "u", approve(true, false), None).await.unwrap_err();
+        assert_eq!(err.to_string(), "worktree has uncommitted changes");
+        assert!(git::is_dirty(&wt).unwrap(), "nothing committed while a gate was unanswered");
+        assert!(!pushed(&origin, "phasr/both"), "nothing pushed");
+
+        // Both answered: committed and pushed (then the PR URL can't be
+        // derived from a local-path remote).
+        let _ = f.review.approve_and_create_pr(&ws, "u", approve(true, true), None).await;
+        assert!(!git::is_dirty(&wt).unwrap());
+        assert!(pushed(&origin, "phasr/both"));
+    }
+
+    /// New #5: Approve pushes `ws.branch` while checks vouch for HEAD. If
+    /// the agent switched branches, refuse rather than commit there and
+    /// push something else.
+    #[tokio::test]
+    async fn approve_refuses_when_the_worktree_is_not_on_the_tasks_branch() {
+        let f = fx().await;
+        let ws = task_with_worktree(&f, "moved").await;
+        let (wt, origin) = with_origin(&f, &ws);
+        git(&wt, &["checkout", "-qb", "agent-side-quest"]);
+        std::fs::write(wt.join("x.txt"), "x\n").unwrap();
+
+        let err = f.review.approve_and_create_pr(&ws, "u", approve(true, true), None).await.unwrap_err();
+        assert!(matches!(err, ReviewError::BranchMismatch { .. }), "{err}");
+        assert!(err.to_string().contains("`agent-side-quest`"), "{err}");
+        assert!(git::is_dirty(&wt).unwrap(), "nothing committed on the wrong branch");
+        assert!(!pushed(&origin, "phasr/moved"));
+        // Merge locally refuses too.
+        let both = CloseOutFlags {
+            override_checks: true,
+            commit_dirty: true,
+        };
+        let err = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, both).await.unwrap_err();
+        assert!(matches!(err, ReviewError::BranchMismatch { .. }), "{err}");
+    }
+
+    /// Merge locally skipped required checks; now it's gated like Approve,
+    /// with the same prefix and the same override.
+    #[tokio::test]
+    async fn merge_locally_is_gated_like_approve() {
+        let f = fx().await;
+        let ws = task_with_worktree(&f, "gated-merge").await;
+        require_check(&f, "true").await;
+        let err = f
+            .review
+            .merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "required checks not passing: test");
+        assert!(!f.repo_path.join("gated-merge.txt").exists(), "nothing merged");
+
+        let wt = PathBuf::from(ws.worktree_path.clone().unwrap());
+        std::fs::write(wt.join("late.txt"), "late\n").unwrap();
+        let override_only = CloseOutFlags {
+            override_checks: true,
+            commit_dirty: false,
+        };
+        let err = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, override_only).await.unwrap_err();
+        assert_eq!(err.to_string(), "worktree has uncommitted changes");
+
+        let both = CloseOutFlags {
+            override_checks: true,
+            commit_dirty: true,
+        };
+        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, both).await.unwrap();
+        assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+        assert!(f.repo_path.join("gated-merge.txt").exists() && f.repo_path.join("late.txt").exists());
+        assert_eq!(f.workspaces.get(&ws.id).await.unwrap().merged_into.as_deref(), Some("main"));
+    }
+
+    /// The merge lands on the base even when the main checkout is on
+    /// another branch, and `merged_into` names where it landed.
+    #[tokio::test]
+    async fn merge_locally_lands_on_the_base_not_the_checked_out_branch() {
+        let f = fx().await;
+        let ws = task_with_worktree(&f, "elsewhere").await;
+        git(&f.repo_path, &["checkout", "-qb", "user-wip"]);
+        let outcome = f
+            .review
+            .merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+        let on = |rev: &str| {
+            Command::new("git")
+                .args(["cat-file", "-e", &format!("{rev}:elsewhere.txt")])
+                .current_dir(&f.repo_path)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(on("main") && !on("user-wip"));
+        assert_eq!(f.workspaces.get(&ws.id).await.unwrap().merged_into.as_deref(), Some("main"));
+    }
+
+    /// A continued merge doesn't overwrite an outcome recorded meanwhile.
+    #[tokio::test]
+    async fn a_continued_merge_never_overwrites_a_recorded_outcome() {
+        let f = fx().await;
+        let a = task_with_worktree(&f, "closed-first").await;
+        let mut local = Workspace::new(f.repository.id.clone(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        f.workspaces.insert_for_user(&local, "u").await.unwrap();
+        f.workspaces.set_outcome(&a.id, Some(TaskOutcome::Closed), None).await.unwrap();
+        let done = f
+            .review
+            .record_continued_merge(&local, "u", &["phasr/closed-first".into()], Some("main"))
+            .await
+            .unwrap();
+        assert!(done.is_empty());
+        assert_eq!(f.workspaces.get(&a.id).await.unwrap().outcome, Some(TaskOutcome::Closed));
     }
 }

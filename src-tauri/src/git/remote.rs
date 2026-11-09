@@ -48,6 +48,12 @@ pub fn get_default_branch(repo_path: &Path) -> Option<String> {
     None
 }
 
+/// Whether the fully-qualified ref `full_ref` (`refs/heads/x`,
+/// `refs/remotes/origin/x`) exists. Blocking.
+pub fn ref_exists(repo_path: &Path, full_ref: &str) -> bool {
+    run_git(repo_path, &["rev-parse", "--verify", "--quiet", full_ref]).is_ok()
+}
+
 /// Sorted list of local branch names (no `refs/heads/` prefix). Empty
 /// repos return `[]` rather than erroring so the dropdown can fall back
 /// to a free-text field gracefully.

@@ -13,7 +13,7 @@ use regex::Regex;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::util::proc::{run_with_timeout, ProcError};
+use crate::util::proc::{run_with_timeout, run_with_timeout_stdin, ProcError};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// `gh pr create` talks to the API (and may wait on a slow push mirror).
@@ -94,17 +94,38 @@ pub struct CreatePr<'a> {
     pub draft: bool,
 }
 
-pub async fn create_pr(gh: &Path, cwd: &Path, pr: &CreatePr<'_>) -> Result<CreatedPr, GhError> {
-    let repo = format!("{}/{}/{}", pr.host, pr.owner, pr.repo);
-    let mut args: Vec<&str> = vec![
-        "pr", "create", "--repo", &repo, "--base", pr.base, "--head", pr.head, "--title", pr.title,
-        "--body", pr.body,
+/// The arguments for `gh pr create`. Every value goes as `--flag=value`,
+/// so a title like `--web` (it's the task name) is a value, never a flag;
+/// the body goes on stdin (`--body-file -`) — it holds the agent's summary,
+/// which can be long and needn't be visible to every process via argv.
+fn create_args(pr: &CreatePr<'_>) -> Vec<String> {
+    let mut args = vec![
+        "pr".to_string(),
+        "create".into(),
+        format!("--repo={}/{}/{}", pr.host, pr.owner, pr.repo),
+        format!("--base={}", pr.base),
+        format!("--head={}", pr.head),
+        format!("--title={}", pr.title),
+        "--body-file=-".into(),
     ];
     if pr.draft {
-        args.push("--draft");
+        args.push("--draft".into());
     }
+    args
+}
+
+pub async fn create_pr(gh: &Path, cwd: &Path, pr: &CreatePr<'_>) -> Result<CreatedPr, GhError> {
+    let args = create_args(pr);
     let program = gh.to_string_lossy();
-    let out = run_with_timeout(&program, &args, Some(cwd), &gh_env(pr.host).await, CREATE_TIMEOUT).await?;
+    let out = run_with_timeout_stdin(
+        &program,
+        &args,
+        Some(cwd),
+        &gh_env(pr.host).await,
+        Some(pr.body.as_bytes()),
+        CREATE_TIMEOUT,
+    )
+    .await?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     parse_create_output(out.status.success(), &stdout, &stderr)
@@ -183,12 +204,29 @@ impl PrView {
     }
 }
 
+/// `pr_url` is a SYNCED column. Only an `https://host/…/pull/N` URL is
+/// handed to `gh` (and after `--`): anything else could be read as a flag,
+/// or point `gh` — with the user's token — at a host of the row's choosing
+/// over plain http.
+pub fn checked_pr_url(url: &str) -> Result<&str, GhError> {
+    let url = url.trim();
+    let ok = url.starts_with("https://")
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+        && pr_url_in(url).is_some_and(|(found, _)| found == url);
+    if ok {
+        Ok(url)
+    } else {
+        Err(GhError::Failed(format!("`{url}` isn't a pull request URL")))
+    }
+}
+
 pub async fn view_pr(gh: &Path, url: &str) -> Result<PrView, GhError> {
+    let url = checked_pr_url(url)?;
     let host = host_of_url(url).unwrap_or("github.com");
     let program = gh.to_string_lossy();
     let out = run_with_timeout(
         &program,
-        &["pr", "view", url, "--json", "state,mergedAt,isDraft"],
+        &["pr", "view", "--json", "state,mergedAt,isDraft", "--", url],
         None,
         &gh_env(host).await,
         VIEW_TIMEOUT,
@@ -239,6 +277,61 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("No commits between"), "{err}");
         assert!(matches!(parse_create_output(true, "done\n", ""), Err(GhError::NoUrl)));
+    }
+
+    #[test]
+    fn only_https_pull_request_urls_reach_gh() {
+        assert!(checked_pr_url("https://github.com/acme/web/pull/142").is_ok());
+        assert!(checked_pr_url("https://github.acme-corp.com/platform/api/pull/7").is_ok());
+        for bad in [
+            "--repo=evil/x",
+            "http://github.com/acme/web/pull/1",
+            "https://github.com/acme/web/pull/1 --web",
+            "https://github.com/acme/web/issues/1",
+            "https://github.com/acme/web/pull/1/../../x",
+            "file:///etc/passwd",
+            "",
+        ] {
+            assert!(checked_pr_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Values ride as `--flag=value` (a task named `--web` is a title) and
+    /// the body goes on stdin.
+    #[test]
+    fn create_args_never_let_a_value_become_a_flag() {
+        let pr = CreatePr {
+            host: "github.com",
+            owner: "acme",
+            repo: "web",
+            base: "main",
+            head: "phasr/x",
+            title: "--web",
+            body: "secret summary",
+            draft: true,
+        };
+        let args = create_args(&pr);
+        assert!(args.contains(&"--title=--web".to_string()));
+        assert!(args.contains(&"--body-file=-".to_string()));
+        assert!(!args.iter().any(|a| a.contains("secret summary")), "body not on the command line");
+        assert_eq!(args.last().map(String::as_str), Some("--draft"));
+    }
+
+    /// The body really arrives on stdin.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_reaches_the_child() {
+        let out = crate::util::proc::run_with_timeout_stdin(
+            "/bin/cat",
+            &["-"],
+            None,
+            &[],
+            Some(b"body text"),
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "body text");
     }
 
     #[test]

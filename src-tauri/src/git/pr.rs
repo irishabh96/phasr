@@ -47,24 +47,43 @@ pub fn build_pull_request_target(
     None
 }
 
-/// Resolves the base branch a PR should target.
+/// Resolves the repository's default branch — what a task with no
+/// recorded base merges into / opens its PR against.
 ///
-/// Uses the repo's configured `default_branch` when it actually exists
-/// in the local checkout, otherwise falls back to whatever git reports
-/// as the default (keeps rows created with `default_branch = "main"`
-/// working on master-style repos), and finally to the configured value.
+/// The configured `default_branch` when it exists in the checkout (locally
+/// or as `origin/<it>`); otherwise the remote's default (`origin/HEAD`),
+/// then `main` / `master` if one exists (keeps rows created with
+/// `default_branch = "main"` working on master-style repos); finally the
+/// configured value.
 ///
-/// `local_path` must be the **main repo checkout**, not a worktree —
-/// `get_default_branch` on a worktree returns the checked-out feature
-/// branch, which is never the PR base.
+/// Never the checkout's CURRENT branch: that's whatever the user (or an
+/// in-place agent) last switched to, and used to become the base whenever
+/// the configured default didn't match it — so "merge locally" and the PR
+/// targeted a feature branch.
 pub fn resolve_base_branch(local_path: Option<&str>, configured_default: &str) -> String {
-    let detected =
-        local_path.and_then(|p| super::get_default_branch(std::path::Path::new(p)));
-    match detected {
-        Some(d) if d == configured_default => configured_default.to_string(),
-        Some(d) => d,
-        None => configured_default.to_string(),
+    let Some(path) = local_path.map(std::path::Path::new) else {
+        return configured_default.to_string();
+    };
+    let exists = |r: &str| super::error::run_git(path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    if super::error::ensure_branch_name(configured_default).is_ok()
+        && (exists(&format!("refs/heads/{configured_default}"))
+            || exists(&format!("refs/remotes/origin/{configured_default}")))
+    {
+        return configured_default.to_string();
     }
+    if let Ok(head) = super::error::run_git(path, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
+        if let Some(name) = head.trim().strip_prefix("origin/") {
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    for candidate in ["main", "master"] {
+        if exists(&format!("refs/heads/{candidate}")) {
+            return candidate.to_string();
+        }
+    }
+    configured_default.to_string()
 }
 
 /// Returns `(host, owner, repo)` parsed from a typical git remote URL.
@@ -164,6 +183,34 @@ mod tests {
     #[test]
     fn returns_none_for_unknown_host() {
         assert!(build_pull_request_target("git@example.com:foo/bar.git", "main", "feat").is_none());
+    }
+
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// The default is never the checkout's current branch (new #4: with no
+    /// base set, `base_of` resolved to whatever the main checkout had out).
+    #[test]
+    fn resolve_base_branch_ignores_the_checked_out_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        git(p, &["init", "-q", "-b", "master"]);
+        git(p, &["config", "user.email", "t@example.com"]);
+        git(p, &["config", "user.name", "t"]);
+        std::fs::write(p.join("a"), "a").unwrap();
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-qm", "init"]);
+        git(p, &["checkout", "-qb", "phasr/feature"]);
+        let path = p.to_str();
+        // Configured "main" doesn't exist: master (not the feature branch).
+        assert_eq!(resolve_base_branch(path, "main"), "master");
+        git(p, &["branch", "develop"]);
+        assert_eq!(resolve_base_branch(path, "develop"), "develop");
+        // Nothing matches at all: the configured value.
+        git(p, &["branch", "-m", "master", "trunk"]);
+        assert_eq!(resolve_base_branch(path, "main"), "main");
     }
 
     #[test]
