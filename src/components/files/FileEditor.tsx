@@ -63,23 +63,26 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-(--color-border-subtle) px-3 text-[12px]">
+      {/* Breadcrumb row (A-Editor). No rule under it: the editor below is
+          the same tone, and the row reads as a header by its muted type. */}
+      <div className="flex h-[30px] shrink-0 items-center gap-2 px-3.5 text-[12px]">
         <nav aria-label="File path" className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-(--color-text-muted)">
           {crumbs.map((c, i) => (
             <span key={i} className="flex min-w-0 items-center gap-1">
-              {i > 0 ? <ChevronRight className="size-3 shrink-0" aria-hidden /> : null}
-              <span className={cn("truncate", i === crumbs.length - 1 && "text-(--color-text-primary)")}>{c}</span>
+              {i > 0 ? <ChevronRight className="size-3 shrink-0 text-(--color-text-faint)" aria-hidden /> : null}
+              <span className={cn("truncate", i === crumbs.length - 1 && "text-(--color-text-secondary)")}>{c}</span>
             </span>
           ))}
         </nav>
         <span className="flex-1" />
         {edit ? (
-          <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-(--color-text-muted)">
+          <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--color-text-muted)">
             <AgentMark agent={edit.agent} size="xs" />
             {AGENT_META[edit.agent].label} edited this file {formatAgo(edit.at, now)}
           </span>
         ) : null}
-        <div role="radiogroup" aria-label="File view" className="flex overflow-hidden rounded-(--radius-control) border border-(--color-border-default)">
+        {/* Segmented track (no border); the selected segment is one step up. */}
+        <div role="radiogroup" aria-label="File view" className="inline-flex shrink-0 gap-0.5 rounded-[7px] bg-(--color-bg-surface) p-0.5">
           {(["edit", "diff"] as const).map((m) => (
             <button
               key={m}
@@ -88,8 +91,11 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
               aria-checked={mode === m}
               onClick={() => setMode(m)}
               className={cn(
-                "flex h-6 items-center gap-1 px-2 text-[11px] focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)",
-                mode === m ? "bg-(--color-bg-elevated) text-(--color-text-primary)" : "text-(--color-text-muted)",
+                "flex h-[22px] items-center gap-1 rounded-[5px] px-2 text-[12px] transition-colors duration-(--dur-1) ease-(--ease-out)",
+                "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
+                mode === m
+                  ? "bg-(--color-bg-hover) text-(--color-text-primary)"
+                  : "text-(--color-text-muted) hover:text-(--color-text-primary)",
               )}
             >
               {m === "diff" ? <GitCompare className="size-3" aria-hidden /> : null}
@@ -100,11 +106,11 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
       </div>
 
       {diskChanged ? (
-        <div role="status" className="flex shrink-0 items-center gap-2 border-b border-(--color-border-subtle) bg-(--color-warning-tint) px-3 py-1.5 text-[12px]">
+        <div role="status" className="flex shrink-0 items-center gap-2 bg-(--color-warning-tint) px-3.5 py-1.5 text-[12px]">
           <span className="flex-1 text-(--color-text-secondary)">
             {edit ? AGENT_META[edit.agent].label : "Something"} changed this file on disk while you had unsaved edits.
           </span>
-          <Button size="sm" className="h-6" onClick={reloadFromDisk}>
+          <Button variant="ghost" size="sm" className="h-6" onClick={reloadFromDisk}>
             Reload theirs
           </Button>
           <Button size="sm" className="h-6" variant="primary" onClick={() => save(true)}>
@@ -113,7 +119,7 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
         </div>
       ) : null}
       {entry && file.isError ? (
-        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-(--color-border-subtle) bg-(--color-warning-tint) px-3 py-1.5 text-[12px] text-(--color-text-secondary)">
+        <div role="alert" className="flex shrink-0 items-center gap-2 bg-(--color-warning-tint) px-3.5 py-1.5 text-[12px] text-(--color-text-secondary)">
           Can't re-read this file from disk: {humanizeError(file.error)}
         </div>
       ) : null}
@@ -126,7 +132,7 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
           )
         ) : null}
         {entry && mode === "diff" ? (
-          <div className="h-full overflow-auto p-3">
+          <div className="h-full overflow-auto">
             <DiffAnnotationsContext.Provider
               value={{
                 onRevertHunk: (header, body) =>
@@ -173,7 +179,8 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
         ) : null}
       </div>
 
-      <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-(--color-border-subtle) bg-(--color-bg-sidebar) px-3 font-mono text-[11px] text-(--color-text-muted)">
+      {/* Status line: Inter with tabular figures (mono is for code only). */}
+      <footer className="flex h-[26px] shrink-0 items-center gap-3.5 px-3.5 text-[12px] tabular-nums text-(--color-text-muted)">
         {saving ? (
           <span>saving…</span>
         ) : dirty ? (
@@ -185,7 +192,7 @@ export function FileEditor({ workspaceId, path }: { workspaceId: string; path: s
           <span>saved</span>
         )}
         {dirty && !saving ? (
-          <Button size="sm" className="h-5 px-2 font-sans text-[11px]" onClick={() => save(false)}>
+          <Button variant="ghost" size="sm" className="h-5 px-2 text-[12px]" onClick={() => save(false)}>
             Save
           </Button>
         ) : null}
