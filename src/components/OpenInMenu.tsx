@@ -89,7 +89,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
       </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden surface-floating animate-popover-in">
           {launchers && launchers.length === 0 && (
             <div className="px-3 py-3 text-[12px] text-(--color-text-muted)">
               No editors or terminals detected.
@@ -103,7 +103,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                 key={kind}
                 className="border-b border-(--glass-border-hairline) p-1 last:border-b-0"
               >
-                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
+                <div className="group-header px-2 py-1">
                   {KIND_LABEL[kind]}
                 </div>
                 {items.map((launcher) => (

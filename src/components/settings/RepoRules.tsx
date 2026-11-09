@@ -149,13 +149,13 @@ function Worktrees({ repositoryId }: { repositoryId: string }) {
         title={
           <span className="flex items-center gap-2">
             Worktrees
-            <span className="font-mono font-normal normal-case tracking-normal">
+            <span className="font-normal tabular-nums">
               {worktrees?.length ?? 0}
               {sizes ? ` · ${formatBytes(total)}` : ""}
             </span>
             <span className="flex-1" />
             {orphans.length > 0 ? (
-              <Button size="sm" variant="danger" className="h-6 normal-case tracking-normal" onClick={() => setConfirm(orphans)}>
+              <Button size="sm" variant="danger" className="h-6" onClick={() => setConfirm(orphans)}>
                 Remove {orphans.length} orphaned
               </Button>
             ) : null}

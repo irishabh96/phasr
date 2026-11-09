@@ -32,7 +32,7 @@ export function NewTaskModal() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && clearPending()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) data-[state=open]:animate-[overlay-in_140ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <Dialog.Content
           aria-describedby={undefined}
           className="fixed left-1/2 top-1/2 z-(--z-modal) w-[min(760px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
@@ -43,7 +43,7 @@ export function NewTaskModal() {
             if (target?.closest('[role="combobox"][aria-expanded="true"]')) e.preventDefault();
           }}
         >
-          <div className="glass-modal animate-[modal-in_160ms_var(--ease-glass)] overflow-hidden">
+          <div className="glass-modal animate-modal-in overflow-hidden">
             <header className="flex items-center gap-2.5 border-b border-(--color-border-subtle) px-[18px] py-3.5">
               <Dialog.Title asChild>
                 <h2 className="m-0 text-[14px] font-semibold leading-none">

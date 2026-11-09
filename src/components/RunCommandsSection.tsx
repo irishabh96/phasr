@@ -132,7 +132,7 @@ export function RunCommandsSection({
     <section className="space-y-3">
       {!isControlled && (
         <div className="flex items-center justify-between">
-          <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
+          <div className="group-header">
             Commands
           </div>
           <GlassButton variant="outline" size="sm" onClick={toggleAdd}>

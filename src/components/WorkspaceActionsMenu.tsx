@@ -180,7 +180,7 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         </GlassButton>
 
         {open && (
-          <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]">
+          <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden surface-floating animate-popover-in">
             <ul className="p-1 text-[12px]">
               {canMergeToMain && (
                 <MenuItem

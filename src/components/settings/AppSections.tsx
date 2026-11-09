@@ -123,7 +123,7 @@ function ThemePreview({ theme }: { theme: Theme }) {
       <span
         aria-hidden
         className="block h-14 rounded-[5px] border border-(--color-border-default)"
-        style={{ background: "linear-gradient(110deg, #0B0D10 50%, #F6F5F2 50%)" }}
+        style={{ background: "linear-gradient(110deg, #0C0C0E 50%, #F6F5F2 50%)" }}
       />
     );
   }
@@ -132,11 +132,11 @@ function ThemePreview({ theme }: { theme: Theme }) {
     <span
       aria-hidden
       className="flex h-14 overflow-hidden rounded-[5px] border"
-      style={{ background: dark ? "#0B0D10" : "#F6F5F2", borderColor: dark ? "#232931" : "#D9D4CB" }}
+      style={{ background: dark ? "#0C0C0E" : "#F6F5F2", borderColor: dark ? "#26262C" : "#D9D4CB" }}
     >
       <span
         className="w-[28%] border-r"
-        style={{ background: dark ? "#0E1114" : "#ECE8E1", borderColor: dark ? "#232931" : "#D9D4CB" }}
+        style={{ background: dark ? "#141417" : "#ECE8E1", borderColor: dark ? "#1A1A1F" : "#D9D4CB" }}
       />
     </span>
   );

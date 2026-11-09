@@ -355,7 +355,7 @@ export function CommandPalette() {
       contentClassName="fixed left-1/2 top-[120px] z-(--z-modal) w-[min(680px,calc(100vw-32px))] -translate-x-1/2 outline-none"
     >
       <RadixDialog.Title className="sr-only">Command palette</RadixDialog.Title>
-      <div className="flex flex-col overflow-hidden rounded-(--radius-modal) border border-(--color-border-strong) bg-(--color-bg-sheet) shadow-(--shadow-modal) animate-[modal-in_140ms_var(--ease-glass)]">
+      <div className="flex flex-col overflow-hidden glass-modal animate-modal-in">
         <div className="flex h-[52px] items-center gap-2.5 border-b border-(--color-border-subtle) px-4">
           <span className="flex h-[22px] shrink-0 items-center rounded-(--radius-chip) bg-(--color-bg-elevated) px-[7px] font-mono text-[11px] text-(--color-text-muted)">
             {scopeRepo?.name ?? "all repos"}

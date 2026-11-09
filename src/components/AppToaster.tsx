@@ -108,8 +108,8 @@ function ToastCard({ toast, leaving }: { toast: AppToast; leaving: boolean }) {
       onBlur={() => resumeToast(toast.id)}
       className={cn(
         "glass-panel pointer-events-auto p-3",
-        "animate-[toast-in_180ms_var(--ease-glass)]",
-        "data-[leaving]:animate-[toast-out_140ms_var(--ease-glass)]",
+        "animate-[toast-in_var(--dur-2)_var(--ease-out)]",
+        "data-[leaving]:animate-[toast-out_var(--dur-exit)_var(--ease-in)]",
       )}
     >
       <div className="flex items-start gap-2.5">

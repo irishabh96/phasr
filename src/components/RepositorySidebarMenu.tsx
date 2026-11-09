@@ -87,7 +87,7 @@ export function RepositorySidebarMenu({
           <ContextMenu.Content
             className={cn(
               "z-[200] min-w-[180px] overflow-hidden p-1",
-              "rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]",
+              "surface-floating data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
             )}
           >
             <Item icon={<FolderOpen size={12} />} onSelect={onOpenProject}>
@@ -184,12 +184,12 @@ function RemoveConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-[160] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
+          <div className="glass-modal animate-modal-in overflow-hidden">
             <header className="border-b border-(--glass-border-hairline) px-5 py-3.5">
               <Dialog.Title asChild>
                 <h3 className="text-[13px] font-semibold leading-none">

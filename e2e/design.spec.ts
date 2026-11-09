@@ -50,12 +50,12 @@ test.describe("design-fix validation (/design-test)", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   });
 
-  // A-System: primary CTA ink is --color-accent-onfill — dark bg-0 ink on the
+  // Primary CTA ink is --color-accent-onfill — dark bg ink (#0C0C0E) on the
   // bright dark-theme coral, white on the darker light-theme coral (#C94F2E),
   // each clearing 4.5:1 on its fill.
   test("T1: primary button ink follows accent-onfill per theme", async ({ page }) => {
     const btn = page.getByTestId("btn-primary");
-    const expected = { dark: "rgb(11, 13, 16)", light: "rgb(255, 255, 255)" } as const;
+    const expected = { dark: "rgb(12, 12, 14)", light: "rgb(255, 255, 255)" } as const;
     for (const theme of ["light", "dark"] as const) {
       await setTheme(page, theme);
       // The button transitions its colours, so a single read right after the
@@ -68,13 +68,14 @@ test.describe("design-fix validation (/design-test)", () => {
     }
   });
 
-  // A-System: Danger is a tint (Stop, Discard); the solid red fill is the
-  // confirm step of a destructive dialog, white text on #c93c37.
-  test("T2: danger is tinted; danger-solid keeps the solid fill", async ({ page }) => {
+  // A-Polish: Danger is red text on a ghost button (Stop, Discard); the
+  // solid red fill is the confirm step of a destructive dialog, white text
+  // on #c93c37.
+  test("T2: danger is ghost red text; danger-solid keeps the solid fill", async ({ page }) => {
     await setTheme(page, "dark");
-    const tinted = page.getByTestId("btn-danger");
-    expect(await tinted.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(240, 107, 107)");
-    expect(await tinted.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(31, 21, 22)");
+    const ghost = page.getByTestId("btn-danger");
+    expect(await ghost.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(240, 107, 107)");
+    expect(await ghost.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
     const solid = page.getByTestId("btn-danger-solid");
     expect(await solid.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(201, 60, 55)");
   });

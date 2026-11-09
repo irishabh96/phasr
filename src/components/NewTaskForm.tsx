@@ -205,7 +205,7 @@ export function NewTaskForm({
             placeholder="What should the agent do?"
             rows={variant === "inline" ? 3 : 4}
             autoFocus={autoFocus}
-            className="resize-none rounded-(--radius-card) border border-(--color-border-default) bg-(--color-bg-base) p-3 text-[13px] leading-[1.55] text-(--color-text-primary) focus:border-(--color-accent-700)"
+            className="resize-none rounded-(--radius-card) p-3 text-[13px] leading-[1.55] text-(--color-text-primary)"
           />
           <div className="flex items-center gap-1 text-[11px] text-(--color-text-muted)">
             <label htmlFor="new-task-name" className="shrink-0 pl-1">

@@ -592,7 +592,7 @@ function Section({
   return (
     <section className="flex flex-col gap-2">
       <header className="flex items-center justify-between px-1">
-        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
+        <span className="group-header">
           {title} <span className="text-(--color-text-secondary)">{count}</span>
         </span>
         {action}

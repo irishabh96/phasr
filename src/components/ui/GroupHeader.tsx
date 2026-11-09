@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-/** 11/600 caps group header with optional mono count and trailing action. */
+/**
+ * Group header (A-Polish rule 3): sentence case, 12px, muted, weight 500,
+ * no caps or tracking. The optional count is Inter with tabular figures
+ * (mono is for code, paths and branches only).
+ */
 export function GroupHeader({
   children,
   count,
@@ -23,7 +27,7 @@ export function GroupHeader({
         {children}
       </Tag>
       {count !== undefined ? (
-        <span className="font-mono text-[11px] text-(--color-text-muted)">{count}</span>
+        <span className="text-[12px] tabular-nums text-(--color-text-muted)">{count}</span>
       ) : null}
       {action ? <div className="ml-auto flex items-center gap-1">{action}</div> : null}
     </div>

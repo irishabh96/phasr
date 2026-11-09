@@ -216,7 +216,7 @@ export function MergeToMainDialog({
             aria-label="Merge strategy"
             className="space-y-1"
           >
-            <legend className="mb-1 text-[11px] uppercase tracking-[0.12em] text-(--color-text-muted)">
+            <legend className="group-header mb-1">
               Strategy
             </legend>
             <StrategyRow

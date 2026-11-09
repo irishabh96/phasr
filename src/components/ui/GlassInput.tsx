@@ -6,21 +6,21 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * Shared field chrome — border/hover/focus/disabled tokens. Exported so
- * `GlassSelect` renders as a visually matched set with the input/textarea.
+ * Shared field chrome (A-Polish "Inputs"): inset background, no border, a
+ * 1px hairline ring; focus is an accent ring + a 4px accent glow at 14%.
+ * Exported so `GlassSelect` and `BaseBranchField` render as a matched set.
  */
 export const inputBaseClasses = [
   "block w-full",
   "bg-(--color-bg-input)",
   "text-(--color-text-primary) placeholder:text-(--color-text-muted)",
-  "border border-(--color-border-default)",
+  "border-0 shadow-(--ring-input)",
   "rounded-(--radius-control)",
-  "transition-[border-color,box-shadow] duration-100",
+  "transition-[box-shadow] duration-(--dur-1) ease-(--ease-out)",
   "outline-none",
-  "hover:border-(--color-border-strong)",
-  "focus:border-(--color-focus-ring)",
-  "focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-focus-ring)_22%,transparent)]",
-  "aria-[invalid=true]:border-(--color-danger)",
+  "hover:shadow-(--ring-input-hover)",
+  "focus:shadow-(--ring-input-focus)",
+  "aria-[invalid=true]:shadow-(--ring-input-invalid)",
   "disabled:opacity-50 disabled:cursor-not-allowed",
 ].join(" ");
 

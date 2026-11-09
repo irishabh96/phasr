@@ -279,7 +279,7 @@ export function DiffCard({
         {hasError ? (
           <span
             title={file.errorMessage}
-            className="shrink-0 rounded bg-[color-mix(in_oklab,var(--color-danger)_15%,transparent)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-(--color-danger)"
+            className="shrink-0 rounded bg-[color-mix(in_oklab,var(--color-danger)_15%,transparent)] px-1.5 py-0.5 text-[11px] font-medium text-(--color-danger)"
           >
             error
           </span>
@@ -476,7 +476,7 @@ function CountsBadge({
     return (
       <span
         aria-label="Binary file"
-        className="shrink-0 rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-(--color-text-muted)"
+        className="shrink-0 rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[11px] text-(--color-text-muted)"
       >
         binary
       </span>
@@ -486,7 +486,7 @@ function CountsBadge({
     return (
       <span
         aria-label="No line changes"
-        className="shrink-0 rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-(--color-text-muted)"
+        className="shrink-0 rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[11px] text-(--color-text-muted)"
       >
         empty
       </span>

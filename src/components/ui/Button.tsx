@@ -5,58 +5,71 @@ import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/Kbd";
 
 /**
- * A-System buttons: 28 / 32 px, radius 6, one accent fill for the primary
- * action, everything else neutral. Danger is a tint (Stop, Discard); the
- * solid red is reserved for the confirm step of a destructive dialog.
+ * A-Polish buttons: 28px, radius 6, 13px. No boxed buttons for secondary
+ * actions; one filled accent primary per screen.
+ * - primary: accent fill + a 1px inset top highlight.
+ * - secondary: raised fill, no border.
+ * - ghost: text-2 on transparent; hover raises.
+ * - danger: red text, ghost-style (Stop, Discard). The solid red
+ *   `danger-solid` is reserved for the confirm step of a destructive dialog.
+ * - dashed: legacy "add" affordance; screen agents are replacing it with
+ *   ghost text rows.
+ * Hover is +1 surface step; press is scale(.98) over --dur-1 (skipped under
+ * reduced motion); focus keeps the standard --ring-focus.
  */
 export const buttonVariants = cva(
   [
     "inline-flex items-center justify-center gap-1.5 select-none whitespace-nowrap",
-    "rounded-(--radius-control) border text-[12px] leading-none",
-    "transition-colors duration-100",
-    "disabled:pointer-events-none disabled:border-(--color-border-subtle) disabled:bg-(--color-bg-sheet) disabled:text-(--color-text-faint)",
+    "rounded-(--radius-control) border border-transparent text-[13px] leading-none",
+    "transition-[color,background-color,box-shadow,scale] duration-(--dur-1) ease-(--ease-out)",
+    "motion-safe:active:scale-[.98]",
+    "disabled:pointer-events-none disabled:text-(--color-text-faint)",
     "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
   ].join(" "),
   {
     variants: {
       variant: {
         primary: [
-          "border-transparent bg-(--color-accent-500) font-semibold text-(--color-accent-onfill)",
+          "bg-(--color-accent-500) font-medium text-(--color-accent-onfill) shadow-(--shadow-button-primary)",
           "hover:bg-(--color-accent-400) active:bg-(--color-accent-600)",
-          "disabled:border-transparent disabled:bg-(--color-accent-500) disabled:text-(--color-accent-onfill) disabled:opacity-40",
+          "disabled:text-(--color-accent-onfill) disabled:opacity-40",
         ].join(" "),
         secondary: [
-          "border-(--color-border-default) bg-(--color-bg-surface) text-(--color-text-primary)",
-          "hover:border-(--color-border-strong) hover:bg-(--color-bg-elevated)",
-          "active:bg-(--color-bg-active)",
+          "bg-(--color-bg-elevated) text-(--color-text-primary)",
+          "hover:bg-(--color-bg-hover) active:bg-(--color-bg-active)",
+          "disabled:bg-(--color-bg-surface)",
         ].join(" "),
         ghost: [
-          "border-transparent bg-transparent text-(--color-text-secondary)",
-          "hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
-          "active:bg-(--color-bg-active)",
-          "disabled:border-transparent disabled:bg-transparent",
+          "bg-transparent text-(--color-text-secondary)",
+          "hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
+          "active:bg-(--color-bg-hover)",
         ].join(" "),
         danger: [
-          "border-(--color-danger-border) bg-(--color-danger-tint) text-(--color-danger-text)",
-          "hover:border-(--color-danger) active:brightness-95",
+          "bg-transparent text-(--color-danger-text)",
+          "hover:bg-(--color-danger-tint) active:bg-(--color-danger-tint)",
         ].join(" "),
         "danger-solid": [
-          "border-transparent bg-(--color-danger-solid) font-semibold text-white",
+          "bg-(--color-danger-solid) font-medium text-white",
           "hover:brightness-110 active:brightness-90",
+          "disabled:text-white disabled:opacity-40",
         ].join(" "),
         dashed: [
-          "border-dashed border-(--color-border-strong) bg-transparent text-(--color-text-muted)",
-          "hover:border-(--color-text-faint) hover:text-(--color-text-secondary)",
+          "border-dashed border-(--color-border-default) bg-transparent text-(--color-text-muted)",
+          "hover:border-(--color-border-strong) hover:text-(--color-text-secondary)",
         ].join(" "),
       },
       size: {
         sm: "h-7 px-2.5",
         md: "h-8 px-3",
-        lg: "h-9 px-4 text-[13px]",
+        lg: "h-9 px-4",
         icon: "size-7 px-0",
         "icon-md": "size-8 px-0",
       },
     },
+    compoundVariants: [
+      // The single filled action is a touch wider (A-Polish: 0 12px).
+      { variant: "primary", size: "sm", className: "px-3" },
+    ],
     defaultVariants: { variant: "secondary", size: "sm" },
   },
 );

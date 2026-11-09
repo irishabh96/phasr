@@ -28,7 +28,7 @@ export const PALETTE_DIALOG_CLS =
   "fixed inset-0 z-[200] flex items-start justify-center bg-(--color-bg-overlay) p-0 pt-[14vh]";
 
 export const PALETTE_SHELL_CLS =
-  "overflow-hidden rounded-[var(--radius-modal)] bg-(--color-bg-sheet) border border-(--color-border-strong) shadow-(--shadow-modal) animate-[modal-in_200ms_var(--ease-glass)]";
+  "glass-modal overflow-hidden animate-modal-in";
 
 export const PALETTE_INPUT_ROW_CLS =
   "flex items-center gap-3 px-5 pt-5 pb-2";
@@ -40,4 +40,4 @@ export const PALETTE_LIST_CLS =
   "max-h-[60vh] overflow-y-auto px-3 pb-2";
 
 export const PALETTE_FOOTER_CLS =
-  "flex items-center gap-4 border-t border-(--glass-border-hairline) px-4 py-2.5 text-[11px] text-(--color-text-muted)";
+  "flex items-center gap-4 border-t border-(--color-border-subtle) px-4 py-2.5 text-[11px] text-(--color-text-muted)";

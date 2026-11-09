@@ -57,7 +57,7 @@ export function InboxBell() {
         <Popover.Content
           align="end"
           sideOffset={6}
-          className="z-(--z-dropdown) flex max-h-[480px] w-[360px] flex-col overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) data-[state=open]:animate-[modal-in_120ms_var(--ease-glass)]"
+          className="z-(--z-dropdown) flex max-h-[480px] w-[360px] flex-col overflow-hidden surface-floating data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out"
         >
           <header className="flex items-center gap-2 border-b border-(--color-border-subtle) px-3 py-2.5">
             <span className="group-header">Inbox</span>

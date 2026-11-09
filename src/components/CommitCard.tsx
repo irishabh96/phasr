@@ -42,7 +42,7 @@ export function CommitCard({ workspaceId, commit }: CommitCardProps) {
               {commit.subject}
             </span>
             {commit.parents.length > 1 && (
-              <span className="shrink-0 rounded-sm bg-(--color-bg-elevated) px-1 text-[9.5px] uppercase tracking-[0.06em] text-(--color-text-muted)">
+              <span className="shrink-0 rounded-sm bg-(--color-bg-elevated) px-1 text-[10.5px] text-(--color-text-muted)">
                 merge
               </span>
             )}

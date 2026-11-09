@@ -290,7 +290,7 @@ function EmptyBoard({ repoName, onNewTask }: { repoName: string | null; onNewTas
         ))}
       </div>
       <div className="absolute inset-0 grid place-items-center p-6">
-        <div className="flex w-full max-w-[520px] flex-col gap-3 rounded-(--radius-modal) border border-(--color-border-strong) bg-(--color-bg-sheet) p-6 shadow-(--shadow-modal)">
+        <div className="flex w-full max-w-[520px] flex-col gap-3 glass-modal p-6">
           <span className="group-header">{repoName ? `${repoName} is ready` : "Ready when you are"}</span>
           <h2 className="m-0 text-[22px] font-semibold leading-tight">Give an agent its first task</h2>
           <p className="m-0 text-[13px] leading-[1.55] text-(--color-text-secondary)">

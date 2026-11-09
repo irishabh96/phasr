@@ -33,8 +33,8 @@ export function GlassTooltip({
             className={cn(
               "z-50 px-2 py-1 text-[11px] font-medium",
               "bg-(--color-bg-tooltip) text-(--color-text-primary)",
-              "border border-(--color-border-strong) rounded-(--radius-control) shadow-(--shadow-tooltip)",
-              "data-[state=delayed-open]:animate-[modal-in_180ms_cubic-bezier(0.16,1,0.3,1)]",
+              "rounded-(--radius-control) shadow-(--shadow-tooltip)",
+              "data-[state=delayed-open]:animate-popover-in data-[state=closed]:animate-popover-out",
             )}
           >
             {content}

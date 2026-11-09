@@ -14,12 +14,12 @@ export function readTerminalTheme(): TerminalTheme {
 
   return {
     background: css("--color-bg-terminal", "#000000"),
-    foreground: css("--color-text-primary", "#e6e9ee"),
+    foreground: css("--color-text-primary", "#ececee"),
     cursor: css("--color-accent-500", "#e0674a"),
     // The cursor is an accent FILL, so the glyph inside it is ink on the
     // accent — exactly what `--color-accent-onfill` is for (it flips per
     // theme/accent so it always clears 4.5:1 on that fill).
-    cursorAccent: css("--color-accent-onfill", "#0b0d10"),
+    cursorAccent: css("--color-accent-onfill", "#0c0c0e"),
     // Tokenised so each theme and accent block can restate it.
     selectionBackground: css("--ansi-selection", "rgba(224, 103, 74, 0.28)"),
     black: css("--ansi-black", "#484f58"),

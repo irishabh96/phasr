@@ -202,9 +202,9 @@ function NeedsYouBanner({ workspace }: { workspace: Workspace }) {
       aria-label="Needs you"
       className="flex flex-col gap-2 border-b border-(--color-border-subtle) bg-(--color-warning-tint) px-4 py-3"
     >
-      <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-(--color-warning)">
+      <span className="flex items-center gap-2 text-[12px] font-medium text-(--color-warning)">
         Needs you
-        <span className="font-mono font-normal normal-case tracking-normal">{formatElapsed(att.since, now)}</span>
+        <span className="font-normal tabular-nums">{formatElapsed(att.since, now)}</span>
       </span>
       <p className="m-0 text-[12px] leading-[1.5] text-(--color-text-secondary)">
         {att.title}

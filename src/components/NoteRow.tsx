@@ -295,7 +295,7 @@ export function NoteRow({
                   "min-h-[30px] max-h-[250px]",
                   // Hairline at rest, coral on focus — a permanent focus ring
                   // meant tabbing to Save left two focus indicators, one lying.
-                  "outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
+                  "shadow-none focus:shadow-none outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
                   "focus:outline-2 focus:outline-(--color-focus-ring)",
                   "transition-[outline-color] duration-[var(--duration-glass)] [transition-timing-function:var(--ease-glass)] motion-reduce:transition-none",
                   "disabled:opacity-50",
@@ -489,7 +489,7 @@ export function NoteRow({
                 <DropdownMenu.Content
                   align="end"
                   sideOffset={6}
-                  className="z-(--z-popover) min-w-[180px] overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) p-1 shadow-(--shadow-dropdown)"
+                  className="z-(--z-popover) min-w-[180px] overflow-hidden surface-floating p-1 data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out"
                 >
                   <div
                     role="presentation"

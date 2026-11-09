@@ -74,7 +74,7 @@ export function CommentThread({
               if (e.key === "Escape") onCancel();
             }}
             placeholder="Leave a comment for the agent…"
-            className="resize-none rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-base) p-2 text-[12px]"
+            className="resize-none rounded-(--radius-control) p-2 text-[12px]"
           />
           <span className="flex justify-end gap-1.5">
             <Button size="sm" type="button" onClick={onCancel}>

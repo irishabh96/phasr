@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-/** Keyboard hint chip: mono 10px, 1px strong border, radius 4 (A-System). */
+/**
+ * Keyboard hint chip: mono 10px on a filled step, radius 4. No border
+ * (A-Polish: the property chip is the only bordered element).
+ */
 export function Kbd({
   children,
   tone = "default",
@@ -21,7 +24,7 @@ export function Kbd({
       className={cn(
         "inline-flex items-center font-mono text-[10px] font-medium leading-none",
         tone === "default" &&
-          "rounded-(--radius-chip) border border-(--color-border-strong) px-[5px] py-[2px] text-(--color-text-muted)",
+          "rounded-(--radius-chip) bg-(--color-bg-hover) px-[5px] py-[3px] text-(--color-text-secondary)",
         tone === "onfill" && "opacity-70",
         tone === "bare" && "text-(--color-text-muted)",
         className,

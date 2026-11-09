@@ -267,7 +267,7 @@ export function Pill({
           : "var(--color-text-muted)";
   return (
     <span
-      className="rounded-full border px-1.5 py-px text-[10px] uppercase tracking-[0.08em]"
+      className="rounded-full border px-1.5 py-px text-[11px]"
       style={{
         color,
         borderColor: "color-mix(in oklab, currentColor 35%, transparent)",

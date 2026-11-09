@@ -3,7 +3,9 @@ import { cn } from "@/lib/utils";
 
 /**
  * Settings row (A-SettingsPages): label + help on the left, one control on
- * the right, 1px dividers between rows inside a bordered card.
+ * the right, 1px dividers between rows inside a card. Under A-Polish the card
+ * rings instead of bordering and its title is a plain sentence-case label
+ * (12px, muted, 500) with no tinted strip or divider.
  */
 export function SettingsCard({
   title,
@@ -17,13 +19,13 @@ export function SettingsCard({
   return (
     <section
       className={cn(
-        "overflow-hidden rounded-(--radius-card) border border-(--color-border-subtle)",
+        "overflow-hidden rounded-(--radius-card) shadow-(--shadow-card)",
         "[&>[data-settings-row]+[data-settings-row]]:border-t [&>[data-settings-row]+[data-settings-row]]:border-(--color-border-subtle)",
         className,
       )}
     >
       {title ? (
-        <div className="group-header border-b border-(--color-border-subtle) bg-(--color-bg-sidebar) px-3.5 py-2.5">
+        <div className="group-header px-3.5 pb-1 pt-3">
           {title}
         </div>
       ) : null}
@@ -55,7 +57,7 @@ export function SettingsRow({
       data-settings-row
       id={id}
       className={cn(
-        "flex items-center gap-3 px-3.5 py-3 transition-colors duration-700 data-[flash=true]:bg-(--color-accent-50)",
+        "flex items-center gap-3 px-3.5 py-3 transition-colors duration-(--dur-3) ease-(--ease-out) data-[flash=true]:bg-(--color-accent-50)",
         className,
       )}
     >

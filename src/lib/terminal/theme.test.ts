@@ -12,7 +12,7 @@ describe("readTerminalTheme", () => {
   it("falls back to the shipped palette when no tokens are defined", () => {
     const theme = readTerminalTheme();
     expect(theme.background).toBe("#000000");
-    expect(theme.foreground).toBe("#e6e9ee");
+    expect(theme.foreground).toBe("#ececee");
     expect(theme.cursor).toBe("#e0674a");
     expect(theme.brightWhite).toBe("#ffffff");
   });

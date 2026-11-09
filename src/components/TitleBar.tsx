@@ -238,7 +238,7 @@ function ProfileMenu({
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-(--z-dropdown) min-w-44 origin-top-right overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) p-1 text-[12px] shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]"
+          className="z-(--z-dropdown) min-w-44 origin-top-right overflow-hidden surface-floating p-1 text-[12px] data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out"
         >
           <DropdownMenu.Item
             onSelect={onSettings}

@@ -109,7 +109,7 @@ export function TaskSidebar() {
         onResizeEnd={() => setResizing(false)}
       />
       <div className="flex items-center gap-2 px-3 pb-2 pt-3.5">
-        <h2 className="m-0 text-[12px] font-semibold uppercase tracking-[0.04em] text-(--color-text-muted)">Tasks</h2>
+        <h2 className="m-0 text-[13px] font-medium text-(--color-text-primary)">Tasks</h2>
         <span className="font-mono text-[11px] text-(--color-text-muted)">{activeCount}</span>
         <span className="flex-1" />
         <GlassTooltip content={`Collapse task list (${SHORTCUTS.toggleSidebarPin.display.join("")})`} side="bottom">

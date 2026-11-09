@@ -66,10 +66,10 @@ export function SettingsSheet() {
   return (
     <RadixDialog.Root open={isOpen} onOpenChange={(o) => !o && close()}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) data-[state=open]:animate-[overlay-in_160ms_var(--ease-glass)]" />
+        <RadixDialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <RadixDialog.Content
           aria-describedby={undefined}
-          className="glass-modal fixed left-1/2 top-1/2 z-(--z-modal) flex h-[min(600px,calc(100vh-48px))] w-[min(880px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden outline-none data-[state=open]:animate-[modal-in_160ms_var(--ease-glass)]"
+          className="glass-modal fixed left-1/2 top-1/2 z-(--z-modal) flex h-[min(600px,calc(100vh-48px))] w-[min(880px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden outline-none data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out"
         >
           <nav
             aria-label="Settings sections"
@@ -202,7 +202,7 @@ function RepoPicker({ repositoryId, onPick }: { repositoryId: string | null; onP
         aria-label="Repository"
         value={repositoryId ?? ""}
         onChange={(e) => onPick(e.target.value)}
-        className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-[11px] font-semibold uppercase tracking-[0.04em] text-(--color-text-muted) shadow-none focus:shadow-none"
+        className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-[12px] font-medium text-(--color-text-muted) shadow-none focus:shadow-none"
       >
         {repositories.map((r) => (
           <option key={r.id} value={r.id}>

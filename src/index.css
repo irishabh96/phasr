@@ -3,7 +3,7 @@
 /* ---------- Design tokens (from the rebuild plan: Theming) ---------- */
 
 @theme {
-  /* Option A "Mission Control" — Inter 13/1.4 body, JetBrains Mono 12.
+  /* Option A "Mission Control" — Inter 13/1.45 body, JetBrains Mono 12.
      Both are bundled (@fontsource files, declared in src/fonts.css) so the app renders
      the same offline; system stacks remain as fallbacks. */
   --font-sans:
@@ -20,7 +20,7 @@
   --text-section: 15px;
   --text-section--line-height: 1.35;
   --text-body: 13px;
-  --text-body--line-height: 1.4;
+  --text-body--line-height: 1.45;
   --text-caption: 11px;
   --text-caption--line-height: 1.4;
   --text-mono: 12px;
@@ -28,40 +28,49 @@
 
   /* ---------- Surfaces (dark is the default theme) ----------
      Token names predate the redesign and are kept so ~800 call sites keep
-     working; the comments name the A-System token each one now carries. */
-  --color-bg-base: #0b0d10; /* bg-0 */
-  --color-bg-surface: #151920; /* surface */
-  --color-bg-elevated: #1a1f27; /* raised */
+     working; the comments name the A-Polish role each one now carries.
+     Pure neutrals, not blue-tinted; regions separate by tone, not lines. */
+  --color-bg-base: #0c0c0e; /* bg */
+  --color-bg-surface: #141417; /* surface: cards, composer */
+  --color-bg-elevated: #1a1a1f; /* raised: selected row, secondary button, popovers */
   --color-bg-raised: var(--color-bg-elevated);
-  --color-bg-sheet: #111418; /* dialogs, sheets, palette */
-  --color-bg-input: #0b0d10;
-  --color-bg-sidebar: #0e1114; /* title bar, sidebar, inspector, pane tab bar */
+  --color-bg-sheet: #141417; /* surface: dialogs, sheets, palette */
+  --color-bg-input: #101013; /* inset: inputs, code/diff blocks, activity box */
+  --color-bg-sidebar: #0c0c0e; /* bg: title bar, sidebar, inspector (no tint) */
   /* Pure black on purpose: ghostty-web encodes "default background" as
      (0,0,0) — its renderer skips the fill and the reflow snapshot reads it
      as SGR 49. Any other dark value makes every blank cell an explicitly
      coloured cell (reflow bloats history; a theme switch leaves the old
      colour painted). Visually indistinguishable from bg-0 at this depth. */
   --color-bg-terminal: #000000;
-  --color-bg-tooltip: #1a1f27;
-  --color-bg-dropdown: #1a1f27;
-  --color-bg-hover: #151920;
-  --color-bg-active: #1a1f27;
+  --color-bg-tooltip: #1a1a1f; /* raised */
+  --color-bg-dropdown: #1a1a1f; /* raised */
+  --color-bg-hover: #26262c; /* hover: +1 step, selected segment */
+  --color-bg-active: #26262c;
   --color-bg-overlay: rgba(0, 0, 0, 0.5);
-  /* Persistent "selected" row/tab: the raised surface, outlined in the
-     accent's darkest step (A-System "TASK ROW"). */
+  /* Persistent "selected" row/tab: a background step, never a coloured
+     outline (A-Polish). The border token stays so call sites keep their
+     1px box, but it no longer paints. */
   --color-bg-selected: var(--color-bg-elevated);
-  --color-border-selected: var(--color-accent-900);
+  --color-border-selected: transparent;
 
-  --color-border-subtle: #1c2128; /* hairline */
-  --color-border-hairline: var(--color-border-subtle);
-  --color-border-default: #232931; /* border */
-  --color-border-strong: #2a313b;
+  /* Tone before lines: the only 1px lines left are the structural dividers
+     (title bar, sidebar, inspector) in --color-border-subtle. Cards ring in
+     the same tone; floating things and inputs ring in --color-border-hairline.
+     --color-border-default is the property-chip border, the one bordered
+     element. */
+  --color-border-subtle: #1a1a1f; /* structural dividers, card ring */
+  --color-border-hairline: #1f1f24; /* floating ring, input ring */
+  --color-border-default: #26262c; /* property chip */
+  --color-border-strong: #303037;
 
-  --color-text-primary: #e6e9ee; /* text */
-  --color-text-secondary: #b9bec7; /* text-2 */
-  --color-text-muted: #8b94a3; /* 6.4:1 on bg-0, 5.8:1 on surface */
-  --color-text-faint: #5a6372; /* decorative only: line numbers, separators */
-  --color-text-inverse: #0b0d10;
+  --color-text-primary: #ececee; /* text */
+  --color-text-secondary: #a3a3ad; /* text-2 */
+  /* #6E6E78 exactly (spec D6, design owner): 3.9:1 on bg, a known AA
+     shortfall for 12px muted text. Do not "fix" it back. */
+  --color-text-muted: #6e6e78;
+  --color-text-faint: #4a4a54; /* decorative only: line numbers, separators */
+  --color-text-inverse: #0c0c0e;
 
   /* ---------- Accent (user-selectable; coral default) ----------
      Every step the terminal reads (500, onfill) and every step a
@@ -85,9 +94,10 @@
   --color-accent-active: var(--color-accent-600);
   /* Accent as TEXT on theme surfaces. */
   --color-accent-text: var(--color-accent-400);
-  /* Ink on an accent fill. Dark in dark theme; light theme flips it where
-     the darker light-theme accent needs white to pass 4.5:1. */
-  --color-accent-onfill: #0b0d10;
+  /* Ink on an accent fill. Dark (bg) in dark theme: white on #E0674A is
+     3.4:1, the bg ink 5.8:1. Light theme flips it where the darker
+     light-theme accent needs white to pass 4.5:1. */
+  --color-accent-onfill: #0c0c0e;
 
   /* ---------- Status — fixed hues, never user-selectable ----------
      Status is always colour + glyph + word (A-System). */
@@ -103,6 +113,7 @@
   --color-status-attention: var(--color-warning);
   --color-status-success: var(--color-success);
   --color-status-danger: var(--color-danger);
+  --color-status-review: #a78bfa; /* review lane (A-Polish) */
   /* Tinted chip/button fills for status (A-System "tests ✓", "approval",
      Danger button). Literal so they read identically in every webview. */
   --color-success-tint: #1f2a1f;
@@ -151,20 +162,25 @@
   --glass-base: var(--color-bg-sheet);
   --glass-panel: var(--color-bg-surface);
   --glass-modal: var(--color-bg-sheet);
-  --glass-border-hairline: var(--color-border-default);
+  --glass-border-hairline: var(--color-border-subtle);
   --glass-border-strong: var(--color-border-strong);
   --glass-highlight-top: transparent;
   --blur-rail: 0px;
   --blur-panel: 0px;
   --blur-modal: 0px;
 
-  /* Elevation (A-System): panels flat, menus 1, sheets 2. */
+  /* Elevation (A-Polish): shadows replace borders on floating things.
+     Dialogs, menus, popovers and tooltips share one ring + drop; the
+     composer has a softer drop; nothing inline casts a shadow. Cards ring
+     in the divider tone instead of a border. */
   --shadow-panel: none;
-  --shadow-card: none;
-  --shadow-dropdown: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-modal: 0 30px 80px rgba(0, 0, 0, 0.6);
-  --shadow-button-primary: none;
+  --shadow-floating: 0 0 0 1px var(--color-border-hairline), 0 24px 64px rgba(0, 0, 0, 0.55);
+  --shadow-composer: 0 0 0 1px var(--color-border-hairline), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 0 0 1px var(--color-border-subtle);
+  --shadow-dropdown: var(--shadow-floating);
+  --shadow-tooltip: var(--shadow-floating);
+  --shadow-modal: var(--shadow-floating);
+  --shadow-button-primary: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   --shadow-button-primary-hover: none;
   --shadow-glow: none;
   --shadow-glow-danger: none;
@@ -193,8 +209,25 @@
   --row-list: 30px;
   --row-control: 28px;
 
-  --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
-  --duration-glass: 160ms;
+  /* ---------- Motion (A-Polish) ----------
+     120 hover/press · 160 panels, popovers · 200 dialogs, route changes;
+     nothing over 240. Enter on --ease-out, exit on --ease-in. Animate
+     transform and opacity only. Reduced motion zeroes the durations (see
+     the prefers-reduced-motion block). --ease-out/--ease-in also retune
+     Tailwind's `ease-out`/`ease-in` utilities. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* Legacy names, now aliases so existing call sites follow. */
+  --ease-glass: var(--ease-out);
+  --duration-glass: var(--dur-2);
+
+  /* `animate-*` utilities for every floating surface. */
+  --animate-modal-in: modal-in var(--dur-3) var(--ease-out);
+  --animate-modal-out: modal-out var(--dur-exit) var(--ease-in);
+  --animate-overlay-in: overlay-in var(--dur-3) var(--ease-out);
+  --animate-overlay-out: overlay-out var(--dur-exit) var(--ease-in);
+  --animate-popover-in: popover-in var(--dur-2) var(--ease-out);
+  --animate-popover-out: popover-out var(--dur-exit-popover) var(--ease-in);
 
   /* ---------- Layering (z-index scale) ----------
      Single ascending ladder: a bare dropdown sits BELOW a modal, a dropdown
@@ -208,10 +241,27 @@
 
   /* ---------- Focus ring ----------
      `focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]`.
-     A-System "FOCUSED": accent border + 3px accent halo at 22%. */
+     Fields (A-Polish "Inputs"): no border; a 1px hairline ring at rest, an
+     accent ring + 4px accent glow at 14% on focus. */
   --color-focus-ring: var(--color-accent-500);
   --ring-focus: 0 0 0 2px var(--color-focus-ring);
   --ring-focus-inset: inset 0 0 0 2px var(--color-focus-ring);
+  --ring-input: 0 0 0 1px var(--color-border-hairline);
+  --ring-input-hover: 0 0 0 1px var(--color-border-strong);
+  --ring-input-focus:
+    0 0 0 1px var(--color-focus-ring),
+    0 0 0 4px color-mix(in oklab, var(--color-focus-ring) 14%, transparent);
+  --ring-input-invalid: 0 0 0 1px var(--color-danger);
+}
+
+/* Motion durations. Outside @theme so they are always emitted (no Tailwind
+   utility reads them) and so the reduced-motion block can zero them. */
+:root {
+  --dur-1: 120ms; /* hover, press */
+  --dur-2: 160ms; /* panels, popovers */
+  --dur-3: 200ms; /* dialogs, route changes */
+  --dur-exit: 100ms; /* dialog exit */
+  --dur-exit-popover: 80ms; /* popover / menu exit */
 }
 
 /* ---------- Light theme (A-SystemLight) ----------
@@ -233,6 +283,7 @@
   --color-bg-overlay: rgba(26, 26, 30, 0.28);
 
   --color-border-subtle: #e0dcd4;
+  --color-border-hairline: #d3cec5;
   --color-border-default: #d3cec5;
   --color-border-strong: #bfb9ae;
 
@@ -262,6 +313,8 @@
   --diff-remove-fg: #b91c1c;
   --color-purple: #7653e0;
   --color-cyan: #1b7c83;
+  /* 4.7:1 on bg-0, 4.9:1 on surface: clears 3:1 as a non-text indicator. */
+  --color-status-review: #7653e0;
   /* Codex's pale-grey mark disappears on white. */
   --color-agent-codex: #9aa0aa;
 
@@ -278,9 +331,9 @@
   --color-focus-ring: var(--color-accent-700);
   --ansi-selection: rgba(201, 79, 46, 0.22);
 
-  --shadow-dropdown: 0 4px 12px rgba(26, 26, 30, 0.12);
-  --shadow-tooltip: 0 4px 12px rgba(26, 26, 30, 0.12);
-  --shadow-modal: 0 30px 80px rgba(26, 26, 30, 0.22);
+  --shadow-floating: 0 0 0 1px var(--color-border-hairline), 0 24px 64px rgba(26, 26, 30, 0.18);
+  --shadow-composer: 0 0 0 1px var(--color-border-hairline), 0 8px 24px rgba(26, 26, 30, 0.08);
+  --shadow-button-primary: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 
   /* GitHub Light syntax palette */
   --ansi-black: #24292f;
@@ -419,8 +472,10 @@ body,
 html {
   font-family: var(--font-sans);
   font-size: 13px;
-  line-height: 1.4;
-  font-feature-settings: "cv11", "ss01";
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  /* cv11 single-storey a, ss01 open digits, ss03 rounded quotes (A-Polish). */
+  font-feature-settings: "cv11", "ss01", "ss03";
   color-scheme: dark;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -457,43 +512,33 @@ body {
 
 /* Same layering as the button reset above: unlayered, these field defaults
    beat every `@layer utilities` declaration, so GlassInput/GlassTextarea's
-   glass background, hairline border, radius, and padding never rendered. */
+   background, ring, radius, and padding never rendered.
+   A-Polish "Inputs": inset background, no border, a hairline ring; focus is
+   an accent ring + 4px glow. Native check/radio/range keep their own look. */
 @layer base {
   input,
   textarea,
   select {
     font: inherit;
-    background: var(--color-bg-input);
+    letter-spacing: inherit;
     color: var(--color-text-primary);
-    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-control);
+  }
+
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]),
+  textarea,
+  select {
+    background: var(--color-bg-input);
+    border: 0;
+    box-shadow: var(--ring-input);
     padding: 6px 10px;
   }
 
-  input:focus,
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]):focus,
   textarea:focus,
   select:focus {
     outline: none;
-    border-color: var(--color-focus-ring);
-    box-shadow: 0 0 0 3px
-      color-mix(in oklab, var(--color-focus-ring) 22%, transparent);
-  }
-}
-
-/* ---------- Reduced motion ----------
-   One global fallback so every entrance transform/animation (modal-in,
-   pulse-ring, sidebar-width transition, toast enter/exit, hover lifts)
-   honors the OS "reduce motion" setting without per-component wiring.
-   Near-zero (not 0) durations keep transitionend/animationend events
-   firing so JS that awaits them still resolves. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+    box-shadow: var(--ring-input-focus);
   }
 }
 
@@ -506,27 +551,53 @@ body {
   border: 1px solid var(--color-border-subtle);
 }
 
+/* Floating surfaces lose their borders: a ring + drop shadow separates them
+   (A-Polish rule 10). glass-panel is the toast/menu surface, glass-modal
+   the dialog surface; surface-floating is the explicit name for menus and
+   popovers. */
 @utility glass-panel {
   background: var(--color-bg-dropdown);
-  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-dropdown);
+  box-shadow: var(--shadow-floating);
 }
 
 @utility glass-modal {
   background: var(--color-bg-sheet);
-  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-modal);
-  box-shadow: var(--shadow-modal);
+  box-shadow: var(--shadow-floating);
 }
 
-/* Group header: 11/600, +4% tracking, caps, muted (A-System). */
+@utility surface-floating {
+  background: var(--color-bg-dropdown);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-floating);
+}
+
+/* Card (A-Polish): surface + a ring in the divider tone, never a border.
+   card-interactive raises on hover; selection is a background step too
+   (bg-(--color-bg-selected)), never a coloured outline. */
+@utility card {
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+@utility card-interactive {
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  transition: background-color var(--dur-1) var(--ease-out);
+  &:hover {
+    background: var(--color-bg-elevated);
+  }
+}
+
+/* Group header (A-Polish rule 3): sentence case, 12px, muted, weight 500.
+   No caps, no tracking; the words in the JSX are already sentence case. */
 @utility group-header {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: 500;
   color: var(--color-text-muted);
 }
 
@@ -549,10 +620,14 @@ body {
   }
 }
 
+/* Dialog enter (A-Polish): opacity 0→1 + scale .98→1 over --dur-3 on
+   --ease-out → `animate-modal-in`. Exit 100ms ease-in → `animate-modal-out`.
+   Uses `transform`, so it composes with Tailwind's `translate`/`scale`
+   properties (the centring -translate-x-1/2 keeps working). */
 @keyframes modal-in {
   from {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(0.98);
   }
   to {
     opacity: 1;
@@ -568,8 +643,38 @@ body {
   }
   to {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(0.98);
   }
+}
+
+/* Popover / menu / tooltip enter (A-Polish): opacity + translateY(-4px→0)
+   over --dur-2 → `animate-popover-in`; exit 80ms → `animate-popover-out`.
+   The shift comes from the trigger: content opening upward (Radix
+   data-side="top") sets --popover-shift: 4px. */
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--popover-shift, -4px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--popover-shift, -4px));
+  }
+}
+
+[data-side="top"] {
+  --popover-shift: 4px;
 }
 
 /* Fade-ONLY overlay animation for the shared <Dialog> backdrop. A scale-based
@@ -629,10 +734,60 @@ body {
   }
 }
 
-/* Reduced-motion refinements layered on top of the global rule above:
-   - toast enter/exit become an opacity-only crossfade (drop the translate).
-   - skeleton bars stop pulsing and sit at a steady 0.7 opacity. */
+/* ---------- Reduced motion ----------
+   The one global block (A-Polish): every --dur-* token goes to zero, every
+   transition/animation is clamped for components with hard-coded timings,
+   and the enter/exit keyframes are redeclared opacity-only so nothing
+   moves. "Zero" is 0.01ms, not 0: a 0s transition never fires
+   transitionend, and Radix Presence / our own JS await those events. */
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0.01ms;
+    --dur-2: 0.01ms;
+    --dur-3: 0.01ms;
+    --dur-exit: 0.01ms;
+    --dur-exit-popover: 0.01ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  @keyframes modal-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes modal-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes popover-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes popover-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
   @keyframes toast-in {
     from {
       opacity: 0;

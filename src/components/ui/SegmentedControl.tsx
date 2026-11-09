@@ -51,7 +51,9 @@ export function SegmentedControl<T extends string>({
       role="radiogroup"
       aria-label={label}
       className={cn(
-        "inline-flex overflow-hidden rounded-(--radius-control) border border-(--color-border-default)",
+        // A-Polish: a surface track (2px inset, radius 7) with no border;
+        // the selected segment is the hover step, never an outline.
+        "inline-flex gap-0.5 rounded-[7px] bg-(--color-bg-surface) p-0.5",
         fill && "flex w-full",
         className,
       )}
@@ -73,16 +75,16 @@ export function SegmentedControl<T extends string>({
             onClick={() => onChange(o.value)}
             onKeyDown={onKeyDown}
             className={cn(
-              "whitespace-nowrap px-2.5 text-[12px] transition-colors duration-100",
-              size === "sm" ? "h-7" : "h-[30px]",
+              "whitespace-nowrap rounded-[5px] px-2.5 text-[12px] transition-colors duration-(--dur-1) ease-(--ease-out)",
+              size === "sm" ? "h-6" : "h-[26px]",
               fill && "flex-1 px-1.5",
               "focus-visible:relative focus-visible:outline-none focus-visible:shadow-(--ring-focus-inset)",
               "disabled:cursor-not-allowed disabled:opacity-40",
               selected
-                ? "bg-(--color-bg-elevated) text-(--color-text-primary)"
+                ? "bg-(--color-bg-hover) text-(--color-text-primary)"
                 : o.tone === "warning"
-                  ? "text-(--color-warning) hover:bg-(--color-bg-hover)"
-                  : "text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)",
+                  ? "text-(--color-warning) hover:bg-(--color-bg-elevated)"
+                  : "text-(--color-text-secondary) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
             )}
           >
             {o.label}

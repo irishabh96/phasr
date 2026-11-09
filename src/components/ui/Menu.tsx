@@ -3,8 +3,9 @@ import { forwardRef, type ComponentPropsWithoutRef, type ReactNode } from "react
 import { cn } from "@/lib/utils";
 
 /**
- * Menu surface (A-System elevation 1): raised fill, strong hairline, small
- * shadow. Radix DropdownMenu underneath for focus + keyboard handling.
+ * Menu surface (A-Polish): raised fill, no border; the floating ring +
+ * shadow separates it. Popover motion (opacity + 4px slide from the trigger,
+ * 160ms in / 80ms out). Radix DropdownMenu underneath for focus + keyboard.
  */
 export const Menu = DropdownMenu.Root;
 export const MenuTrigger = DropdownMenu.Trigger;
@@ -20,9 +21,8 @@ export const MenuContent = forwardRef<
       align={align}
       style={{ ...(width ? { width } : {}), ...style }}
       className={cn(
-        "z-(--z-dropdown) min-w-44 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong)",
-        "bg-(--color-bg-dropdown) p-1 text-[12px] shadow-(--shadow-dropdown)",
-        "data-[state=open]:animate-[modal-in_120ms_var(--ease-glass)]",
+        "surface-floating z-(--z-dropdown) min-w-44 overflow-hidden p-1 text-[12px]",
+        "data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
         className,
       )}
       {...rest}

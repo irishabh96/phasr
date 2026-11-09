@@ -168,7 +168,7 @@ export function NewProjectPane() {
             <ArrowLeft size={11} />
             Back
           </button>
-          <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
+          <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.015em] text-(--color-text-primary)">
             New Project
           </h1>
         </header>
@@ -399,7 +399,7 @@ function ModeTile({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-(--radius-control) border-2 px-4 py-5 text-center transition-all",
+        "flex flex-col items-center gap-2 rounded-(--radius-control) border-2 px-4 py-5 text-center transition-[background-color,border-color,box-shadow] duration-(--dur-1) ease-(--ease-out)",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
@@ -443,7 +443,7 @@ function TemplateCard({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col gap-1 rounded-(--radius-control) border-2 p-3 text-left transition-all",
+        "flex flex-col gap-1 rounded-(--radius-control) border-2 p-3 text-left transition-[background-color,border-color,box-shadow] duration-(--dur-1) ease-(--ease-out)",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
         active
           ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
@@ -460,7 +460,7 @@ function TemplateCard({
           {template.name}
         </span>
         {template.tag && (
-          <span className="rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-(--color-text-muted)">
+          <span className="rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[11px] text-(--color-text-muted)">
             {template.tag}
           </span>
         )}

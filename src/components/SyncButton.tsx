@@ -113,9 +113,9 @@ export function SyncButton({ workspaceId }: SyncButtonProps) {
       </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-(--radius-card) border border-(--color-border-strong) bg-(--color-bg-dropdown) shadow-(--shadow-dropdown) animate-[modal-in_120ms_var(--ease-glass)]">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-72 overflow-hidden surface-floating animate-popover-in">
           <header className="border-b border-(--glass-border-hairline) px-3 py-2">
-            <p className="text-[11px] uppercase tracking-[0.12em] text-(--color-text-muted)">
+            <p className="group-header">
               Sync with {status?.baseBranch || targetLabel}
             </p>
             <p className="mt-0.5 text-[12px] text-(--color-text-secondary)">

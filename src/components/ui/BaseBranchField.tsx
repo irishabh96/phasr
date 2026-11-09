@@ -400,7 +400,7 @@ export function BaseBranchField({
             aria-hidden
             className={cn(
               "pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--color-text-muted)",
-              "transition-transform duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+              "transition-transform duration-(--dur-2) ease-(--ease-out)",
               open && "rotate-180",
             )}
           />
@@ -423,8 +423,8 @@ export function BaseBranchField({
           className={cn(
             "pointer-events-auto z-(--z-popover) w-(--radix-popover-trigger-width)",
             "max-h-[min(280px,var(--radix-popover-content-available-height,280px))] overflow-y-auto overscroll-contain",
-            "rounded-[var(--radius-panel)] border border-(--color-border-default) bg-(--color-bg-elevated) p-1",
-            "animate-[modal-in_180ms_var(--ease-glass)]",
+            "surface-floating p-1",
+            "data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
           )}
         >
           {statusRow && (
@@ -462,7 +462,7 @@ export function BaseBranchField({
                   <div
                     key={`heading-${row.label}`}
                     role="presentation"
-                    className="px-2.5 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.1em] text-(--color-text-muted)"
+                    className="group-header px-2.5 pb-1 pt-2"
                   >
                     {row.label}
                   </div>
@@ -577,7 +577,7 @@ export function BaseBranchField({
                   {row.isDefault && (
                     <span
                       className={cn(
-                        "shrink-0 font-sans text-[11px] uppercase tracking-[0.08em]",
+                        "shrink-0 font-sans text-[11px]",
                         active === index
                           ? "text-(--color-text-secondary)"
                           : "text-(--color-text-muted)",
