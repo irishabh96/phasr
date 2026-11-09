@@ -130,6 +130,22 @@ impl Workspace {
             updated_at: now,
         }
     }
+
+    /// An agent task that has never been launched anywhere: still `pending`
+    /// with no branch. This build never leaves a row in that state
+    /// (`start_task` cuts the branch before the row is inserted), but newer
+    /// builds create drafts and queued tasks exactly like this, and they
+    /// sync. Such a row has no worktree to run in — `cwd_for_task` would fall
+    /// back to the repository's own checkout — so nothing may spawn its
+    /// agent here. Keyed on `branch` rather than `worktree_path` because the
+    /// branch syncs and the path is machine-local. Same definition as the
+    /// redesign's `Workspace::is_unlaunched`, so both builds agree on which
+    /// rows are drafts.
+    pub fn is_unlaunched(&self) -> bool {
+        self.workspace_kind == WorkspaceKind::Agent
+            && self.status == WorkspaceStatus::Pending
+            && self.branch.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +181,39 @@ mod tests {
     #[test]
     fn unknown_status_string_returns_none() {
         assert_eq!(WorkspaceStatus::from_str("nonsense"), None);
+    }
+
+    #[test]
+    fn unlaunched_means_a_pending_agent_row_with_no_branch() {
+        let draft = Workspace::new("r".into(), "draft".into(), "claude".into());
+        assert!(
+            draft.is_unlaunched(),
+            "a fresh pending row with no branch is a draft"
+        );
+
+        let mut launched = draft.clone();
+        launched.branch = Some("phasr/abc".into());
+        assert!(
+            !launched.is_unlaunched(),
+            "a branch means it was launched somewhere"
+        );
+
+        for status in [
+            WorkspaceStatus::Running,
+            WorkspaceStatus::Stopped,
+            WorkspaceStatus::Completed,
+            WorkspaceStatus::Failed,
+            WorkspaceStatus::Archived,
+        ] {
+            let mut row = draft.clone();
+            row.status = status;
+            assert!(!row.is_unlaunched(), "{status:?} is not a draft");
+        }
+
+        // The repo's own checkout row is never a draft, branch or not.
+        let mut local = draft.clone();
+        local.workspace_kind = WorkspaceKind::Local;
+        assert!(!local.is_unlaunched());
     }
 
     #[test]

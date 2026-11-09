@@ -34,6 +34,13 @@ pub enum OrchestratorError {
          (no branch or local repository to recreate it from)"
     )]
     WorktreeUnavailable,
+    /// A draft/queued row from a newer build (see
+    /// `Workspace::is_unlaunched`). The frontend matches on the text
+    /// `hasn't been started on this Mac` (`NOT_STARTED_MARKER` in
+    /// `src/lib/terminalErrors.ts`) to show a calm state instead of
+    /// "Couldn't start", so keep that phrase stable.
+    #[error("this task hasn't been started on this Mac yet")]
+    NotStarted,
 }
 
 impl serde::Serialize for OrchestratorError {

@@ -387,6 +387,15 @@ impl TaskOrchestrator {
                 workspace.status.as_str().into(),
             ));
         }
+        // A draft / queued task synced from a newer build has no branch and
+        // no worktree: resuming it would make `cwd_for_task` fall back to
+        // the repository's own checkout and start the agent there, typing
+        // its prompt into the user's main working tree. Refuse before any
+        // side effect (status flip, PTY spawn). Checked after the live-PTY
+        // attach above so it can never strand a process that is running.
+        if workspace.is_unlaunched() {
+            return Err(OrchestratorError::NotStarted);
+        }
 
         let cwd = self.cwd_for_task(&workspace).await?;
         let initial_command = if workspace.command.trim().is_empty() {
@@ -1116,7 +1125,12 @@ mod tests {
         let workspaces = WorkspaceRepo::new(pool.clone());
         let repo_path = Path::new(repo.local_path.as_deref().unwrap());
 
-        let pending = Workspace::new(repo.id.clone(), "add-feature".into(), "cmd".into());
+        // The in-flight shape start_task really inserts: `pending`, branch
+        // already recorded (it is set before the insert). A pending row with
+        // NO branch is a synced draft instead, and is deliberately not
+        // deduped against (`start_task_does_not_dedup_against_a_synced_draft`).
+        let mut pending = Workspace::new(repo.id.clone(), "add-feature".into(), "cmd".into());
+        pending.branch = Some("phasr/add-feature-inflight".into());
         assert_eq!(pending.status, WorkspaceStatus::Pending);
         workspaces.insert(&pending).await.unwrap();
 
@@ -1515,6 +1529,133 @@ mod tests {
 
         let err = orchestrator.cwd_for_task(&workspace).await.unwrap_err();
         assert!(matches!(err, OrchestratorError::WorktreeUnavailable));
+    }
+
+    // Rollback safety (0.4.4): newer builds create drafts / queued tasks as
+    // `pending` rows with no branch, and those rows sync. Opening one here
+    // must NOT fall through to `cwd_for_task`'s repository-checkout fallback
+    // and start the agent — with its prompt — in the user's main checkout.
+    #[tokio::test]
+    async fn open_terminal_refuses_a_synced_draft_and_leaves_it_untouched() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = PathBuf::from(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        // Exactly what sync lands for a redesign draft: pending, no branch,
+        // no worktree, a prompt. The command would leave a marker in its cwd
+        // if it ever ran.
+        let mut draft = Workspace::new(repo.id.clone(), "a draft".into(), "touch RAN".into());
+        draft.prompt = Some("refactor everything".into());
+        workspaces.insert(&draft).await.unwrap();
+        assert!(draft.is_unlaunched());
+
+        let err = orchestrator
+            .open_terminal(&draft.id, 24, 80)
+            .await
+            .err()
+            .expect("an unlaunched draft must not open a terminal");
+        assert!(matches!(err, OrchestratorError::NotStarted), "{err:?}");
+        // The exact string the frontend shows / matches on.
+        assert_eq!(
+            err.to_string(),
+            "this task hasn't been started on this Mac yet"
+        );
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            serde_json::json!("this task hasn't been started on this Mac yet"),
+            "crosses IPC as a plain string"
+        );
+
+        // Refused before any side effect: no PTY, no status flip, nothing
+        // run in the checkout.
+        assert!(orchestrator.runtime.get(&draft.id).is_none());
+        let row = workspaces.get(&draft.id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Pending);
+        assert_eq!(row.started_at, None);
+        assert_eq!(row.branch, None);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !repo_path.join("RAN").exists(),
+            "nothing ran in the main checkout"
+        );
+
+        // Asking again (the terminal's Retry, a remount) is just as calm.
+        assert!(matches!(
+            orchestrator.open_terminal(&draft.id, 24, 80).await,
+            Err(OrchestratorError::NotStarted)
+        ));
+    }
+
+    // Positive control for the guard above: a LAUNCHED row (it has a branch)
+    // that was stopped still resumes — in its own worktree, self-healed from
+    // the branch — so the refusal is specific to drafts.
+    #[tokio::test]
+    async fn open_terminal_still_resumes_a_launched_task() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let worktree_path = tmp.path().join("resume-wt");
+        let mut stopped = Workspace::new(repo.id.clone(), "resume me".into(), "sleep 30".into());
+        stopped.status = WorkspaceStatus::Stopped;
+        stopped.branch = Some("phasr/resume-me".into());
+        stopped.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
+        workspaces.insert(&stopped).await.unwrap();
+        assert!(!stopped.is_unlaunched());
+
+        let sub = orchestrator
+            .open_terminal(&stopped.id, 24, 80)
+            .await
+            .expect("a launched, stopped task resumes");
+        assert_eq!(sub.task_id, stopped.id);
+        assert!(orchestrator.runtime.get(&stopped.id).is_some());
+        assert_eq!(
+            workspaces.get(&stopped.id).await.unwrap().status,
+            WorkspaceStatus::Running
+        );
+        assert!(
+            worktree_path.join("README.md").exists(),
+            "ran in its own worktree"
+        );
+
+        let _ = orchestrator.stop_task(&stopped.id).await;
+    }
+
+    // A synced draft that happens to share a name with a task the user now
+    // starts here must not swallow it: `start_task` creates a real task (own
+    // branch + worktree) instead of returning the draft, which
+    // `open_terminal` would then refuse.
+    #[tokio::test]
+    async fn start_task_does_not_dedup_against_a_synced_draft() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = Path::new(repo.local_path.as_deref().unwrap());
+        let workspaces = WorkspaceRepo::new(pool.clone());
+
+        let draft = Workspace::new(repo.id.clone(), "add-feature".into(), "claude".into());
+        workspaces.insert(&draft).await.unwrap();
+
+        let started = orchestrator
+            .start_task(sleep_request(&repo.id, "add-feature"))
+            .await
+            .unwrap();
+        assert_ne!(
+            started.task_id, draft.id,
+            "the draft must not be handed back"
+        );
+        assert!(started.workspace.branch.is_some());
+        assert_eq!(
+            count_worktrees(repo_path),
+            2,
+            "the new task got its own worktree"
+        );
+
+        // The draft is left exactly as it was synced.
+        let row = workspaces.get(&draft.id).await.unwrap();
+        assert!(row.is_unlaunched());
+
+        cleanup(&orchestrator, &[&started]).await;
     }
 
     #[test]

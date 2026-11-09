@@ -209,6 +209,14 @@ impl WorkspaceRepo {
     /// duplicate agent task. A task that has since stopped/completed/failed/
     /// archived or been deleted is NOT active, so a deliberate re-run after
     /// the first ends still creates fresh state.
+    ///
+    /// Unlaunched rows (`pending` with no branch — `Workspace::is_unlaunched`)
+    /// are NOT active either. `start_task` holds the repo lock from this
+    /// lookup through the insert and only inserts rows that already have a
+    /// branch, so a branchless pending row is never one of its own in-flight
+    /// tasks; it's a draft synced from a newer build. Matching it would hand
+    /// the user's brand-new task back as that draft, which `open_terminal`
+    /// then (rightly) refuses to start.
     pub async fn find_active_by_name(
         &self,
         repository_id: &str,
@@ -221,6 +229,7 @@ impl WorkspaceRepo {
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
+               AND NOT (status = 'pending' AND branch IS NULL)
              ORDER BY created_at DESC
              LIMIT 1",
         )
@@ -247,6 +256,7 @@ impl WorkspaceRepo {
              FROM workspaces
              WHERE repository_id = ? AND name = ? AND user_id = ? AND workspace_kind = 'agent'
                AND status IN ('pending', 'running') AND deleted_at IS NULL
+               AND NOT (status = 'pending' AND branch IS NULL)
              ORDER BY created_at DESC
              LIMIT 1",
         )
@@ -519,8 +529,10 @@ mod tests {
     async fn find_active_by_name_matches_only_active_agent_rows() {
         let (_repos, workspaces, repo) = fresh().await;
 
-        // A pending agent task is ACTIVE → found.
-        let alpha = Workspace::new(repo.id.clone(), "alpha".into(), "cmd".into());
+        // A pending agent task is ACTIVE → found. It carries a branch, as
+        // every row `start_task` inserts does.
+        let mut alpha = Workspace::new(repo.id.clone(), "alpha".into(), "cmd".into());
+        alpha.branch = Some("phasr/alpha".into());
         workspaces.insert(&alpha).await.unwrap();
         assert_eq!(
             workspaces
@@ -595,8 +607,23 @@ mod tests {
             "a local workspace must never match the agent dedup lookup"
         );
 
+        // A draft synced from a newer build (pending, no branch) is not an
+        // in-flight start: a new task with the same name must not be handed
+        // back as that draft.
+        let draft = Workspace::new(repo.id.clone(), "epsilon".into(), "cmd".into());
+        workspaces.insert(&draft).await.unwrap();
+        assert!(
+            workspaces
+                .find_active_by_name(&repo.id, "epsilon")
+                .await
+                .unwrap()
+                .is_none(),
+            "an unlaunched draft must not be deduped against"
+        );
+
         // A soft-deleted agent task is excluded (deleted_at filter).
-        let delta = Workspace::new(repo.id.clone(), "delta".into(), "cmd".into());
+        let mut delta = Workspace::new(repo.id.clone(), "delta".into(), "cmd".into());
+        delta.branch = Some("phasr/delta".into());
         workspaces.insert(&delta).await.unwrap();
         workspaces.delete(&delta.id).await.unwrap();
         assert!(
@@ -636,10 +663,21 @@ mod tests {
         }
 
         // Identical (repository_id, name), two different owners.
-        let a = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        let mut a = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        a.branch = Some("phasr/a".into());
         workspaces.insert_for_user(&a, "user-a").await.unwrap();
-        let b = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        let mut b = Workspace::new(repo.id.clone(), "shared".into(), "cmd".into());
+        b.branch = Some("phasr/b".into());
         workspaces.insert_for_user(&b, "user-b").await.unwrap();
+
+        // The owner-scoped variant ignores drafts too.
+        let draft = Workspace::new(repo.id.clone(), "drafted".into(), "cmd".into());
+        workspaces.insert_for_user(&draft, "user-a").await.unwrap();
+        assert!(workspaces
+            .find_active_by_name_for_user(&repo.id, "drafted", "user-a")
+            .await
+            .unwrap()
+            .is_none());
 
         assert_eq!(
             workspaces
