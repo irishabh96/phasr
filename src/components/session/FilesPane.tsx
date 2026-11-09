@@ -1,14 +1,15 @@
 import { ChevronDown, ChevronRight, FileText, Search } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { FileEditor } from "@/components/files/FileEditor";
 import { ConfirmDialog } from "@/components/ui/Dialog";
-import { useWorkspaceTree } from "@/lib/hooks/useWorkspaceFiles";
+import { useRefreshWorkspaceFilesOnShow, useWorkspaceTree } from "@/lib/hooks/useWorkspaceFiles";
 import { GroupHeader } from "@/components/ui/GroupHeader";
 import { PanelState } from "@/components/ui/PanelState";
 import { useGitStatus } from "@/lib/hooks/useGit";
 import { useRepoFiles } from "@/lib/hooks/useRepoFiles";
 import type { FileChange, Workspace } from "@/lib/types";
-import { useUiStore } from "@/lib/store";
+import { fileBufferKey, useUiStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { changeLetter } from "./Inspector";
 
@@ -47,41 +48,42 @@ function sortedChildren(node: TreeNode): TreeNode[] {
  * Files pane tab (A-Editor): the worktree's file tree with git status
  * badges beside a viewer. Changed files' folders start expanded.
  */
-export function FilesPane({ workspace, visible }: { workspace: Workspace; visible: boolean }) {
+export const FilesPane = memo(FilesPaneImpl, (a, b) =>
+  // The route re-renders on every workspace refetch (agent-state events
+  // from any task); only these fields matter here.
+  a.visible === b.visible && a.workspace.id === b.workspace.id && a.workspace.worktreePath === b.workspace.worktreePath,
+);
+
+const NO_TABS: string[] = [];
+
+function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: boolean }) {
+  const workspaceId = workspace.id;
   const root = workspace.worktreePath;
   // The backend tree (tracked + untracked, with status); the repo file list
   // when the backend doesn't answer.
-  const wsTree = useWorkspaceTree(visible ? workspace.id : null);
-  const fallback = useRepoFiles(visible && !Array.isArray(wsTree.data?.files) ? root : null);
-  const files = wsTree.data?.files ? wsTree.data.files.map((f) => f.path) : fallback.data;
+  const wsTree = useWorkspaceTree(visible ? workspaceId : null);
+  useRefreshWorkspaceFilesOnShow(workspaceId, visible);
+  const treeFiles = wsTree.data?.files;
+  const fallback = useRepoFiles(visible && !Array.isArray(treeFiles) ? root : null);
+  // Keyed on the query data's identity (structurally shared across
+  // refetches), so the tree below is rebuilt only when the files change.
+  const files = useMemo(() => (treeFiles ? treeFiles.map((f) => f.path) : fallback.data), [treeFiles, fallback.data]);
   const isLoading = wsTree.isLoading || fallback.isLoading;
   const error = wsTree.data ? null : fallback.error;
-  const { data: changes } = useGitStatus(workspace.id);
-  const [openTabs, setOpenTabs] = useState<string[]>([]);
-  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
+  const { data: changes } = useGitStatus(workspaceId);
+  // Tabs and buffers live in the store: they survive task switches, and a
+  // closed tab is really gone (so opening it again works).
+  const openTabs = useUiStore((s) => s.openFiles[workspaceId] ?? NO_TABS);
+  const dirtyPaths = useUiStore(
+    useShallow((s) => openTabs.filter((p) => s.fileBuffers[fileBufferKey(workspaceId, p)]?.dirty)),
+  );
+  const closeSessionFile = useUiStore((s) => s.closeSessionFile);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
-  const closeTab = (p: string) => {
-    const rest = openTabs.filter((x) => x !== p);
-    setOpenTabs(rest);
-    onDirtyChange(p, false);
-    if (p === selected && rest.length > 0) setSelected(rest[rest.length - 1]!);
-  };
-  const onDirtyChange = useCallback((p: string, dirty: boolean) => {
-    setDirtyPaths((prev) => {
-      if (prev.has(p) === dirty) return prev;
-      const next = new Set(prev);
-      if (dirty) next.add(p);
-      else next.delete(p);
-      return next;
-    });
-  }, []);
+  const closeTab = (p: string) => closeSessionFile(workspaceId, p);
   const [filter, setFilter] = useState("");
-  const selected = useUiStore((s) => s.sessionFile[workspace.id] ?? null);
-  useEffect(() => {
-    if (selected) setOpenTabs((tabs) => (tabs.includes(selected) ? tabs : [...tabs, selected]));
-  }, [selected]);
+  const selected = useUiStore((s) => s.sessionFile[workspaceId] ?? null);
   const openSessionFile = useUiStore((s) => s.openSessionFile);
-  const setSelected = (path: string) => openSessionFile(workspace.id, path);
+  const setSelected = (path: string) => openSessionFile(workspaceId, path);
   const [open, setOpen] = useState<Set<string>>(new Set());
 
   const changeByPath = useMemo(() => new Map((changes ?? []).map((c) => [c.path, c])), [changes]);
@@ -218,11 +220,11 @@ export function FilesPane({ workspace, visible }: { workspace: Workspace; visibl
                     ) : null}
                     {p.slice(p.lastIndexOf("/") + 1)}
                   </button>
-                  {dirtyPaths.has(p) ? <span aria-label="unsaved" className="size-1.5 rounded-full bg-(--color-warning)" /> : null}
+                  {dirtyPaths.includes(p) ? <span aria-label="unsaved" className="size-1.5 rounded-full bg-(--color-warning)" /> : null}
                   <button
                     type="button"
                     aria-label={`Close ${p}`}
-                    onClick={() => (dirtyPaths.has(p) ? setConfirmClose(p) : closeTab(p))}
+                    onClick={() => (dirtyPaths.includes(p) ? setConfirmClose(p) : closeTab(p))}
                     className="grid size-4 place-items-center rounded-(--radius-chip) opacity-0 hover:bg-(--color-bg-hover) group-hover/ftab:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
                   >
                     ×
@@ -238,7 +240,7 @@ export function FilesPane({ workspace, visible }: { workspace: Workspace; visibl
                 undo history survive switching tabs. */}
             {openTabs.map((p) => (
               <div key={p} className={cn("absolute inset-0", p !== selected && "hidden")}>
-                <FileEditor workspaceId={workspace.id} path={p} onDirtyChange={onDirtyChange} />
+                <FileEditor workspaceId={workspaceId} path={p} />
               </div>
             ))}
           </div>

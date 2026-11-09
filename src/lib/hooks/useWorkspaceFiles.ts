@@ -73,6 +73,26 @@ function useWorktreeFileEvents(workspaceId: string | null | undefined) {
   }, [workspaceId, queryClient]);
 }
 
+/**
+ * The watcher subscription lives only while the Files pane is visible, and
+ * open files are cached forever (`staleTime: Infinity`), so anything written
+ * while the pane was hidden — or while another task was open — would stay
+ * invisible. Each time the pane is shown, re-read the tree and every open
+ * file; the editor then runs its disk-changed check against the fresh data.
+ */
+export function useRefreshWorkspaceFilesOnShow(workspaceId: string, visible: boolean) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!visible) return;
+    // `cancelRefetch: false`: a first load already in flight is fresh enough.
+    void queryClient.invalidateQueries({ queryKey: workspaceFileKeys.tree(workspaceId) }, { cancelRefetch: false });
+    void queryClient.invalidateQueries(
+      { queryKey: [...workspaceFileKeys.all, "file", workspaceId] },
+      { cancelRefetch: false },
+    );
+  }, [queryClient, workspaceId, visible]);
+}
+
 /** The worktree's files (tracked + untracked, `.gitignore` honoured) with git badges. */
 export function useWorkspaceTree(workspaceId: string | null | undefined) {
   useWorktreeFileEvents(workspaceId);
@@ -105,7 +125,7 @@ export function useWorkspaceFile(
 }
 
 /** Everything a write or a hunk revert can change for this workspace. */
-function invalidateAfterEdit(
+export function invalidateAfterEdit(
   queryClient: ReturnType<typeof useQueryClient>,
   workspaceId: string,
 ) {
@@ -116,39 +136,33 @@ function invalidateAfterEdit(
   void queryClient.invalidateQueries({ queryKey: taskCardKeys.all });
 }
 
-export interface WriteWorkspaceFileArgs {
-  path: string;
-  contents: string;
-  /** The `hash` the editor loaded; `null` = new file / overwrite anyway. */
-  expectedHash: string | null;
-}
-
 /**
- * ⌘S. On success the cached file takes the saved contents + new hash (no
- * refetch flash). Rejects with {@link FILE_CHANGED_ON_DISK} when the agent
- * edited the file since it was loaded — offer reload / overwrite (save again
- * with `expectedHash: null`).
+ * After a successful write: the cached file takes the saved contents + new
+ * hash (no refetch flash), then one confirming read. The invalidation also
+ * cancels any read that started before the write landed, so a stale
+ * pre-save copy can never replace the saved one.
+ *
+ * Without `force`, the cache is only replaced while it still holds the
+ * version the save started from (`fromHash`) — a third version cached
+ * meanwhile is newer than our write (the write would have failed
+ * otherwise) and must stay for the disk-changed check.
  */
-export function useWriteWorkspaceFile(workspaceId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ path, contents, expectedHash }: WriteWorkspaceFileArgs) =>
-      tauri.writeWorkspaceFile(workspaceId, path, contents, expectedHash),
-    onSuccess: (result, { path, contents }) => {
-      queryClient.setQueryData<WorkspaceFile>(workspaceFileKeys.file(workspaceId, path), (prev) =>
-        prev
-          ? { ...prev, contents, hash: result.hash, sizeBytes: new TextEncoder().encode(contents).length }
-          : prev,
-      );
-      invalidateAfterEdit(queryClient, workspaceId);
-    },
-    onError: (err, { path }) => {
-      // Show the user what's on disk now.
-      if (isFileChangedOnDisk(err)) {
-        void queryClient.invalidateQueries({ queryKey: workspaceFileKeys.file(workspaceId, path) });
-      }
-    },
-  });
+export function applySavedFile(
+  queryClient: ReturnType<typeof useQueryClient>,
+  workspaceId: string,
+  path: string,
+  contents: string,
+  hash: string,
+  { force = false, fromHash = null }: { force?: boolean; fromHash?: string | null } = {},
+) {
+  const key = workspaceFileKeys.file(workspaceId, path);
+  queryClient.setQueryData<WorkspaceFile>(key, (prev) =>
+    prev && (force || prev.hash === fromHash || prev.hash === hash)
+      ? { ...prev, contents, hash, sizeBytes: new TextEncoder().encode(contents).length }
+      : prev,
+  );
+  void queryClient.invalidateQueries({ queryKey: key });
+  invalidateAfterEdit(queryClient, workspaceId);
 }
 
 export interface RevertHunkArgs {

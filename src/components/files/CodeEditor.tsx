@@ -92,9 +92,10 @@ const theme = EditorView.theme({
 
 /**
  * CodeMirror 6 for the Files tab (A-Editor). Uncontrolled after mount: the
- * parent hands a `docKey` (path + loaded hash); a new key replaces the
- * document, anything else is the user's edit buffer. Lazy-loaded so the
- * editor ships only when the Files tab opens.
+ * document starts as `value` (the stored buffer, so a remount restores
+ * unsaved edits). A new `docKey` (path + reload revision) replaces the
+ * document with `value`; anything else is the user's edit buffer.
+ * Lazy-loaded so the editor ships only when the Files tab opens.
  */
 export default function CodeEditor({
   docKey,
@@ -168,9 +169,9 @@ export default function CodeEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // A new document (another file, or a reload after an agent edit). When
-  // the new disk version is exactly what's in the editor (we just saved it),
-  // leave the document alone so cursor and undo history survive ⌘S.
+  // A new document (a reload after an agent edit, or "Reload theirs"). When
+  // it is exactly what's in the editor already, leave the document alone so
+  // cursor and undo history survive.
   useEffect(() => {
     const v = view.current;
     if (!v) return;
