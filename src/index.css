@@ -206,7 +206,6 @@
   --layout-rail-right: 40px;
   --layout-header-height: 44px;
   --layout-panetabs-height: 44px; /* A-Workspace pane tab bar */
-  --layout-statusbar-height: 28px;
   --layout-toolbar-height: 52px;
 
   /* Row heights; [data-density="comfortable"] relaxes them. */
@@ -735,6 +734,32 @@ body {
     opacity: 0.6;
   }
   50% {
+    opacity: 1;
+  }
+}
+
+/* Side-panel collapse (A-Polish, spec P1): the sidebar and inspector slide
+   with translateX inside a clipped container (<SlidePanel>); the centre
+   column's width changes once, never per frame. The icon rail cross-fades
+   in 60ms after the slide starts. `will-change` is set inline only while a
+   panel animates. Under reduced motion SlidePanel skips the slide. */
+.panel-slide {
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.panel-rail {
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+
+.panel-rail-in {
+  animation: panel-rail-in var(--dur-2) var(--ease-out) 60ms backwards;
+}
+
+@keyframes panel-rail-in {
+  from {
+    opacity: 0;
+  }
+  to {
     opacity: 1;
   }
 }

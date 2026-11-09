@@ -19,6 +19,7 @@ import type {
   TerminalBackendKind,
   TerminalSurface,
 } from "@/lib/terminal/surface";
+import { fitSurfaceNow, watchSurfaceSize } from "@/lib/terminal/refit";
 import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent } from "@/lib/types";
 
@@ -264,12 +265,11 @@ export function SessionTerminalTab({
       }
     }
 
-    const refit = () => {
-      // Skip when hidden — see isSurfaceVisible.
-      if (!isSurfaceVisible(surface.element)) return;
-      // See Terminal.tsx — a width change is rebuilt, never reflowed.
-      surface.fitAnchored();
-    };
+    // See Terminal.tsx — a width change is rebuilt, never reflowed; the
+    // refitter skips hidden surfaces, coalesces to one fit per frame and
+    // waits out side-panel animations.
+    const refitter = watchSurfaceSize(surface, surface.element);
+    const refit = () => refitter.now({ force: true });
     // See Terminal.tsx — one-shot full redraw after a re-parent, never on
     // a resize tick.
     const forceRepaint = () => {
@@ -291,17 +291,11 @@ export function SessionTerminalTab({
       window.setTimeout(refit, 600),
     ];
 
-    const onWindowResize = () => refit();
-    window.addEventListener("resize", onWindowResize);
-
-    const resizeObserver = new ResizeObserver(refit);
-    resizeObserver.observe(surface.element);
 
     return () => {
       cancelAnimationFrame(rafId);
       for (const t of settleTimers) window.clearTimeout(t);
-      window.removeEventListener("resize", onWindowResize);
-      resizeObserver.disconnect();
+      refitter.dispose();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
       // Stop routing channel updates to this (unmounting) instance — a
@@ -319,7 +313,7 @@ export function SessionTerminalTab({
     if (!entry) return;
     entry.linkContext.editorId = settings?.defaultEditor ?? null;
     entry.surface.applySettings(settings);
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
   }, [settings, tabId]);
 
   // See Terminal.tsx — a theme flip has to be pushed into the emulator,
@@ -343,7 +337,7 @@ export function SessionTerminalTab({
     entry.surface.setActive(visible);
     if (!visible) return;
     if (!isSurfaceVisible(entry.surface.element)) return;
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();

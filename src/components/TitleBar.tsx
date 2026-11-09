@@ -4,13 +4,13 @@ import { Check, ChevronDown, Layers, LogOut, Plus, Search, Settings as SettingsI
 import { useSyncExternalStore } from "react";
 import { useSettingsRoute } from "@/components/settings/useSettingsRoute";
 import { InboxBell } from "@/components/shell/InboxBell";
-import { Button } from "@/components/ui/Button";
-import { Chip } from "@/components/ui/Chip";
-import { Kbd } from "@/components/ui/Kbd";
+import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "@/components/ui/Menu";
 import { RepoMark } from "@/components/ui/RepoMark";
-import { StatusGlyph } from "@/components/ui/StatusBadge";
-import { useRepositories, useRepository } from "@/lib/hooks/useRepositories";
+import type { TaskLane } from "@/lib/board";
+import { useBoardTasks } from "@/lib/hooks/useBoardTasks";
+import { useRepositories } from "@/lib/hooks/useRepositories";
+import { type SyncState, useSyncState } from "@/lib/hooks/useSyncState";
 import { useWorkspace } from "@/lib/hooks/useWorkspaces";
 import {
   type DesktopSession,
@@ -51,14 +51,17 @@ function useDesktopSession(): DesktopSession | null {
 }
 
 /**
- * Title bar (A: 44px). Traffic-light inset, repository switcher, breadcrumb
- * to the open task, primary nav, ⌘K search field, settings, account. The
- * whole bar is a Tauri drag region — interactive children stop the drag.
+ * Title bar (A-Polish, spec §4.1): 44px, text only, no boxes. Traffic-light
+ * inset, the repository switcher (ghost), `/ ● task` with its branch when a
+ * task is open, then Board, the ⌘K search, the inbox bell, settings and the
+ * account avatar. The whole bar is a Tauri drag region — interactive
+ * children stop the drag.
  */
 export function TitleBar() {
   const settingsRoute = useSettingsRoute();
   const openCommandPalette = useUiStore((s) => s.openCommandPalette);
   const session = useDesktopSession();
+  const sync = useSyncState();
   const params = useParams({ strict: false }) as { repositoryId?: string; workspaceId?: string };
   const inSession = !!params.workspaceId;
   const location = useLocation();
@@ -67,56 +70,49 @@ export function TitleBar() {
   return (
     <header
       data-tauri-drag-region
-      className="relative z-20 flex h-(--layout-header-height) shrink-0 items-center gap-4 border-b border-(--color-border-subtle) bg-(--color-bg-sidebar)"
+      className="relative z-20 flex h-(--layout-header-height) shrink-0 items-center gap-[6px] border-b border-(--color-border-subtle) bg-(--color-bg-sidebar)"
       style={{ paddingLeft: isMac ? 92 : 16, paddingRight: 16 }}
     >
       <RepoSwitcher />
       {inSession ? <TaskBreadcrumb workspaceId={params.workspaceId!} /> : null}
-      <nav aria-label="Primary" className="flex gap-0.5" data-tauri-drag-region>
+      <div className="flex-1 self-stretch" data-tauri-drag-region />
+      <nav aria-label="Primary" className="flex gap-[2px]" data-tauri-drag-region>
         <Link
           to="/"
           aria-current={onBoard ? "page" : undefined}
           className={cn(
-            "rounded-(--radius-control) px-2.5 py-1.5 text-[13px] no-underline transition-colors duration-100",
+            "flex h-[28px] items-center rounded-(--radius-control) px-[10px] text-[13px] no-underline transition-colors duration-(--dur-1)",
             "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
             onBoard
               ? "bg-(--color-bg-elevated) font-medium text-(--color-text-primary)"
-              : "text-(--color-text-muted) hover:text-(--color-text-secondary)",
+              : "text-(--color-text-secondary) hover:bg-(--color-bg-surface) hover:text-(--color-text-primary)",
           )}
         >
           Board
         </Link>
       </nav>
-      <div className="flex-1 self-stretch" data-tauri-drag-region />
-      <button
-        type="button"
-        onClick={openCommandPalette}
-        className={cn(
-          "flex h-7 items-center gap-2 rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-base) px-2.5 text-left text-[13px] text-(--color-text-muted)",
-          "transition-colors duration-100 hover:border-(--color-border-strong)",
-          "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
-          inSession ? "w-[200px]" : "w-[320px]",
-        )}
-      >
-        <Search className="size-3.5 shrink-0" aria-hidden />
-        <span className="flex-1 truncate">{inSession ? "Search…" : "Search tasks, files, commands…"}</span>
-        <Kbd>{SHORTCUTS.togglePalette.display.join("")}</Kbd>
-      </button>
-      <InboxBell />
-      <Button
-        variant="secondary"
-        size="icon"
-        aria-label="Settings"
-        title={`Settings (${SHORTCUTS.openSettings.display.join("")})`}
-        onClick={() => settingsRoute.open()}
-        className="text-(--color-text-muted)"
-      >
-        <SettingsIcon className="size-3.5" aria-hidden />
-      </Button>
-      <ProfileMenu session={session} onSettings={() => settingsRoute.open()} />
+      <GlassTooltip content={`Search (${SHORTCUTS.togglePalette.display.join("")})`} side="bottom">
+        <button type="button" aria-label="Search" onClick={openCommandPalette} className={titleIconClass}>
+          <Search className="size-[15px]" aria-hidden />
+        </button>
+      </GlassTooltip>
+      <InboxBell sync={sync} className={titleIconClass} />
+      <GlassTooltip content={`Settings (${SHORTCUTS.openSettings.display.join("")})`} side="bottom">
+        <button type="button" aria-label="Settings" onClick={() => settingsRoute.open()} className={titleIconClass}>
+          <SettingsIcon className="size-[15px]" aria-hidden />
+        </button>
+      </GlassTooltip>
+      <ProfileMenu session={session} sync={sync} onSettings={() => settingsRoute.open()} />
     </header>
   );
 }
+
+/** 28px borderless icon button (A-Polish title bar). */
+const titleIconClass = cn(
+  "relative grid size-[28px] shrink-0 place-items-center rounded-(--radius-control) text-(--color-text-secondary)",
+  "transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary)",
+  "focus-visible:outline-none focus-visible:shadow-(--ring-focus) data-[state=open]:bg-(--color-bg-elevated)",
+);
 
 function RepoSwitcher() {
   const { data: repositories } = useRepositories();
@@ -136,17 +132,21 @@ function RepoSwitcher() {
         <button
           type="button"
           aria-label={`Repository: ${current?.name ?? "All repositories"}`}
-          className="flex h-7 items-center gap-2 rounded-(--radius-control) border border-(--color-border-default) bg-(--color-bg-surface) px-2.5 text-[13px] font-medium text-(--color-text-primary) transition-colors duration-100 hover:border-(--color-border-strong) focus-visible:outline-none focus-visible:shadow-(--ring-focus) data-[state=open]:border-(--color-border-strong)"
+          className={cn(
+            "flex h-[28px] min-w-0 shrink-0 items-center gap-[6px] rounded-(--radius-control) px-[8px] text-[13px] font-medium text-(--color-text-primary)",
+            "transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) data-[state=open]:bg-(--color-bg-elevated)",
+            "focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
+          )}
         >
           {current ? (
             <RepoMark id={current.id} name={current.name} size={16} />
           ) : (
-            <span aria-hidden className="grid size-4 place-items-center rounded-(--radius-chip) bg-(--color-bg-elevated) text-(--color-text-muted)">
+            <span aria-hidden className="grid size-[16px] place-items-center rounded-[4px] bg-(--color-bg-elevated) text-(--color-text-muted)">
               <Layers className="size-2.5" />
             </span>
           )}
           <span className="max-w-[180px] truncate">{current?.name ?? "All repositories"}</span>
-          <ChevronDown className="size-3 text-(--color-text-muted)" aria-hidden />
+          <ChevronDown className="size-[12px] text-(--color-text-muted)" aria-hidden />
         </button>
       </MenuTrigger>
       <MenuContent width={240}>
@@ -183,37 +183,60 @@ function RepoSwitcher() {
   );
 }
 
+const LANE_DOT: Record<TaskLane, string> = {
+  queued: "var(--color-status-queued)",
+  running: "var(--color-status-running)",
+  "needs-you": "var(--color-status-attention)",
+  review: "var(--color-status-review)",
+  failed: "var(--color-status-danger)",
+  done: "var(--color-status-success)",
+};
+
+/**
+ * `/ ● task name  branch` — the dot carries a 3px glow in its status hue;
+ * the branch is plain muted mono. The base branch lives in the inspector.
+ */
 function TaskBreadcrumb({ workspaceId }: { workspaceId: string }) {
   const { data: ws } = useWorkspace(workspaceId);
-  const { data: repo } = useRepository(ws?.repositoryId);
+  const { tasks } = useBoardTasks(null);
   if (!ws) return null;
-  const base = ws.baseBranch ?? repo?.defaultBranch ?? null;
+  const isAgent = ws.workspaceKind === "agent";
+  const lane: TaskLane | null = isAgent
+    ? (tasks.find((t) => t.workspace.id === ws.id)?.lane ??
+      (ws.status === "running" ? "running" : ws.status === "failed" ? "failed" : "queued"))
+    : null;
   return (
-    <div className="flex min-w-0 items-center gap-3" data-tauri-drag-region>
+    <div className="flex min-w-0 items-center gap-[6px]" data-tauri-drag-region>
       <span aria-hidden className="text-(--color-text-faint)">
-        ›
+        /
       </span>
-      <span className="flex min-w-0 items-center gap-2 text-[13px] font-medium">
-        {ws.workspaceKind === "agent" ? (
-          <StatusGlyph kind={ws.status === "running" ? "running" : ws.status === "failed" ? "failed" : "queued"} halo={ws.status === "running"} />
+      <span className="flex h-[28px] min-w-0 items-center gap-[8px] px-[8px] text-[13px] font-medium text-(--color-text-primary)">
+        {lane ? (
+          <span
+            aria-hidden
+            className="size-[6px] shrink-0 rounded-full"
+            style={{
+              background: LANE_DOT[lane],
+              boxShadow: `0 0 0 3px color-mix(in srgb, ${LANE_DOT[lane]} 18%, transparent)`,
+            }}
+          />
         ) : null}
-        <span className="truncate">{ws.workspaceKind === "local" ? "local" : ws.name}</span>
-        {ws.branch ? (
-          <Chip tone="outline" mono className="font-normal">
-            {ws.branch}
-            {base && ws.workspaceKind === "agent" ? ` ← ${base}` : ""}
-          </Chip>
-        ) : null}
+        <span className="truncate">{isAgent ? ws.name : "local"}</span>
       </span>
+      {ws.branch ? (
+        <span className="min-w-0 shrink truncate font-mono text-[11px] text-(--color-text-muted)">{ws.branch}</span>
+      ) : null}
     </div>
   );
 }
 
 function ProfileMenu({
   session,
+  sync,
   onSettings,
 }: {
   session: DesktopSession | null;
+  sync: SyncState;
   onSettings: () => void;
 }) {
   const signOut = () => {
@@ -229,7 +252,7 @@ function ProfileMenu({
           type="button"
           title="Account menu"
           aria-label="Account menu"
-          className="grid size-7 place-items-center rounded-full focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+          className="ml-[6px] grid size-[24px] shrink-0 place-items-center rounded-full text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
         >
           <ProfileAvatar session={session} />
         </button>
@@ -240,6 +263,16 @@ function ProfileMenu({
           sideOffset={6}
           className="z-(--z-dropdown) min-w-44 origin-top-right overflow-hidden surface-floating p-1 text-[12px] data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out"
         >
+          {/* Sync state (spec D1): the status bar's line, now here. */}
+          <DropdownMenu.Label
+            aria-live="polite"
+            className="flex h-[32px] items-center gap-[8px] px-[8px] text-(--color-text-muted)"
+            title={sync.reason ?? undefined}
+          >
+            <span aria-hidden className="size-[6px] shrink-0 rounded-full" style={{ background: SYNC_DOT[sync.phase] }} />
+            <span className="min-w-0 max-w-[240px] truncate">{sync.label}</span>
+          </DropdownMenu.Label>
+          <DropdownMenu.Separator className="my-1 h-px bg-(--color-border-subtle)" />
           <DropdownMenu.Item
             onSelect={onSettings}
             className={menuItemClassName()}
@@ -261,13 +294,21 @@ function ProfileMenu({
   );
 }
 
+const SYNC_DOT: Record<SyncState["phase"], string> = {
+  idle: "var(--color-status-success)",
+  syncing: "var(--color-status-running)",
+  error: "var(--color-status-danger)",
+  off: "var(--color-status-queued)",
+  unknown: "var(--color-status-queued)",
+};
+
 function ProfileAvatar({ session }: { session: DesktopSession | null }) {
   if (session?.profile.imageUrl) {
     return (
       <img
         src={session.profile.imageUrl}
         alt=""
-        className="size-7 rounded-full object-cover"
+        className="size-[24px] rounded-full object-cover"
       />
     );
   }
@@ -275,7 +316,7 @@ function ProfileAvatar({ session }: { session: DesktopSession | null }) {
   const initials = session ? accountInitials(session) : null;
   if (initials) {
     return (
-      <span className="flex size-7 items-center justify-center rounded-full bg-(--color-success) text-[12px] font-semibold uppercase leading-none text-white">
+      <span className="flex size-[24px] items-center justify-center rounded-full bg-[#2e7d5b] text-[11px] font-semibold uppercase leading-none text-white">
         {initials}
       </span>
     );

@@ -3,7 +3,6 @@ import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-
 import { useEffect } from "react";
 import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal";
 import { TaskSidebar } from "@/components/shell/TaskSidebar";
-import { StatusBar } from "@/components/shell/StatusBar";
 import { CommandPalette } from "@/components/CommandPalette";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -252,7 +251,9 @@ function AppShell() {
   }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, adjustTerminalFontSize, queryClient, navigate, openSettings]);
 
   return (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
+    // `data-app-shell` carries `data-panel-animating` while the sidebar or
+    // inspector slides (lib/panelMotion).
+    <div data-app-shell className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
       <TitleBar />
       <div className="flex min-h-0 min-w-0 flex-1">
         <TaskSidebar />
@@ -260,7 +261,6 @@ function AppShell() {
           <div className="relative min-h-0 flex-1 overflow-hidden">
             <Outlet />
           </div>
-          <StatusBar />
         </main>
       </div>
       <CommandPalette />

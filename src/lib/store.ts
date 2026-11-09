@@ -157,7 +157,7 @@ const LAST_WORKSPACE_KEY = "phasr.lastWorkspace";
 
 export const SIDEBAR_WIDTH_MIN = 220;
 export const SIDEBAR_WIDTH_MAX = 420;
-export const SIDEBAR_WIDTH_DEFAULT = 264;
+export const SIDEBAR_WIDTH_DEFAULT = 248;
 export const RIGHT_PANEL_WIDTH_MIN = 260;
 export const RIGHT_PANEL_WIDTH_MAX = 480;
 export const RIGHT_PANEL_WIDTH_DEFAULT = 320; // --layout-inspector-width (280 content + 2×20 padding)
@@ -243,9 +243,9 @@ interface UiState {
   /** Title-bar repository switcher: null = all repositories. */
   repoFilter: string | null;
   setRepoFilter: (repositoryId: string | null) => void;
-  /** Cloud sync worker health, fed by useCloudSync (status bar). */
-  cloudSync: { state: "unknown" | "ok" | "error"; at: number | null };
-  setCloudSync: (state: "ok" | "error") => void;
+  /** Cloud sync worker health, fed by useCloudSync (account menu, bell). */
+  cloudSync: { state: "unknown" | "ok" | "error"; at: number | null; reason: string | null };
+  setCloudSync: (state: "ok" | "error", reason?: string | null) => void;
   density: Density;
   setDensity: (density: Density) => void;
 
@@ -472,8 +472,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     }),
   repoFilter: null,
   setRepoFilter: (repoFilter) => set({ repoFilter }),
-  cloudSync: { state: "unknown", at: null },
-  setCloudSync: (state) => set({ cloudSync: { state, at: Date.now() } }),
+  cloudSync: { state: "unknown", at: null, reason: null },
+  setCloudSync: (state, reason = null) => set({ cloudSync: { state, at: Date.now(), reason } }),
   density: readStoredDensity(),
   setDensity: (density) => {
     writeStoredDensity(density);

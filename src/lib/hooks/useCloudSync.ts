@@ -24,7 +24,7 @@ export function useCloudSync() {
 
     const unlistenUpdated = listen("cloud-sync-updated", refresh);
     const unlistenError = listen("cloud-sync-error", (event) => {
-      setCloudSync("error");
+      setCloudSync("error", typeof event.payload === "string" ? event.payload : null);
       // Surface the worker's error in the console too — it was
       // previously Sentry-only, which made sync failures (e.g. a row
       // that never reaches Supabase) invisible during local debugging.

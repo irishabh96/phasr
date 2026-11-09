@@ -15,6 +15,7 @@ import type {
   TerminalBackendKind,
   TerminalSurface,
 } from "@/lib/terminal/surface";
+import { fitSurfaceNow, watchSurfaceSize } from "@/lib/terminal/refit";
 import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent } from "@/lib/types";
 
@@ -103,9 +104,9 @@ export function RunCommandTerminal({
     surface.fit();
 
     // See Terminal.tsx — every later resize is anchored, so a width change
-    // rebuilds the grid instead of rewrapping it.
-    const resizeObserver = new ResizeObserver(() => surface.fitAnchored());
-    resizeObserver.observe(container);
+    // rebuilds the grid instead of rewrapping it; one fit per frame at most,
+    // none while a side panel animates (spec P1/P2).
+    const refitter = watchSurfaceSize(surface, container);
 
     const disposables: SurfaceDisposable[] = [];
 
@@ -194,7 +195,7 @@ export function RunCommandTerminal({
 
     return () => {
       cancelled = true;
-      resizeObserver.disconnect();
+      refitter.dispose();
       for (const d of disposables) d.dispose();
       // Disposes the renderer too — this surface owns a WebGL context
       // that used to be leaked on every unmount.
@@ -207,7 +208,7 @@ export function RunCommandTerminal({
     const surface = surfaceRef.current;
     if (!surface) return;
     surface.applySettings(settings);
-    surface.fitAnchored();
+    fitSurfaceNow(surface);
   }, [settings]);
 
   // See Terminal.tsx — a theme flip has to be pushed into the emulator,
@@ -223,7 +224,7 @@ export function RunCommandTerminal({
     if (!surface) return;
     surface.setActive(visible);
     if (!visible) return;
-    surface.fitAnchored();
+    fitSurfaceNow(surface);
     surface.repaint();
     // See Terminal.tsx — reveal hands over the keyboard.
     if (canTakeTerminalFocus()) surface.focus();
