@@ -200,20 +200,17 @@ impl ClaudeReader {
             };
             let mut cursor = state.cursor.clone();
             let (session, top_level) = (state.session.clone(), state.top_level);
-            match read_new_lines(&path, &mut cursor) {
-                Ok(NewLines::Lines(lines)) => {
+            match read_new_lines(&path, &mut cursor, |line| self.ingest(line, &session, top_level)) {
+                Ok(NewLines::Read(read)) => {
                     if let Some(state) = self.files.get_mut(&path) {
                         state.cursor = cursor;
                     }
-                    if !lines.is_empty() {
+                    if read > 0 {
                         if let Some(m) = mtime(&path) {
                             if self.newest.as_ref().is_none_or(|(t, _)| m >= *t) && top_level {
                                 self.newest = Some((m, path.clone()));
                             }
                         }
-                    }
-                    for line in lines {
-                        self.ingest(&line, &session, top_level);
                     }
                 }
                 Ok(NewLines::Truncated) => {
@@ -235,12 +232,12 @@ impl ClaudeReader {
                 continue;
             };
             let mut cursor = state.cursor;
-            if let Ok(NewLines::Lines(lines)) = read_new_lines(&path, &mut cursor) {
+            let read = read_new_lines(&path, &mut cursor, |line| {
+                self.ingest(line, &state.session, state.top_level)
+            });
+            if let Ok(NewLines::Read(_)) = read {
                 if let Some(s) = self.files.get_mut(&path) {
                     s.cursor = cursor;
-                }
-                for line in lines {
-                    self.ingest(&line, &state.session, state.top_level);
                 }
             }
         }
@@ -366,7 +363,7 @@ impl ClaudeReader {
                 .or_default()
                 .add(&m.tokens);
         }
-        let mut cost: Option<i64> = Some(0);
+        let mut cost = pricing::CostSum::default();
         let sessions: HashSet<&str> = by_session.keys().copied().collect();
         for session in sessions {
             let recorded = self
@@ -375,20 +372,18 @@ impl ClaudeReader {
                 .filter(|c| !c.stale)
                 .and_then(|c| c.recorded)
                 .filter(|(_, unknown)| !unknown);
-            let session_cost = match recorded {
-                Some((usd, _)) => Some((usd * 1_000_000.0).round() as i64),
-                None => by_session[session]
-                    .iter()
-                    .filter(|(_, tokens)| !tokens.is_zero())
-                    .try_fold(0i64, |acc, (model, tokens)| {
-                        pricing::cost_micros(model, tokens).map(|c| acc + c)
-                    }),
-            };
-            cost = match (cost, session_cost) {
-                (Some(a), Some(b)) => Some(a + b),
-                _ => None,
-            };
+            match recorded {
+                Some((usd, _)) => cost.add_micros((usd * 1_000_000.0).round() as i64),
+                // Per model, so one unpriced model only leaves its own
+                // tokens out (and marks the total partial).
+                None => {
+                    for (model, tokens) in &by_session[session] {
+                        cost.add(Some(model), tokens);
+                    }
+                }
+            }
         }
+        let (cost, cost_partial) = cost.total();
         Some(TaskUsage {
             source: UsageSource::Claude,
             model: self.last_model.clone(),
@@ -397,6 +392,7 @@ impl ClaudeReader {
             cache_read_tokens: totals.cache_read,
             cache_write_tokens: totals.cache_write(),
             cost_usd_micros: cost,
+            cost_partial,
             updated_at: now,
             transcript_path: self
                 .newest
@@ -530,15 +526,18 @@ mod tests {
         writeln!(f, "{}", assistant("m1", "claude-sonnet-5", "2026-11-09T10:00:00Z", serde_json::json!({"type":"text","text":"one"}), 1)).unwrap();
         let mut reader = ClaudeReader::new(target(Path::new("/Users/me/.phasr/worktrees/task-1")), root);
         reader.refresh();
-        assert_eq!(reader.usage(Utc::now()).unwrap().output_tokens, 1);
-        assert!(reader.usage(Utc::now()).unwrap().cost_usd_micros.is_some());
+        let priced = reader.usage(Utc::now()).unwrap();
+        assert_eq!(priced.output_tokens, 1);
+        assert!(priced.cost_usd_micros.is_some());
+        assert!(!priced.cost_partial);
 
-        writeln!(f, "{}", assistant("m2", "claude-opus-5-5", "2026-11-09T10:01:00Z", serde_json::json!({"type":"text","text":"two"}), 2)).unwrap();
+        writeln!(f, "{}", assistant("m2", "claude-opus-9", "2026-11-09T10:01:00Z", serde_json::json!({"type":"text","text":"two"}), 2)).unwrap();
         reader.refresh();
         let usage = reader.usage(Utc::now()).unwrap();
         assert_eq!(usage.output_tokens, 3);
-        // An unpriced model in the mix → no cost at all, not a partial one.
-        assert_eq!(usage.cost_usd_micros, None);
+        // An unpriced model in the mix keeps the priced part, flagged partial.
+        assert_eq!(usage.cost_usd_micros, priced.cost_usd_micros);
+        assert!(usage.cost_partial);
         assert_eq!(reader.summary().unwrap().text, "two");
     }
 
@@ -547,13 +546,16 @@ mod tests {
         let (_d, root, project) = setup();
         let path = project.join("sess-c.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "{}", assistant("m1", "claude-opus-5-5", "2026-11-09T10:00:00Z", serde_json::json!({"type":"text","text":"x"}), 1)).unwrap();
+        writeln!(f, "{}", assistant("m1", "claude-opus-9", "2026-11-09T10:00:00Z", serde_json::json!({"type":"text","text":"x"}), 1)).unwrap();
         writeln!(f, r#"{{"type":"cost-state","sessionId":"sess-c","totalCostUSD":0.25,"hasUnknownModelCost":false}}"#).unwrap();
         let mut reader = ClaudeReader::new(target(Path::new("/Users/me/.phasr/worktrees/task-1")), root);
         reader.refresh();
-        assert_eq!(reader.usage(Utc::now()).unwrap().cost_usd_micros, Some(250_000));
-        // Resumed: a newer message makes the recorded total stale.
-        writeln!(f, "{}", assistant("m2", "claude-opus-5-5", "2026-11-09T11:00:00Z", serde_json::json!({"type":"text","text":"y"}), 1)).unwrap();
+        let usage = reader.usage(Utc::now()).unwrap();
+        assert_eq!(usage.cost_usd_micros, Some(250_000));
+        assert!(!usage.cost_partial, "a recorded total covers unknown models");
+        // Resumed: a newer message makes the recorded total stale, and
+        // nothing left is priceable.
+        writeln!(f, "{}", assistant("m2", "claude-opus-9", "2026-11-09T11:00:00Z", serde_json::json!({"type":"text","text":"y"}), 1)).unwrap();
         reader.refresh();
         assert_eq!(reader.usage(Utc::now()).unwrap().cost_usd_micros, None);
     }

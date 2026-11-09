@@ -10,7 +10,7 @@ pub mod claude;
 pub mod codex;
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -219,37 +219,58 @@ pub struct LineCursor {
 }
 
 pub enum NewLines {
-    Lines(Vec<String>),
+    /// This many non-empty lines were handed to the callback.
+    Read(usize),
     /// The file is shorter than what was already read: it was rewritten.
     Truncated,
 }
 
-/// Complete lines appended since the cursor; a trailing partial line (the
-/// agent mid-write) is left for next time.
-pub fn read_new_lines(path: &Path, cursor: &mut LineCursor) -> std::io::Result<NewLines> {
+/// Hand each complete line appended since the cursor to `on_line`, one at
+/// a time; a trailing partial line (the agent mid-write) is left for next
+/// time.
+///
+/// Streamed, not slurped: the first read of a resumed task's transcript can
+/// be tens of MB, and holding all of it (plus a `String` per line) at once
+/// is what this avoids. Memory is bounded by the longest line.
+///
+/// The cursor advances past every line handed out, so the caller must keep
+/// it even if this returns early: a read error mid-file stops there (the
+/// rest is retried next refresh) rather than replaying lines already seen.
+pub fn read_new_lines(
+    path: &Path,
+    cursor: &mut LineCursor,
+    mut on_line: impl FnMut(&str),
+) -> std::io::Result<NewLines> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     if len < cursor.offset {
         return Ok(NewLines::Truncated);
     }
     if len == cursor.offset {
-        return Ok(NewLines::Lines(Vec::new()));
+        return Ok(NewLines::Read(0));
     }
     file.seek(SeekFrom::Start(cursor.offset))?;
-    let mut buf = Vec::with_capacity((len - cursor.offset) as usize);
-    file.take(len - cursor.offset).read_to_end(&mut buf)?;
-    let Some(last_nl) = buf.iter().rposition(|b| *b == b'\n') else {
-        return Ok(NewLines::Lines(Vec::new()));
-    };
-    let complete = &buf[..=last_nl];
-    cursor.offset += complete.len() as u64;
-    Ok(NewLines::Lines(
-        complete
-            .split(|b| *b == b'\n')
-            .filter(|l| !l.is_empty())
-            .map(|l| String::from_utf8_lossy(l).into_owned())
-            .collect(),
-    ))
+    let mut reader = BufReader::with_capacity(64 * 1024, file.take(len - cursor.offset));
+    let mut line = Vec::new();
+    let mut read = 0;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            // EOF, or a partial last line: stop before it.
+            Ok(0) => break,
+            Ok(_) if line.last() != Some(&b'\n') => break,
+            Ok(n) => {
+                cursor.offset += n as u64;
+                let text = &line[..n - 1];
+                if !text.is_empty() {
+                    on_line(&String::from_utf8_lossy(text));
+                    read += 1;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(NewLines::Read(read))
 }
 
 pub fn parse_ts(v: &serde_json::Value) -> Option<DateTime<Utc>> {
@@ -285,22 +306,42 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
-        write!(f, "a\nb\nparti").unwrap();
+        write!(f, "a\n\nb\nparti").unwrap();
         let mut cursor = LineCursor::default();
-        let NewLines::Lines(lines) = read_new_lines(&path, &mut cursor).unwrap() else {
-            panic!()
+        let read = |cursor: &mut LineCursor| {
+            let mut lines = Vec::new();
+            let NewLines::Read(n) = read_new_lines(&path, cursor, |l| lines.push(l.to_string())).unwrap() else {
+                panic!()
+            };
+            assert_eq!(n, lines.len());
+            lines
         };
-        assert_eq!(lines, vec!["a", "b"]);
+        // Blank lines are skipped but still consumed.
+        assert_eq!(read(&mut cursor), vec!["a", "b"]);
+        assert_eq!(cursor.offset, 5);
+        assert!(read(&mut cursor).is_empty(), "the partial line waits");
         write!(f, "al\nc\n").unwrap();
-        let NewLines::Lines(lines) = read_new_lines(&path, &mut cursor).unwrap() else {
-            panic!()
-        };
-        assert_eq!(lines, vec!["partial", "c"]);
+        assert_eq!(read(&mut cursor), vec!["partial", "c"]);
         std::fs::write(&path, "x\n").unwrap();
         assert!(matches!(
-            read_new_lines(&path, &mut cursor).unwrap(),
+            read_new_lines(&path, &mut cursor, |_| {}).unwrap(),
             NewLines::Truncated
         ));
+    }
+
+    /// Lines far larger than the read buffer still arrive whole, one at a
+    /// time (a transcript line can carry a whole file's contents).
+    #[test]
+    fn read_new_lines_streams_lines_longer_than_the_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.jsonl");
+        let long = "x".repeat(300 * 1024);
+        std::fs::write(&path, format!("{long}\nshort\n{long}")).unwrap();
+        let mut cursor = LineCursor::default();
+        let mut lens = Vec::new();
+        read_new_lines(&path, &mut cursor, |l| lens.push(l.len())).unwrap();
+        assert_eq!(lens, vec![long.len(), 5]);
+        assert_eq!(cursor.offset, (long.len() + 1 + 6) as u64);
     }
 
     #[test]
