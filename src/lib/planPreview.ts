@@ -18,6 +18,13 @@ export const PERMISSION_LABEL: Record<PermissionMode, string> = {
   "skip-all": "Skip all",
 };
 
+/** One line per mode for the New task picker. */
+export const PERMISSION_HINT: Record<PermissionMode, string> = {
+  "ask-edits": "Asks before editing files or running commands.",
+  "ask-shell": "Edits files on its own; asks before running commands.",
+  "skip-all": "Never asks. Edits and runs anything.",
+};
+
 /**
  * The "plan" lines under New task (A-NewTask): what Phasr will actually do,
  * so the branch, worktree and agent command are never a surprise.

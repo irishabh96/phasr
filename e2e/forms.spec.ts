@@ -93,8 +93,11 @@ test.describe("New task form (NewTaskModal)", () => {
     await expect(page.locator("#new-task-agent")).toBeVisible();
     // Base branch seeded from the repo's default branch.
     await expect(page.locator("#new-task-base-branch")).toHaveValue("main");
-    // The agent picker defaults to the default agent; the plan prints its command.
+    // The agent picker defaults to the default agent; the plan (behind
+    // "Show commands") prints its command.
     await expect(dialog.getByRole("radio", { name: "Claude" })).toHaveAttribute("aria-checked", "true");
+    await expect(dialog.getByRole("list", { name: "What Phasr will run" })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Show commands" }).click();
     await expect(
       dialog.getByRole("list", { name: "What Phasr will run" }).getByText("claude", { exact: true }),
     ).toBeVisible();

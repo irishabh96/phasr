@@ -97,7 +97,16 @@ pub struct DetectionCache {
 impl DetectionCache {
     pub async fn agents(&self, force: bool) -> Vec<AgentDetection> {
         let mut cached = self.agents.lock().await;
-        if let (false, Some(report)) = (force, cached.as_ref()) {
+        if let (false, Some(report)) = (force, cached.as_mut()) {
+            // A timeout is usually a cold start under load (every agent is
+            // probed at once at launch), not a broken install: probe just
+            // those again rather than serving "no version" until relaunch.
+            if report.iter().any(|d| d.status == DetectionStatus::Timeout) {
+                let path_env = crate::pty::login_path().await;
+                for entry in report.iter_mut().filter(|d| d.status == DetectionStatus::Timeout) {
+                    *entry = detect_agent(entry.agent, OsStr::new(&path_env), VERSION_TIMEOUT).await;
+                }
+            }
             return report.clone();
         }
         let path_env = crate::pty::login_path().await;

@@ -107,7 +107,7 @@ describe("NewTaskForm", () => {
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
     const submit = screen.getByRole("button", { name: "Start task" });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByPlaceholderText(/fix login redirect bug/), {
+    fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "fix bug" },
     });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -128,8 +128,9 @@ describe("NewTaskForm", () => {
     } satisfies StartedTask);
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
     expect(await screen.findByDisplayValue("develop")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
-    fireEvent.change(screen.getByPlaceholderText(/fix login redirect bug/), { target: { value: "fix it" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "fix it" } });
     fireEvent.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => expect(startTask).toHaveBeenCalledTimes(1));
     expect(startTask.mock.calls[0]?.[0]).toMatchObject({ baseBranch: "develop" });
@@ -150,9 +151,10 @@ describe("NewTaskForm", () => {
     );
 
     // Wait for default agent to populate before submitting.
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
 
-    fireEvent.change(screen.getByPlaceholderText(/fix login redirect bug/), {
+    fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "fix login bug" },
     });
     fireEvent.change(screen.getByPlaceholderText(/What should the agent do/), {
@@ -180,9 +182,10 @@ describe("NewTaskForm", () => {
       workspace: makeWorkspace(),
     });
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
 
-    const nameInput = screen.getByPlaceholderText(/fix login redirect bug/);
+    const nameInput = screen.getByLabelText("Name");
     fireEvent.change(nameInput, { target: { value: "fix bug" } });
     fireEvent.keyDown(nameInput, { key: "Enter", metaKey: true });
 
@@ -191,9 +194,10 @@ describe("NewTaskForm", () => {
 
   it("⌘↵ does nothing while the form is incomplete", async () => {
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
 
-    const nameInput = screen.getByPlaceholderText(/fix login redirect bug/);
+    const nameInput = screen.getByLabelText("Name");
     fireEvent.keyDown(nameInput, { key: "Enter", metaKey: true });
 
     expect(startTask).not.toHaveBeenCalled();
@@ -202,9 +206,10 @@ describe("NewTaskForm", () => {
   it("surfaces backend errors inline without throwing", async () => {
     startTask.mockRejectedValue("repository has no local path");
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
 
-    fireEvent.change(screen.getByPlaceholderText(/fix login redirect bug/), {
+    fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "broken task" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Start task" }));
@@ -245,6 +250,7 @@ describe("NewTaskForm", () => {
 
   it("offers an unmatched query as a custom ref; Enter keeps it without submitting", async () => {
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
     const baseInput = await screen.findByDisplayValue("main");
 
@@ -265,8 +271,9 @@ describe("NewTaskForm", () => {
       workspace: makeWorkspace(),
     });
     renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show commands" }));
     await screen.findByText("claude --dangerously-skip-permissions");
-    fireEvent.change(screen.getByPlaceholderText(/fix login redirect bug/), {
+    fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "fix bug" },
     });
 
