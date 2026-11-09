@@ -2,7 +2,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::error::{ensure_branch_name, run_git, run_git_with_stdin, run_git_with_timeout, GitError};
+use super::error::{
+    ensure_branch_name, run_git, run_git_with_stdin, run_git_with_timeout, GitError,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,10 +101,16 @@ const PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60)
 pub fn push(cwd: &Path, remote: &str, branch: &str) -> Result<(), GitError> {
     ensure_branch_name(branch)?;
     if remote.is_empty() || remote.starts_with('-') {
-        return Err(GitError::CommandFailed(format!("`{remote}` isn't a remote name")));
+        return Err(GitError::CommandFailed(format!(
+            "`{remote}` isn't a remote name"
+        )));
     }
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    run_git_with_timeout(cwd, &["push", "--set-upstream", "--", remote, &refspec], PUSH_TIMEOUT)?;
+    run_git_with_timeout(
+        cwd,
+        &["push", "--set-upstream", "--", remote, &refspec],
+        PUSH_TIMEOUT,
+    )?;
     Ok(())
 }
 
@@ -112,8 +120,16 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
@@ -123,14 +139,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let origin = dir.path().join("origin.git");
         let work = dir.path().join("work");
-        git(dir.path(), &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
-        git(dir.path(), &["init", "-q", "-b", "main", work.to_str().unwrap()]);
+        git(
+            dir.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            dir.path(),
+            &["init", "-q", "-b", "main", work.to_str().unwrap()],
+        );
         git(&work, &["config", "user.email", "t@example.com"]);
         git(&work, &["config", "user.name", "t"]);
         std::fs::write(work.join("a.txt"), "a\n").unwrap();
         git(&work, &["add", "-A"]);
         git(&work, &["commit", "-qm", "init"]);
-        git(&work, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(
+            &work,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         git(&work, &["push", "-q", "origin", "main", "main:keep"]);
         git(&work, &["checkout", "-qb", "feature"]);
         std::fs::write(work.join("f.txt"), "f\n").unwrap();
@@ -140,7 +172,10 @@ mod tests {
     }
 
     fn remote_branches(origin: &Path) -> String {
-        git(origin, &["for-each-ref", "--format=%(refname)", "refs/heads/"])
+        git(
+            origin,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )
     }
 
     #[test]

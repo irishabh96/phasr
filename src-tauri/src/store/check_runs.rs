@@ -111,11 +111,18 @@ impl CheckRunRepo {
     }
 
     pub async fn get(&self, id: &str) -> Result<CheckRun, StoreError> {
-        let row = sqlx::query(concat!("SELECT ", check_run_columns!(), " FROM check_runs WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&self.db)
-            .await?;
-        row.as_ref().map(row_to_check_run).transpose()?.ok_or(StoreError::NotFound)
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            check_run_columns!(),
+            " FROM check_runs WHERE id = ?"
+        ))
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+        row.as_ref()
+            .map(row_to_check_run)
+            .transpose()?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Owner-scoped `get`: another account's run is `not found`.
@@ -129,12 +136,18 @@ impl CheckRunRepo {
         .bind(user_id)
         .fetch_optional(&self.db)
         .await?;
-        row.as_ref().map(row_to_check_run).transpose()?.ok_or(StoreError::NotFound)
+        row.as_ref()
+            .map(row_to_check_run)
+            .transpose()?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Recent runs for a workspace, newest first. Callers have already
     /// checked the workspace is the user's.
-    pub async fn list_for_workspace(&self, workspace_id: &str) -> Result<Vec<CheckRun>, StoreError> {
+    pub async fn list_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<CheckRun>, StoreError> {
         let rows = sqlx::query(concat!(
             "SELECT ",
             check_run_columns!(),
@@ -156,7 +169,11 @@ impl CheckRunRepo {
     /// One statement (`DELETE … RETURNING`): the startup prune runs before
     /// the window appears, and deleting row by row there cost a round trip
     /// (and an fsync) per pruned run.
-    pub async fn prune(&self, keep: i64, workspace_id: Option<&str>) -> Result<Vec<String>, StoreError> {
+    pub async fn prune(
+        &self,
+        keep: i64,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<String>, StoreError> {
         let rows = sqlx::query(
             "DELETE FROM check_runs WHERE id IN (
                 SELECT id FROM (
@@ -247,7 +264,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_pool(&dir.path().join("t.sqlite")).await.unwrap();
         let repository = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert(&repository).await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert(&repository)
+            .await
+            .unwrap();
         let ws = Workspace::new(repository.id, "t".into(), "c".into());
         WorkspaceRepo::new(pool.clone()).insert(&ws).await.unwrap();
         (CheckRunRepo::new(pool), ws, dir)
@@ -277,11 +297,23 @@ mod tests {
         let (repo, ws, _dir) = fresh().await;
         let run = queued(&ws.id);
         repo.insert(&run, Some("user-a")).await.unwrap();
-        let running = repo.mark_running(&run.id, Utc::now(), Some("at-start")).await.unwrap().unwrap();
+        let running = repo
+            .mark_running(&run.id, Utc::now(), Some("at-start"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.status, CheckStatus::Running);
-        assert_eq!(running.fingerprint.as_deref(), Some("at-start"), "replaces the queue-time one");
+        assert_eq!(
+            running.fingerprint.as_deref(),
+            Some("at-start"),
+            "replaces the queue-time one"
+        );
         // Only once.
-        assert!(repo.mark_running(&run.id, Utc::now(), Some("again")).await.unwrap().is_none());
+        assert!(repo
+            .mark_running(&run.id, Utc::now(), Some("again"))
+            .await
+            .unwrap()
+            .is_none());
         let done = repo
             .finish(
                 &run.id,
@@ -295,7 +327,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!((done.status, done.exit_code, done.output_tail.as_str()), (CheckStatus::Passed, Some(0), "ok\n"));
+        assert_eq!(
+            (done.status, done.exit_code, done.output_tail.as_str()),
+            (CheckStatus::Passed, Some(0), "ok\n")
+        );
         // A settled run can't be re-settled (a late cancel).
         let again = repo
             .finish(
@@ -311,10 +346,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.status, CheckStatus::Passed);
-        assert_eq!(again.fingerprint.as_deref(), Some("at-start"), "finishing never changes the fingerprint");
+        assert_eq!(
+            again.fingerprint.as_deref(),
+            Some("at-start"),
+            "finishing never changes the fingerprint"
+        );
 
-        assert_eq!(repo.get_for_user(&run.id, "user-a").await.unwrap().id, run.id);
-        assert!(matches!(repo.get_for_user(&run.id, "user-b").await, Err(StoreError::NotFound)));
+        assert_eq!(
+            repo.get_for_user(&run.id, "user-a").await.unwrap().id,
+            run.id
+        );
+        assert!(matches!(
+            repo.get_for_user(&run.id, "user-b").await,
+            Err(StoreError::NotFound)
+        ));
         assert_eq!(repo.list_for_workspace(&ws.id).await.unwrap().len(), 1);
     }
 

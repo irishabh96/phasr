@@ -452,7 +452,10 @@ mod tests {
         assert_eq!(s.ahead_of_target, 0);
         assert_eq!(s.behind_of_target, 0);
         assert!(s.target_ref.is_none());
-        assert_eq!(s.base_branch, "main", "still names the base it was asked about");
+        assert_eq!(
+            s.base_branch, "main",
+            "still names the base it was asked about"
+        );
     }
 
     #[test]

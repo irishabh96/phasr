@@ -220,10 +220,18 @@ mod tests {
     #[test]
     fn every_git_call_runs_without_optional_locks() {
         let dir = scratch_repo();
-        let out = run_git(dir.path(), &["-c", "alias.env=!printf %s \"$GIT_OPTIONAL_LOCKS\"", "env"]).unwrap();
+        let out = run_git(
+            dir.path(),
+            &["-c", "alias.env=!printf %s \"$GIT_OPTIONAL_LOCKS\"", "env"],
+        )
+        .unwrap();
         assert_eq!(out, "0");
-        let out = run_git_with_stdin(dir.path(), &["-c", "alias.env=!printf %s \"$GIT_OPTIONAL_LOCKS\"", "env"], "")
-            .unwrap();
+        let out = run_git_with_stdin(
+            dir.path(),
+            &["-c", "alias.env=!printf %s \"$GIT_OPTIONAL_LOCKS\"", "env"],
+            "",
+        )
+        .unwrap();
         assert_eq!(out, "0");
     }
 
@@ -240,8 +248,12 @@ mod tests {
         assert!(err.to_string().contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         // A quick call is unaffected.
-        let ok = run_git_with_timeout(dir.path(), &["rev-parse", "--git-dir"], std::time::Duration::from_secs(10))
-            .unwrap();
+        let ok = run_git_with_timeout(
+            dir.path(),
+            &["rev-parse", "--git-dir"],
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
         assert_eq!(ok.trim(), ".git");
     }
 

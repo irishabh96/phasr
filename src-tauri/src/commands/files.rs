@@ -113,7 +113,9 @@ fn read_preview(path: &Path, roots: &[PathBuf]) -> Result<String, FilePreviewErr
     }
     let canonical = match std::fs::canonicalize(path) {
         Ok(p) => p,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(FilePreviewError::Missing),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FilePreviewError::Missing)
+        }
         Err(e) => return Err(e.into()),
     };
     if !git::is_within_roots(&canonical, roots) {
@@ -130,7 +132,9 @@ fn read_preview(path: &Path, roots: &[PathBuf]) -> Result<String, FilePreviewErr
     }
     let file = match options.open(&canonical) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(FilePreviewError::Missing),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FilePreviewError::Missing)
+        }
         Err(e) => return Err(e.into()),
     };
     let metadata = file.metadata()?;
@@ -392,12 +396,25 @@ pub async fn revert_hunk(
                 let repository = repositories
                     .get_for_user(&workspace.repository_id, &current.user_id)
                     .await?;
-                git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch)
+                git::resolve_base_branch(
+                    repository.local_path.as_deref(),
+                    &repository.default_branch,
+                )
             }
         }),
         _ => None,
     };
-    blocking(move || git::revert_hunk(&root, &path, &hunk_header, &hunk_body, scope, base.as_deref())).await?;
+    blocking(move || {
+        git::revert_hunk(
+            &root,
+            &path,
+            &hunk_header,
+            &hunk_body,
+            scope,
+            base.as_deref(),
+        )
+    })
+    .await?;
     board.invalidate_diff(&workspace.id);
     board.notify_changed(&workspace.repository_id);
     Ok(())
@@ -418,14 +435,25 @@ mod tests {
         let roots = vec![root.path().to_path_buf()];
         std::fs::write(root.path().join("ok.txt"), "hello").unwrap();
         std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.path().join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            root.path().join("link.txt"),
+        )
+        .unwrap();
         std::os::unix::fs::symlink("/dev/zero", root.path().join("zero")).unwrap();
         let fifo = root.path().join("pipe");
         let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
-        std::fs::write(root.path().join("big.txt"), vec![b'a'; (MAX_PREVIEW_BYTES + 1) as usize]).unwrap();
+        std::fs::write(
+            root.path().join("big.txt"),
+            vec![b'a'; (MAX_PREVIEW_BYTES + 1) as usize],
+        )
+        .unwrap();
 
-        assert_eq!(read_preview(&root.path().join("ok.txt"), &roots).unwrap(), "hello");
+        assert_eq!(
+            read_preview(&root.path().join("ok.txt"), &roots).unwrap(),
+            "hello"
+        );
         assert!(matches!(
             read_preview(&root.path().join("link.txt"), &roots),
             Err(FilePreviewError::OutsideRoots)
@@ -435,9 +463,18 @@ mod tests {
             Err(FilePreviewError::OutsideRoots)
         ));
         assert!(read_preview(&root.path().join("zero"), &roots).is_err());
-        assert!(matches!(read_preview(&fifo, &roots), Err(FilePreviewError::NotAFile)), "no hang on a FIFO");
-        assert!(matches!(read_preview(&root.path().join("big.txt"), &roots), Err(FilePreviewError::TooLarge(_))));
-        assert!(matches!(read_preview(&root.path().join("nope.txt"), &roots), Err(FilePreviewError::Missing)));
+        assert!(
+            matches!(read_preview(&fifo, &roots), Err(FilePreviewError::NotAFile)),
+            "no hang on a FIFO"
+        );
+        assert!(matches!(
+            read_preview(&root.path().join("big.txt"), &roots),
+            Err(FilePreviewError::TooLarge(_))
+        ));
+        assert!(matches!(
+            read_preview(&root.path().join("nope.txt"), &roots),
+            Err(FilePreviewError::Missing)
+        ));
     }
 
     #[test]
@@ -447,14 +484,26 @@ mod tests {
         std::fs::write(dir.path().join("src/a.rs"), "a").unwrap();
         let t = |s: i64| DateTime::<Utc>::from_timestamp(s, 0).unwrap();
         let edits = vec![
-            AgentFileEdit { path: "src/a.rs".into(), at: t(10), tool: "Edit".into() },
+            AgentFileEdit {
+                path: "src/a.rs".into(),
+                at: t(10),
+                tool: "Edit".into(),
+            },
             AgentFileEdit {
                 path: dir.path().join("src/a.rs").to_string_lossy().into_owned(),
                 at: t(20),
                 tool: "Write".into(),
             },
-            AgentFileEdit { path: "src/b.rs".into(), at: t(30), tool: "Edit".into() },
-            AgentFileEdit { path: "/elsewhere/src/a.rs".into(), at: t(40), tool: "Edit".into() },
+            AgentFileEdit {
+                path: "src/b.rs".into(),
+                at: t(30),
+                tool: "Edit".into(),
+            },
+            AgentFileEdit {
+                path: "/elsewhere/src/a.rs".into(),
+                at: t(40),
+                tool: "Edit".into(),
+            },
         ];
         assert_eq!(last_edit_of(&edits, dir.path(), "src/a.rs"), Some(t(20)));
         assert_eq!(last_edit_of(&edits, dir.path(), "./src/a.rs"), Some(t(20)));
@@ -466,7 +515,10 @@ mod tests {
         let err = FilesCmdError::from(WorkspaceFileError::Conflict);
         assert_eq!(serde_json::to_value(&err).unwrap(), "file changed on disk");
         let err = FilesCmdError::from(RevertHunkError::NoLongerMatches);
-        assert_eq!(serde_json::to_value(&err).unwrap(), "hunk no longer matches");
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            "hunk no longer matches"
+        );
         let err = FilesCmdError::from(StoreError::NotFound);
         assert_eq!(serde_json::to_value(&err).unwrap(), "not found");
         assert_eq!(
@@ -479,7 +531,9 @@ mod tests {
     async fn registered_roots_are_the_users_checkouts_and_worktrees_only() {
         use crate::domain::Repository;
         let dir = tempfile::tempdir().unwrap();
-        let pool = crate::store::init_pool(&dir.path().join("t.sqlite")).await.unwrap();
+        let pool = crate::store::init_pool(&dir.path().join("t.sqlite"))
+            .await
+            .unwrap();
         for id in ["user-a", "user-b"] {
             sqlx::query(
                 "INSERT INTO users (id, clerk_user_id, name, email, created_at, updated_at, dirty)
@@ -500,9 +554,14 @@ mod tests {
         ws.worktree_path = Some("/wt/a-task".into());
         workspaces.insert_for_user(&ws, "user-a").await.unwrap();
 
-        let a = registered_roots(&repositories, &workspaces, "user-a").await.unwrap();
+        let a = registered_roots(&repositories, &workspaces, "user-a")
+            .await
+            .unwrap();
         assert!(a.contains(&PathBuf::from("/code/a")));
         assert!(a.contains(&PathBuf::from("/wt/a-task")));
-        assert!(registered_roots(&repositories, &workspaces, "user-b").await.unwrap().is_empty());
+        assert!(registered_roots(&repositories, &workspaces, "user-b")
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

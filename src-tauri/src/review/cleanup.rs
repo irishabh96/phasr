@@ -101,28 +101,40 @@ impl MergeCleanup {
     /// merged. Never fails the caller's merge: problems are logged and
     /// reported as `None`.
     pub async fn on_merged(&self, task: &Workspace, user_id: &str) -> CleanupAction {
-        if task.workspace_kind != WorkspaceKind::Agent || task.outcome != Some(TaskOutcome::Merged) {
+        if task.workspace_kind != WorkspaceKind::Agent || task.outcome != Some(TaskOutcome::Merged)
+        {
             return CleanupAction::None;
         }
-        let worktree = task.worktree_path.as_deref().map(PathBuf::from).filter(|p| p.exists());
+        let worktree = task
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.exists());
         let policy = match self.configs.get(&task.repository_id).await {
             Ok(config) => config.cleanup_after_merge,
             Err(err) => {
-                eprintln!("cleanup after merge: config for {} unreadable: {err}", task.repository_id);
+                eprintln!(
+                    "cleanup after merge: config for {} unreadable: {err}",
+                    task.repository_id
+                );
                 return CleanupAction::None;
             }
         };
         let running = self.runtime.get(&task.id).is_some();
         // Only `always` deletes anything, so only it pays for the probe.
         let unsaved = match (&worktree, policy) {
-            (Some(worktree), CleanupAfterMerge::Always) => self.has_unsaved_work(task, user_id, worktree).await,
+            (Some(worktree), CleanupAfterMerge::Always) => {
+                self.has_unsaved_work(task, user_id, worktree).await
+            }
             _ => false,
         };
         match decide(policy, worktree.is_some(), running, unsaved) {
             CleanupAction::None => CleanupAction::None,
             CleanupAction::Suggested => self.suggest(task, user_id).await,
             CleanupAction::Removed => {
-                let Some(worktree) = worktree else { return CleanupAction::None };
+                let Some(worktree) = worktree else {
+                    return CleanupAction::None;
+                };
                 match self.remove(task, user_id, &worktree).await {
                     Ok(true) => CleanupAction::Removed,
                     // Work appeared (or an agent started) between the probe
@@ -154,7 +166,11 @@ impl MergeCleanup {
     /// kept neither in what it merged into (or its base) nor on `origin`.
     /// A probe that fails counts as "yes": never force-delete on a guess.
     async fn has_unsaved_work(&self, task: &Workspace, user_id: &str, worktree: &Path) -> bool {
-        let Ok(repository) = self.repositories.get_for_user(&task.repository_id, user_id).await else {
+        let Ok(repository) = self
+            .repositories
+            .get_for_user(&task.repository_id, user_id)
+            .await
+        else {
             return true;
         };
         let Some(repo_path) = repository.local_path.as_deref().map(PathBuf::from) else {
@@ -186,7 +202,12 @@ impl MergeCleanup {
     /// outside the lock (and before stopping run commands / checks, which
     /// can write files): what it saw could be stale by now. `Ok(false)` =
     /// left alone.
-    async fn remove(&self, task: &Workspace, user_id: &str, worktree: &Path) -> Result<bool, String> {
+    async fn remove(
+        &self,
+        task: &Workspace,
+        user_id: &str,
+        worktree: &Path,
+    ) -> Result<bool, String> {
         let repository = self
             .repositories
             .get_for_user(&task.repository_id, user_id)
@@ -201,13 +222,17 @@ impl MergeCleanup {
             runs.stop_for_workspace(&task.id);
         }
         if let Some(checks) = &self.checks {
-            checks.cancel_and_wait(&task.id, Duration::from_secs(5)).await;
+            checks
+                .cancel_and_wait(&task.id, Duration::from_secs(5))
+                .await;
         }
         // Shared `.git` (worktree registry + refs): same lock as every other
         // worktree add/remove and branch delete on this repository.
         let lock = self.repo_locks.for_repository(&task.repository_id);
         let _guard = lock.lock().await;
-        if self.runtime.get(&task.id).is_some() || self.has_unsaved_work(task, user_id, worktree).await {
+        if self.runtime.get(&task.id).is_some()
+            || self.has_unsaved_work(task, user_id, worktree).await
+        {
             return Ok(false);
         }
         let (wt, branch) = (worktree.to_path_buf(), task.branch.clone());
@@ -240,15 +265,31 @@ mod tests {
         use CleanupAfterMerge::*;
         assert_eq!(decide(Always, true, false, false), CleanupAction::Removed);
         assert_eq!(decide(Always, true, true, false), CleanupAction::Suggested);
-        assert_eq!(decide(Always, true, false, true), CleanupAction::Suggested, "unsaved work");
+        assert_eq!(
+            decide(Always, true, false, true),
+            CleanupAction::Suggested,
+            "unsaved work"
+        );
         assert_eq!(decide(Ask, true, false, false), CleanupAction::Suggested);
         assert_eq!(decide(Never, true, false, true), CleanupAction::None);
-        assert_eq!(decide(Always, false, false, false), CleanupAction::None, "nothing on disk");
+        assert_eq!(
+            decide(Always, false, false, false),
+            CleanupAction::None,
+            "nothing on disk"
+        );
     }
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     struct Fixture {
@@ -282,7 +323,11 @@ mod tests {
         git::create_worktree(&repo_path, &worktree, "phasr/task", "main").unwrap();
 
         let repositories = RepositoryRepo::new(pool.clone());
-        let repo = Repository::new("r".into(), Some(repo_path.to_string_lossy().into_owned()), None);
+        let repo = Repository::new(
+            "r".into(),
+            Some(repo_path.to_string_lossy().into_owned()),
+            None,
+        );
         repositories.insert_for_user(&repo, "u").await.unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let mut task = Workspace::new(repo.id.clone(), "Fix it".into(), "c".into());
@@ -304,7 +349,14 @@ mod tests {
             Arc::new(TaskRuntime::new(dir.path().join("logs"))),
         )
         .with_notifier(notifier);
-        Fixture { _dir: dir, repo_path, cleanup, configs, notifications, task }
+        Fixture {
+            _dir: dir,
+            repo_path,
+            cleanup,
+            configs,
+            notifications,
+            task,
+        }
     }
 
     async fn set_policy(f: &Fixture, policy: CleanupAfterMerge) {
@@ -315,7 +367,12 @@ mod tests {
 
     fn branch_exists(repo: &Path, branch: &str) -> bool {
         Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
             .current_dir(repo)
             .status()
             .unwrap()
@@ -326,7 +383,10 @@ mod tests {
     async fn always_removes_the_worktree_and_local_branch() {
         let f = fixture().await;
         set_policy(&f, CleanupAfterMerge::Always).await;
-        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Removed);
+        assert_eq!(
+            f.cleanup.on_merged(&f.task, "u").await,
+            CleanupAction::Removed
+        );
         assert!(!Path::new(f.task.worktree_path.as_deref().unwrap()).exists());
         assert!(!branch_exists(&f.repo_path, "phasr/task"));
         assert_eq!(f.notifications.unread_count("u").await.unwrap(), 0);
@@ -340,18 +400,30 @@ mod tests {
         set_policy(&f, CleanupAfterMerge::Always).await;
         let wt = PathBuf::from(f.task.worktree_path.as_deref().unwrap());
         std::fs::write(wt.join("uncommitted.txt"), "x\n").unwrap();
-        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
+        assert_eq!(
+            f.cleanup.on_merged(&f.task, "u").await,
+            CleanupAction::Suggested
+        );
         assert!(wt.join("uncommitted.txt").exists(), "worktree kept");
 
         // Committed on the branch but not in main / origin: still at risk.
         git(&wt, &["add", "-A"]);
         git(&wt, &["commit", "-qm", "after the merge"]);
-        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
+        assert_eq!(
+            f.cleanup.on_merged(&f.task, "u").await,
+            CleanupAction::Suggested
+        );
         assert!(branch_exists(&f.repo_path, "phasr/task"), "branch kept");
 
         // Once that commit is in main, nothing would be lost → removed.
-        git(&f.repo_path, &["merge", "-q", "--no-ff", "-m", "m", "phasr/task"]);
-        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Removed);
+        git(
+            &f.repo_path,
+            &["merge", "-q", "--no-ff", "-m", "m", "phasr/task"],
+        );
+        assert_eq!(
+            f.cleanup.on_merged(&f.task, "u").await,
+            CleanupAction::Removed
+        );
         assert!(!wt.exists());
     }
 
@@ -359,10 +431,17 @@ mod tests {
     async fn ask_suggests_in_the_inbox_and_keeps_everything() {
         let f = fixture().await;
         // The default policy is "ask".
-        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
+        assert_eq!(
+            f.cleanup.on_merged(&f.task, "u").await,
+            CleanupAction::Suggested
+        );
         assert!(Path::new(f.task.worktree_path.as_deref().unwrap()).exists());
         assert!(branch_exists(&f.repo_path, "phasr/task"));
-        let inbox = f.notifications.list_for_user("u", true, None).await.unwrap();
+        let inbox = f
+            .notifications
+            .list_for_user("u", true, None)
+            .await
+            .unwrap();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].payload["suggestion"], "cleanup");
         assert_eq!(inbox[0].workspace_id.as_deref(), Some(f.task.id.as_str()));
@@ -376,11 +455,27 @@ mod tests {
     #[tokio::test]
     async fn the_cleanup_suggestion_is_made_once_per_task() {
         let f = fixture().await;
-        let (a, b) = tokio::join!(f.cleanup.on_merged(&f.task, "u"), f.cleanup.on_merged(&f.task, "u"));
+        let (a, b) = tokio::join!(
+            f.cleanup.on_merged(&f.task, "u"),
+            f.cleanup.on_merged(&f.task, "u")
+        );
         assert_eq!((a, b), (CleanupAction::Suggested, CleanupAction::Suggested));
-        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
-        let inbox = f.notifications.list_for_user("u", false, None).await.unwrap();
-        assert_eq!(inbox.iter().filter(|n| n.payload["suggestion"] == "cleanup").count(), 1);
+        assert_eq!(
+            f.cleanup.on_merged(&f.task, "u").await,
+            CleanupAction::Suggested
+        );
+        let inbox = f
+            .notifications
+            .list_for_user("u", false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            inbox
+                .iter()
+                .filter(|n| n.payload["suggestion"] == "cleanup")
+                .count(),
+            1
+        );
     }
 
     /// The removal itself re-checks under the repo lock: work that appeared
@@ -390,7 +485,10 @@ mod tests {
         let f = fixture().await;
         let wt = PathBuf::from(f.task.worktree_path.as_deref().unwrap());
         std::fs::write(wt.join("late.txt"), "written after the probe\n").unwrap();
-        assert!(!f.cleanup.remove(&f.task, "u", &wt).await.unwrap(), "left alone");
+        assert!(
+            !f.cleanup.remove(&f.task, "u", &wt).await.unwrap(),
+            "left alone"
+        );
         assert!(wt.join("late.txt").exists());
         assert!(branch_exists(&f.repo_path, "phasr/task"));
         std::fs::remove_file(wt.join("late.txt")).unwrap();

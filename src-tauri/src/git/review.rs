@@ -32,7 +32,12 @@ pub fn merge_base(worktree: &Path, base: &str) -> Result<String, GitError> {
     let has_remote = !base.starts_with("origin/")
         && run_git(
             worktree,
-            &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{remote}"),
+            ],
         )
         .is_ok();
     if has_remote {
@@ -60,7 +65,10 @@ pub fn diff_vs_base(worktree: &Path, base: &str, path: Option<&str>) -> Result<S
         if porcelain.starts_with("??") {
             return synthesise_new_file_diff(worktree, p);
         }
-        return run_git(worktree, &["diff", "--no-color", "--no-ext-diff", &mb, "--", p]);
+        return run_git(
+            worktree,
+            &["diff", "--no-color", "--no-ext-diff", &mb, "--", p],
+        );
     }
     let mut out = run_git(worktree, &["diff", "--no-color", "--no-ext-diff", &mb])?;
     for rel in untracked(worktree)?.into_iter().take(UNTRACKED_DIFF_CAP) {
@@ -88,11 +96,25 @@ pub fn review_files(worktree: &Path, base: &str) -> Result<Vec<FileChange>, GitE
     let mb = merge_base(worktree, base)?;
     let name_status = run_git(
         worktree,
-        &["diff", "--name-status", "--no-renames", "--no-ext-diff", "-z", &mb],
+        &[
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "--no-ext-diff",
+            "-z",
+            &mb,
+        ],
     )?;
     let numstat = run_git(
         worktree,
-        &["diff", "--numstat", "--no-renames", "--no-ext-diff", "-z", &mb],
+        &[
+            "diff",
+            "--numstat",
+            "--no-renames",
+            "--no-ext-diff",
+            "-z",
+            &mb,
+        ],
     )?;
     let counts = parse_numstat_z(&numstat);
     let dirty: HashMap<String, FileStatus> = parse_porcelain(&run_git(
@@ -160,11 +182,13 @@ fn parse_numstat_z(out: &str) -> HashMap<&str, (Option<u32>, Option<u32>)> {
 
 /// Untracked, non-ignored files (nested repositories excluded).
 fn untracked(worktree: &Path) -> Result<Vec<String>, GitError> {
-    Ok(run_git(worktree, &["ls-files", "-o", "--exclude-standard", "-z"])?
-        .split('\0')
-        .filter(|p| !p.is_empty() && !p.ends_with('/'))
-        .map(str::to_string)
-        .collect())
+    Ok(
+        run_git(worktree, &["ls-files", "-o", "--exclude-standard", "-z"])?
+            .split('\0')
+            .filter(|p| !p.is_empty() && !p.ends_with('/'))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// A CHEAP key for `worktree_fingerprint`'s cache: HEAD, the status
@@ -185,7 +209,13 @@ pub fn fingerprint_key(worktree: &Path) -> Result<String, GitError> {
     hasher.update([0]);
     let status = run_git(
         worktree,
-        &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ],
     )?;
     hasher.update(status.as_bytes());
     for change in parse_porcelain(&status) {
@@ -203,7 +233,11 @@ pub fn fingerprint_key(worktree: &Path) -> Result<String, GitError> {
             Err(_) => hasher.update(b"-"),
         }
     }
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 /// A fingerprint of the worktree's CONTENT: the tree `git commit -a` (plus
@@ -231,7 +265,11 @@ pub fn worktree_fingerprint(worktree: &Path) -> Result<String, GitError> {
     let mut hasher = Sha256::new();
     hasher.update(b"phasr-worktree-tree-v2\0");
     hasher.update(tree.as_bytes());
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 /// The tree object id of the worktree's content (see
@@ -239,8 +277,10 @@ pub fn worktree_fingerprint(worktree: &Path) -> Result<String, GitError> {
 fn worktree_tree(worktree: &Path) -> Result<String, GitError> {
     // Relative to `worktree` unless absolute (a linked worktree's index
     // lives under the main repo's `.git/worktrees/<name>/`).
-    let real_index = worktree.join(run_git(worktree, &["rev-parse", "--git-path", "index"])?.trim());
-    let scratch = std::env::temp_dir().join(format!("phasr-fingerprint-{}.index", uuid::Uuid::new_v4()));
+    let real_index =
+        worktree.join(run_git(worktree, &["rev-parse", "--git-path", "index"])?.trim());
+    let scratch =
+        std::env::temp_dir().join(format!("phasr-fingerprint-{}.index", uuid::Uuid::new_v4()));
     // Removed however this returns (git may also leave `<scratch>.lock`).
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {
@@ -256,9 +296,11 @@ fn worktree_tree(worktree: &Path) -> Result<String, GitError> {
     let _ = std::fs::copy(&real_index, &scratch);
     let index = scratch.as_os_str();
     run_git_env(worktree, &["add", "-A"], &[("GIT_INDEX_FILE", index)])?;
-    Ok(run_git_env(worktree, &["write-tree"], &[("GIT_INDEX_FILE", index)])?
-        .trim()
-        .to_string())
+    Ok(
+        run_git_env(worktree, &["write-tree"], &[("GIT_INDEX_FILE", index)])?
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -267,8 +309,16 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// main: a.txt, gone.txt. Task branch commits an edit to a.txt and
@@ -307,13 +357,21 @@ mod tests {
         assert!(diff.contains("+TWO"), "committed edit: {diff}");
         assert!(diff.contains("+4"), "unstaged edit: {diff}");
         assert!(diff.contains("b/staged.txt"), "staged file: {diff}");
-        assert!(diff.contains("deleted file mode"), "committed delete: {diff}");
+        assert!(
+            diff.contains("deleted file mode"),
+            "committed delete: {diff}"
+        );
         assert!(diff.contains("+++ b/new.rs"), "untracked file: {diff}");
-        assert!(!diff.contains("later.txt"), "base's own later commit: {diff}");
+        assert!(
+            !diff.contains("later.txt"),
+            "base's own later commit: {diff}"
+        );
 
         let one = diff_vs_base(dir.path(), "main", Some("a.txt")).unwrap();
         assert!(one.contains("+TWO") && one.contains("+4") && !one.contains("staged.txt"));
-        assert!(diff_vs_base(dir.path(), "main", Some("new.rs")).unwrap().contains("+fn a() {}"));
+        assert!(diff_vs_base(dir.path(), "main", Some("new.rs"))
+            .unwrap()
+            .contains("+fn a() {}"));
         assert!(diff_vs_base(dir.path(), "no-such-base", None).is_err());
     }
 
@@ -321,13 +379,25 @@ mod tests {
     fn review_files_list_committed_uncommitted_and_untracked() {
         let dir = repo();
         let files = review_files(dir.path(), "main").unwrap();
-        let by = |p: &str| files.iter().find(|f| f.path == p).unwrap_or_else(|| panic!("{p} missing: {files:?}"));
+        let by = |p: &str| {
+            files
+                .iter()
+                .find(|f| f.path == p)
+                .unwrap_or_else(|| panic!("{p} missing: {files:?}"))
+        };
         let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(names, vec!["a.txt", "gone.txt", "new.rs", "staged.txt"]);
         let a = by("a.txt");
-        assert_eq!((a.staged, a.unstaged, a.adds, a.removes), (FileStatus::Modified, FileStatus::Modified, Some(2), Some(1)));
+        assert_eq!(
+            (a.staged, a.unstaged, a.adds, a.removes),
+            (FileStatus::Modified, FileStatus::Modified, Some(2), Some(1))
+        );
         let gone = by("gone.txt");
-        assert_eq!((gone.staged, gone.unstaged), (FileStatus::Deleted, FileStatus::Other), "committed only");
+        assert_eq!(
+            (gone.staged, gone.unstaged),
+            (FileStatus::Deleted, FileStatus::Other),
+            "committed only"
+        );
         assert_eq!(by("staged.txt").staged, FileStatus::Added);
         let new = by("new.rs");
         assert_eq!((new.staged, new.adds), (FileStatus::Untracked, Some(1)));
@@ -345,7 +415,10 @@ mod tests {
         git(upstream.path(), &["add", "-A"]);
         git(upstream.path(), &["commit", "-qm", "init"]);
         let clone_dir = tempfile::tempdir().unwrap();
-        git(clone_dir.path(), &["clone", "-q", &upstream.path().to_string_lossy(), "c"]);
+        git(
+            clone_dir.path(),
+            &["clone", "-q", &upstream.path().to_string_lossy(), "c"],
+        );
         let c = clone_dir.path().join("c");
         git(&c, &["config", "user.email", "t@example.com"]);
         git(&c, &["config", "user.name", "t"]);
@@ -358,7 +431,11 @@ mod tests {
 
         let files = review_files(&c, "main").unwrap();
         let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(names, vec!["mine.txt"], "upstream's commit is not the task's");
+        assert_eq!(
+            names,
+            vec!["mine.txt"],
+            "upstream's commit is not the task's"
+        );
         let stats = super::super::diff::diff_stats_vs_base(&c, "main").unwrap();
         assert_eq!(stats.files, 1, "{stats:?}");
     }
@@ -368,7 +445,11 @@ mod tests {
         let dir = repo();
         let p = dir.path();
         let first = worktree_fingerprint(p).unwrap();
-        assert_eq!(first, worktree_fingerprint(p).unwrap(), "stable for the same state");
+        assert_eq!(
+            first,
+            worktree_fingerprint(p).unwrap(),
+            "stable for the same state"
+        );
         assert_eq!(first.len(), 64);
 
         // An edit to a tracked file.
@@ -383,10 +464,18 @@ mod tests {
         // fingerprint — "Commit & push" must not stale its own checks.
         let index_before = std::fs::read(p.join(".git/index")).unwrap();
         assert_eq!(worktree_fingerprint(p).unwrap(), untracked_edit);
-        assert_eq!(std::fs::read(p.join(".git/index")).unwrap(), index_before, "real index untouched");
+        assert_eq!(
+            std::fs::read(p.join(".git/index")).unwrap(),
+            index_before,
+            "real index untouched"
+        );
         git(p, &["add", "-A"]);
         git(p, &["commit", "-qm", "wip"]);
-        assert_eq!(untracked_edit, worktree_fingerprint(p).unwrap(), "same content, new HEAD");
+        assert_eq!(
+            untracked_edit,
+            worktree_fingerprint(p).unwrap(),
+            "same content, new HEAD"
+        );
         // Deleting a file, or adding an empty one, is a change.
         std::fs::remove_file(p.join("new.rs")).unwrap();
         let deleted = worktree_fingerprint(p).unwrap();
@@ -451,17 +540,27 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("reading untracked links hung (followed a FIFO?)");
         for link in ["zero-link", "fifo-link"] {
-            let f = files.iter().find(|f| f.path == link).unwrap_or_else(|| panic!("{link} listed"));
+            let f = files
+                .iter()
+                .find(|f| f.path == link)
+                .unwrap_or_else(|| panic!("{link} listed"));
             assert_eq!(f.adds, Some(0), "{link} counts 0 lines");
         }
         assert_eq!(fifo_lines, 0, "a raw FIFO is never opened for reading");
         assert!(diff.len() < 64 * 1024, "no /dev/zero contents in the diff");
-        assert!(one.contains("new file mode 120000") && one.contains("+/dev/zero"), "{one}");
+        assert!(
+            one.contains("new file mode 120000") && one.contains("+/dev/zero"),
+            "{one}"
+        );
         assert!(fifo_one.contains("new file mode 120000"), "{fifo_one}");
 
         std::fs::remove_file(p.join("zero-link")).unwrap();
         std::os::unix::fs::symlink("/dev/null", p.join("zero-link")).unwrap();
-        assert_ne!(worktree_fingerprint(&p).unwrap(), fp, "retargeting a link changes the fingerprint");
+        assert_ne!(
+            worktree_fingerprint(&p).unwrap(),
+            fp,
+            "retargeting a link changes the fingerprint"
+        );
     }
 
     /// The cache key moves whenever the fingerprint would: HEAD, the
@@ -473,7 +572,11 @@ mod tests {
         git(p, &["checkout", "-q", "task"]);
         std::fs::write(p.join("a.txt"), "dirty 1\n").unwrap();
         let k1 = fingerprint_key(p).unwrap();
-        assert_eq!(fingerprint_key(p).unwrap(), k1, "stable while nothing changes");
+        assert_eq!(
+            fingerprint_key(p).unwrap(),
+            k1,
+            "stable while nothing changes"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(p.join("a.txt"), "dirty 22\n").unwrap();
         let k2 = fingerprint_key(p).unwrap();

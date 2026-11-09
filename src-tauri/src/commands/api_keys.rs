@@ -86,6 +86,9 @@ mod tests {
     #[test]
     fn errors_serialize_as_plain_strings() {
         let err = ApiKeyCmdError::from(SecretError::NotAllowed("PATH".into()));
-        assert_eq!(serde_json::to_value(&err).unwrap(), "`PATH` is not a key phasr stores");
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            "`PATH` is not a key phasr stores"
+        );
     }
 }

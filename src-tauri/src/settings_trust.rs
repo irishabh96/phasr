@@ -52,7 +52,13 @@ fn gated_values(settings: &UserSettings) -> Vec<(String, String, String)> {
         .agent_commands
         .iter()
         .filter(|(_, template)| !template.trim().is_empty())
-        .map(|(key, template)| (format!("agentCommands.{key}"), agent_scope(key), template.clone()))
+        .map(|(key, template)| {
+            (
+                format!("agentCommands.{key}"),
+                agent_scope(key),
+                template.clone(),
+            )
+        })
         .collect();
     if !settings.terminal_shell.trim().is_empty() {
         out.push((
@@ -72,7 +78,10 @@ fn gated_values(settings: &UserSettings) -> Vec<(String, String, String)> {
 }
 
 /// The gated values NOT trusted on this machine, with their values.
-pub async fn unconfirmed(meta: &AppMetaRepo, settings: &UserSettings) -> Result<Vec<UnconfirmedSetting>, StoreError> {
+pub async fn unconfirmed(
+    meta: &AppMetaRepo,
+    settings: &UserSettings,
+) -> Result<Vec<UnconfirmedSetting>, StoreError> {
     let mut out = Vec::new();
     for (key, scope, value) in gated_values(settings) {
         if !meta.is_trusted_scoped(&scope, &value).await? {
@@ -103,8 +112,14 @@ pub async fn confirm_keys(
 
 /// Trust every current gated value (the one-time grandfathering pass).
 /// Returns the keys that were unconfirmed.
-pub async fn confirm_all(meta: &AppMetaRepo, settings: &UserSettings) -> Result<Vec<String>, StoreError> {
-    let keys: Vec<String> = gated_values(settings).into_iter().map(|(key, _, _)| key).collect();
+pub async fn confirm_all(
+    meta: &AppMetaRepo,
+    settings: &UserSettings,
+) -> Result<Vec<String>, StoreError> {
+    let keys: Vec<String> = gated_values(settings)
+        .into_iter()
+        .map(|(key, _, _)| key)
+        .collect();
     confirm_keys(meta, settings, &keys).await
 }
 
@@ -112,13 +127,20 @@ pub async fn confirm_all(meta: &AppMetaRepo, settings: &UserSettings) -> Result<
 /// (the user typed them here). Unchanged values keep their status — the
 /// settings page re-sends the whole object on every toggle, which must not
 /// silently confirm a synced value it merely loaded.
-pub async fn trust_edits(meta: &AppMetaRepo, before: &UserSettings, after: &UserSettings) -> Result<(), StoreError> {
+pub async fn trust_edits(
+    meta: &AppMetaRepo,
+    before: &UserSettings,
+    after: &UserSettings,
+) -> Result<(), StoreError> {
     let old: Vec<(String, String)> = gated_values(before)
         .into_iter()
         .map(|(_, scope, text)| (scope, text))
         .collect();
     for (_, scope, text) in gated_values(after) {
-        if !old.iter().any(|(s, t)| *s == scope && t.trim() == text.trim()) {
+        if !old
+            .iter()
+            .any(|(s, t)| *s == scope && t.trim() == text.trim())
+        {
             meta.trust_scoped(&scope, &text).await?;
         }
     }
@@ -132,7 +154,12 @@ pub async fn usable(meta: &AppMetaRepo, mut settings: UserSettings) -> UserSetti
     let mut kept = BTreeMap::new();
     for (key, template) in std::mem::take(&mut settings.agent_commands) {
         // Unknown = untrusted: never run a value on a failed lookup.
-        if template.trim().is_empty() || meta.is_trusted_scoped(&agent_scope(&key), &template).await.unwrap_or(false) {
+        if template.trim().is_empty()
+            || meta
+                .is_trusted_scoped(&agent_scope(&key), &template)
+                .await
+                .unwrap_or(false)
+        {
             kept.insert(key, template);
         }
     }
@@ -157,7 +184,10 @@ pub async fn usable(meta: &AppMetaRepo, mut settings: UserSettings) -> UserSetti
 }
 
 /// The user's settings as a LAUNCH may use them (`usable`).
-pub async fn launch_settings(settings: &SettingsRepo, meta: &AppMetaRepo) -> Result<UserSettings, StoreError> {
+pub async fn launch_settings(
+    settings: &SettingsRepo,
+    meta: &AppMetaRepo,
+) -> Result<UserSettings, StoreError> {
     Ok(usable(meta, settings.get_or_init().await?).await)
 }
 
@@ -178,7 +208,9 @@ pub async fn grandfather_existing(meta: &AppMetaRepo, settings: &SettingsRepo) {
         return;
     };
     if confirm_all(meta, &current).await.is_ok() {
-        let _ = meta.set(GRANDFATHERED_KEY, &chrono::Utc::now().to_rfc3339()).await;
+        let _ = meta
+            .set(GRANDFATHERED_KEY, &chrono::Utc::now().to_rfc3339())
+            .await;
     }
 }
 
@@ -209,8 +241,10 @@ mod tests {
     #[tokio::test]
     async fn a_synced_skip_all_default_needs_confirmation_on_this_machine() {
         let (meta, _settings, _dir) = meta().await;
-        let mut synced = UserSettings::default();
-        synced.default_permission_mode = PermissionMode::SkipAll;
+        let synced = UserSettings {
+            default_permission_mode: PermissionMode::SkipAll,
+            ..UserSettings::default()
+        };
         assert_eq!(
             unconfirmed(&meta, &synced).await.unwrap(),
             vec![UnconfirmedSetting {
@@ -218,17 +252,27 @@ mod tests {
                 value: "skip-all".into()
             }]
         );
-        assert_eq!(usable(&meta, synced.clone()).await.default_permission_mode, PermissionMode::AskShell);
+        assert_eq!(
+            usable(&meta, synced.clone()).await.default_permission_mode,
+            PermissionMode::AskShell
+        );
         for safe in [PermissionMode::AskEdits, PermissionMode::AskShell] {
-            let mut s = UserSettings::default();
-            s.default_permission_mode = safe;
+            let s = UserSettings {
+                default_permission_mode: safe,
+                ..UserSettings::default()
+            };
             assert!(unconfirmed(&meta, &s).await.unwrap().is_empty());
             assert_eq!(usable(&meta, s).await.default_permission_mode, safe);
         }
         // Chosen HERE (changed from what was stored): trusted.
-        trust_edits(&meta, &UserSettings::default(), &synced).await.unwrap();
+        trust_edits(&meta, &UserSettings::default(), &synced)
+            .await
+            .unwrap();
         assert!(unconfirmed(&meta, &synced).await.unwrap().is_empty());
-        assert_eq!(usable(&meta, synced).await.default_permission_mode, PermissionMode::SkipAll);
+        assert_eq!(
+            usable(&meta, synced).await.default_permission_mode,
+            PermissionMode::SkipAll
+        );
     }
 
     /// The banner trusts items one by one, each at its current value.
@@ -238,14 +282,32 @@ mod tests {
         let mut synced = with("claude --x {{permissions}}", "/bin/fish");
         synced.default_permission_mode = PermissionMode::SkipAll;
         let pending = unconfirmed(&meta, &synced).await.unwrap();
-        assert_eq!(keys(&pending), vec!["agentCommands.claude", "terminalShell", "defaultPermissionMode"]);
-        assert_eq!(pending[1].value, "/bin/fish", "the banner can show the value");
+        assert_eq!(
+            keys(&pending),
+            vec![
+                "agentCommands.claude",
+                "terminalShell",
+                "defaultPermissionMode"
+            ]
+        );
+        assert_eq!(
+            pending[1].value, "/bin/fish",
+            "the banner can show the value"
+        );
         let json = serde_json::to_value(&pending[0]).unwrap();
-        assert_eq!(json, serde_json::json!({ "key": "agentCommands.claude", "value": "claude --x {{permissions}}" }));
+        assert_eq!(
+            json,
+            serde_json::json!({ "key": "agentCommands.claude", "value": "claude --x {{permissions}}" })
+        );
 
-        let done = confirm_keys(&meta, &synced, &["terminalShell".into(), "nonsense".into()]).await.unwrap();
+        let done = confirm_keys(&meta, &synced, &["terminalShell".into(), "nonsense".into()])
+            .await
+            .unwrap();
         assert_eq!(done, vec!["terminalShell".to_string()]);
-        assert_eq!(keys(&unconfirmed(&meta, &synced).await.unwrap()), vec!["agentCommands.claude", "defaultPermissionMode"]);
+        assert_eq!(
+            keys(&unconfirmed(&meta, &synced).await.unwrap()),
+            vec!["agentCommands.claude", "defaultPermissionMode"]
+        );
         let used = usable(&meta, synced.clone()).await;
         assert_eq!(used.terminal_shell, "/bin/fish");
         assert!(used.agent_commands.is_empty(), "still unconfirmed");
@@ -254,8 +316,19 @@ mod tests {
         synced.terminal_shell = "/tmp/other-shell".into();
         assert!(keys(&unconfirmed(&meta, &synced).await.unwrap()).contains(&"terminalShell"));
         // Confirming again is a no-op for already-trusted keys.
-        assert!(confirm_keys(&meta, &synced, &["agentCommands.claude".into()]).await.unwrap().len() == 1);
-        assert!(confirm_keys(&meta, &synced, &["agentCommands.claude".into()]).await.unwrap().is_empty());
+        assert!(
+            confirm_keys(&meta, &synced, &["agentCommands.claude".into()])
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(
+            confirm_keys(&meta, &synced, &["agentCommands.claude".into()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// A synced value is not used until confirmed here; a value typed here
@@ -270,7 +343,10 @@ mod tests {
             vec!["agentCommands.claude", "terminalShell"]
         );
         let used = usable(&meta, synced.clone()).await;
-        assert!(used.agent_commands.is_empty(), "falls back to the default template");
+        assert!(
+            used.agent_commands.is_empty(),
+            "falls back to the default template"
+        );
         assert_eq!(used.terminal_shell, "", "falls back to the login shell");
 
         // The user toggles something else: the whole object is re-saved.
@@ -280,19 +356,30 @@ mod tests {
         // They edit the template here: that value is trusted.
         let edited = with("claude --verbose {{permissions}}", "/tmp/evil-shell");
         trust_edits(&meta, &synced, &edited).await.unwrap();
-        assert_eq!(keys(&unconfirmed(&meta, &edited).await.unwrap()), vec!["terminalShell"]);
+        assert_eq!(
+            keys(&unconfirmed(&meta, &edited).await.unwrap()),
+            vec!["terminalShell"]
+        );
         assert_eq!(usable(&meta, edited.clone()).await.agent_commands.len(), 1);
 
         // Explicit confirmation trusts the rest.
-        assert_eq!(confirm_all(&meta, &edited).await.unwrap(), vec!["terminalShell".to_string()]);
-        assert_eq!(usable(&meta, edited).await.terminal_shell, "/tmp/evil-shell");
+        assert_eq!(
+            confirm_all(&meta, &edited).await.unwrap(),
+            vec!["terminalShell".to_string()]
+        );
+        assert_eq!(
+            usable(&meta, edited).await.terminal_shell,
+            "/tmp/evil-shell"
+        );
     }
 
     #[tokio::test]
     async fn values_already_present_are_grandfathered_once() {
         let (meta, settings, _dir) = meta().await;
         let mut current = settings.get_or_init().await.unwrap();
-        current.agent_commands.insert("claude".into(), "claude --mine {{permissions}}".into());
+        current
+            .agent_commands
+            .insert("claude".into(), "claude --mine {{permissions}}".into());
         settings.update(&current).await.unwrap();
         grandfather_existing(&meta, &settings).await;
         assert!(unconfirmed(&meta, &current).await.unwrap().is_empty());
@@ -300,6 +387,9 @@ mod tests {
         current.terminal_shell = "/bin/fish".into();
         settings.update(&current).await.unwrap();
         grandfather_existing(&meta, &settings).await;
-        assert_eq!(keys(&unconfirmed(&meta, &current).await.unwrap()), vec!["terminalShell"]);
+        assert_eq!(
+            keys(&unconfirmed(&meta, &current).await.unwrap()),
+            vec!["terminalShell"]
+        );
     }
 }

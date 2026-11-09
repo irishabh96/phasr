@@ -44,7 +44,8 @@ impl ProcessGroups {
         self.0.lock().remove(&pgid);
     }
 
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.0.lock().len()
     }
 
@@ -63,7 +64,8 @@ impl ProcessGroups {
             let deadline = Instant::now() + grace;
             // `killpg(pgid, 0)` fails once no process is left in the group.
             let alive = |pgid: u32| {
-                libc::pid_t::try_from(pgid).is_ok_and(|g| g > 1 && unsafe { libc::killpg(g, 0) } == 0)
+                libc::pid_t::try_from(pgid)
+                    .is_ok_and(|g| g > 1 && unsafe { libc::killpg(g, 0) } == 0)
             };
             while Instant::now() < deadline && groups.iter().any(|&g| alive(g)) {
                 std::thread::sleep(Duration::from_millis(25));
@@ -115,7 +117,11 @@ pub struct CheckResult {
 /// `on_output` receives merged output in batches (≤ 1 per
 /// `OUTPUT_THROTTLE`, plus a final flush), never splitting a UTF-8
 /// character.
-pub async fn run_check<F>(spec: CheckSpec, mut cancel: watch::Receiver<bool>, mut on_output: F) -> CheckResult
+pub async fn run_check<F>(
+    spec: CheckSpec,
+    mut cancel: watch::Receiver<bool>,
+    mut on_output: F,
+) -> CheckResult
 where
     F: FnMut(String) + Send,
 {
@@ -266,7 +272,10 @@ async fn terminate(child: &mut tokio::process::Child, pgid: Option<u32>) {
     if let Some(pgid) = pgid {
         crate::util::proc::signal_process_group(pgid, libc::SIGTERM);
     }
-    if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_err() {
+    if tokio::time::timeout(TERM_GRACE, child.wait())
+        .await
+        .is_err()
+    {
         #[cfg(unix)]
         if let Some(pgid) = pgid {
             crate::util::proc::signal_process_group(pgid, libc::SIGKILL);
@@ -296,7 +305,12 @@ impl Tail {
             self.0.drain(..cut);
         }
         // Skip a UTF-8 continuation run the cut may have started in.
-        let start = self.0.iter().take(3).take_while(|b| (**b & 0b1100_0000) == 0b1000_0000).count();
+        let start = self
+            .0
+            .iter()
+            .take(3)
+            .take_while(|b| (**b & 0b1100_0000) == 0b1000_0000)
+            .count();
         String::from_utf8_lossy(&self.0[start..]).into_owned()
     }
 }
@@ -356,7 +370,11 @@ mod tests {
     }
 
     fn assert_dead(pid_file: &std::path::Path) {
-        let pid: libc::pid_t = std::fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+        let pid: libc::pid_t = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         // SAFETY: signal 0 only probes for existence.
         while unsafe { libc::kill(pid, 0) } == 0 {
@@ -375,10 +393,22 @@ mod tests {
         ))
         .await;
         assert_eq!(ok.end, CheckEnd::Exited(Some(0)));
-        let leaf = dir.path().file_name().unwrap().to_string_lossy().into_owned();
+        let leaf = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         for needle in ["out-1", "err", leaf.as_str()] {
-            assert!(ok.tail.contains(needle), "tail missing {needle}: {:?}", ok.tail);
-            assert!(streamed.contains(needle), "stream missing {needle}: {streamed:?}");
+            assert!(
+                ok.tail.contains(needle),
+                "tail missing {needle}: {:?}",
+                ok.tail
+            );
+            assert!(
+                streamed.contains(needle),
+                "stream missing {needle}: {streamed:?}"
+            );
         }
         let log = std::fs::read_to_string(dir.path().join("logs/check.log")).unwrap();
         assert!(log.contains("out-1") && log.contains("err"));
@@ -415,7 +445,11 @@ mod tests {
         ))
         .await;
         assert_eq!(res.end, CheckEnd::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(6), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "took {:?}",
+            started.elapsed()
+        );
         assert_dead(&pid_file);
     }
 
@@ -426,7 +460,10 @@ mod tests {
         let (tx, rx) = watch::channel(false);
         let s = spec(
             dir.path(),
-            &format!("sleep 30 & echo $! > '{}'; echo started; wait", pid_file.display()),
+            &format!(
+                "sleep 30 & echo $! > '{}'; echo started; wait",
+                pid_file.display()
+            ),
             Duration::from_secs(60),
         );
         let handle = tokio::spawn(run_check(s, rx, |_| {}));
@@ -436,7 +473,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         tx.send(true).unwrap();
-        let res = tokio::time::timeout(Duration::from_secs(6), handle).await.unwrap().unwrap();
+        let res = tokio::time::timeout(Duration::from_secs(6), handle)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(res.end, CheckEnd::Cancelled);
         assert!(res.tail.contains("started"));
         assert_dead(&pid_file);
@@ -456,7 +496,11 @@ mod tests {
         ))
         .await;
         assert_eq!(res.end, CheckEnd::Exited(Some(0)));
-        assert!(started.elapsed() < Duration::from_secs(5), "hung on the pipe: {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "hung on the pipe: {:?}",
+            started.elapsed()
+        );
         assert_dead(&pid_file);
     }
 
@@ -481,10 +525,15 @@ mod tests {
         }
         assert_eq!(groups.len(), 1, "the running check's group is registered");
         let killer = groups.clone();
-        tokio::task::spawn_blocking(move || killer.terminate_all_blocking(Duration::from_millis(500)))
+        tokio::task::spawn_blocking(move || {
+            killer.terminate_all_blocking(Duration::from_millis(500))
+        })
+        .await
+        .unwrap();
+        let res = tokio::time::timeout(Duration::from_secs(10), check)
             .await
+            .unwrap()
             .unwrap();
-        let res = tokio::time::timeout(Duration::from_secs(10), check).await.unwrap().unwrap();
         assert!(matches!(res.end, CheckEnd::Exited(_)), "{:?}", res.end);
         assert_dead(&pid_file);
         assert_eq!(groups.len(), 0);

@@ -160,7 +160,10 @@ pub async fn git_diff(
                 let repository = repositories
                     .get_for_user(&workspace.repository_id, &current.user_id)
                     .await?;
-                git::resolve_base_branch(repository.local_path.as_deref(), &repository.default_branch)
+                git::resolve_base_branch(
+                    repository.local_path.as_deref(),
+                    &repository.default_branch,
+                )
             }
         };
         let path = input.path;
@@ -429,9 +432,14 @@ pub async fn git_merge_to_main(
             },
         )
         .await?;
-    if matches!(outcome, MergeOutcome::Clean { .. }) && workspace.workspace_kind == WorkspaceKind::Agent {
+    if matches!(outcome, MergeOutcome::Clean { .. })
+        && workspace.workspace_kind == WorkspaceKind::Agent
+    {
         if workspace.outcome != Some(TaskOutcome::Merged) {
-            if let Ok(merged) = workspaces.get_for_user(&workspace.id, &current.user_id).await {
+            if let Ok(merged) = workspaces
+                .get_for_user(&workspace.id, &current.user_id)
+                .await
+            {
                 cleanup.on_merged(&merged, &current.user_id).await;
             }
         }

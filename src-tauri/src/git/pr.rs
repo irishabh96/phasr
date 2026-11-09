@@ -64,14 +64,23 @@ pub fn resolve_base_branch(local_path: Option<&str>, configured_default: &str) -
     let Some(path) = local_path.map(std::path::Path::new) else {
         return configured_default.to_string();
     };
-    let exists = |r: &str| super::error::run_git(path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    let exists =
+        |r: &str| super::error::run_git(path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
     if super::error::ensure_branch_name(configured_default).is_ok()
         && (exists(&format!("refs/heads/{configured_default}"))
             || exists(&format!("refs/remotes/origin/{configured_default}")))
     {
         return configured_default.to_string();
     }
-    if let Ok(head) = super::error::run_git(path, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Ok(head) = super::error::run_git(
+        path,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    ) {
         if let Some(name) = head.trim().strip_prefix("origin/") {
             if !name.is_empty() {
                 return name.to_string();
@@ -186,8 +195,16 @@ mod tests {
     }
 
     fn git(cwd: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// The default is never the checkout's current branch (new #4: with no

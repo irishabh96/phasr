@@ -4,8 +4,8 @@ use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
 use crate::domain::UserSettings;
-use crate::store::{AppMetaRepo, SettingsRepo, StoreError};
 use crate::settings_trust::UnconfirmedSetting;
+use crate::store::{AppMetaRepo, SettingsRepo, StoreError};
 use crate::sync::CloudSyncState;
 
 /// Wraps `StoreError` so we can carry an auth-rejection variant on the
@@ -166,7 +166,9 @@ pub async fn confirm_settings_on_this_machine(
 /// `""` in `terminalShell` means the account's login shell, which the UI
 /// offers separately.
 #[tauri::command]
-pub async fn list_shells(session: State<'_, Arc<SessionState>>) -> Result<Vec<String>, SettingsCmdError> {
+pub async fn list_shells(
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, SettingsCmdError> {
     session.require()?;
     Ok(tokio::task::spawn_blocking(crate::pty::list_shells)
         .await
@@ -179,9 +181,12 @@ mod tests {
     use crate::domain::PermissionMode;
 
     fn stored() -> UserSettings {
-        let mut s = UserSettings::default();
-        s.default_permission_mode = PermissionMode::SkipAll;
-        s.agent_commands.insert("claude".into(), "claude --x {{permissions}}".into());
+        let mut s = UserSettings {
+            default_permission_mode: PermissionMode::SkipAll,
+            ..UserSettings::default()
+        };
+        s.agent_commands
+            .insert("claude".into(), "claude --x {{permissions}}".into());
         s.notification_prefs.background_only = false;
         s.terminal_shell = "/bin/zsh".into();
         s.copy_on_select = true;
@@ -217,7 +222,10 @@ mod tests {
         let input: UserSettingsInput = serde_json::from_value(json).unwrap();
         let merged = input.merged_over(&stored());
         assert_eq!(merged.default_permission_mode, PermissionMode::AskEdits);
-        assert!(merged.agent_commands.is_empty(), "an explicit {{}} clears overrides");
+        assert!(
+            merged.agent_commands.is_empty(),
+            "an explicit {{}} clears overrides"
+        );
         // Present prefs win (here: the defaults, over the stored `false`).
         assert!(merged.notification_prefs.background_only);
     }

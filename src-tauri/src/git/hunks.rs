@@ -58,7 +58,8 @@ pub fn revert_hunk(
         (DiffScope::Base, Some(base)) => diff_vs_base(worktree, base, Some(path))?,
         _ => return Err(RevertHunkError::UnsupportedScope),
     };
-    let patch = single_hunk_patch(&full, hunk_header, hunk_body).ok_or(RevertHunkError::NoLongerMatches)?;
+    let patch =
+        single_hunk_patch(&full, hunk_header, hunk_body).ok_or(RevertHunkError::NoLongerMatches)?;
     run_git_with_stdin(
         worktree,
         &["apply", "-R", "--whitespace=nowarn", "-"],
@@ -108,7 +109,9 @@ pub fn single_hunk_patch(diff: &str, header: &str, body: &str) -> Option<String>
             .unwrap_or(lines.len());
         let this = line.trim_end_matches(['\r', '\n']).trim_end();
         if this == wanted || range_part(this) == Some(wanted) {
-            if hunk_lines(lines[i + 1..end].iter().copied()) != hunk_lines(body_without_header(body).lines()) {
+            if hunk_lines(lines[i + 1..end].iter().copied())
+                != hunk_lines(body_without_header(body).lines())
+            {
                 return None;
             }
             for l in &lines[i..end] {
@@ -156,8 +159,16 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
@@ -186,7 +197,10 @@ mod tests {
     }
 
     fn headers(diff: &str) -> Vec<String> {
-        diff.lines().filter(|l| l.starts_with("@@")).map(str::to_string).collect()
+        diff.lines()
+            .filter(|l| l.starts_with("@@"))
+            .map(str::to_string)
+            .collect()
     }
 
     /// Hunk `n` of `diff` as the client renders it: header + lines.
@@ -216,7 +230,11 @@ mod tests {
             .unwrap()
             .replace("line 18 DIRTY\n", "line 18 SOMETHING ELSE\n");
         std::fs::write(p.join("f.txt"), &edited).unwrap();
-        assert_eq!(headers(&diff(p, DiffScope::Head, Some("f.txt")).unwrap()), h, "header unchanged");
+        assert_eq!(
+            headers(&diff(p, DiffScope::Head, Some("f.txt")).unwrap()),
+            h,
+            "header unchanged"
+        );
         let err = revert_hunk(p, "f.txt", &h[0], &seen, DiffScope::Head, None).unwrap_err();
         assert!(matches!(err, RevertHunkError::NoLongerMatches));
         assert_eq!(std::fs::read_to_string(p.join("f.txt")).unwrap(), edited);
@@ -226,7 +244,9 @@ mod tests {
         let body = hunk(&d, 0);
         let without_header = body.split_once('\n').unwrap().1.replace('\n', "\r\n") + "\r\n";
         revert_hunk(p, "f.txt", &h[0], &without_header, DiffScope::Head, None).unwrap();
-        assert!(!std::fs::read_to_string(p.join("f.txt")).unwrap().contains("SOMETHING ELSE"));
+        assert!(!std::fs::read_to_string(p.join("f.txt"))
+            .unwrap()
+            .contains("SOMETHING ELSE"));
     }
 
     #[test]
@@ -250,7 +270,15 @@ mod tests {
         let h = headers(&d);
         assert_eq!(h.len(), 2, "{d}");
         // The first hunk is the committed edit near the top.
-        revert_hunk(p, "f.txt", &h[0], &hunk(&d, 0), DiffScope::Base, Some("main")).unwrap();
+        revert_hunk(
+            p,
+            "f.txt",
+            &h[0],
+            &hunk(&d, 0),
+            DiffScope::Base,
+            Some("main"),
+        )
+        .unwrap();
         let now = std::fs::read_to_string(p.join("f.txt")).unwrap();
         assert!(!now.contains("COMMITTED"));
         assert!(now.contains("line 18 DIRTY"), "the other hunk stays");
@@ -265,11 +293,16 @@ mod tests {
         let d = diff(p, DiffScope::Head, Some("f.txt")).unwrap();
         let h = headers(&d);
         // The agent edits the file again, shifting the hunk.
-        let moved = std::fs::read_to_string(p.join("f.txt")).unwrap().replace("line 1\n", "line 0\nline 1\n");
+        let moved = std::fs::read_to_string(p.join("f.txt"))
+            .unwrap()
+            .replace("line 1\n", "line 0\nline 1\n");
         std::fs::write(p.join("f.txt"), &moved).unwrap();
         let err = revert_hunk(p, "f.txt", &h[0], &hunk(&d, 0), DiffScope::Head, None).unwrap_err();
         assert!(matches!(err, RevertHunkError::NoLongerMatches));
-        assert_eq!(serde_json::to_value(&err).unwrap(), "hunk no longer matches");
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            "hunk no longer matches"
+        );
         assert_eq!(std::fs::read_to_string(p.join("f.txt")).unwrap(), moved);
         assert!(matches!(
             revert_hunk(p, "f.txt", &h[0], &hunk(&d, 0), DiffScope::Unstaged, None),

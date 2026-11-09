@@ -114,7 +114,11 @@ pub struct PullRequestOutcome {
 
 /// The PR description: the agent's own summary of what it did, then the
 /// checks as a task list. Overridden (failing / stale) checks say so.
-pub fn pr_body(summary: Option<&str>, runs: &[CheckRun], current_fingerprint: Option<&str>) -> String {
+pub fn pr_body(
+    summary: Option<&str>,
+    runs: &[CheckRun],
+    current_fingerprint: Option<&str>,
+) -> String {
     let mut out = String::new();
     if let Some(summary) = summary.map(str::trim).filter(|s| !s.is_empty()) {
         out.push_str(summary);
@@ -123,13 +127,17 @@ pub fn pr_body(summary: Option<&str>, runs: &[CheckRun], current_fingerprint: Op
     if !runs.is_empty() {
         out.push_str("### Checks\n\n");
         for run in runs {
-            let stale = current_fingerprint.is_none() || run.fingerprint.as_deref() != current_fingerprint;
+            let stale =
+                current_fingerprint.is_none() || run.fingerprint.as_deref() != current_fingerprint;
             let (mark, what) = match run.status {
                 CheckStatus::Passed => ("x", "passed".to_string()),
-                CheckStatus::Failed => (" ", match run.exit_code {
-                    Some(code) => format!("failed (exit {code})"),
-                    None => "failed".into(),
-                }),
+                CheckStatus::Failed => (
+                    " ",
+                    match run.exit_code {
+                        Some(code) => format!("failed (exit {code})"),
+                        None => "failed".into(),
+                    },
+                ),
                 CheckStatus::Timeout => (" ", "timed out".into()),
                 CheckStatus::Cancelled => (" ", "cancelled".into()),
                 CheckStatus::Error => (" ", "couldn't run".into()),
@@ -140,8 +148,15 @@ pub fn pr_body(summary: Option<&str>, runs: &[CheckRun], current_fingerprint: Op
                 .filter(|_| matches!(run.status, CheckStatus::Passed | CheckStatus::Failed))
                 .map(|ms| format!(" in {}", human_duration(ms)))
                 .unwrap_or_default();
-            let stale = if stale { " — on an earlier version of this branch" } else { "" };
-            out.push_str(&format!("- [{mark}] `{}` {what}{duration}{stale}\n", run.name));
+            let stale = if stale {
+                " — on an earlier version of this branch"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "- [{mark}] `{}` {what}{duration}{stale}\n",
+                run.name
+            ));
         }
         out.push('\n');
     }
@@ -233,7 +248,11 @@ impl ReviewService {
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(false);
         };
-        let Some(local) = self.workspaces.get_local_by_repository(repository_id).await? else {
+        let Some(local) = self
+            .workspaces
+            .get_local_by_repository(repository_id)
+            .await?
+        else {
             return Ok(false);
         };
         Ok(local.agent.is_some()
@@ -336,12 +355,16 @@ impl ReviewService {
     ) -> Result<PullRequestOutcome, ReviewError> {
         let branch = ws.branch.clone().ok_or(ReviewError::NoBranch)?;
         let cwd = Self::worktree(ws)?;
-        let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
+        let repository = self
+            .repositories
+            .get_for_user(&ws.repository_id, user_id)
+            .await?;
         let flags = CloseOutFlags {
             override_checks: input.override_checks.unwrap_or(false),
             commit_dirty: input.commit_dirty.unwrap_or(false),
         };
-        self.close_out_gate(ws, user_id, &cwd, &branch, flags).await?;
+        self.close_out_gate(ws, user_id, &cwd, &branch, flags)
+            .await?;
         {
             let (cwd, branch) = (cwd.clone(), branch.clone());
             blocking(move || git::push(&cwd, "origin", &branch)).await?;
@@ -350,7 +373,9 @@ impl ReviewService {
             Some(url) => url,
             None => {
                 let cwd = cwd.clone();
-                blocking(move || Ok(git::get_remote_url(&cwd))).await?.ok_or(ReviewError::NoRemote)?
+                blocking(move || Ok(git::get_remote_url(&cwd)))
+                    .await?
+                    .ok_or(ReviewError::NoRemote)?
             }
         };
         let base = Self::base_branch(ws, &repository).await;
@@ -361,17 +386,28 @@ impl ReviewService {
             .filter(|t| !t.is_empty())
             .unwrap_or(&ws.name)
             .to_string();
-        let body = match input.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        let body = match input
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+        {
             Some(body) => body.to_string(),
             None => {
-                let runs = self.checks.latest_runs(ws, user_id).await.unwrap_or_default();
+                let runs = self
+                    .checks
+                    .latest_runs(ws, user_id)
+                    .await
+                    .unwrap_or_default();
                 let current = self.checks.fingerprint(&cwd).await;
                 pr_body(summary.as_deref(), &runs, current.as_deref())
             }
         };
         let draft = input.draft.unwrap_or(false);
 
-        if let (Some((host, owner, repo)), Some(gh_bin)) = (git::parse_remote_url(&remote_url), gh::find_gh().await) {
+        if let (Some((host, owner, repo)), Some(gh_bin)) =
+            (git::parse_remote_url(&remote_url), gh::find_gh().await)
+        {
             if gh::authenticated(&gh_bin, &host).await {
                 let created = gh::create_pr(
                     &gh_bin,
@@ -432,7 +468,10 @@ impl ReviewService {
             .list_tasks_for_user(user_id, repository_id)
             .await?
             .into_iter()
-            .filter(|t| t.pr_url.is_some() && matches!(t.pr_state.as_deref(), None | Some("open") | Some("draft")))
+            .filter(|t| {
+                t.pr_url.is_some()
+                    && matches!(t.pr_state.as_deref(), None | Some("open") | Some("draft"))
+            })
             .collect();
         if tasks.is_empty() {
             return Ok(PrRefresh::default());
@@ -443,7 +482,9 @@ impl ReviewService {
         let mut changed = Vec::new();
         let mut newly_merged = Vec::new();
         for task in tasks {
-            let Some(url) = task.pr_url.as_deref() else { continue };
+            let Some(url) = task.pr_url.as_deref() else {
+                continue;
+            };
             let view = match gh::view_pr(&gh_bin, url).await {
                 Ok(view) => view,
                 // One unreachable PR (deleted repo, revoked access) must not
@@ -465,7 +506,12 @@ impl ReviewService {
             if task.outcome.is_none() && matches!(state, "merged" | "closed") {
                 let base = match task.base_branch.clone() {
                     Some(base) => base,
-                    None => self.repositories.get(&task.repository_id).await?.default_branch,
+                    None => {
+                        self.repositories
+                            .get(&task.repository_id)
+                            .await?
+                            .default_branch
+                    }
                 };
                 let (outcome, into) = if state == "merged" {
                     (TaskOutcome::Merged, Some(base.as_str()))
@@ -474,7 +520,11 @@ impl ReviewService {
                 };
                 // Only if still unset: a Discard (Closed) or a local merge
                 // that landed while `gh` was answering wins.
-                if let Some(row) = self.workspaces.set_outcome_if_unset(&task.id, outcome, into).await? {
+                if let Some(row) = self
+                    .workspaces
+                    .set_outcome_if_unset(&task.id, outcome, into)
+                    .await?
+                {
                     if outcome == TaskOutcome::Merged {
                         newly_merged.push(row.clone());
                     }
@@ -485,7 +535,10 @@ impl ReviewService {
                 changed.push(w);
             }
         }
-        Ok(PrRefresh { changed, newly_merged })
+        Ok(PrRefresh {
+            changed,
+            newly_merged,
+        })
     }
 
     /// Merge the task's branch into `target` (default: its base) in the
@@ -504,14 +557,20 @@ impl ReviewService {
         flags: CloseOutFlags,
     ) -> Result<MergeOutcome, ReviewError> {
         let branch = ws.branch.clone().ok_or(ReviewError::NoBranch)?;
-        let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
+        let repository = self
+            .repositories
+            .get_for_user(&ws.repository_id, user_id)
+            .await?;
         let main_repo = repository
             .local_path
             .as_deref()
             .map(PathBuf::from)
             .ok_or(ReviewError::NoRepositoryPath)?;
         match Self::worktree(ws) {
-            Ok(cwd) => self.close_out_gate(ws, user_id, &cwd, &branch, flags).await?,
+            Ok(cwd) => {
+                self.close_out_gate(ws, user_id, &cwd, &branch, flags)
+                    .await?
+            }
             // No worktree left to vouch for: only the check gate applies
             // (with nothing to fingerprint, a required check can't pass).
             Err(_) => {
@@ -534,9 +593,12 @@ impl ReviewService {
         if self.in_place_agent_running(&ws.repository_id).await? {
             return Err(ReviewError::InPlaceAgentRunning);
         }
-        let merged = blocking(move || git::merge_to(&main_repo, &target, &branch, strategy)).await?;
+        let merged =
+            blocking(move || git::merge_to(&main_repo, &target, &branch, strategy)).await?;
         drop(guard);
-        if matches!(merged.outcome, MergeOutcome::Clean { .. }) && ws.workspace_kind == WorkspaceKind::Agent {
+        if matches!(merged.outcome, MergeOutcome::Clean { .. })
+            && ws.workspace_kind == WorkspaceKind::Agent
+        {
             self.workspaces
                 .set_outcome(&ws.id, Some(TaskOutcome::Merged), Some(&merged.into))
                 .await?;
@@ -563,14 +625,19 @@ impl ReviewService {
         if checkout.workspace_kind != WorkspaceKind::Local || merged_branches.is_empty() {
             return Ok(Vec::new());
         }
-        let repository = self.repositories.get_for_user(&checkout.repository_id, user_id).await?;
+        let repository = self
+            .repositories
+            .get_for_user(&checkout.repository_id, user_id)
+            .await?;
         let mut done = Vec::new();
         for task in self
             .workspaces
             .list_tasks_for_user(user_id, Some(&checkout.repository_id))
             .await?
         {
-            let Some(branch) = task.branch.as_deref() else { continue };
+            let Some(branch) = task.branch.as_deref() else {
+                continue;
+            };
             if task.outcome.is_some() || !merged_branches.iter().any(|b| b == branch) {
                 continue;
             }
@@ -596,7 +663,10 @@ impl ReviewService {
     /// stop the agent, run commands and checks first.
     pub async fn discard(&self, ws: &Workspace, user_id: &str) -> Result<Workspace, ReviewError> {
         Self::ensure_discardable(ws)?;
-        let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
+        let repository = self
+            .repositories
+            .get_for_user(&ws.repository_id, user_id)
+            .await?;
         if let Some(repo_path) = repository.local_path.as_deref().map(PathBuf::from) {
             let lock = self.repo_locks.for_repository(&ws.repository_id);
             let _guard = lock.lock().await;
@@ -613,7 +683,10 @@ impl ReviewService {
             })
             .await?;
         }
-        Ok(self.workspaces.set_outcome(&ws.id, Some(TaskOutcome::Closed), None).await?)
+        Ok(self
+            .workspaces
+            .set_outcome(&ws.id, Some(TaskOutcome::Closed), None)
+            .await?)
     }
 }
 
@@ -625,8 +698,16 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn run(name: &str, status: CheckStatus, fp: &str, ms: i64, exit: Option<i64>) -> CheckRun {
@@ -695,9 +776,16 @@ mod tests {
         git(&repo_path, &["commit", "-qm", "init"]);
 
         let repositories = RepositoryRepo::new(pool.clone());
-        let mut repository = Repository::new("r".into(), Some(repo_path.to_string_lossy().into_owned()), None);
+        let mut repository = Repository::new(
+            "r".into(),
+            Some(repo_path.to_string_lossy().into_owned()),
+            None,
+        );
         repository.default_branch = "main".into();
-        repositories.insert_for_user(&repository, "u").await.unwrap();
+        repositories
+            .insert_for_user(&repository, "u")
+            .await
+            .unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let checks = CheckService::new(
             CheckRunRepo::new(pool.clone()),
@@ -706,7 +794,12 @@ mod tests {
             AppMetaRepo::new(pool.clone()),
             dir.path().join("logs"),
         );
-        let review = ReviewService::new(workspaces.clone(), repositories, Arc::new(RepoLockRegistry::new()), checks);
+        let review = ReviewService::new(
+            workspaces.clone(),
+            repositories,
+            Arc::new(RepoLockRegistry::new()),
+            checks,
+        );
         Fx {
             review,
             workspaces,
@@ -735,7 +828,12 @@ mod tests {
 
     fn branch_exists(repo: &Path, branch: &str) -> bool {
         Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
             .current_dir(repo)
             .status()
             .unwrap()
@@ -753,7 +851,10 @@ mod tests {
         assert_eq!(closed.outcome, Some(TaskOutcome::Closed));
         assert!(closed.outcome_at.is_some());
         assert!(!wt.exists(), "worktree removed");
-        assert!(!branch_exists(&f.repo_path, "phasr/throwaway"), "branch force-deleted");
+        assert!(
+            !branch_exists(&f.repo_path, "phasr/throwaway"),
+            "branch force-deleted"
+        );
         // The row (and everything hanging off it, e.g. notes) stays.
         let row = f.workspaces.get_for_user(&ws.id, "u").await.unwrap();
         assert_eq!(row.name, "throwaway");
@@ -765,7 +866,17 @@ mod tests {
     async fn merge_locally_records_merged_into_base_on_a_clean_merge() {
         let f = fx().await;
         let ws = task_with_worktree(&f, "feature").await;
-        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.unwrap();
+        let outcome = f
+            .review
+            .merge_locally(
+                &ws,
+                "u",
+                MergeStrategy::Merge,
+                None,
+                CloseOutFlags::default(),
+            )
+            .await
+            .unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         let row = f.workspaces.get(&ws.id).await.unwrap();
         assert_eq!(row.outcome, Some(TaskOutcome::Merged));
@@ -790,7 +901,17 @@ mod tests {
         ws.base_branch = Some("develop".into());
         f.workspaces.insert_for_user(&ws, "u").await.unwrap();
 
-        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.unwrap();
+        let outcome = f
+            .review
+            .merge_locally(
+                &ws,
+                "u",
+                MergeStrategy::Merge,
+                None,
+                CloseOutFlags::default(),
+            )
+            .await
+            .unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         let row = f.workspaces.get(&ws.id).await.unwrap();
         assert_eq!(row.merged_into.as_deref(), Some("develop"));
@@ -822,24 +943,48 @@ mod tests {
         f.workspaces.insert_for_user(&local, "u").await.unwrap();
         let runtime = Arc::new(TaskRuntime::new(f.repo_path.parent().unwrap().join("logs")));
         let handle = runtime
-            .spawn(crate::pty::SpawnSpec::new(local.id.clone(), f.repo_path.clone()).with_shell(Some("/bin/sh".into())))
+            .spawn(
+                crate::pty::SpawnSpec::new(local.id.clone(), f.repo_path.clone())
+                    .with_shell(Some("/bin/sh".into())),
+            )
             .unwrap();
         let review = f.review.clone().with_runtime(runtime.clone());
 
-        let err = review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.unwrap_err();
+        let err = review
+            .merge_locally(
+                &ws,
+                "u",
+                MergeStrategy::Merge,
+                None,
+                CloseOutFlags::default(),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, ReviewError::InPlaceAgentRunning), "{err}");
         assert!(!f.repo_path.join("busy.txt").exists(), "nothing was merged");
 
         handle.kill().unwrap();
         runtime.drop_task(&local.id);
-        assert!(review.merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default()).await.is_ok());
+        assert!(review
+            .merge_locally(
+                &ws,
+                "u",
+                MergeStrategy::Merge,
+                None,
+                CloseOutFlags::default()
+            )
+            .await
+            .is_ok());
     }
 
     #[test]
     fn the_main_checkout_is_never_discardable() {
         let mut local = Workspace::new("r".into(), "local".into(), String::new());
         local.workspace_kind = WorkspaceKind::Local;
-        assert!(matches!(ReviewService::ensure_discardable(&local), Err(ReviewError::LocalNotDiscardable)));
+        assert!(matches!(
+            ReviewService::ensure_discardable(&local),
+            Err(ReviewError::LocalNotDiscardable)
+        ));
         let task = Workspace::new("r".into(), "t".into(), "c".into());
         assert!(ReviewService::ensure_discardable(&task).is_ok());
     }
@@ -860,7 +1005,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(done.len(), 1);
-        assert_eq!(f.workspaces.get(&a.id).await.unwrap().outcome, Some(TaskOutcome::Merged));
+        assert_eq!(
+            f.workspaces.get(&a.id).await.unwrap().outcome,
+            Some(TaskOutcome::Merged)
+        );
         assert_eq!(f.workspaces.get(&b.id).await.unwrap().outcome, None);
         // Inside a task worktree (sync-with-main), nothing is recorded.
         assert!(f
@@ -887,7 +1035,10 @@ mod tests {
         let ws = task_with_worktree(&f, "dirty").await;
         let wt = PathBuf::from(ws.worktree_path.clone().unwrap());
         let origin = f.repo_path.parent().unwrap().join("origin.git");
-        git(f.repo_path.parent().unwrap(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        git(
+            f.repo_path.parent().unwrap(),
+            &["init", "-q", "--bare", origin.to_str().unwrap()],
+        );
         git(&wt, &["remote", "add", "origin", origin.to_str().unwrap()]);
         std::fs::write(wt.join("untracked.txt"), "agent output\n").unwrap();
 
@@ -925,7 +1076,11 @@ mod tests {
             .current_dir(&origin)
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "dirty", "pushed with the task's name");
+        assert_eq!(
+            String::from_utf8_lossy(&subject.stdout).trim(),
+            "dirty",
+            "pushed with the task's name"
+        );
         let files = Command::new("git")
             .args(["ls-tree", "-r", "--name-only", "phasr/dirty"])
             .current_dir(&origin)
@@ -938,7 +1093,8 @@ mod tests {
     async fn approve_is_gated_on_required_checks() {
         let f = fx().await;
         let ws = task_with_worktree(&f, "gated").await;
-        let mut rc = crate::domain::RunCommand::new(f.repository.id.clone(), "test".into(), "true".into());
+        let mut rc =
+            crate::domain::RunCommand::new(f.repository.id.clone(), "test".into(), "true".into());
         rc.required_for_approve = true;
         f.run_commands.insert_for_user(&rc, "u").await.unwrap();
         let err = f
@@ -967,15 +1123,27 @@ mod tests {
 
     fn with_origin(f: &Fx, ws: &Workspace) -> (PathBuf, PathBuf) {
         let wt = PathBuf::from(ws.worktree_path.clone().unwrap());
-        let origin = f.repo_path.parent().unwrap().join(format!("origin-{}.git", ws.name));
-        git(f.repo_path.parent().unwrap(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        let origin = f
+            .repo_path
+            .parent()
+            .unwrap()
+            .join(format!("origin-{}.git", ws.name));
+        git(
+            f.repo_path.parent().unwrap(),
+            &["init", "-q", "--bare", origin.to_str().unwrap()],
+        );
         git(&wt, &["remote", "add", "origin", origin.to_str().unwrap()]);
         (wt, origin)
     }
 
     fn pushed(origin: &Path, branch: &str) -> bool {
         Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
             .current_dir(origin)
             .status()
             .unwrap()
@@ -983,7 +1151,8 @@ mod tests {
     }
 
     async fn require_check(f: &Fx, command: &str) -> crate::domain::RunCommand {
-        let mut rc = crate::domain::RunCommand::new(f.repository.id.clone(), "test".into(), command.into());
+        let mut rc =
+            crate::domain::RunCommand::new(f.repository.id.clone(), "test".into(), command.into());
         rc.required_for_approve = true;
         f.run_commands.insert_for_user(&rc, "u").await.unwrap();
         rc
@@ -1009,18 +1178,42 @@ mod tests {
         let (wt, origin) = with_origin(&f, &ws);
         std::fs::write(wt.join("wip.txt"), "wip\n").unwrap();
 
-        let err = f.review.approve_and_create_pr(&ws, "u", approve(false, false), None).await.unwrap_err();
-        assert!(err.to_string().starts_with("required checks not passing"), "{err}");
-        let err = f.review.approve_and_create_pr(&ws, "u", approve(false, true), None).await.unwrap_err();
-        assert!(err.to_string().starts_with("required checks not passing"), "{err}");
-        let err = f.review.approve_and_create_pr(&ws, "u", approve(true, false), None).await.unwrap_err();
+        let err = f
+            .review
+            .approve_and_create_pr(&ws, "u", approve(false, false), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().starts_with("required checks not passing"),
+            "{err}"
+        );
+        let err = f
+            .review
+            .approve_and_create_pr(&ws, "u", approve(false, true), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().starts_with("required checks not passing"),
+            "{err}"
+        );
+        let err = f
+            .review
+            .approve_and_create_pr(&ws, "u", approve(true, false), None)
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), "worktree has uncommitted changes");
-        assert!(git::is_dirty(&wt).unwrap(), "nothing committed while a gate was unanswered");
+        assert!(
+            git::is_dirty(&wt).unwrap(),
+            "nothing committed while a gate was unanswered"
+        );
         assert!(!pushed(&origin, "phasr/both"), "nothing pushed");
 
         // Both answered: committed and pushed (then the PR URL can't be
         // derived from a local-path remote).
-        let _ = f.review.approve_and_create_pr(&ws, "u", approve(true, true), None).await;
+        let _ = f
+            .review
+            .approve_and_create_pr(&ws, "u", approve(true, true), None)
+            .await;
         assert!(!git::is_dirty(&wt).unwrap());
         assert!(pushed(&origin, "phasr/both"));
     }
@@ -1036,17 +1229,28 @@ mod tests {
         git(&wt, &["checkout", "-qb", "agent-side-quest"]);
         std::fs::write(wt.join("x.txt"), "x\n").unwrap();
 
-        let err = f.review.approve_and_create_pr(&ws, "u", approve(true, true), None).await.unwrap_err();
+        let err = f
+            .review
+            .approve_and_create_pr(&ws, "u", approve(true, true), None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ReviewError::BranchMismatch { .. }), "{err}");
         assert!(err.to_string().contains("`agent-side-quest`"), "{err}");
-        assert!(git::is_dirty(&wt).unwrap(), "nothing committed on the wrong branch");
+        assert!(
+            git::is_dirty(&wt).unwrap(),
+            "nothing committed on the wrong branch"
+        );
         assert!(!pushed(&origin, "phasr/moved"));
         // Merge locally refuses too.
         let both = CloseOutFlags {
             override_checks: true,
             commit_dirty: true,
         };
-        let err = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, both).await.unwrap_err();
+        let err = f
+            .review
+            .merge_locally(&ws, "u", MergeStrategy::Merge, None, both)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ReviewError::BranchMismatch { .. }), "{err}");
     }
 
@@ -1059,11 +1263,20 @@ mod tests {
         require_check(&f, "true").await;
         let err = f
             .review
-            .merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default())
+            .merge_locally(
+                &ws,
+                "u",
+                MergeStrategy::Merge,
+                None,
+                CloseOutFlags::default(),
+            )
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "required checks not passing: test");
-        assert!(!f.repo_path.join("gated-merge.txt").exists(), "nothing merged");
+        assert!(
+            !f.repo_path.join("gated-merge.txt").exists(),
+            "nothing merged"
+        );
 
         let wt = PathBuf::from(ws.worktree_path.clone().unwrap());
         std::fs::write(wt.join("late.txt"), "late\n").unwrap();
@@ -1071,17 +1284,35 @@ mod tests {
             override_checks: true,
             commit_dirty: false,
         };
-        let err = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, override_only).await.unwrap_err();
+        let err = f
+            .review
+            .merge_locally(&ws, "u", MergeStrategy::Merge, None, override_only)
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), "worktree has uncommitted changes");
 
         let both = CloseOutFlags {
             override_checks: true,
             commit_dirty: true,
         };
-        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None, both).await.unwrap();
+        let outcome = f
+            .review
+            .merge_locally(&ws, "u", MergeStrategy::Merge, None, both)
+            .await
+            .unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
-        assert!(f.repo_path.join("gated-merge.txt").exists() && f.repo_path.join("late.txt").exists());
-        assert_eq!(f.workspaces.get(&ws.id).await.unwrap().merged_into.as_deref(), Some("main"));
+        assert!(
+            f.repo_path.join("gated-merge.txt").exists() && f.repo_path.join("late.txt").exists()
+        );
+        assert_eq!(
+            f.workspaces
+                .get(&ws.id)
+                .await
+                .unwrap()
+                .merged_into
+                .as_deref(),
+            Some("main")
+        );
     }
 
     /// The merge lands on the base even when the main checkout is on
@@ -1093,7 +1324,13 @@ mod tests {
         git(&f.repo_path, &["checkout", "-qb", "user-wip"]);
         let outcome = f
             .review
-            .merge_locally(&ws, "u", MergeStrategy::Merge, None, CloseOutFlags::default())
+            .merge_locally(
+                &ws,
+                "u",
+                MergeStrategy::Merge,
+                None,
+                CloseOutFlags::default(),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
@@ -1106,7 +1343,15 @@ mod tests {
                 .success()
         };
         assert!(on("main") && !on("user-wip"));
-        assert_eq!(f.workspaces.get(&ws.id).await.unwrap().merged_into.as_deref(), Some("main"));
+        assert_eq!(
+            f.workspaces
+                .get(&ws.id)
+                .await
+                .unwrap()
+                .merged_into
+                .as_deref(),
+            Some("main")
+        );
     }
 
     /// A continued merge doesn't overwrite an outcome recorded meanwhile.
@@ -1117,13 +1362,19 @@ mod tests {
         let mut local = Workspace::new(f.repository.id.clone(), "local".into(), String::new());
         local.workspace_kind = WorkspaceKind::Local;
         f.workspaces.insert_for_user(&local, "u").await.unwrap();
-        f.workspaces.set_outcome(&a.id, Some(TaskOutcome::Closed), None).await.unwrap();
+        f.workspaces
+            .set_outcome(&a.id, Some(TaskOutcome::Closed), None)
+            .await
+            .unwrap();
         let done = f
             .review
             .record_continued_merge(&local, "u", &["phasr/closed-first".into()], Some("main"))
             .await
             .unwrap();
         assert!(done.is_empty());
-        assert_eq!(f.workspaces.get(&a.id).await.unwrap().outcome, Some(TaskOutcome::Closed));
+        assert_eq!(
+            f.workspaces.get(&a.id).await.unwrap().outcome,
+            Some(TaskOutcome::Closed)
+        );
     }
 }

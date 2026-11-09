@@ -69,9 +69,15 @@ async fn gh_env(host: &str) -> Vec<(String, String)> {
 /// Whether `gh` is signed in to `host`.
 pub async fn authenticated(gh: &Path, host: &str) -> bool {
     let program = gh.to_string_lossy();
-    run_with_timeout(&program, &["auth", "status", "--hostname", host], None, &gh_env(host).await, AUTH_TIMEOUT)
-        .await
-        .is_ok_and(|out| out.status.success())
+    run_with_timeout(
+        &program,
+        &["auth", "status", "--hostname", host],
+        None,
+        &gh_env(host).await,
+        AUTH_TIMEOUT,
+    )
+    .await
+    .is_ok_and(|out| out.status.success())
 }
 
 /// A pull request `gh` created (or found already open for the branch).
@@ -134,7 +140,11 @@ pub async fn create_pr(gh: &Path, cwd: &Path, pr: &CreatePr<'_>) -> Result<Creat
 /// `gh pr create` prints the new PR's URL on stdout; when one already
 /// exists for the branch it fails with that PR's URL in stderr, which is
 /// as good as created for us.
-pub fn parse_create_output(success: bool, stdout: &str, stderr: &str) -> Result<CreatedPr, GhError> {
+pub fn parse_create_output(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<CreatedPr, GhError> {
     if success {
         return pr_url_in(stdout)
             .map(|(url, number)| CreatedPr {
@@ -163,7 +173,9 @@ pub fn parse_create_output(success: bool, stdout: &str, stderr: &str) -> Result<
 
 fn pr_url_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"https?://[^\s/]+/[^\s/]+/[^\s/]+/pull/(\d+)").expect("static regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"https?://[^\s/]+/[^\s/]+/[^\s/]+/pull/(\d+)").expect("static regex")
+    })
 }
 
 /// The last pull-request URL in `text`, with its number.
@@ -176,7 +188,9 @@ pub fn pr_url_in(text: &str) -> Option<(String, Option<i64>)> {
 
 /// The host of a PR URL (`https://github.example.com/o/r/pull/1`).
 pub fn host_of_url(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     rest.split('/').next().filter(|h| !h.is_empty())
 }
 
@@ -233,9 +247,12 @@ pub async fn view_pr(gh: &Path, url: &str) -> Result<PrView, GhError> {
     )
     .await?;
     if !out.status.success() {
-        return Err(GhError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+        return Err(GhError::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| GhError::Failed(format!("unexpected gh output: {e}")))
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| GhError::Failed(format!("unexpected gh output: {e}")))
 }
 
 #[cfg(test)]
@@ -273,10 +290,17 @@ mod tests {
 
     #[test]
     fn real_failures_surface_gh_s_message() {
-        let err = parse_create_output(false, "", "pull request create failed: GraphQL: No commits between main and phasr/x\n")
-            .unwrap_err();
+        let err = parse_create_output(
+            false,
+            "",
+            "pull request create failed: GraphQL: No commits between main and phasr/x\n",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("No commits between"), "{err}");
-        assert!(matches!(parse_create_output(true, "done\n", ""), Err(GhError::NoUrl)));
+        assert!(matches!(
+            parse_create_output(true, "done\n", ""),
+            Err(GhError::NoUrl)
+        ));
     }
 
     #[test]
@@ -313,7 +337,10 @@ mod tests {
         let args = create_args(&pr);
         assert!(args.contains(&"--title=--web".to_string()));
         assert!(args.contains(&"--body-file=-".to_string()));
-        assert!(!args.iter().any(|a| a.contains("secret summary")), "body not on the command line");
+        assert!(
+            !args.iter().any(|a| a.contains("secret summary")),
+            "body not on the command line"
+        );
         assert_eq!(args.last().map(String::as_str), Some("--draft"));
     }
 
@@ -337,10 +364,22 @@ mod tests {
     #[test]
     fn pr_view_maps_to_phasr_states() {
         let view = |json: &str| serde_json::from_str::<PrView>(json).unwrap().pr_state();
-        assert_eq!(view(r#"{"state":"OPEN","mergedAt":null,"isDraft":true}"#), "draft");
-        assert_eq!(view(r#"{"state":"OPEN","mergedAt":null,"isDraft":false}"#), "open");
-        assert_eq!(view(r#"{"state":"MERGED","mergedAt":"2026-11-09T10:00:00Z","isDraft":false}"#), "merged");
-        assert_eq!(view(r#"{"state":"CLOSED","mergedAt":null,"isDraft":false}"#), "closed");
+        assert_eq!(
+            view(r#"{"state":"OPEN","mergedAt":null,"isDraft":true}"#),
+            "draft"
+        );
+        assert_eq!(
+            view(r#"{"state":"OPEN","mergedAt":null,"isDraft":false}"#),
+            "open"
+        );
+        assert_eq!(
+            view(r#"{"state":"MERGED","mergedAt":"2026-11-09T10:00:00Z","isDraft":false}"#),
+            "merged"
+        );
+        assert_eq!(
+            view(r#"{"state":"CLOSED","mergedAt":null,"isDraft":false}"#),
+            "closed"
+        );
     }
 
     #[test]

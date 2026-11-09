@@ -19,6 +19,7 @@ pub fn get_remote_url(repo_path: &Path) -> Option<String> {
 ///   1. `git symbolic-ref --short HEAD`            current branch
 ///   2. `origin/HEAD` symbolic ref                 typical remote default
 ///   3. literal "main" / "master" if either exists
+///
 /// Falls back to `None` for detached HEAD with no `origin/HEAD`.
 pub fn get_default_branch(repo_path: &Path) -> Option<String> {
     if let Ok(branch) = run_git(repo_path, &["symbolic-ref", "--short", "HEAD"]) {

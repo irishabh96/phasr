@@ -16,10 +16,14 @@ use crate::agent_signals::state::AgentStateKind;
 use crate::agent_signals::AgentSignalEvent;
 use crate::domain::board::Lane;
 use crate::domain::review::{latest_by_command, run_is_current, unsatisfied_required};
-use crate::domain::{CheckRun, CheckStatus, CheckSummary, RunCommand, RunWhen, Workspace, WorkspaceStatus};
+use crate::domain::{
+    CheckRun, CheckStatus, CheckSummary, RunCommand, RunWhen, Workspace, WorkspaceStatus,
+};
 use crate::git::{self, GitError};
 use crate::orchestrator::{TaskBoard, TaskStatusEvent};
-use crate::store::{AppMetaRepo, CheckRunFinish, CheckRunRepo, RunCommandRepo, StoreError, WorkspaceRepo};
+use crate::store::{
+    AppMetaRepo, CheckRunFinish, CheckRunRepo, RunCommandRepo, StoreError, WorkspaceRepo,
+};
 
 use super::runner::{run_check, CheckEnd, CheckSpec, ProcessGroups};
 
@@ -174,7 +178,12 @@ impl CheckService {
     /// Drop all but the newest `RUNS_KEPT_PER_CHECK` settled runs per check
     /// (one task, or all), with their log files.
     async fn prune(&self, workspace_id: Option<&str>) {
-        match self.inner.runs.prune(RUNS_KEPT_PER_CHECK, workspace_id).await {
+        match self
+            .inner
+            .runs
+            .prune(RUNS_KEPT_PER_CHECK, workspace_id)
+            .await
+        {
             Ok(logs) => {
                 for log in logs {
                     let _ = tokio::fs::remove_file(log).await;
@@ -238,7 +247,11 @@ impl CheckService {
         self.inner.fingerprints.lock().remove(worktree);
     }
 
-    async fn commands_for(&self, workspace: &Workspace, user_id: &str) -> Result<Vec<RunCommand>, CheckError> {
+    async fn commands_for(
+        &self,
+        workspace: &Workspace,
+        user_id: &str,
+    ) -> Result<Vec<RunCommand>, CheckError> {
         Ok(self
             .inner
             .run_commands
@@ -282,7 +295,8 @@ impl CheckService {
                 trusted
             }
         };
-        self.start_runs(workspace, &worktree, user_id, selected).await
+        self.start_runs(workspace, &worktree, user_id, selected)
+            .await
     }
 
     async fn start_runs(
@@ -305,13 +319,18 @@ impl CheckService {
                 .active
                 .lock()
                 .iter()
-                .find(|(_, a)| a.workspace_id == workspace.id && a.run_command_id.as_deref() == Some(&rc.id))
+                .find(|(_, a)| {
+                    a.workspace_id == workspace.id && a.run_command_id.as_deref() == Some(&rc.id)
+                })
                 .map(|(id, _)| id.clone());
             if let Some(run_id) = already {
                 out.push(self.inner.runs.get(&run_id).await?);
                 continue;
             }
-            out.push(self.queue(workspace, worktree, user_id, &rc, fingerprint.clone()).await?);
+            out.push(
+                self.queue(workspace, worktree, user_id, &rc, fingerprint.clone())
+                    .await?,
+            );
         }
         Ok(out)
     }
@@ -377,14 +396,21 @@ impl CheckService {
         Ok(run)
     }
 
-    async fn execute(&self, id: String, spec: CheckSpec, limit: Arc<Semaphore>, mut cancel: watch::Receiver<bool>) {
+    async fn execute(
+        &self,
+        id: String,
+        spec: CheckSpec,
+        limit: Arc<Semaphore>,
+        mut cancel: watch::Receiver<bool>,
+    ) {
         // Wait for a slot — or a cancel while still queued.
         let permit = tokio::select! {
             permit = limit.acquire_owned() => permit.ok(),
             _ = wait_cancelled(&mut cancel) => None,
         };
         let Some(_permit) = permit else {
-            self.settle(&id, CheckStatus::Cancelled, None, None, String::new()).await;
+            self.settle(&id, CheckStatus::Cancelled, None, None, String::new())
+                .await;
             return;
         };
         // The fingerprint is the code the check is ABOUT to run on — taken
@@ -393,7 +419,12 @@ impl CheckService {
         // pass to whatever the worktree looked like at the end — edits made
         // DURING the run included.
         let at_start = self.fingerprint(&spec.cwd).await;
-        let running = match self.inner.runs.mark_running(&id, Utc::now(), at_start.as_deref()).await {
+        let running = match self
+            .inner
+            .runs
+            .mark_running(&id, Utc::now(), at_start.as_deref())
+            .await
+        {
             Ok(Some(run)) => run,
             // Settled while queued, or the row is gone.
             _ => {
@@ -494,7 +525,11 @@ impl CheckService {
 
     /// Latest run of each run command + the approve gate + what's stale /
     /// unconfirmed.
-    pub async fn summary(&self, workspace: &Workspace, user_id: &str) -> Result<CheckSummary, CheckError> {
+    pub async fn summary(
+        &self,
+        workspace: &Workspace,
+        user_id: &str,
+    ) -> Result<CheckSummary, CheckError> {
         let commands = self.commands_for(workspace, user_id).await?;
         let runs = self.inner.runs.list_for_workspace(&workspace.id).await?;
         let current = match Self::worktree_of(workspace) {
@@ -519,7 +554,7 @@ impl CheckService {
         let shown: Vec<CheckRun> = shown_with_rc.into_iter().map(|(_, r)| r).collect();
         let mut needs_confirmation = Vec::new();
         for rc in commands.iter().filter(|rc| rc.run_when.is_automatic()) {
-            if !self.inner.meta.is_run_command_trusted(&rc).await? {
+            if !self.inner.meta.is_run_command_trusted(rc).await? {
                 needs_confirmation.push(rc.id.clone());
             }
         }
@@ -529,7 +564,8 @@ impl CheckService {
                 .filter(|rc| rc.required_for_approve)
                 .map(|rc| rc.id.clone())
                 .collect(),
-            required_satisfied: unsatisfied_required(&commands, &runs, current.as_deref()).is_empty(),
+            required_satisfied: unsatisfied_required(&commands, &runs, current.as_deref())
+                .is_empty(),
             runs: shown,
             stale_ids,
             needs_confirmation,
@@ -538,7 +574,11 @@ impl CheckService {
 
     /// Names of required checks without a passing run on the worktree as
     /// it is now (empty = the approve gate is open).
-    pub async fn unsatisfied_required(&self, workspace: &Workspace, user_id: &str) -> Result<Vec<String>, CheckError> {
+    pub async fn unsatisfied_required(
+        &self,
+        workspace: &Workspace,
+        user_id: &str,
+    ) -> Result<Vec<String>, CheckError> {
         let commands = self.commands_for(workspace, user_id).await?;
         if !commands.iter().any(|rc| rc.required_for_approve) {
             return Ok(Vec::new());
@@ -552,7 +592,11 @@ impl CheckService {
     }
 
     /// Latest settled run per check, for the PR body.
-    pub async fn latest_runs(&self, workspace: &Workspace, user_id: &str) -> Result<Vec<CheckRun>, CheckError> {
+    pub async fn latest_runs(
+        &self,
+        workspace: &Workspace,
+        user_id: &str,
+    ) -> Result<Vec<CheckRun>, CheckError> {
         Ok(self.summary(workspace, user_id).await?.runs)
     }
 
@@ -575,13 +619,19 @@ impl CheckService {
     /// command is trusted on this machine, and only when the worktree
     /// changed since that check's last run (a re-entry into review with
     /// the same code reruns nothing).
-    pub async fn auto_run_before_review(&self, workspace: &Workspace, user_id: &str) -> Result<Vec<CheckRun>, CheckError> {
+    pub async fn auto_run_before_review(
+        &self,
+        workspace: &Workspace,
+        user_id: &str,
+    ) -> Result<Vec<CheckRun>, CheckError> {
         let Ok(worktree) = Self::worktree_of(workspace) else {
             return Ok(Vec::new());
         };
         let mut candidates = Vec::new();
         for rc in self.commands_for(workspace, user_id).await? {
-            if rc.run_when == RunWhen::BeforeReview && self.inner.meta.is_run_command_trusted(&rc).await? {
+            if rc.run_when == RunWhen::BeforeReview
+                && self.inner.meta.is_run_command_trusted(&rc).await?
+            {
                 candidates.push(rc);
             }
         }
@@ -594,7 +644,9 @@ impl CheckService {
         let due: Vec<RunCommand> = candidates
             .into_iter()
             .filter(|rc| match latest.get(&rc.id) {
-                Some(last) => !last.status.is_active() && !run_is_current(last, rc, current.as_deref()),
+                Some(last) => {
+                    !last.status.is_active() && !run_is_current(last, rc, current.as_deref())
+                }
                 None => true,
             })
             .collect();
@@ -706,8 +758,16 @@ mod tests {
     }
 
     fn git(cwd: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     async fn fx(timeout: Duration) -> Fx {
@@ -730,7 +790,10 @@ mod tests {
         git(&wt, &["commit", "-qm", "init"]);
 
         let repo = Repository::new("r".into(), None, None);
-        RepositoryRepo::new(pool.clone()).insert_for_user(&repo, "u").await.unwrap();
+        RepositoryRepo::new(pool.clone())
+            .insert_for_user(&repo, "u")
+            .await
+            .unwrap();
         let workspaces = WorkspaceRepo::new(pool.clone());
         let mut ws = Workspace::new(repo.id.clone(), "t".into(), "c".into());
         ws.branch = Some("main".into());
@@ -746,7 +809,14 @@ mod tests {
             dir.path().join("logs"),
             timeout,
         );
-        Fx { service, run_commands, meta, ws, repo, _dir: dir }
+        Fx {
+            service,
+            run_commands,
+            meta,
+            ws,
+            repo,
+            _dir: dir,
+        }
     }
 
     async fn add(f: &Fx, name: &str, command: &str, required: bool, when: RunWhen) -> RunCommand {
@@ -772,7 +842,10 @@ mod tests {
         f.meta.trust_run_command(&test).await.unwrap();
         add(&f, "dev", "sleep 100", false, RunWhen::Manual).await;
 
-        assert_eq!(f.service.unsatisfied_required(&f.ws, "u").await.unwrap(), vec!["test"]);
+        assert_eq!(
+            f.service.unsatisfied_required(&f.ws, "u").await.unwrap(),
+            vec!["test"]
+        );
         let mut events = f.service.subscribe();
         let queued = f.service.run(&f.ws, "u", None).await.unwrap();
         assert_eq!(queued.len(), 1, "only checks run by default: {queued:?}");
@@ -784,7 +857,12 @@ mod tests {
         assert_eq!(summary.required, vec![test.id.clone()]);
         assert!(summary.required_satisfied);
         assert!(summary.stale_ids.is_empty());
-        assert!(f.service.unsatisfied_required(&f.ws, "u").await.unwrap().is_empty());
+        assert!(f
+            .service
+            .unsatisfied_required(&f.ws, "u")
+            .await
+            .unwrap()
+            .is_empty());
         // queued → running → passed went out as events.
         let mut seen = Vec::new();
         while let Ok(event) = events.try_recv() {
@@ -792,14 +870,24 @@ mod tests {
                 seen.push(r.status);
             }
         }
-        assert!(seen.starts_with(&[CheckStatus::Queued]) && seen.ends_with(&[CheckStatus::Passed]), "{seen:?}");
+        assert!(
+            seen.starts_with(&[CheckStatus::Queued]) && seen.ends_with(&[CheckStatus::Passed]),
+            "{seen:?}"
+        );
 
         // An edit makes the pass stale and closes the gate again.
-        std::fs::write(Path::new(f.ws.worktree_path.as_deref().unwrap()).join("b.txt"), "b\n").unwrap();
+        std::fs::write(
+            Path::new(f.ws.worktree_path.as_deref().unwrap()).join("b.txt"),
+            "b\n",
+        )
+        .unwrap();
         let summary = f.service.summary(&f.ws, "u").await.unwrap();
         assert!(!summary.required_satisfied);
         assert_eq!(summary.stale_ids, vec![summary.runs[0].id.clone()]);
-        assert_eq!(f.service.unsatisfied_required(&f.ws, "u").await.unwrap(), vec!["test"]);
+        assert_eq!(
+            f.service.unsatisfied_required(&f.ws, "u").await.unwrap(),
+            vec!["test"]
+        );
     }
 
     #[tokio::test]
@@ -807,20 +895,39 @@ mod tests {
         let f = fx(Duration::from_millis(500)).await;
         let fail = add(&f, "fail", "echo boom; exit 2", true, RunWhen::Manual).await;
         let slow = add(&f, "slow", "sleep 30", false, RunWhen::Manual).await;
-        f.service.run(&f.ws, "u", Some(&[fail.id.clone(), slow.id.clone()])).await.unwrap();
+        f.service
+            .run(&f.ws, "u", Some(&[fail.id.clone(), slow.id.clone()]))
+            .await
+            .unwrap();
         settle(&f).await;
         let summary = f.service.summary(&f.ws, "u").await.unwrap();
-        let by = |id: &str| summary.runs.iter().find(|r| r.run_command_id.as_deref() == Some(id)).unwrap();
-        assert_eq!((by(&fail.id).status, by(&fail.id).exit_code), (CheckStatus::Failed, Some(2)));
+        let by = |id: &str| {
+            summary
+                .runs
+                .iter()
+                .find(|r| r.run_command_id.as_deref() == Some(id))
+                .unwrap()
+        };
+        assert_eq!(
+            (by(&fail.id).status, by(&fail.id).exit_code),
+            (CheckStatus::Failed, Some(2))
+        );
         assert!(by(&fail.id).output_tail.contains("boom"));
         assert!(f.service.output(by(&fail.id)).await.contains("boom"));
         assert_eq!(by(&slow.id).status, CheckStatus::Timeout);
 
         let f = fx(CHECK_TIMEOUT).await;
         let slow = add(&f, "slow", "sleep 30", false, RunWhen::Manual).await;
-        f.service.run(&f.ws, "u", Some(&[slow.id.clone()])).await.unwrap();
+        f.service
+            .run(&f.ws, "u", Some(std::slice::from_ref(&slow.id)))
+            .await
+            .unwrap();
         // Running twice doesn't queue a duplicate.
-        let again = f.service.run(&f.ws, "u", Some(&[slow.id.clone()])).await.unwrap();
+        let again = f
+            .service
+            .run(&f.ws, "u", Some(std::slice::from_ref(&slow.id)))
+            .await
+            .unwrap();
         assert_eq!(f.service.active_count(&f.ws.id), 1, "{again:?}");
         assert_eq!(f.service.cancel(&f.ws.id), 1);
         settle(&f).await;
@@ -833,7 +940,11 @@ mod tests {
         let f = fx(CHECK_TIMEOUT).await;
         let mut ids = Vec::new();
         for i in 0..3 {
-            ids.push(add(&f, &format!("c{i}"), "sleep 1", false, RunWhen::Manual).await.id);
+            ids.push(
+                add(&f, &format!("c{i}"), "sleep 1", false, RunWhen::Manual)
+                    .await
+                    .id,
+            );
         }
         let mut events = f.service.subscribe();
         f.service.run(&f.ws, "u", Some(&ids)).await.unwrap();
@@ -843,7 +954,11 @@ mod tests {
         let mut settled = 0;
         while settled < 3 {
             assert!(std::time::Instant::now() < deadline);
-            match tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap().unwrap() {
+            match tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
                 CheckEvent::Run(r) if r.status == CheckStatus::Running => {
                     running += 1;
                     max_running = max_running.max(running);
@@ -865,18 +980,52 @@ mod tests {
     async fn auto_run_respects_trust_and_fingerprint() {
         let f = fx(CHECK_TIMEOUT).await;
         let rc = add(&f, "lint", "true", false, RunWhen::BeforeReview).await;
-        assert!(f.service.auto_run_before_review(&f.ws, "u").await.unwrap().is_empty());
+        assert!(f
+            .service
+            .auto_run_before_review(&f.ws, "u")
+            .await
+            .unwrap()
+            .is_empty());
         let summary = f.service.summary(&f.ws, "u").await.unwrap();
         assert_eq!(summary.needs_confirmation, vec![rc.id.clone()]);
 
         f.meta.trust_run_command(&rc).await.unwrap();
-        assert_eq!(f.service.auto_run_before_review(&f.ws, "u").await.unwrap().len(), 1);
+        assert_eq!(
+            f.service
+                .auto_run_before_review(&f.ws, "u")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         settle(&f).await;
-        assert!(f.service.summary(&f.ws, "u").await.unwrap().needs_confirmation.is_empty());
+        assert!(f
+            .service
+            .summary(&f.ws, "u")
+            .await
+            .unwrap()
+            .needs_confirmation
+            .is_empty());
         // Same worktree state → nothing to rerun.
-        assert!(f.service.auto_run_before_review(&f.ws, "u").await.unwrap().is_empty());
-        std::fs::write(Path::new(f.ws.worktree_path.as_deref().unwrap()).join("c.txt"), "c\n").unwrap();
-        assert_eq!(f.service.auto_run_before_review(&f.ws, "u").await.unwrap().len(), 1);
+        assert!(f
+            .service
+            .auto_run_before_review(&f.ws, "u")
+            .await
+            .unwrap()
+            .is_empty());
+        std::fs::write(
+            Path::new(f.ws.worktree_path.as_deref().unwrap()).join("c.txt"),
+            "c\n",
+        )
+        .unwrap();
+        assert_eq!(
+            f.service
+                .auto_run_before_review(&f.ws, "u")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         settle(&f).await;
     }
 
@@ -887,15 +1036,32 @@ mod tests {
         let f = fx(CHECK_TIMEOUT).await;
         let mine = add(&f, "test", "true", true, RunWhen::Manual).await;
         f.meta.trust_run_command(&mine).await.unwrap();
-        let synced = add(&f, "lint", "echo from-elsewhere", true, RunWhen::BeforeReview).await;
+        let synced = add(
+            &f,
+            "lint",
+            "echo from-elsewhere",
+            true,
+            RunWhen::BeforeReview,
+        )
+        .await;
         let queued = f.service.run(&f.ws, "u", None).await.unwrap();
         assert_eq!(
-            queued.iter().map(|r| r.run_command_id.clone().unwrap()).collect::<Vec<_>>(),
+            queued
+                .iter()
+                .map(|r| r.run_command_id.clone().unwrap())
+                .collect::<Vec<_>>(),
             vec![mine.id.clone()]
         );
         settle(&f).await;
         // Explicitly picked: the user asked, so it runs.
-        assert_eq!(f.service.run(&f.ws, "u", Some(&[synced.id.clone()])).await.unwrap().len(), 1);
+        assert_eq!(
+            f.service
+                .run(&f.ws, "u", Some(std::slice::from_ref(&synced.id)))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         settle(&f).await;
     }
 
@@ -909,10 +1075,22 @@ mod tests {
         let f = fx(CHECK_TIMEOUT).await;
         let wt = PathBuf::from(f.ws.worktree_path.clone().unwrap());
         let slow = add(&f, "slow", "sleep 1", true, RunWhen::Manual).await;
-        f.service.run(&f.ws, "u", Some(&[slow.id.clone()])).await.unwrap();
+        f.service
+            .run(&f.ws, "u", Some(std::slice::from_ref(&slow.id)))
+            .await
+            .unwrap();
         // Edit while it runs.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while f.service.inner.runs.list_for_workspace(&f.ws.id).await.unwrap()[0].status != CheckStatus::Running {
+        while f
+            .service
+            .inner
+            .runs
+            .list_for_workspace(&f.ws.id)
+            .await
+            .unwrap()[0]
+            .status
+            != CheckStatus::Running
+        {
             assert!(std::time::Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -920,17 +1098,40 @@ mod tests {
         settle(&f).await;
         let summary = f.service.summary(&f.ws, "u").await.unwrap();
         assert_eq!(summary.runs[0].status, CheckStatus::Passed);
-        assert!(!summary.required_satisfied, "the mid-run edit was never checked");
+        assert!(
+            !summary.required_satisfied,
+            "the mid-run edit was never checked"
+        );
         assert_eq!(summary.stale_ids, vec![summary.runs[0].id.clone()]);
         // Undo the edit: back to the code it ran on → current again.
         std::fs::remove_file(wt.join("during.txt")).unwrap();
-        assert!(f.service.summary(&f.ws, "u").await.unwrap().required_satisfied);
+        assert!(
+            f.service
+                .summary(&f.ws, "u")
+                .await
+                .unwrap()
+                .required_satisfied
+        );
 
-        let fmt = add(&f, "fmt", "printf 'formatted\\n' > a.txt", false, RunWhen::Manual).await;
-        f.service.run(&f.ws, "u", Some(&[fmt.id.clone()])).await.unwrap();
+        let fmt = add(
+            &f,
+            "fmt",
+            "printf 'formatted\\n' > a.txt",
+            false,
+            RunWhen::Manual,
+        )
+        .await;
+        f.service
+            .run(&f.ws, "u", Some(std::slice::from_ref(&fmt.id)))
+            .await
+            .unwrap();
         settle(&f).await;
         let summary = f.service.summary(&f.ws, "u").await.unwrap();
-        let fmt_run = summary.runs.iter().find(|r| r.run_command_id.as_deref() == Some(fmt.id.as_str())).unwrap();
+        let fmt_run = summary
+            .runs
+            .iter()
+            .find(|r| r.run_command_id.as_deref() == Some(fmt.id.as_str()))
+            .unwrap();
         assert!(summary.stale_ids.contains(&fmt_run.id), "{summary:?}");
     }
 
@@ -943,13 +1144,34 @@ mod tests {
         std::fs::write(wt.join("a.txt"), "agent edit\n").unwrap();
         std::fs::write(wt.join("new.txt"), "new file\n").unwrap();
         let test = add(&f, "test", "test -f new.txt", true, RunWhen::Manual).await;
-        f.service.run(&f.ws, "u", Some(&[test.id.clone()])).await.unwrap();
+        f.service
+            .run(&f.ws, "u", Some(std::slice::from_ref(&test.id)))
+            .await
+            .unwrap();
         settle(&f).await;
-        assert!(f.service.unsatisfied_required(&f.ws, "u").await.unwrap().is_empty());
+        assert!(f
+            .service
+            .unsatisfied_required(&f.ws, "u")
+            .await
+            .unwrap()
+            .is_empty());
         git(&wt, &["add", "-A"]);
         git(&wt, &["commit", "-qm", "the task"]);
-        assert!(f.service.unsatisfied_required(&f.ws, "u").await.unwrap().is_empty(), "still fresh");
-        assert!(f.service.summary(&f.ws, "u").await.unwrap().stale_ids.is_empty());
+        assert!(
+            f.service
+                .unsatisfied_required(&f.ws, "u")
+                .await
+                .unwrap()
+                .is_empty(),
+            "still fresh"
+        );
+        assert!(f
+            .service
+            .summary(&f.ws, "u")
+            .await
+            .unwrap()
+            .stale_ids
+            .is_empty());
     }
 
     /// Editing a check's command makes its last pass stale: it vouched for
@@ -958,9 +1180,18 @@ mod tests {
     async fn editing_a_checks_command_makes_its_pass_stale() {
         let f = fx(CHECK_TIMEOUT).await;
         let test = add(&f, "test", "true", true, RunWhen::Manual).await;
-        f.service.run(&f.ws, "u", Some(&[test.id.clone()])).await.unwrap();
+        f.service
+            .run(&f.ws, "u", Some(std::slice::from_ref(&test.id)))
+            .await
+            .unwrap();
         settle(&f).await;
-        assert!(f.service.summary(&f.ws, "u").await.unwrap().required_satisfied);
+        assert!(
+            f.service
+                .summary(&f.ws, "u")
+                .await
+                .unwrap()
+                .required_satisfied
+        );
         let patch = crate::store::RunCommandUpdate {
             name: None,
             command: Some("test -f missing.txt".into()),
@@ -992,7 +1223,16 @@ mod tests {
         assert_eq!(f.service.active_count(&f.ws.id), 1);
         f.service.cancel(&f.ws.id);
         settle(&f).await;
-        assert_eq!(f.service.inner.runs.list_for_workspace(&f.ws.id).await.unwrap().len(), 1);
+        assert_eq!(
+            f.service
+                .inner
+                .runs
+                .list_for_workspace(&f.ws.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1000,7 +1240,10 @@ mod tests {
         let f = fx(CHECK_TIMEOUT).await;
         let mut gone = f.ws.clone();
         gone.worktree_path = Some("/nonexistent/phasr/wt".into());
-        assert!(matches!(f.service.run(&gone, "u", None).await, Err(CheckError::NoWorktree)));
+        assert!(matches!(
+            f.service.run(&gone, "u", None).await,
+            Err(CheckError::NoWorktree)
+        ));
         assert!(matches!(
             f.service.run(&f.ws, "u", Some(&["nope".into()])).await,
             Err(CheckError::UnknownCommand(_))

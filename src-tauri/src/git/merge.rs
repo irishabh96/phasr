@@ -82,7 +82,11 @@ pub fn has_unpushed_commits(repo_path: &Path, branch: &str) -> Result<bool, GitE
 /// its target (a local merge, which never pushes) has nothing to lose,
 /// unlike what `has_unpushed_commits` would say for it. Refs that don't
 /// exist are skipped. `false` when the branch itself doesn't exist.
-pub fn has_unsaved_commits(repo_path: &Path, branch: &str, kept_in: &[&str]) -> Result<bool, GitError> {
+pub fn has_unsaved_commits(
+    repo_path: &Path,
+    branch: &str,
+    kept_in: &[&str],
+) -> Result<bool, GitError> {
     let exists = |r: &str| run_git(repo_path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
     let head = format!("refs/heads/{branch}");
     if !exists(&head) {
@@ -196,7 +200,10 @@ pub fn merge_to(
     }
     let switched = original.as_deref() != Some(target_branch);
     if !target_exists {
-        run_git(main_repo, &["branch", "--track", "--", target_branch, &remote_target])?;
+        run_git(
+            main_repo,
+            &["branch", "--track", "--", target_branch, &remote_target],
+        )?;
     }
     if switched {
         // `<branch> --`: a branch, never a path; validated, so never an
@@ -372,9 +379,20 @@ pub fn merge_head_branches(cwd: &Path) -> Result<Vec<String>, GitError> {
     };
     let out = run_git(
         cwd,
-        &["for-each-ref", "--format=%(refname:short)", "--points-at", sha.trim(), "refs/heads/"],
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--points-at",
+            sha.trim(),
+            "refs/heads/",
+        ],
     )?;
-    Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// The branch `cwd` has checked out; `None` when detached.
@@ -665,7 +683,9 @@ mod tests {
         checkout(dir.path(), "feature", true);
         add_commit(dir.path(), "feat.txt", "feat\n", "feature work");
         checkout(dir.path(), "main", false);
-        let outcome = merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward).unwrap().outcome;
+        let outcome = merge_to(dir.path(), "main", "feature", MergeStrategy::FastForward)
+            .unwrap()
+            .outcome;
         assert!(matches!(outcome, MergeOutcome::Clean { .. }));
         assert!(dir.path().join("feat.txt").exists());
     }
@@ -689,8 +709,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(p).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@example.com"]);
@@ -706,12 +734,20 @@ mod tests {
         git(&["commit", "-qam", "main"]);
 
         assert!(merge_head_branches(p).unwrap().is_empty(), "no merge yet");
-        let outcome = merge_to(p, "main", "phasr/task", MergeStrategy::Merge).unwrap().outcome;
+        let outcome = merge_to(p, "main", "phasr/task", MergeStrategy::Merge)
+            .unwrap()
+            .outcome;
         assert!(matches!(outcome, MergeOutcome::Conflicts { .. }));
-        assert_eq!(merge_head_branches(p).unwrap(), vec!["phasr/task".to_string()]);
+        assert_eq!(
+            merge_head_branches(p).unwrap(),
+            vec!["phasr/task".to_string()]
+        );
         assert_eq!(current_branch(p).unwrap().as_deref(), Some("main"));
         set_resolution(p, "f.txt", ConflictSide::Theirs).unwrap();
-        assert!(matches!(continue_after_resolution(p).unwrap(), MergeOutcome::Clean { .. }));
+        assert!(matches!(
+            continue_after_resolution(p).unwrap(),
+            MergeOutcome::Clean { .. }
+        ));
         assert!(merge_head_branches(p).unwrap().is_empty());
     }
 
@@ -722,14 +758,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
         let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(dir.path()).status().unwrap().success());
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success());
         };
         git(&["checkout", "-qb", "phasr/t"]);
         add_commit(dir.path(), "t.txt", "t\n", "work");
-        assert!(has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(), "only on the branch");
+        assert!(
+            has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(),
+            "only on the branch"
+        );
         git(&["checkout", "-q", "main"]);
         git(&["merge", "-q", "--no-ff", "-m", "merge", "phasr/t"]);
-        assert!(!has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(), "merged into main");
+        assert!(
+            !has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(),
+            "merged into main"
+        );
         // …though it was never pushed.
         assert!(has_unpushed_commits(dir.path(), "phasr/t").unwrap());
         // A missing branch / missing keeper refs are fine.
@@ -738,8 +785,16 @@ mod tests {
     }
 
     fn git_out(path: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(path).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
@@ -774,7 +829,10 @@ mod tests {
         assert!(matches!(merged.outcome, MergeOutcome::Clean { .. }));
         assert_eq!(merged.into, "develop");
         assert!(on_branch(p, "develop", "t.txt"), "merged into develop");
-        assert!(!on_branch(p, "other", "t.txt"), "the previously checked-out branch is untouched");
+        assert!(
+            !on_branch(p, "other", "t.txt"),
+            "the previously checked-out branch is untouched"
+        );
         assert!(!on_branch(p, "main", "t.txt"));
         assert_eq!(current_branch(p).unwrap().as_deref(), Some("develop"));
     }
@@ -788,7 +846,10 @@ mod tests {
         std::fs::write(p.join("wip.txt"), "wip\n").unwrap();
         let err = merge_to(p, "develop", "phasr/t", MergeStrategy::Merge).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("`other`") && msg.contains("uncommitted"), "{msg}");
+        assert!(
+            msg.contains("`other`") && msg.contains("uncommitted"),
+            "{msg}"
+        );
         assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));
         assert!(!on_branch(p, "develop", "t.txt"));
         assert!(p.join("wip.txt").exists());
@@ -803,7 +864,10 @@ mod tests {
         checkout_on_another_branch(p);
         let err = merge_to(p, "release", "phasr/t", MergeStrategy::Merge).unwrap_err();
         assert!(err.to_string().contains("`release` doesn't exist"), "{err}");
-        assert!(!on_branch(p, "other", "t.txt"), "nothing merged into the current branch");
+        assert!(
+            !on_branch(p, "other", "t.txt"),
+            "nothing merged into the current branch"
+        );
         assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));
     }
 
@@ -817,7 +881,10 @@ mod tests {
         add_commit(upstream.path(), "d.txt", "d\n", "develop work");
         checkout(upstream.path(), "main", false);
         let clone_dir = tempfile::tempdir().unwrap();
-        git_out(clone_dir.path(), &["clone", "-q", &upstream.path().to_string_lossy(), "c"]);
+        git_out(
+            clone_dir.path(),
+            &["clone", "-q", &upstream.path().to_string_lossy(), "c"],
+        );
         let c = clone_dir.path().join("c");
         git_out(&c, &["config", "user.email", "t@example.com"]);
         git_out(&c, &["config", "user.name", "t"]);
@@ -828,7 +895,10 @@ mod tests {
         let merged = merge_to(&c, "develop", "phasr/t", MergeStrategy::Merge).unwrap();
         assert_eq!(merged.into, "develop");
         assert!(on_branch(&c, "develop", "t.txt") && on_branch(&c, "develop", "d.txt"));
-        assert_eq!(git_out(&c, &["rev-parse", "--abbrev-ref", "develop@{upstream}"]), "origin/develop");
+        assert_eq!(
+            git_out(&c, &["rev-parse", "--abbrev-ref", "develop@{upstream}"]),
+            "origin/develop"
+        );
     }
 
     /// A ff-only merge that can't fast-forward changes nothing — and the
@@ -862,12 +932,21 @@ mod tests {
 
         let err = merge_to(p, "main", "phasr/t", MergeStrategy::Squash).unwrap_err();
         assert!(err.to_string().contains("conflicts in README.md"), "{err}");
-        assert_eq!(git_out(p, &["status", "--porcelain"]), "", "nothing half-merged");
+        assert_eq!(
+            git_out(p, &["status", "--porcelain"]),
+            "",
+            "nothing half-merged"
+        );
         assert_eq!(git_out(p, &["rev-parse", "HEAD"]), head);
-        assert_eq!(std::fs::read_to_string(p.join("README.md")).unwrap(), "main\n");
+        assert_eq!(
+            std::fs::read_to_string(p.join("README.md")).unwrap(),
+            "main\n"
+        );
         // The next merge isn't blocked.
         assert!(matches!(
-            merge_to(p, "main", "phasr/t", MergeStrategy::Merge).unwrap().outcome,
+            merge_to(p, "main", "phasr/t", MergeStrategy::Merge)
+                .unwrap()
+                .outcome,
             MergeOutcome::Conflicts { .. }
         ));
         // Same for a squash sync inside a worktree.
@@ -882,8 +961,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         checkout_on_another_branch(p);
-        for (target, source) in [("--no-verify", "phasr/t"), ("develop", "--squash"), ("develop", "phasr/t:develop")] {
-            assert!(merge_to(p, target, source, MergeStrategy::Merge).is_err(), "{target} {source}");
+        for (target, source) in [
+            ("--no-verify", "phasr/t"),
+            ("develop", "--squash"),
+            ("develop", "phasr/t:develop"),
+        ] {
+            assert!(
+                merge_to(p, target, source, MergeStrategy::Merge).is_err(),
+                "{target} {source}"
+            );
         }
         assert!(merge_into(p, "--abort", MergeStrategy::Merge).is_err());
         assert_eq!(current_branch(p).unwrap().as_deref(), Some("other"));

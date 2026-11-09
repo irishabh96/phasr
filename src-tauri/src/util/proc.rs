@@ -77,7 +77,11 @@ pub async fn run_with_timeout_stdin<S: AsRef<OsStr>>(
 ) -> Result<Output, ProcError> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Backstop for every early-return path (including the caller's

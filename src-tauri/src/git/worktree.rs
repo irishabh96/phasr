@@ -56,7 +56,10 @@ pub fn create_worktree(
     .is_ok();
 
     if branch_exists {
-        run_git(repo_path, &["worktree", "add", "--", worktree_path_str, branch])?;
+        run_git(
+            repo_path,
+            &["worktree", "add", "--", worktree_path_str, branch],
+        )?;
         return Ok(());
     }
 
@@ -147,7 +150,12 @@ pub fn branch_delete(repo_path: &Path, branch: &str) -> Result<(), GitError> {
     ensure_branch_name(branch)?;
     if run_git(
         repo_path,
-        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
     )
     .is_err()
     {
@@ -227,7 +235,11 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let worktree_base = tempfile::tempdir().unwrap();
         init_repo(repo_dir.path());
-        Command::new("git").args(["branch", "victim"]).current_dir(repo_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["branch", "victim"])
+            .current_dir(repo_dir.path())
+            .status()
+            .unwrap();
         let wt = worktree_base.path().join("t");
         for (branch, base) in [
             ("--detach", "main"),
@@ -235,7 +247,10 @@ mod tests {
             ("main:victim", "main"),
             ("phasr/ok", "+main:refs/heads/victim"),
         ] {
-            assert!(create_worktree(repo_dir.path(), &wt, branch, base).is_err(), "{branch} / {base}");
+            assert!(
+                create_worktree(repo_dir.path(), &wt, branch, base).is_err(),
+                "{branch} / {base}"
+            );
             assert!(!wt.exists(), "nothing created for {branch} / {base}");
         }
         assert!(branch_delete(repo_dir.path(), "--all").is_err());

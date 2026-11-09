@@ -84,7 +84,11 @@ pub fn classify(
     let by_path: HashMap<PathBuf, &Workspace> = tasks
         .iter()
         .filter(|w| w.workspace_kind == WorkspaceKind::Agent)
-        .filter_map(|w| w.worktree_path.as_deref().map(|p| (canonical(Path::new(p)), w)))
+        .filter_map(|w| {
+            w.worktree_path
+                .as_deref()
+                .map(|p| (canonical(Path::new(p)), w))
+        })
         .collect();
     refs.iter()
         .filter_map(|r| {
@@ -163,9 +167,19 @@ pub async fn sizes(paths: Vec<String>) -> Vec<WorktreeSize> {
     let mut set = tokio::task::JoinSet::new();
     for (i, path) in paths.into_iter().enumerate() {
         set.spawn(async move {
-            let bytes = match run_with_timeout("du", &["-sk", path.as_str()], None, &[], SIZE_TIMEOUT).await {
-                Ok(out) if out.status.success() => parse_du_kib(&String::from_utf8_lossy(&out.stdout))
-                    .map(|kib| kib.saturating_mul(1024)),
+            let bytes = match run_with_timeout(
+                "du",
+                &["-sk", path.as_str()],
+                None,
+                &[],
+                SIZE_TIMEOUT,
+            )
+            .await
+            {
+                Ok(out) if out.status.success() => {
+                    parse_du_kib(&String::from_utf8_lossy(&out.stdout))
+                        .map(|kib| kib.saturating_mul(1024))
+                }
                 _ => None,
             };
             (i, WorktreeSize { path, bytes })
@@ -218,7 +232,15 @@ mod tests {
         for p in [&main, &task_wt, &orphan_wt, &external_wt] {
             std::fs::create_dir_all(p).unwrap();
         }
-        Layout { _dir: dir, main, base, task_wt, orphan_wt, external_wt, gone_wt }
+        Layout {
+            _dir: dir,
+            main,
+            base,
+            task_wt,
+            orphan_wt,
+            external_wt,
+            gone_wt,
+        }
     }
 
     fn task(path: &Path) -> Workspace {
@@ -240,8 +262,17 @@ mod tests {
         let t = task(&l.task_wt);
         let mut local = task(&l.main);
         local.workspace_kind = WorkspaceKind::Local;
-        let listed = classify(&l.main, &[l.base.clone()], &refs, &[t.clone(), local]);
-        assert_eq!(listed.len(), 3, "main checkout and missing dirs are left out: {listed:?}");
+        let listed = classify(
+            &l.main,
+            std::slice::from_ref(&l.base),
+            &refs,
+            &[t.clone(), local],
+        );
+        assert_eq!(
+            listed.len(),
+            3,
+            "main checkout and missing dirs are left out: {listed:?}"
+        );
         let by = |p: &Path| listed.iter().find(|w| Path::new(&w.path) == p).unwrap();
         let attached = by(&l.task_wt);
         assert_eq!(attached.workspace_id.as_deref(), Some(t.id.as_str()));
@@ -271,7 +302,15 @@ mod tests {
             Err(WorktreeRemoveError::MainCheckout)
         ));
         assert!(matches!(
-            validate_removal(&[s(&l.external_wt)], &l.main, &bases, &refs, &idle, &idle, false),
+            validate_removal(
+                &[s(&l.external_wt)],
+                &l.main,
+                &bases,
+                &refs,
+                &idle,
+                &idle,
+                false
+            ),
             Err(WorktreeRemoveError::OutsideBase(_))
         ));
         // Under the base but not one of this repository's worktrees (another
@@ -285,21 +324,54 @@ mod tests {
         // The base folder itself is never "under" itself.
         let with_base = [refs.clone(), vec![wt(&l.base, "x")]].concat();
         assert!(matches!(
-            validate_removal(&[s(&l.base)], &l.main, &bases, &with_base, &idle, &idle, false),
+            validate_removal(
+                &[s(&l.base)],
+                &l.main,
+                &bases,
+                &with_base,
+                &idle,
+                &idle,
+                false
+            ),
             Err(WorktreeRemoveError::OutsideBase(_))
         ));
         // A running task's worktree.
         let task_wt = canonical(&l.task_wt);
         let running = move |p: &Path| p == task_wt;
         assert!(matches!(
-            validate_removal(&[s(&l.task_wt)], &l.main, &bases, &refs, &running, &idle, false),
+            validate_removal(
+                &[s(&l.task_wt)],
+                &l.main,
+                &bases,
+                &refs,
+                &running,
+                &idle,
+                false
+            ),
             Err(WorktreeRemoveError::Running(_))
         ));
         // All-or-nothing: one bad path refuses the batch.
-        assert!(validate_removal(&[s(&l.orphan_wt), s(&l.main)], &l.main, &bases, &refs, &idle, &idle, false).is_err());
+        assert!(validate_removal(
+            &[s(&l.orphan_wt), s(&l.main)],
+            &l.main,
+            &bases,
+            &refs,
+            &idle,
+            &idle,
+            false
+        )
+        .is_err());
         // Good ones pass, deduplicated.
-        let ok = validate_removal(&[s(&l.orphan_wt), s(&l.task_wt), s(&l.orphan_wt)], &l.main, &bases, &refs, &idle, &idle, false)
-            .unwrap();
+        let ok = validate_removal(
+            &[s(&l.orphan_wt), s(&l.task_wt), s(&l.orphan_wt)],
+            &l.main,
+            &bases,
+            &refs,
+            &idle,
+            &idle,
+            false,
+        )
+        .unwrap();
         assert_eq!(ok, vec![canonical(&l.orphan_wt), canonical(&l.task_wt)]);
     }
 
@@ -307,7 +379,11 @@ mod tests {
     #[test]
     fn removal_refuses_unsaved_work_unless_forced() {
         let l = layout();
-        let refs = vec![wt(&l.main, "main"), wt(&l.task_wt, "phasr/fix"), wt(&l.orphan_wt, "phasr/old")];
+        let refs = vec![
+            wt(&l.main, "main"),
+            wt(&l.task_wt, "phasr/fix"),
+            wt(&l.orphan_wt, "phasr/old"),
+        ];
         let bases = vec![l.base.clone()];
         let idle = |_: &Path| false;
         let everything = |_: &Path| true;
@@ -315,11 +391,15 @@ mod tests {
         let both = [s(&l.task_wt), s(&l.orphan_wt)];
         match validate_removal(&both, &l.main, &bases, &refs, &idle, &everything, false) {
             Err(WorktreeRemoveError::UnsavedWork(paths)) => {
-                assert_eq!(paths, vec![s(&canonical(&l.task_wt)), s(&canonical(&l.orphan_wt))]);
+                assert_eq!(
+                    paths,
+                    vec![s(&canonical(&l.task_wt)), s(&canonical(&l.orphan_wt))]
+                );
             }
             other => panic!("expected UnsavedWork, got {other:?}"),
         }
-        let forced = validate_removal(&both, &l.main, &bases, &refs, &idle, &everything, true).unwrap();
+        let forced =
+            validate_removal(&both, &l.main, &bases, &refs, &idle, &everything, true).unwrap();
         assert_eq!(forced.len(), 2);
         // `force` never overrides the hard refusals.
         let task_wt = canonical(&l.task_wt);
@@ -339,7 +419,13 @@ mod tests {
         let out = sizes(vec![found.clone(), missing.clone()]).await;
         assert_eq!(out[0].path, found);
         assert!(out[0].bytes.unwrap() >= 64 * 1024, "{out:?}");
-        assert_eq!(out[1], WorktreeSize { path: missing, bytes: None });
+        assert_eq!(
+            out[1],
+            WorktreeSize {
+                path: missing,
+                bytes: None
+            }
+        );
         assert_eq!(parse_du_kib("128\t/x\n"), Some(128));
         assert_eq!(parse_du_kib(""), None);
     }
