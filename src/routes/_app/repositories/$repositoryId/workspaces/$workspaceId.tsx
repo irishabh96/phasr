@@ -142,7 +142,8 @@ function WorkspaceDetail() {
         setStopOpen(true);
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+      // ⌘ only: Ctrl+Alt+digit belongs to the terminal.
+      if (e.metaKey && !e.ctrlKey && e.altKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
         const n = Number(e.code.slice(5)) - 1;
         const tabs = Array.from(
           document.querySelectorAll<HTMLElement>('[aria-label="Workspace tabs"] [role="tab"]'),
@@ -181,7 +182,8 @@ function WorkspaceDetail() {
   // the numbered chips on the PinnedRunCommandsToolbar.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return; // ⌘⌥N focuses panes
+      // ⌘ only (Ctrl+digit belongs to the terminal); ⌘⌥N focuses panes.
+      if (!e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       if (e.key < "1" || e.key > "9") return;
       if (isOverlayOpen()) return;
       const pinned = [...(runCommands ?? [])]

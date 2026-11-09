@@ -106,8 +106,20 @@ describe("metaOnly bindings", () => {
     expect(matchShortcut(key("i", { ctrl: true }), SHORTCUTS.toggleRightPanel, OTHER)).toBe(true);
   });
 
-  it("leave the other ⌘ bindings matching Ctrl", () => {
-    expect(matchShortcut(key("b", { ctrl: true }), SHORTCUTS.toggleSidebarPin, MAC)).toBe(true);
+  it("let Ctrl+W/N/T/K/B reach the terminal on macOS", () => {
+    for (const [k, s] of [
+      ["w", SHORTCUTS.closeActiveTab],
+      ["n", SHORTCUTS.newWorkspace],
+      ["t", SHORTCUTS.newTerminal],
+      ["k", SHORTCUTS.togglePalette],
+      ["b", SHORTCUTS.toggleSidebarPin],
+    ] as const) {
+      expect(matchShortcut(key(k, { ctrl: true }), s, MAC)).toBe(false);
+      expect(matchShortcut(key(k, { meta: true }), s, MAC)).toBe(true);
+    }
+  });
+
+  it("keep Ctrl for the font-size keys", () => {
     expect(matchShortcut(key("=", { ctrl: true }), SHORTCUTS.increaseFontSize, MAC)).toBe(true);
   });
 

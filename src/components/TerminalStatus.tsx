@@ -13,7 +13,9 @@ export type TerminalStatusState =
   | "retrying"
   | "restarting"
   | "failed"
-  | "exited";
+  | "exited"
+  | "setting-up"
+  | "not-started";
 
 interface TerminalStatusProps {
   state: TerminalStatusState;
@@ -75,6 +77,26 @@ function resolve(
         support: SUPPORT_LAUNCH,
         role: "status",
         button: { label: "Restart", disabled: true },
+      };
+    case "setting-up":
+      return {
+        Icon: Loader2,
+        iconColor: "text-(--color-info)",
+        spin: true,
+        title: "Setting up the worktree…",
+        support: "The agent starts as soon as setup finishes.",
+        role: "status",
+        button: null,
+      };
+    case "not-started":
+      return {
+        Icon: CircleAlert,
+        iconColor: "text-(--color-text-muted)",
+        spin: false,
+        title: "Not started yet",
+        support: "Start this task from the board with Start now.",
+        role: "status",
+        button: null,
       };
     case "failed":
       return {

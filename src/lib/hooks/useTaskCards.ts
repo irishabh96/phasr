@@ -88,8 +88,11 @@ export function useTaskCardEvents() {
       queryClient.invalidateQueries({ queryKey: taskCardKeys.systemStatus() });
     }).then(keep);
 
-    void listen<TaskStatusPayload>(TASK_STATUS_EVENT, (event) => {
-      invalidateRepo(event.payload.repositoryId);
+    // A status change also reaches the board as task-cards-changed (after
+    // the backend's 300 ms coalescing, with the fresh diff), so only the
+    // status bar counts are refreshed here; refetching the card list too
+    // made every status change cost two full board loads.
+    void listen<TaskStatusPayload>(TASK_STATUS_EVENT, () => {
       queryClient.invalidateQueries({ queryKey: taskCardKeys.systemStatus() });
     }).then(keep);
 

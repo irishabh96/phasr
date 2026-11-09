@@ -115,7 +115,8 @@ export function ReviewInspector({ workspace }: { workspace: Workspace }) {
   // commit & push instead; the two never mount together).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.key !== "Enter") return;
+      // ⌘ only: Ctrl+Shift+Enter in a terminal must not approve the PR.
+      if (!e.metaKey || e.ctrlKey || !e.shiftKey || e.key !== "Enter") return;
       if ((e.target as HTMLElement | null)?.closest("textarea, input")) return;
       if (approve.isPending || workspace.outcome != null || isOverlayOpen()) return;
       e.preventDefault();

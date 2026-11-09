@@ -55,24 +55,28 @@ export const SHORTCUTS = {
   openSettings: {
     key: ",",
     meta: true,
+    metaOnly: true,
     display: ["⌘", ","],
     label: "Open settings",
   },
   togglePalette: {
     key: "k",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "K"],
     label: "Command palette",
   },
   toggleSidebarPin: {
     key: "b",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "B"],
     label: "Collapse task list",
   },
   toggleSidebarHide: {
     key: "b",
     meta: true,
+    metaOnly: true,
     shift: true,
     display: ["⌘", "⇧", "B"],
     label: "Hide task list",
@@ -111,6 +115,7 @@ export const SHORTCUTS = {
   stopAgent: {
     key: ".",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "."],
     label: "Stop agent",
   },
@@ -146,30 +151,35 @@ export const SHORTCUTS = {
   newWorkspace: {
     key: "n",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "N"],
     label: "New task",
   },
   newTerminal: {
     key: "t",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "T"],
     label: "New terminal",
   },
   closeActiveTab: {
     key: "w",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "W"],
     label: "Close tab",
   },
   searchFiles: {
     key: "p",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "P"],
     label: "Search files",
   },
   openInEditor: {
     key: "o",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "O"],
     label: "Open in editor",
   },
@@ -178,6 +188,7 @@ export const SHORTCUTS = {
   openNotes: {
     key: "n",
     meta: true,
+    metaOnly: true,
     shift: true,
     display: ["⌘", "⇧", "N"],
     label: "Repository notes",
@@ -187,6 +198,7 @@ export const SHORTCUTS = {
   toggleDiffMode: {
     key: "\\",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "\\"],
     label: "Toggle split / inline diff",
   },
@@ -195,6 +207,7 @@ export const SHORTCUTS = {
   submitForm: {
     key: "enter",
     meta: true,
+    metaOnly: true,
     display: ["⌘", "↵"],
     label: "Submit",
   },
@@ -203,6 +216,7 @@ export const SHORTCUTS = {
   commitAndPush: {
     key: "enter",
     meta: true,
+    metaOnly: true,
     shift: true,
     display: ["⌘", "⇧", "↵"],
     label: "Commit & push",

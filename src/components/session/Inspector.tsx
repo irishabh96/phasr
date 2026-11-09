@@ -303,7 +303,7 @@ function TaskSection({ workspace, onCollapse }: { workspace: Workspace; onCollap
             <dt className="text-(--color-text-muted)">Tokens</dt>
             <dd className="m-0 font-mono text-[11px]" title={usage.model ?? undefined}>
               {formatTokens(usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens)}
-              {usage.costUsd !== null ? ` · $${usage.costUsd.toFixed(2)}` : ""}
+              {usage.costUsd !== null ? ` · ${usage.costPartial ? "≥ " : ""}$${usage.costUsd.toFixed(2)}` : ""}
             </dd>
           </>
         ) : null}

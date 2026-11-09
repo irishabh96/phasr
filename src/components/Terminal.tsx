@@ -43,7 +43,7 @@ type StartMode = "initial" | "retry" | "restart";
 
 /** Overlay state driven onto <TerminalStatus>. `null` = no overlay. */
 type TermStatus =
-  | { state: "starting" | "retrying" | "restarting" }
+  | { state: "starting" | "retrying" | "restarting" | "setting-up" | "not-started" }
   | { state: "failed"; error: string }
   | { state: "exited"; exitCode: number | null }
   | null;
@@ -228,7 +228,24 @@ export function Terminal({
           .resizeTask(workspaceId, surface.rows, surface.cols)
           .catch(() => {});
       } catch (err) {
-        entry!.setStatus?.({ state: "failed", error: String(err) });
+        const message = String(err);
+        if (message.includes("still being set up")) {
+          // The worktree is still being prepared (fetch + after-create hook);
+          // the backend starts the agent itself when that finishes. Poll
+          // until it's attachable, while this terminal is still cached.
+          entry!.setStatus?.({ state: "setting-up" });
+          const pending = entry!;
+          window.setTimeout(() => {
+            if (mainSurfaceCache.get(workspaceId) === pending && !pending.started)
+              void startOrAttach("initial");
+          }, 2000);
+          return;
+        }
+        if (message.includes("hasn't started yet")) {
+          entry!.setStatus?.({ state: "not-started" });
+          return;
+        }
+        entry!.setStatus?.({ state: "failed", error: message });
       }
     };
 

@@ -109,12 +109,16 @@ export function RunCommandTerminal({
 
     const disposables: SurfaceDisposable[] = [];
 
+    // Attaching to an exited command replays its output and exit, and the
+    // exit can arrive before the attach promise resolves.
+    let exitSeen = false;
     const channel = new Channel<PtyEvent>();
     channel.onmessage = (event) => {
       if (cancelled) return;
       if (event.type === "output") {
         surface.write(decodePtyChunk(event.chunk));
       } else if (event.type === "exit") {
+        exitSeen = true;
         setStatus({ state: "exited", exitCode: event.exitCode });
         onExitRef.current?.(event.exitCode);
       }
@@ -129,23 +133,23 @@ export function RunCommandTerminal({
             : { state: "starting" },
       );
       for (const d of disposables.splice(0)) d.dispose();
+      exitSeen = false;
       try {
         await whenGridSettles(surface);
         // Mounting ATTACHES; only an explicit Run (an intent from openTab,
         // or Retry/Restart here) spawns. Visiting another task — or coming
         // back after an exec command exited — never runs it again by itself.
+        // An explicit Run goes straight to start, which re-attaches to a live
+        // command and otherwise spawns (attach would replay an old exit).
         let attached = false;
         if (mode === "initial") {
           const key = runKey(runCommandId, taskId);
-          try {
-            await tauri.attachRunCommand(runCommandId, channel, surface.rows, surface.cols, workspaceId);
-            attached = true;
-            // Already running: the "run it" is satisfied. Left in place it
-            // would restart the command by itself on a later remount.
-            useUiStore.getState().runPanel.consumeIntent(key);
-          } catch (err) {
-            if (String(err) !== "not running") throw err;
-            if (!useUiStore.getState().runPanel.consumeIntent(key)) {
+          if (!useUiStore.getState().runPanel.consumeIntent(key)) {
+            try {
+              await tauri.attachRunCommand(runCommandId, channel, surface.rows, surface.cols, workspaceId);
+              attached = true;
+            } catch (err) {
+              if (String(err) !== "not running") throw err;
               if (cancelled) return;
               setStatus({ state: "exited", exitCode: null });
               return;
@@ -161,7 +165,7 @@ export function RunCommandTerminal({
             workspaceId,
           );
         if (cancelled) return;
-        setStatus(null);
+        if (!exitSeen) setStatus(null);
         disposables.push(
           surface.onData((data) => {
             if (cancelled) return;

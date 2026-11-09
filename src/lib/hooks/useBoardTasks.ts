@@ -45,11 +45,19 @@ function fromCard(card: TaskCard, repository: Repository | null): BoardTask {
     repository,
     lane: LANE_FROM_BACKEND[card.lane],
     diff: card.diff,
-    activity: card.workspace.status === "running" ? (st?.lastActivity ?? null) : null,
+    // "running" also covers a task whose worktree is still being set up
+    // (status pending; the backend reports "Setting up the worktree…").
+    activity:
+      card.workspace.status === "running" || card.lane === "running" ? (st?.lastActivity ?? null) : null,
     attention: st?.state === "needs-you" ? (st.attention ?? null) : null,
     finishedAt: card.finishedAt,
     dependsOnName: card.dependsOnName,
-    notStarted: card.lane === "draft" || card.lane === "queued",
+    // A queued task that gave up after repeated failed starts is "failed"
+    // with no branch: it never ran, so it keeps the Start now card.
+    notStarted:
+      card.lane === "draft" ||
+      card.lane === "queued" ||
+      (card.lane === "failed" && !card.workspace.branch && !card.workspace.worktreePath),
   };
 }
 

@@ -151,7 +151,9 @@ function QueuedCard({ task }: { task: BoardTask }) {
           {task.repository ? <RepoMark id={task.repository.id} name={task.repository.name} size={12} /> : null}
           <span className="truncate">{task.repository?.name}</span>
           <span className="flex-1" />
-          <span>{ws.queuedAt ? "queued" : "draft"}</span>
+          <span className={ws.status === "failed" ? "text-(--color-danger)" : undefined}>
+            {ws.status === "failed" ? "couldn't start" : ws.queuedAt ? "queued" : "draft"}
+          </span>
         </span>
         <span className="font-medium leading-[1.35]">{ws.name}</span>
         {ws.prompt ? (
