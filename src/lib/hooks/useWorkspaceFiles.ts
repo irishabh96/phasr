@@ -73,6 +73,26 @@ function useWorktreeFileEvents(workspaceId: string | null | undefined) {
   }, [workspaceId, queryClient]);
 }
 
+/**
+ * The watcher subscription lives only while the Files pane is visible, and
+ * open files are cached forever (`staleTime: Infinity`), so anything written
+ * while the pane was hidden — or while another task was open — would stay
+ * invisible. Each time the pane is shown, re-read the tree and every open
+ * file; the editor then runs its disk-changed check against the fresh data.
+ */
+export function useRefreshWorkspaceFilesOnShow(workspaceId: string, visible: boolean) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!visible) return;
+    // `cancelRefetch: false`: a first load already in flight is fresh enough.
+    void queryClient.invalidateQueries({ queryKey: workspaceFileKeys.tree(workspaceId) }, { cancelRefetch: false });
+    void queryClient.invalidateQueries(
+      { queryKey: [...workspaceFileKeys.all, "file", workspaceId] },
+      { cancelRefetch: false },
+    );
+  }, [queryClient, workspaceId, visible]);
+}
+
 /** The worktree's files (tracked + untracked, `.gitignore` honoured) with git badges. */
 export function useWorkspaceTree(workspaceId: string | null | undefined) {
   useWorktreeFileEvents(workspaceId);

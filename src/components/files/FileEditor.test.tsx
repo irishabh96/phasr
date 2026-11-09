@@ -318,3 +318,31 @@ describe("FilesPane saving", () => {
     expect(h.writeWorkspaceFile).toHaveBeenLastCalledWith(WS, "a.ts", "mine 2", null);
   });
 });
+
+describe("FilesPane freshness", () => {
+  it("refetches open files when the pane becomes visible again", async () => {
+    const view = render(pane(true));
+    const el = await openFile();
+    view.rerender(pane(false));
+
+    // The agent edits while the pane is hidden (no watcher subscription).
+    h.state.disk.set("a.ts", "agent edit\n");
+    view.rerender(pane(true));
+
+    await waitFor(() => expect(el.value).toBe("agent edit\n"));
+  });
+
+  it("flags a hidden-time agent edit under unsaved changes when shown again", async () => {
+    const view = render(pane(true));
+    const el = await openFile();
+    type(el, "mine");
+    view.rerender(pane(false));
+
+    h.state.disk.set("a.ts", "agent edit\n");
+    view.rerender(pane(true));
+
+    expect(await screen.findByText(/changed this file on disk/)).toBeInTheDocument();
+    expect(el.value).toBe("mine");
+  });
+});
+

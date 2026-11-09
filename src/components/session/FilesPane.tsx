@@ -1,9 +1,9 @@
 import { ChevronDown, ChevronRight, FileText, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { FileEditor } from "@/components/files/FileEditor";
 import { ConfirmDialog } from "@/components/ui/Dialog";
-import { useWorkspaceTree } from "@/lib/hooks/useWorkspaceFiles";
+import { useRefreshWorkspaceFilesOnShow, useWorkspaceTree } from "@/lib/hooks/useWorkspaceFiles";
 import { GroupHeader } from "@/components/ui/GroupHeader";
 import { PanelState } from "@/components/ui/PanelState";
 import { useGitStatus } from "@/lib/hooks/useGit";
@@ -48,16 +48,26 @@ function sortedChildren(node: TreeNode): TreeNode[] {
  * Files pane tab (A-Editor): the worktree's file tree with git status
  * badges beside a viewer. Changed files' folders start expanded.
  */
+export const FilesPane = memo(FilesPaneImpl, (a, b) =>
+  // The route re-renders on every workspace refetch (agent-state events
+  // from any task); only these fields matter here.
+  a.visible === b.visible && a.workspace.id === b.workspace.id && a.workspace.worktreePath === b.workspace.worktreePath,
+);
+
 const NO_TABS: string[] = [];
 
-export function FilesPane({ workspace, visible }: { workspace: Workspace; visible: boolean }) {
+function FilesPaneImpl({ workspace, visible }: { workspace: Workspace; visible: boolean }) {
   const workspaceId = workspace.id;
   const root = workspace.worktreePath;
   // The backend tree (tracked + untracked, with status); the repo file list
   // when the backend doesn't answer.
   const wsTree = useWorkspaceTree(visible ? workspaceId : null);
-  const fallback = useRepoFiles(visible && !Array.isArray(wsTree.data?.files) ? root : null);
-  const files = wsTree.data?.files ? wsTree.data.files.map((f) => f.path) : fallback.data;
+  useRefreshWorkspaceFilesOnShow(workspaceId, visible);
+  const treeFiles = wsTree.data?.files;
+  const fallback = useRepoFiles(visible && !Array.isArray(treeFiles) ? root : null);
+  // Keyed on the query data's identity (structurally shared across
+  // refetches), so the tree below is rebuilt only when the files change.
+  const files = useMemo(() => (treeFiles ? treeFiles.map((f) => f.path) : fallback.data), [treeFiles, fallback.data]);
   const isLoading = wsTree.isLoading || fallback.isLoading;
   const error = wsTree.data ? null : fallback.error;
   const { data: changes } = useGitStatus(workspaceId);
