@@ -12,7 +12,8 @@ use crate::orchestrator::{
     launch, OrchestratorError, RepoLockRegistry, TaskOrchestrator, TaskSetup,
 };
 use crate::store::{
-    RepositoryConfigRepo, RepositoryRepo, SettingsRepo, StoreError, WorkspaceRepo, WorkspaceUpdate,
+    AppMetaRepo, RepositoryConfigRepo, RepositoryRepo, SettingsRepo, StoreError, WorkspaceRepo,
+    WorkspaceUpdate,
 };
 use crate::sync::CloudSyncState;
 
@@ -132,6 +133,7 @@ pub async fn create_workspace(
     workspaces: State<'_, WorkspaceRepo>,
     repositories: State<'_, RepositoryRepo>,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     repository_configs: State<'_, RepositoryConfigRepo>,
     repo_locks: State<'_, Arc<RepoLockRegistry>>,
     session: State<'_, Arc<SessionState>>,
@@ -144,7 +146,7 @@ pub async fn create_workspace(
     // Same branch template / worktree base / default base as start_task.
     let setup = TaskSetup {
         config: repository_configs.get(&repository.id).await?,
-        settings: settings.get_or_default().await?,
+        settings: crate::settings_trust::usable(&meta, settings.get_or_default().await?).await,
     };
 
     // The launch command is the selected agent's (default Claude) template
@@ -152,7 +154,7 @@ pub async fn create_workspace(
     // start_task uses, so this path can't quietly launch skip-all.
     let agent = input.agent.unwrap_or_else(Agent::default);
     let (mode, command) =
-        launch::resolve_launch(agent, None, &settings.get_or_init().await?)?;
+        launch::resolve_launch(agent, None, &crate::settings_trust::launch_settings(&settings, &meta).await?)?;
     let mut workspace = Workspace::new(
         input.repository_id.clone(),
         input.name,
@@ -219,6 +221,7 @@ pub async fn update_workspace(
     input: UpdateWorkspaceInput,
     repo: State<'_, WorkspaceRepo>,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, WorkspaceCmdError> {
@@ -239,7 +242,7 @@ pub async fn update_workspace(
                 agent,
                 input.permission_mode,
                 existing.permission_mode,
-                &settings.get_or_init().await?,
+                &crate::settings_trust::launch_settings(&settings, &meta).await?,
             )?;
             let prompt = input.prompt.as_deref().or(existing.prompt.as_deref());
             command = Some(launch::interpolate_for_task(&template, prompt));

@@ -52,6 +52,29 @@ The release workflow declares `environment: release`, so GitHub only exposes the
 
 7. **Publish.**
 
+## Rollback safety (migrations)
+
+**Release 0.4.4 before any release that contains migrations 0015 or later
+(currently 0015–0021, the Mission Control redesign).**
+
+0.4.4 is `master` plus `migrator()`'s `set_ignore_missing(true)`
+(`src-tauri/src/store/pool.rs`), with no new migrations. Every build up to
+0.4.3 uses sqlx's strict migrator: if a user upgrades to a build that has
+applied 0015+ and then reinstalls 0.4.3, the app fails at launch with
+"migration 15 was previously applied but is missing" — the 0.3.7 incident
+again — and there is no version they can roll back to. With 0.4.4 out
+first, 0.4.4 is a safe rollback target, because it ignores migrations it
+doesn't know and the later ones are additive only.
+
+The `version_compat` tests in `store/pool.rs` pin this:
+`rolling_back_to_0_4_3_is_impossible_so_0_4_4_must_ship_first` and
+`rolling_back_to_0_4_4_opens_a_db_this_build_wrote`. If 0.4.4 can't be
+released first, say in the release notes that the release can't be rolled
+back.
+
+When you add a migration, keep it additive (new nullable or defaulted
+columns, new tables), and pin its checksum in `SHIPPED` in the same file.
+
 ## Versioning
 
 Pre-1.0 we use SemVer loosely:

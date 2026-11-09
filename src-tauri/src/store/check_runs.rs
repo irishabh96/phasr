@@ -25,6 +25,11 @@ pub struct CheckRunFinish {
     pub finished_at: DateTime<Utc>,
     pub duration_ms: Option<i64>,
     pub output_tail: String,
+    /// The worktree's fingerprint AFTER the run, when it ran to an exit. A
+    /// check that rewrites files (a formatter, codegen) leaves the worktree
+    /// as its result describes it; tied to the pre-run state it was always
+    /// stale. `None` keeps the fingerprint recorded at queue time.
+    pub fingerprint: Option<String>,
 }
 
 /// `check_runs` — local-only, so no `dirty`/sync bookkeeping. Rows carry
@@ -91,7 +96,7 @@ impl CheckRunRepo {
     pub async fn finish(&self, id: &str, finish: CheckRunFinish) -> Result<CheckRun, StoreError> {
         sqlx::query(
             "UPDATE check_runs SET status = ?, exit_code = ?, finished_at = ?, duration_ms = ?,
-                output_tail = ?
+                output_tail = ?, fingerprint = COALESCE(?, fingerprint)
              WHERE id = ? AND status IN ('queued', 'running')",
         )
         .bind(finish.status.as_str())
@@ -99,6 +104,7 @@ impl CheckRunRepo {
         .bind(finish.finished_at.to_rfc3339())
         .bind(finish.duration_ms)
         .bind(&finish.output_tail)
+        .bind(&finish.fingerprint)
         .bind(id)
         .execute(&self.db)
         .await?;
@@ -140,6 +146,43 @@ impl CheckRunRepo {
         .fetch_all(&self.db)
         .await?;
         rows.iter().map(row_to_check_run).collect()
+    }
+
+    /// Keep only the newest `keep` SETTLED runs per check per task (one
+    /// workspace, or all with `None`); delete the rest. Every "Run checks"
+    /// adds rows, and nothing else ever removed them. Returns the deleted
+    /// runs' log paths for the caller to remove. Active runs are never
+    /// touched.
+    pub async fn prune(&self, keep: i64, workspace_id: Option<&str>) -> Result<Vec<String>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id, log_path FROM (
+                SELECT id, log_path, status,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY workspace_id, COALESCE(run_command_id, name)
+                           ORDER BY created_at DESC, rowid DESC
+                       ) AS rn
+                FROM check_runs
+                WHERE (? IS NULL OR workspace_id = ?)
+             )
+             WHERE rn > ? AND status NOT IN ('queued', 'running')",
+        )
+        .bind(workspace_id)
+        .bind(workspace_id)
+        .bind(keep)
+        .fetch_all(&self.db)
+        .await?;
+        let mut logs = Vec::new();
+        for row in &rows {
+            let id: String = row.try_get("id")?;
+            sqlx::query("DELETE FROM check_runs WHERE id = ?")
+                .bind(&id)
+                .execute(&self.db)
+                .await?;
+            if let Some(path) = row.try_get::<Option<String>, _>("log_path")? {
+                logs.push(path);
+            }
+        }
+        Ok(logs)
     }
 
     /// Startup: a run still `queued`/`running` belonged to a process that
@@ -246,6 +289,7 @@ mod tests {
                     finished_at: Utc::now(),
                     duration_ms: Some(12),
                     output_tail: "ok\n".into(),
+                    fingerprint: Some("after".into()),
                 },
             )
             .await
@@ -261,15 +305,50 @@ mod tests {
                     finished_at: Utc::now(),
                     duration_ms: None,
                     output_tail: String::new(),
+                    fingerprint: None,
                 },
             )
             .await
             .unwrap();
         assert_eq!(again.status, CheckStatus::Passed);
+        assert_eq!(again.fingerprint.as_deref(), Some("after"), "the post-run fingerprint is recorded");
 
         assert_eq!(repo.get_for_user(&run.id, "user-a").await.unwrap().id, run.id);
         assert!(matches!(repo.get_for_user(&run.id, "user-b").await, Err(StoreError::NotFound)));
         assert_eq!(repo.list_for_workspace(&ws.id).await.unwrap().len(), 1);
+    }
+
+    /// Only the newest `keep` settled runs per check survive; active runs
+    /// are never pruned; the pruned runs' logs are handed back.
+    #[tokio::test]
+    async fn prune_keeps_the_latest_runs_per_check() {
+        let (repo, ws, _dir) = fresh().await;
+        let base = Utc::now() - chrono::Duration::hours(1);
+        for i in 0..5 {
+            let mut run = queued(&ws.id);
+            run.status = CheckStatus::Passed;
+            run.created_at = base + chrono::Duration::minutes(i);
+            run.log_path = Some(format!("/logs/{i}.log"));
+            repo.insert(&run, None).await.unwrap();
+        }
+        let mut other = queued(&ws.id);
+        other.run_command_id = Some("lint".into());
+        other.status = CheckStatus::Failed;
+        repo.insert(&other, None).await.unwrap();
+        let mut active = queued(&ws.id);
+        active.created_at = base - chrono::Duration::minutes(1);
+        repo.insert(&active, None).await.unwrap();
+
+        let mut logs = repo.prune(2, Some(&ws.id)).await.unwrap();
+        logs.sort();
+        // rc: 6 rows (5 settled + 1 active, the oldest); the 2 newest kept,
+        // the active one survives regardless.
+        assert_eq!(logs, vec!["/logs/0.log", "/logs/1.log", "/logs/2.log"]);
+        let left = repo.list_for_workspace(&ws.id).await.unwrap();
+        assert_eq!(left.len(), 4);
+        assert!(left.iter().any(|r| r.id == active.id));
+        assert!(left.iter().any(|r| r.id == other.id));
+        assert!(repo.prune(2, None).await.unwrap().is_empty(), "idempotent");
     }
 
     #[tokio::test]

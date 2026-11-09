@@ -131,9 +131,7 @@ pub fn apply_update(
     if let Some(v) = input.default_base_branch {
         config.default_base_branch = clean_text(v);
         if let Some(b) = &config.default_base_branch {
-            if b.contains(char::is_whitespace) || b.starts_with('-') {
-                return Err(format!("`{b}` isn't a branch name"));
-            }
+            crate::domain::repository_config::validate_branch_name(b)?;
         }
     }
     if let Some(v) = input.fetch_base_before_task {
@@ -308,14 +306,17 @@ pub async fn compute_worktree_sizes(
 
 /// Remove worktrees (`git worktree remove --force`). All-or-nothing
 /// validation first: only this repository's worktrees, inside a phasr
-/// worktree folder, never the main checkout, never under a running agent.
-/// Branches are kept, so a task whose worktree was removed is recreated
-/// from its branch when reopened. Returns the removed paths.
+/// worktree folder, never the main checkout, never under a running agent,
+/// and — unless `force` — none with uncommitted changes or commits kept
+/// nowhere else (rejects naming them all). Branches are kept, so a task
+/// whose worktree was removed is recreated from its branch when reopened.
+/// Returns the removed paths.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn remove_worktrees(
     repository_id: String,
     paths: Vec<String>,
+    force: Option<bool>,
     repositories: State<'_, RepositoryRepo>,
     configs: State<'_, RepositoryConfigRepo>,
     settings: State<'_, SettingsRepo>,
@@ -347,7 +348,56 @@ pub async fn remove_worktrees(
     };
     let runtime = runtime.inner().clone();
     let running = |path: &Path| task_at(path).is_some_and(|t| runtime.get(&t.id).is_some());
-    let targets = worktrees::validate_removal(&paths, &ctx.main, &ctx.bases, &ctx.refs, &running)?;
+    let force = force.unwrap_or(false);
+    // Unsaved work per requested path, gathered off the runtime (one git
+    // status + rev-list each): dirty, or commits on its branch that are
+    // neither pushed nor in the task's base.
+    let unsaved_paths: std::collections::HashSet<PathBuf> = if force {
+        Default::default()
+    } else {
+        let probes: Vec<(PathBuf, Option<String>, Option<String>)> = paths
+            .iter()
+            .map(|raw| {
+                let path = std::fs::canonicalize(raw).unwrap_or_else(|_| PathBuf::from(raw));
+                let branch = ctx
+                    .refs
+                    .iter()
+                    .find(|r| std::fs::canonicalize(&r.path).is_ok_and(|p| p == path))
+                    .and_then(|r| r.branch.clone());
+                let base = task_at(&path)
+                    .and_then(|t| t.base_branch.clone())
+                    .or_else(|| Some(repository.default_branch.clone()));
+                (path, branch, base)
+            })
+            .collect();
+        let main = ctx.main.clone();
+        tokio::task::spawn_blocking(move || {
+            probes
+                .into_iter()
+                .filter(|(path, branch, base)| {
+                    // Unknown = at risk: never force-delete on a failed probe.
+                    git::is_dirty(path).unwrap_or(true)
+                        || branch.as_deref().is_some_and(|b| {
+                            let kept: Vec<&str> = base.as_deref().into_iter().collect();
+                            git::has_unsaved_commits(&main, b, &kept).unwrap_or(true)
+                        })
+                })
+                .map(|(path, _, _)| path)
+                .collect()
+        })
+        .await
+        .map_err(|e| GitError::CommandFailed(e.to_string()))?
+    };
+    let unsaved = |path: &Path| unsaved_paths.contains(path);
+    let targets = worktrees::validate_removal(
+        &paths,
+        &ctx.main,
+        &ctx.bases,
+        &ctx.refs,
+        &running,
+        &unsaved,
+        force,
+    )?;
 
     let mut removed = Vec::with_capacity(targets.len());
     for path in targets {

@@ -32,6 +32,9 @@ const MAX_CONCURRENT_PER_TASK: usize = 2;
 /// `get_check_output` returns at most this much of the log (its end).
 const OUTPUT_READ_CAP: u64 = 4 * 1024 * 1024;
 const EVENT_CAPACITY: usize = 1024;
+/// Settled runs kept per check per task; older ones (and their logs) are
+/// pruned after each run and at startup.
+const RUNS_KEPT_PER_CHECK: i64 = 20;
 
 #[derive(Debug, Error)]
 pub enum CheckError {
@@ -83,6 +86,10 @@ struct Inner {
     active: Mutex<HashMap<String, Active>>,
     /// Last lane seen per task, to catch the move INTO needs-review.
     lanes: Mutex<HashMap<String, Lane>>,
+    /// Worktree → (cheap key, full fingerprint). The full fingerprint
+    /// (`git diff HEAD` + reading untracked files) is only recomputed when
+    /// `git::fingerprint_key` moves.
+    fingerprints: Mutex<HashMap<PathBuf, (String, Option<String>)>>,
 }
 
 #[derive(Clone)]
@@ -124,6 +131,7 @@ impl CheckService {
                 limits: Mutex::new(HashMap::new()),
                 active: Mutex::new(HashMap::new()),
                 lanes: Mutex::new(HashMap::new()),
+                fingerprints: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -137,6 +145,20 @@ impl CheckService {
     pub async fn settle_interrupted(&self) {
         if let Err(err) = self.inner.runs.settle_interrupted().await {
             eprintln!("failed to settle interrupted check runs: {err}");
+        }
+        self.prune(None).await;
+    }
+
+    /// Drop all but the newest `RUNS_KEPT_PER_CHECK` settled runs per check
+    /// (one task, or all), with their log files.
+    async fn prune(&self, workspace_id: Option<&str>) {
+        match self.inner.runs.prune(RUNS_KEPT_PER_CHECK, workspace_id).await {
+            Ok(logs) => {
+                for log in logs {
+                    let _ = tokio::fs::remove_file(log).await;
+                }
+            }
+            Err(err) => eprintln!("failed to prune check runs: {err}"),
         }
     }
 
@@ -161,12 +183,28 @@ impl CheckService {
     }
 
     /// The worktree's current fingerprint; `None` if git couldn't say.
+    /// Served from the cache while `git::fingerprint_key` is unchanged.
     pub async fn fingerprint(&self, worktree: &Path) -> Option<String> {
-        let worktree = worktree.to_path_buf();
-        tokio::task::spawn_blocking(move || git::worktree_fingerprint(&worktree))
-            .await
-            .ok()
-            .and_then(Result::ok)
+        let path = worktree.to_path_buf();
+        let cached = self.inner.fingerprints.lock().get(&path).cloned();
+        let (key, fingerprint) = tokio::task::spawn_blocking(move || {
+            let key = git::fingerprint_key(&path).ok();
+            if let (Some(key), Some((cached_key, cached_fp))) = (key.as_ref(), cached) {
+                if *key == cached_key {
+                    return (Some(key.clone()), cached_fp);
+                }
+            }
+            (key, git::worktree_fingerprint(&path).ok())
+        })
+        .await
+        .ok()?;
+        if let Some(key) = key {
+            self.inner
+                .fingerprints
+                .lock()
+                .insert(worktree.to_path_buf(), (key, fingerprint.clone()));
+        }
+        fingerprint
     }
 
     async fn commands_for(&self, workspace: &Workspace, user_id: &str) -> Result<Vec<RunCommand>, CheckError> {
@@ -178,9 +216,12 @@ impl CheckService {
     }
 
     /// Run checks now: `ids` (any run commands of the task's repository,
-    /// trusted or not — the user asked), or every check (`is_check`) when
-    /// `None`. A command already queued/running for this task isn't
-    /// started twice; its active run is returned instead.
+    /// trusted or not — the user picked them), or, when `None`, every check
+    /// (`is_check`) whose command is trusted on this machine — "Run checks"
+    /// must not run a synced command nobody here has confirmed (those show
+    /// up in the summary's `needs_confirmation`). A command already
+    /// queued/running for this task isn't started twice; its active run is
+    /// returned instead.
     pub async fn run(
         &self,
         workspace: &Workspace,
@@ -200,7 +241,15 @@ impl CheckService {
                         .ok_or_else(|| CheckError::UnknownCommand(id.clone()))
                 })
                 .collect::<Result<_, _>>()?,
-            None => commands.into_iter().filter(RunCommand::is_check).collect(),
+            None => {
+                let mut trusted = Vec::new();
+                for rc in commands.into_iter().filter(RunCommand::is_check) {
+                    if self.inner.meta.is_run_command_trusted(&rc).await? {
+                        trusted.push(rc);
+                    }
+                }
+                trusted
+            }
         };
         self.start_runs(workspace, &worktree, user_id, selected).await
     }
@@ -301,7 +350,7 @@ impl CheckService {
             _ = wait_cancelled(&mut cancel) => None,
         };
         let Some(_permit) = permit else {
-            self.settle(&id, CheckStatus::Cancelled, None, None, String::new()).await;
+            self.settle(&id, CheckStatus::Cancelled, None, None, String::new(), None).await;
             return;
         };
         let running = match self.inner.runs.mark_running(&id, Utc::now()).await {
@@ -314,6 +363,8 @@ impl CheckService {
         };
         let workspace_id = running.workspace_id.clone();
         let _ = self.inner.events.send(CheckEvent::Run(running));
+        let cwd = spec.cwd.clone();
+        let task_id = workspace_id.clone();
 
         let events = self.inner.events.clone();
         let run_id = id.clone();
@@ -337,13 +388,29 @@ impl CheckService {
             tail.push_str(msg);
         }
         let duration = i64::try_from(result.duration.as_millis()).ok();
-        self.settle(&id, status, exit_code, duration, tail).await;
+        // A run that exited describes the worktree as it LEFT it: a check
+        // that rewrites files (formatter, codegen) would otherwise always be
+        // stale against its own output.
+        let after = match result.end {
+            CheckEnd::Exited(_) => self.fingerprint(&cwd).await,
+            _ => None,
+        };
+        self.settle(&id, status, exit_code, duration, tail, after).await;
+        self.prune(Some(&task_id)).await;
     }
 
     /// Record the final state, drop the run from `active`, then announce —
     /// in that order, so a listener seeing the final row also sees whether
     /// this was the task's last active check.
-    async fn settle(&self, id: &str, status: CheckStatus, exit_code: Option<i64>, duration_ms: Option<i64>, tail: String) {
+    async fn settle(
+        &self,
+        id: &str,
+        status: CheckStatus,
+        exit_code: Option<i64>,
+        duration_ms: Option<i64>,
+        tail: String,
+        fingerprint: Option<String>,
+    ) {
         let finished = self
             .inner
             .runs
@@ -355,6 +422,7 @@ impl CheckService {
                     finished_at: Utc::now(),
                     duration_ms,
                     output_tail: tail,
+                    fingerprint,
                 },
             )
             .await;
@@ -416,7 +484,7 @@ impl CheckService {
             .collect();
         let mut needs_confirmation = Vec::new();
         for rc in commands.iter().filter(|rc| rc.run_when.is_automatic()) {
-            if !self.inner.meta.is_command_trusted(&rc.command).await? {
+            if !self.inner.meta.is_run_command_trusted(&rc).await? {
                 needs_confirmation.push(rc.id.clone());
             }
         }
@@ -478,7 +546,7 @@ impl CheckService {
         };
         let mut candidates = Vec::new();
         for rc in self.commands_for(workspace, user_id).await? {
-            if rc.run_when == RunWhen::BeforeReview && self.inner.meta.is_command_trusted(&rc.command).await? {
+            if rc.run_when == RunWhen::BeforeReview && self.inner.meta.is_run_command_trusted(&rc).await? {
                 candidates.push(rc);
             }
         }
@@ -666,6 +734,7 @@ mod tests {
     async fn required_check_is_satisfied_until_the_worktree_changes() {
         let f = fx(CHECK_TIMEOUT).await;
         let test = add(&f, "test", "test -f a.txt", true, RunWhen::Manual).await;
+        f.meta.trust_run_command(&test).await.unwrap();
         add(&f, "dev", "sleep 100", false, RunWhen::Manual).await;
 
         assert_eq!(f.service.unsatisfied_required(&f.ws, "u").await.unwrap(), vec!["test"]);
@@ -765,7 +834,7 @@ mod tests {
         let summary = f.service.summary(&f.ws, "u").await.unwrap();
         assert_eq!(summary.needs_confirmation, vec![rc.id.clone()]);
 
-        f.meta.trust_command(&rc.command).await.unwrap();
+        f.meta.trust_run_command(&rc).await.unwrap();
         assert_eq!(f.service.auto_run_before_review(&f.ws, "u").await.unwrap().len(), 1);
         settle(&f).await;
         assert!(f.service.summary(&f.ws, "u").await.unwrap().needs_confirmation.is_empty());
@@ -774,6 +843,42 @@ mod tests {
         std::fs::write(Path::new(f.ws.worktree_path.as_deref().unwrap()).join("c.txt"), "c\n").unwrap();
         assert_eq!(f.service.auto_run_before_review(&f.ws, "u").await.unwrap().len(), 1);
         settle(&f).await;
+    }
+
+    /// "Run checks" with no ids runs only checks trusted on this machine:
+    /// a synced, never-confirmed check is left for `needs_confirmation`.
+    #[tokio::test]
+    async fn run_all_skips_unconfirmed_synced_checks() {
+        let f = fx(CHECK_TIMEOUT).await;
+        let mine = add(&f, "test", "true", true, RunWhen::Manual).await;
+        f.meta.trust_run_command(&mine).await.unwrap();
+        let synced = add(&f, "lint", "echo from-elsewhere", true, RunWhen::BeforeReview).await;
+        let queued = f.service.run(&f.ws, "u", None).await.unwrap();
+        assert_eq!(
+            queued.iter().map(|r| r.run_command_id.clone().unwrap()).collect::<Vec<_>>(),
+            vec![mine.id.clone()]
+        );
+        settle(&f).await;
+        // Explicitly picked: the user asked, so it runs.
+        assert_eq!(f.service.run(&f.ws, "u", Some(&[synced.id.clone()])).await.unwrap().len(), 1);
+        settle(&f).await;
+    }
+
+    /// A check that rewrites files (a formatter) is tied to the worktree
+    /// as it LEFT it, so it isn't stale against its own output.
+    #[tokio::test]
+    async fn a_check_that_modifies_files_is_not_stale_after_it_ran() {
+        let f = fx(CHECK_TIMEOUT).await;
+        let fmt = add(&f, "fmt", "printf 'formatted\\n' > a.txt", true, RunWhen::Manual).await;
+        f.service.run(&f.ws, "u", Some(&[fmt.id.clone()])).await.unwrap();
+        settle(&f).await;
+        let summary = f.service.summary(&f.ws, "u").await.unwrap();
+        assert_eq!(summary.runs[0].status, CheckStatus::Passed);
+        assert!(summary.stale_ids.is_empty(), "{summary:?}");
+        assert!(summary.required_satisfied);
+        // Any later edit still makes it stale.
+        std::fs::write(Path::new(f.ws.worktree_path.as_deref().unwrap()).join("a.txt"), "edited\n").unwrap();
+        assert!(!f.service.summary(&f.ws, "u").await.unwrap().stale_ids.is_empty());
     }
 
     #[tokio::test]

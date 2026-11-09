@@ -24,6 +24,8 @@ use crate::store::{NotificationRepo, StoreError, WorkspaceRepo};
 
 /// Entries older than this are pruned at startup.
 pub const RETENTION_DAYS: i64 = 30;
+/// How often old notifications are pruned while the app runs.
+const PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 const EVENT_CAPACITY: usize = 256;
 
 struct Inner {
@@ -74,6 +76,26 @@ impl NotificationService {
         if let Err(err) = self.inner.repo.prune_before(cutoff).await {
             eprintln!("failed to prune old notifications: {err}");
         }
+    }
+
+    /// Prune now and then every `PRUNE_INTERVAL` for as long as the app
+    /// runs — a Mac that stays up for weeks would otherwise only ever
+    /// prune at launch. Call once, inside a Tokio runtime.
+    pub fn start_pruning(&self) {
+        self.start_pruning_every(PRUNE_INTERVAL);
+    }
+
+    fn start_pruning_every(&self, interval: std::time::Duration) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                // The first tick fires immediately: the startup prune.
+                tick.tick().await;
+                this.prune_old().await;
+            }
+        });
     }
 
     /// Store + announce `n` for `task`, applying the task's
@@ -393,6 +415,7 @@ mod tests {
                 since: Utc::now(),
                 source: AttentionSource::Hook,
                 can_respond: true,
+                can_allow_for_task: false,
                 keys: Default::default(),
             }),
             last_activity: None,
@@ -487,5 +510,37 @@ mod tests {
         assert_eq!(n.body.as_deref(), Some("The agent exited with code 2."));
         // Another account's task id records nothing.
         assert!(svc.on_status("x", &failed).await.unwrap().is_none());
+    }
+
+    /// Pruning runs on a timer for as long as the app runs (first pass
+    /// immediately), not only once at launch.
+    #[tokio::test]
+    async fn old_notifications_are_pruned_periodically() {
+        let (service, repo, _w, _ws, _dir) = fx().await;
+        let mut old = AppNotification::new(NotificationKind::TaskFailed, "old");
+        old.created_at = Utc::now() - chrono::Duration::days(RETENTION_DAYS + 1);
+        repo.insert(&old, "u").await.unwrap();
+        // The production cadence is hourly; the mechanism is the same.
+        service.start_pruning_every(std::time::Duration::from_millis(100));
+        let wait_for_count = |want: usize| {
+            let repo = repo.clone();
+            async move {
+                for _ in 0..200 {
+                    if repo.list_for_user("u", false, None).await.unwrap().len() == want {
+                        return true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                false
+            }
+        };
+        assert!(wait_for_count(0).await, "pruned at start");
+        // Something that ages past retention while the app stays up is
+        // pruned on a later pass, not just at launch.
+        let mut later = AppNotification::new(NotificationKind::TaskFailed, "aged");
+        later.created_at = Utc::now() - chrono::Duration::days(RETENTION_DAYS + 1);
+        repo.insert(&later, "u").await.unwrap();
+        assert!(wait_for_count(0).await, "pruned again on the next tick");
+        assert_eq!(PRUNE_INTERVAL, std::time::Duration::from_secs(3600));
     }
 }

@@ -3,6 +3,13 @@
 //! A printed port is only a claim — servers print their URL before (or
 //! without ever) binding, and a test runner may echo a URL it doesn't
 //! serve — so a candidate is reported only once a TCP connect succeeds.
+//!
+//! Only `http(s)://` URLs count: a dev server announces itself as one,
+//! while `postgres://localhost:5432` or a bare `localhost:6379` in a log is
+//! a service the command TALKS to. And a port that accepts connections is
+//! only this command's if its listener is in the command's own process
+//! tree (`lsof`, when available) — otherwise another task's `:3000`, or a
+//! database, shows up as "this command's server".
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -21,10 +28,10 @@ const CARRY: usize = 256;
 fn port_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Loopback / any-address hosts, with or without a scheme:
-        // `http://localhost:5173/`, `127.0.0.1:8080`, `tcp://0.0.0.0:3000`,
-        // `http://[::1]:3000`, `[::]:8080`.
-        Regex::new(r"(?i)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})\b")
+        // An http(s) URL on a loopback / any-address host:
+        // `http://localhost:5173/`, `https://127.0.0.1:8443`,
+        // `http://0.0.0.0:3000`, `http://[::1]:3000`, `http://[::]:8080`.
+        Regex::new(r"(?i)\bhttps?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})\b")
             .expect("static port regex")
     })
 }
@@ -74,6 +81,41 @@ pub async fn accepts_connections(port: u16) -> bool {
     false
 }
 
+/// PIDs listening on TCP `port` (`lsof -t`). `None` = can't tell (no
+/// `lsof`, or it failed); `Some(empty)` = nothing of ours listens there
+/// (lsof exits 1 for "no match", e.g. another user's process).
+pub async fn listener_pids(port: u16) -> Option<Vec<u32>> {
+    let spec = format!("-iTCP:{port}");
+    let out = crate::util::proc::run_with_timeout(
+        "lsof",
+        &["-nP", spec.as_str(), "-sTCP:LISTEN", "-t"],
+        None,
+        &[],
+        Duration::from_secs(3),
+    )
+    .await
+    .ok()?;
+    match out.status.code() {
+        Some(0) | Some(1) => Some(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Whether a confirmed port belongs to the command: its listener is one of
+/// `members` (the command's terminal processes). When ownership can't be
+/// checked (`listeners: None`), the http-URL requirement is the only gate.
+pub fn owned_by(listeners: Option<&[u32]>, members: &[u32]) -> bool {
+    match listeners {
+        None => true,
+        Some(pids) => pids.iter().any(|p| members.contains(p)),
+    }
+}
+
 /// Poll `port` until it accepts a connection (→ `true`) or we give up.
 pub async fn confirm(port: u16) -> bool {
     for i in 0..CONFIRM_ATTEMPTS {
@@ -97,11 +139,10 @@ mod tests {
         let fixtures: &[(&str, &str, &[u16])] = &[
             ("vite", "  VITE v5.4.2  ready in 312 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n", &[5173]),
             ("next", "  ▲ Next.js 14.2.3\n  - Local:        http://localhost:3000\n  - Environments: .env\n\n ✓ Ready in 1843ms\n", &[3000]),
-            ("cargo axum", "   Compiling api v0.1.0\n    Finished dev [unoptimized] target(s)\n     Running `target/debug/api`\nlistening on 0.0.0.0:8080\n", &[8080]),
-            ("cargo actix", "[2026-11-09T10:00:00Z INFO  actix_server::builder] starting service: \"actix-web-service-127.0.0.1:8081\"\n", &[8081]),
+            ("axum (url)", "listening on http://0.0.0.0:8080\n", &[8080]),
             ("rails puma", "=> Booting Puma\n* Listening on http://127.0.0.1:3000\n* Listening on http://[::1]:3000\nUse Ctrl-C to stop\n", &[3000]),
-            ("puma tcp", "* Listening on tcp://0.0.0.0:9292\n", &[9292]),
-            ("ipv6 any", "server bound to [::]:4000\n", &[4000]),
+            ("https", "Serving on https://localhost:8443/\n", &[8443]),
+            ("ipv6 any", "server bound to http://[::]:4000\n", &[4000]),
         ];
         for (name, text, want) in fixtures {
             assert_eq!(find_ports(text), want.to_vec(), "{name}");
@@ -115,8 +156,14 @@ mod tests {
             "fetching https://registry.npmjs.org:443/react",
             "localhost:abc",
             "listening on 10.0.0.5:3000",
-            "localhost:0",
-            "localhost:99999",
+            "http://localhost:0",
+            "http://localhost:99999",
+            // Services the command talks to, not a server it runs.
+            "connecting to postgres://localhost:5432/app",
+            "redis at redis://127.0.0.1:6379",
+            "* Listening on tcp://0.0.0.0:9292",
+            "listening on 0.0.0.0:8080",
+            "DATABASE_URL=postgresql://user@localhost:5432/db",
         ] {
             assert!(find_ports(text).is_empty(), "{text}");
         }
@@ -128,7 +175,27 @@ mod tests {
         assert!(s.feed("  ➜  Local:   http://local").is_empty());
         assert_eq!(s.feed("host:5173/\n"), vec![5173]);
         assert!(s.feed("again http://localhost:5173/\n").is_empty());
-        assert_eq!(s.feed("hmr on localhost:24678\n"), vec![24678]);
+        assert!(s.feed("hmr on localhost:24678\n").is_empty(), "no scheme");
+        assert_eq!(s.feed("hmr on http://localhost:24678\n"), vec![24678]);
+    }
+
+    #[test]
+    fn ownership_needs_a_listener_in_the_commands_tree() {
+        assert!(owned_by(Some(&[10, 42]), &[1, 42]));
+        assert!(!owned_by(Some(&[10]), &[1, 42]), "another process's port");
+        assert!(!owned_by(Some(&[]), &[1, 42]), "listener we can't see");
+        assert!(owned_by(None, &[1, 42]), "unknowable → the http gate alone");
+    }
+
+    /// The test process itself listens: lsof names THIS pid as the owner.
+    #[tokio::test]
+    async fn listener_pids_names_the_owner() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if let Some(pids) = listener_pids(port).await {
+            assert!(pids.contains(&std::process::id()), "{pids:?}");
+        }
+        drop(listener);
     }
 
     #[tokio::test]

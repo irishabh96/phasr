@@ -48,6 +48,7 @@ pub async fn start_session_terminal(
     on_event: Channel<PtyEvent>,
     runtime: State<'_, Arc<TaskRuntime>>,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, crate::store::AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, SessionTerminalError> {
     session.require()?;
@@ -55,11 +56,11 @@ pub async fn start_session_terminal(
     let key = pty_id(&session_id);
     // Settings → Terminal → Shell; unreadable settings or a shell this
     // machine lacks mean the login shell, never a failed terminal.
-    let shell = settings
-        .get_or_default()
-        .await
-        .ok()
-        .and_then(|s| usable_shell_override(&s.terminal_shell));
+    // A synced shell not confirmed on this machine isn't used either.
+    let shell = match settings.get_or_default().await {
+        Ok(s) => usable_shell_override(&crate::settings_trust::usable(&meta, s).await.terminal_shell),
+        Err(_) => None,
+    };
 
     let handle = runtime.spawn(
         SpawnSpec::new(key.clone(), PathBuf::from(cwd))

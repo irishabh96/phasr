@@ -25,6 +25,7 @@ pub mod transcripts;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -72,6 +73,10 @@ pub enum AgentSignalError {
     StaleAttention,
     #[error("this prompt can't be answered from Phasr; open the terminal to respond")]
     NotRespondable,
+    /// The dialog offers no option scoped to this task/session (Claude's
+    /// "always allow … from this project" is a persistent rule).
+    #[error("this prompt has no allow-for-this-task option; allow once or answer in the terminal")]
+    AllowTaskUnavailable,
 }
 
 impl serde::Serialize for AgentSignalError {
@@ -141,7 +146,9 @@ struct TaskEntry {
     /// Bumped per registration so a replaced PTY's detector can't write.
     generation: u64,
     target: Option<TranscriptTarget>,
-    usage_dirty: bool,
+    /// Shared with the task's detector, which sets it on every output chunk
+    /// WITHOUT taking the global `tasks` lock (it used to, per PTY chunk).
+    usage_dirty: Arc<AtomicBool>,
     last_usage_refresh: Option<Instant>,
     last_usage: Option<TaskUsage>,
     gate: GateState,
@@ -255,9 +262,10 @@ impl AgentSignals {
             }
             _ => None,
         };
-        let resume = if task.resuming
-            && !launch::command_embeds_prompt(&task.command, task.prompt.as_deref())
-        {
+        // A `{{prompt}}` template already hands the prompt to the agent on
+        // its command line: typing it as well would deliver it twice.
+        let embeds_prompt = launch::command_embeds_prompt(&task.command, task.prompt.as_deref());
+        let resume = if task.resuming && !embeds_prompt {
             self.resume_mode(task).await
         } else {
             Resume::Fresh
@@ -270,14 +278,14 @@ impl AgentSignals {
                     Vec::new()
                 },
                 command,
-                send_prompt: resume.sends_prompt(),
+                send_prompt: resume.sends_prompt() && !embeds_prompt,
             },
             // A wrapper we can't see into: run it exactly as before, prompt
             // included — a resume that couldn't be expressed mustn't eat it.
             None => LaunchPlan {
                 command: task.command.clone(),
                 env: Vec::new(),
-                send_prompt: true,
+                send_prompt: !embeds_prompt,
             },
         }
     }
@@ -347,7 +355,7 @@ impl AgentSignals {
                 tail: Arc::new(Mutex::new(TailBuffer::default())),
                 generation,
                 target,
-                usage_dirty: true,
+                usage_dirty: Arc::new(AtomicBool::new(true)),
                 last_usage_refresh: None,
                 last_usage: None,
                 gate: GateState::default(),
@@ -359,13 +367,17 @@ impl AgentSignals {
 
     /// Watch the agent's PTY output for dialogs (the heuristic fallback).
     pub fn attach_pty(&self, task_id: &str, generation: u64, handle: &Arc<PtyHandle>) {
-        let Some((agent, tail)) = self.inner.tasks.lock().get(task_id).and_then(|e| {
-            (e.generation == generation).then(|| (e.state.agent, e.tail.clone()))
+        let Some((agent, tail, usage_dirty)) = self.inner.tasks.lock().get(task_id).and_then(|e| {
+            (e.generation == generation).then(|| {
+                // Agents without readable usage never need a re-read.
+                let dirty = e.state.agent.usage_supported().then(|| e.usage_dirty.clone());
+                (e.state.agent, e.tail.clone(), dirty)
+            })
         }) else {
             return;
         };
         let rx = handle.subscribe();
-        tokio::spawn(self.clone().run_detector(task_id.to_string(), generation, agent, tail, rx));
+        tokio::spawn(self.clone().run_detector(task_id.to_string(), generation, agent, tail, usage_dirty, rx));
     }
 
     /// The agent's PTY exited (or was killed).
@@ -379,7 +391,7 @@ impl AgentSignals {
                 return;
             }
             entry.state.on_exit(Utc::now());
-            entry.usage_dirty = true;
+            entry.usage_dirty.store(true, Ordering::Relaxed);
             entry.state.to_wire()
         };
         self.emit(AgentSignalEvent::State(wire));
@@ -450,6 +462,7 @@ impl AgentSignals {
                 .map_err(|e| match e {
                     ClaimError::Stale => AgentSignalError::StaleAttention,
                     ClaimError::NotRespondable => AgentSignalError::NotRespondable,
+                    ClaimError::NoTaskScope => AgentSignalError::AllowTaskUnavailable,
                 })?;
             // The dialog on screen is being answered: don't re-detect it.
             entry.tail.lock().mark_consumed();
@@ -639,7 +652,7 @@ impl AgentSignals {
             let before = entry.state.to_wire();
             let effects = entry.state.apply_hook(signal, session, Utc::now());
             if effects.contains(&Effect::UsageDirty) {
-                entry.usage_dirty = true;
+                entry.usage_dirty.store(true, Ordering::Relaxed);
             }
             let after = entry.state.to_wire();
             (
@@ -651,7 +664,7 @@ impl AgentSignals {
         if let Some(wire) = changed {
             self.emit(AgentSignalEvent::State(wire));
         }
-        if matches!(signal, AgentSignal::PostToolUse { .. }) {
+        if matches!(signal, AgentSignal::PostToolUse { tool_name, .. } if tool_may_modify_files(tool_name)) {
             self.emit(AgentSignalEvent::ToolFinished {
                 task_id: task_id.to_string(),
                 repository_id,
@@ -683,6 +696,7 @@ impl AgentSignals {
         generation: u64,
         agent: Agent,
         tail: Arc<Mutex<TailBuffer>>,
+        usage_dirty: Option<Arc<AtomicBool>>,
         mut rx: broadcast::Receiver<PtyEvent>,
     ) {
         let mut deadline: Option<tokio::time::Instant> = None;
@@ -698,7 +712,11 @@ impl AgentSignals {
                     Ok(PtyEvent::Output { chunk, .. }) => {
                         tail.lock().push(&chunk);
                         deadline = Some(tokio::time::Instant::now() + QUIET);
-                        self.mark_output(&task_id, generation);
+                        // A replaced PTY's detector holds the OLD entry's
+                        // flag, so it can't dirty the new generation.
+                        if let Some(dirty) = &usage_dirty {
+                            dirty.store(true, Ordering::Relaxed);
+                        }
                     }
                     Ok(PtyEvent::Exit { .. }) => break,
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -713,10 +731,11 @@ impl AgentSignals {
         }
     }
 
+    #[cfg(test)]
     fn mark_output(&self, task_id: &str, generation: u64) {
         if let Some(entry) = self.inner.tasks.lock().get_mut(task_id) {
             if entry.generation == generation && entry.state.agent.usage_supported() {
-                entry.usage_dirty = true;
+                entry.usage_dirty.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -897,7 +916,7 @@ impl AgentSignals {
             tasks
                 .iter_mut()
                 .filter(|(_, e)| {
-                    e.usage_dirty
+                    e.usage_dirty.load(Ordering::Relaxed)
                         && e.last_usage_refresh
                             .is_none_or(|at| now.duration_since(at) >= USAGE_MIN_INTERVAL)
                 })
@@ -908,7 +927,7 @@ impl AgentSignals {
                             target.session_ids.push(session.clone());
                         }
                     }
-                    e.usage_dirty = false;
+                    e.usage_dirty.store(false, Ordering::Relaxed);
                     e.last_usage_refresh = Some(now);
                     Some((id.clone(), target))
                 })
@@ -994,24 +1013,109 @@ pub fn split_keystrokes(keys: &str) -> Vec<&str> {
     out
 }
 
-/// Whether PTY input reflects the user acting on the screen. Focus and
-/// mouse reports are sent by the terminal on its own (focusing or clicking
-/// the pane) and must not dismiss a "needs you" card.
+/// Tools whose completion can change the worktree (so the task's cached
+/// diff is stale). Reads and searches can't — firing `ToolFinished` for
+/// every Read/Grep/Glob made the board recompute diffs constantly.
+fn tool_may_modify_files(tool: &str) -> bool {
+    matches!(
+        tool,
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Bash" | "apply_patch"
+    )
+}
+
+/// Whether PTY input reflects the user acting on the screen, rather than
+/// the terminal answering on its own. The emulator writes its replies to
+/// the agent's queries through the same input path as keystrokes —
+/// Claude's trust dialog ends with DA1 / kitty-keyboard / XTVERSION
+/// queries, and the answers arrive within milliseconds. Treating those as
+/// "the user answered" consumed the dialog before the gate ever saw it.
+///
+/// Non-input, possibly several concatenated in one write:
+/// focus (`CSI I|O`), mouse (SGR `CSI < … M|m`, X10 `CSI M b x y`),
+/// CPR (`CSI [?] r ; c R`), DA1 (`CSI ? … c`), DA2 (`CSI > … c`), kitty
+/// keyboard flags (`CSI ? … u`), DECRPM (`CSI [?] … $ y`), DSR / window
+/// reports (`CSI … n`, `CSI … t`), and DCS / OSC / APC / PM strings
+/// terminated by ST or BEL. Anything else — including a lone ESC or an
+/// UNTERMINATED string (Alt+P is `ESC P`) — is the user.
+///
+/// #PLAN_UNCERTAINTY: `CSI 1 ; <mod> R` is also xterm's modified F3; a
+/// user pressing Shift/Ctrl+F3 in an agent dialog is accepted as a miss.
 pub fn is_meaningful_input(bytes: &[u8]) -> bool {
-    if bytes.is_empty() {
-        return false;
+    // Empty input is nothing; a write made only of reports is the terminal.
+    let mut i = 0;
+    while i < bytes.len() {
+        match terminal_report_len(&bytes[i..]) {
+            Some(len) => i += len,
+            None => return true,
+        }
     }
-    if bytes == b"\x1b[I" || bytes == b"\x1b[O" {
-        return false;
+    false
+}
+
+/// Length of the terminal-generated report at the start of `b`, or `None`
+/// if `b` doesn't start with one (i.e. it's user input).
+fn terminal_report_len(b: &[u8]) -> Option<usize> {
+    if b.first() != Some(&0x1b) || b.len() < 2 {
+        return None;
     }
-    // SGR mouse (`ESC [ < b ; x ; y M|m`) and X10 mouse (`ESC [ M b x y`).
-    if bytes.starts_with(b"\x1b[<") && matches!(bytes.last(), Some(b'M' | b'm')) {
-        return false;
+    match b[1] {
+        b'[' => csi_report_len(b),
+        // DCS, OSC, APC, PM: a string up to ST (`ESC \`) or, for OSC, BEL.
+        b'P' | b']' | b'_' | b'^' => {
+            let mut j = 2;
+            while j < b.len() {
+                match b[j] {
+                    0x07 => return Some(j + 1),
+                    0x1b if b.get(j + 1) == Some(&b'\\') => return Some(j + 2),
+                    // A new ESC that isn't ST: the string was never closed.
+                    0x1b => return None,
+                    _ => j += 1,
+                }
+            }
+            None
+        }
+        _ => None,
     }
-    if bytes.starts_with(b"\x1b[M") && bytes.len() == 6 {
-        return false;
+}
+
+fn csi_report_len(b: &[u8]) -> Option<usize> {
+    // X10 mouse: `ESC [ M` + three raw bytes.
+    if b.get(2) == Some(&b'M') && b.len() >= 6 {
+        return Some(6);
     }
-    true
+    let mut j = 2;
+    let params_from = j;
+    while j < b.len() && (0x30..=0x3f).contains(&b[j]) {
+        j += 1;
+    }
+    let params = &b[params_from..j];
+    let inter_from = j;
+    while j < b.len() && (0x20..=0x2f).contains(&b[j]) {
+        j += 1;
+    }
+    let intermediates = &b[inter_from..j];
+    let final_byte = *b.get(j)?;
+    if !(0x40..=0x7e).contains(&final_byte) {
+        return None;
+    }
+    let len = j + 1;
+    let prefix = params.first().copied();
+    let digits_only = |p: &[u8]| p.iter().all(|c| c.is_ascii_digit() || *c == b';');
+    let report = match (final_byte, intermediates) {
+        (b'I' | b'O', []) => params.is_empty(),
+        (b'M' | b'm', []) => prefix == Some(b'<'),
+        (b'R', []) => {
+            let p = params.strip_prefix(b"?").unwrap_or(params);
+            !p.is_empty() && digits_only(p) && p.contains(&b';')
+        }
+        (b'c', []) => matches!(prefix, Some(b'?' | b'>')),
+        (b'u', []) => prefix == Some(b'?'),
+        (b'y', [b'$']) => true,
+        (b'n', []) => !params.is_empty(),
+        (b't', []) => !params.is_empty() && digits_only(params),
+        _ => false,
+    };
+    report.then_some(len)
 }
 
 
@@ -1117,11 +1221,19 @@ mod tests {
             Err(AgentSignalError::StaleAttention)
         ));
         assert_eq!(f.signals.state(&f.workspace.id).unwrap().state, AgentStateKind::NeedsYou);
+        // No dialog on screen to read options from: Claude's option 2 may
+        // be a persistent project rule, so "allow for this task" is refused…
+        assert!(!attention.can_allow_for_task);
+        assert!(matches!(
+            f.signals.claim_attention(&f.workspace.id, &attention.id, AttentionResponse::AllowTask),
+            Err(AgentSignalError::AllowTaskUnavailable)
+        ));
+        // …without consuming the card: allow once still works.
         assert_eq!(
             f.signals
-                .claim_attention(&f.workspace.id, &attention.id, AttentionResponse::AllowTask)
+                .claim_attention(&f.workspace.id, &attention.id, AttentionResponse::AllowOnce)
                 .unwrap(),
-            "2"
+            "1"
         );
 
         fire_claude_hook(&f, r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#);
@@ -1135,6 +1247,28 @@ mod tests {
         assert!(row.last_turn_ended_at.is_some());
         let summary = f.signals.summary_for(&row).await.unwrap();
         assert_eq!((summary.text.as_str(), summary.source), ("Done.", SummarySource::Hook));
+    }
+
+    /// A hook card survives the terminal's own replies (focus, DA1, …) and
+    /// an unrelated tool finishing, but real input in the terminal moves it
+    /// to Working (answered there).
+    #[tokio::test]
+    async fn hook_card_ignores_auto_replies_and_moves_on_real_input() {
+        let f = fixture(Agent::Claude).await;
+        let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
+        f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        fire_claude_hook(&f, r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}"#);
+        fire_claude_hook(&f, r#"{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/x"}}"#);
+        f.signals.drain_hooks().await;
+        assert_eq!(f.signals.state(&f.workspace.id).unwrap().state, AgentStateKind::NeedsYou);
+        for reply in [&b"\x1b[I"[..], b"\x1b[?1;2c", b"\x1b[12;40R\x1b[O"] {
+            f.signals.note_user_input(&f.workspace.id, reply);
+        }
+        assert_eq!(f.signals.state(&f.workspace.id).unwrap().state, AgentStateKind::NeedsYou);
+        f.signals.note_user_input(&f.workspace.id, b"1");
+        let state = f.signals.state(&f.workspace.id).unwrap();
+        assert_eq!(state.state, AgentStateKind::Working);
+        assert!(state.attention.is_none());
     }
 
     #[tokio::test]
@@ -1275,6 +1409,21 @@ mod tests {
         assert_eq!(plan.command, "./my-claude-wrapper.sh");
         assert!(plan.send_prompt && plan.env.is_empty());
 
+        // A template that embeds the prompt gets it on the command line
+        // only — never typed again (fresh launch or resume).
+        let embedded = crate::orchestrator::launch::interpolate_for_task("claude {{prompt}}", Some("fix the bug"));
+        let plan = f
+            .signals
+            .prepare_launch(&launch_task(&f, Agent::Claude, &embedded, false))
+            .await;
+        assert!(!plan.send_prompt, "{}", plan.command);
+        assert!(plan.command.contains("'fix the bug'"));
+        let plan = f
+            .signals
+            .prepare_launch(&launch_task(&f, Agent::Gemini, "gemini {{prompt}}", false))
+            .await;
+        assert!(plan.send_prompt, "no prompt in this command");
+
         // Codex gets notify; agents without hooks are untouched.
         let plan = f
             .signals
@@ -1406,9 +1555,49 @@ mod tests {
         assert!(!is_meaningful_input(b"\x1b[I"));
         assert!(!is_meaningful_input(b"\x1b[O"));
         assert!(!is_meaningful_input(b"\x1b[<0;12;5M"));
+        assert!(!is_meaningful_input(b"\x1b[M !!"));
         assert!(!is_meaningful_input(b""));
+        // Auto-replies to the agent's queries.
+        assert!(!is_meaningful_input(b"\x1b[12;40R"), "CPR");
+        assert!(!is_meaningful_input(b"\x1b[?1;2c"), "DA1");
+        assert!(!is_meaningful_input(b"\x1b[>0;276;0c"), "DA2");
+        assert!(!is_meaningful_input(b"\x1b[?0u"), "kitty keyboard flags");
+        assert!(!is_meaningful_input(b"\x1b[?2026;2$y"), "DECRPM");
+        assert!(!is_meaningful_input(b"\x1bP>|xterm.js(5.5.0)\x1b\\"), "XTVERSION (DCS)");
+        assert!(!is_meaningful_input(b"\x1b]11;rgb:1e1e/1e1e/1e1e\x07"), "OSC (BEL)");
+        assert!(!is_meaningful_input(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"), "OSC (ST)");
+        // Several in one write.
+        assert!(!is_meaningful_input(b"\x1b[?0u\x1bP>|xterm.js(5.5.0)\x1b\\\x1b[?62;22c\x1b[I"));
+        // The user.
         assert!(is_meaningful_input(b"1"));
         assert!(is_meaningful_input(b"\x1b"));
         assert!(is_meaningful_input(b"\x1b[A"));
+        assert!(is_meaningful_input(b"\x1b[B\r"));
+        assert!(is_meaningful_input(b"\r"));
+        assert!(is_meaningful_input(b"\x1bP"), "Alt+P is not an unterminated DCS reply");
+        assert!(is_meaningful_input(b"\x1b[?1;2cy"), "a reply followed by a key is input");
+        assert!(is_meaningful_input(b"\x1b[3~"), "Delete key");
+    }
+
+    /// The webview answers the trust dialog's DA1 query through the same
+    /// path as keystrokes. That reply must not count as the user reacting:
+    /// the trust card is still raised and the prompt is still held.
+    #[tokio::test]
+    async fn trust_dialog_followed_by_a_da1_reply_still_raises_the_card() {
+        let f = fixture(Agent::Claude).await;
+        let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
+        let generation = f.signals.register_task(&f.workspace, Agent::Claude, &cwd, None);
+        let gate = f.signals.prompt_gate(&f.workspace.id, generation).unwrap();
+        push_output(&f, TRUST_FIXTURE);
+        // Arrives within ms of the dialog, before GATE_SETTLE.
+        f.signals.note_user_input(&f.workspace.id, b"\x1b[?1;2c");
+        f.signals.note_user_input(&f.workspace.id, b"\x1b[?0u\x1bP>|xterm.js(5.5.0)\x1b\\");
+        assert_eq!(gate_after(&gate, Duration::from_millis(900)).await, PromptGateDecision::Wait);
+        let state = f.signals.state(&f.workspace.id).unwrap();
+        assert_eq!(state.state, AgentStateKind::NeedsYou);
+        assert_eq!(state.attention.unwrap().kind, AttentionKind::Trust);
+        // Still held well past the old 30 s blind-type path's trigger point
+        // would matter: nothing here lets the prompt through.
+        assert_eq!(gate.check(), PromptGateDecision::Wait);
     }
 }

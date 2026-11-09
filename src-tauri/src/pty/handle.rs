@@ -62,6 +62,10 @@ pub enum PtyError {
     Pty(String),
     #[error("task already running")]
     AlreadyRunning,
+    /// `send_message` into an interactive PTY whose agent has exited back
+    /// to the shell: the text would run as a shell command.
+    #[error("agent not running")]
+    AgentNotRunning,
 }
 
 impl From<anyhow::Error> for PtyError {
@@ -230,6 +234,15 @@ pub struct PtyHandle {
     /// foreground process group to tell "the agent is running" from "back
     /// at the shell prompt".
     shell_pid: Option<u32>,
+    /// `LaunchMode::InteractiveTyped`: the shell outlives the program typed
+    /// into it, so "shell in the foreground" means that program is gone.
+    /// (In `Exec` mode the shell IS the program; builtins like `read` keep
+    /// it in the foreground legitimately.)
+    interactive: bool,
+    /// The PTY's slave device (`ttys012` / `pts/3`): every job started in
+    /// this terminal has it as its controlling tty — how `terminate` finds
+    /// them all, even after the shell itself has gone.
+    tty: Option<String>,
 }
 
 /// Wall-clock epoch milliseconds. The frontend compares this against
@@ -351,6 +364,13 @@ impl PtyHandle {
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
         let (tx, _rx_initial) = broadcast::channel::<PtyEvent>(2048);
+        let interactive = matches!(launch, LaunchMode::InteractiveTyped);
+        #[cfg(unix)]
+        let tty = master
+            .tty_name()
+            .map(|p| p.to_string_lossy().trim_start_matches("/dev/").to_string());
+        #[cfg(not(unix))]
+        let tty: Option<String> = None;
 
         let master = Arc::new(Mutex::new(master));
         let writer = Arc::new(Mutex::new(writer));
@@ -366,6 +386,8 @@ impl PtyHandle {
             bracketed_paste: Arc::new(AtomicBool::new(false)),
             exit_code: Arc::new(OnceLock::new()),
             shell_pid,
+            interactive,
+            tty,
         });
 
         // Schedule the agent command + optional prompt as keystrokes
@@ -419,9 +441,14 @@ impl PtyHandle {
             last_output_at: handle.last_output_at.clone(),
             bracketed_paste: handle.bracketed_paste.clone(),
         };
+        // Dropped (never sent on) when the coalescer returns — i.e. after its
+        // final flush. The wait thread blocks on it so `Exit` is broadcast
+        // AFTER the last output, not racing it.
+        let (drained_tx, drained_rx) = std::sync::mpsc::channel::<()>();
         std::thread::Builder::new()
             .name(format!("phasr-pty-out-{task_id_for_coalesce}"))
             .spawn(move || {
+                let _drained = drained_tx;
                 coalesce_pty_output(
                     task_id_for_coalesce,
                     bytes_rx,
@@ -445,6 +472,13 @@ impl PtyHandle {
                     let mut guard = child_for_wait.lock();
                     guard.wait().ok().and_then(exit_status_to_code)
                 };
+                // Let the output pipeline drain first: the child's last
+                // bytes (an exec command's failing test summary) are often
+                // still in the kernel buffer or the 8 ms coalescing window
+                // when it exits, and viewers stop reading at `Exit`. Bounded,
+                // because a background job that inherited the PTY keeps the
+                // reader from ever seeing EOF.
+                let _ = drained_rx.recv_timeout(EXIT_DRAIN_TIMEOUT);
                 // Recorded before the broadcast — see `PtyHandle::exit_code`.
                 let _ = exit_code_for_wait.set(exit_code);
                 let _ = tx_for_wait.send(PtyEvent::Exit {
@@ -495,7 +529,14 @@ impl PtyHandle {
     /// Writes run on the blocking pool: a PTY write blocks once the
     /// kernel's input buffer is full (the program isn't reading yet), and
     /// a long message must not park a Tokio worker while it waits.
+    ///
+    /// Refuses with `AgentNotRunning` in an interactive PTY whose shell is
+    /// back in the foreground: the agent exited, and a pasted message plus
+    /// Enter would run as a shell command (backticks and all).
     pub async fn send_message(self: &Arc<Self>, text: &str, submit: bool) -> Result<(), PtyError> {
+        if self.interactive && self.shell_in_foreground() == Some(true) {
+            return Err(PtyError::AgentNotRunning);
+        }
         let body = frame_message(text, self.bracketed_paste_enabled());
         if !body.is_empty() {
             self.write_off_runtime(body).await?;
@@ -570,11 +611,166 @@ impl PtyHandle {
     /// Forcefully kills the child process. Signals via the separate
     /// `ChildKiller` handle so we don't block on the waiter thread's
     /// long-held lock on the child itself.
+    ///
+    /// Only the shell itself: jobs it started (a dev server, the agent, a
+    /// `&` background job) live in their own process groups and survive.
+    /// Stop paths use `terminate` instead.
     pub fn kill(&self) -> Result<(), PtyError> {
         let mut killer = self.killer.lock();
         killer.kill().map_err(|e| PtyError::Pty(e.to_string()))?;
         Ok(())
     }
+
+    /// Stop EVERYTHING running in this terminal, escalating: SIGHUP (what
+    /// closing a terminal sends), then SIGTERM after `grace`, then SIGKILL
+    /// after another `grace` — each to every process in the PTY's session.
+    ///
+    /// The session, not the shell's process group: the PTY's shell is a
+    /// session leader (portable-pty `setsid`s it), and job control gives
+    /// every job it starts — the agent, `pnpm dev`, `cmd &` — its own
+    /// process group, so signalling the shell (`kill`) or its group left
+    /// them running, holding ports and files. Returns immediately; the
+    /// escalation runs on its own thread.
+    pub fn terminate(&self, grace: Duration) {
+        #[cfg(unix)]
+        if let Some(sid) = self.shell_pid {
+            let tty = self.tty.clone();
+            std::thread::spawn(move || terminate_session(sid, tty.as_deref(), grace));
+            return;
+        }
+        let _ = self.kill();
+    }
+
+    /// Every process running in this terminal (blocking: shells out to
+    /// `pgrep`). Empty where that can't be determined.
+    pub fn process_ids(&self) -> Vec<u32> {
+        #[cfg(unix)]
+        if let Some(shell) = self.shell_pid.and_then(|p| libc::pid_t::try_from(p).ok()) {
+            return terminal_members(shell, self.tty.as_deref())
+                .into_iter()
+                .filter_map(|p| u32::try_from(p).ok())
+                .collect();
+        }
+        Vec::new()
+    }
+
+    /// `terminate`, synchronously and bounded by roughly `2 × grace` — for
+    /// app quit, where nothing may outlive the process.
+    pub fn terminate_blocking(&self, grace: Duration) {
+        #[cfg(unix)]
+        if let Some(sid) = self.shell_pid {
+            terminate_session(sid, self.tty.as_deref(), grace);
+            return;
+        }
+        let _ = self.kill();
+    }
+}
+
+#[cfg(unix)]
+fn pgrep(args: &[&str]) -> Vec<libc::pid_t> {
+    std::process::Command::new("pgrep")
+        .args(args)
+        .output()
+        .ok()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Everything running in the terminal: the shell, every process whose
+/// controlling tty is the PTY (`pgrep -t` — macOS' pgrep has no `-s`),
+/// and the shell's descendants (`pgrep -P`, walked down), which also
+/// catches a child that detached from the tty. Never ourselves or init.
+#[cfg(unix)]
+fn terminal_members(shell: libc::pid_t, tty: Option<&str>) -> Vec<libc::pid_t> {
+    let mut out = vec![shell];
+    if let Some(tty) = tty {
+        out.extend(pgrep(&["-t", tty]));
+    }
+    let mut frontier = vec![shell];
+    // Bounded walk: process trees here are shallow.
+    for _ in 0..16 {
+        let mut next = Vec::new();
+        for parent in frontier {
+            for child in pgrep(&["-P", &parent.to_string()]) {
+                if !out.contains(&child) {
+                    out.push(child);
+                    next.push(child);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    let me = std::process::id() as libc::pid_t;
+    out.sort_unstable();
+    out.dedup();
+    out.retain(|p| *p > 1 && *p != me);
+    out
+}
+
+#[cfg(unix)]
+fn gone(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only probes for existence.
+    let missing = unsafe { libc::kill(pid, 0) != 0 };
+    missing || is_zombie(pid)
+}
+
+/// HUP → TERM → KILL to everything in the terminal. Members are gathered
+/// BEFORE the first signal (once the shell dies, its orphans reparent and
+/// the descendant walk can't find them) and re-gathered each step (a
+/// dying process may have spawned more), so the final SIGKILL reaches
+/// everything ever seen.
+#[cfg(unix)]
+fn terminate_session(shell: u32, tty: Option<&str>, grace: Duration) {
+    let Ok(shell) = libc::pid_t::try_from(shell) else {
+        return;
+    };
+    let mut seen = terminal_members(shell, tty);
+    for (signal, then_wait) in [(libc::SIGHUP, true), (libc::SIGTERM, true), (libc::SIGKILL, false)] {
+        for pid in terminal_members(shell, tty) {
+            if !seen.contains(&pid) {
+                seen.push(pid);
+            }
+        }
+        seen.retain(|p| !gone(*p));
+        if seen.is_empty() {
+            return;
+        }
+        for pid in &seen {
+            // SAFETY: only processes that ran in this PTY.
+            unsafe {
+                libc::kill(*pid, signal);
+            }
+        }
+        if !then_wait {
+            return;
+        }
+        let until = Instant::now() + grace;
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+            if seen.iter().all(|p| gone(*p)) {
+                return;
+            }
+        }
+    }
+}
+
+/// A process that exited but hasn't been reaped yet still answers
+/// `kill(pid, 0)`; it is gone for our purposes.
+#[cfg(unix)]
+fn is_zombie(pid: libc::pid_t) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+        .unwrap_or(false)
 }
 
 /// Delay before the agent command is typed into the fresh shell. Only
@@ -609,20 +805,51 @@ const REATTEMPT_WAIT: Duration = Duration::from_secs(30);
 /// Typing attempts before falling back to the blind type-and-Enter.
 const MAX_TYPE_ATTEMPTS: usize = 3;
 
+/// Longest the wait thread holds `Exit` back for the output pipeline to
+/// drain (see the wait thread in `PtyHandle::spawn`).
+const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(750);
+
 const PASTE_START: &str = "\x1b[200~";
 const PASTE_END: &str = "\x1b[201~";
 
+/// Make message text inert as terminal input: line breaks normalised to
+/// `\n`, then every ESC, every C1 control (U+0080–U+009F, incl. the
+/// single-character CSI U+009B), DEL and every C0 control except `\t` and
+/// `\n` removed. With no ESC/CSI left, no paste marker, key sequence or
+/// control keystroke (Ctrl-C, Ctrl-U, a bare CR = Enter) can survive in the
+/// body, whatever nesting the content tries — review comments and file
+/// excerpts are repo content, so the repo itself could supply them.
+///
+/// Whole paste markers are removed first (to a fixpoint) purely so that a
+/// marker in the text vanishes instead of leaving a `[201~` stub; the
+/// control strip is what makes it safe.
+fn sanitize_message(text: &str) -> String {
+    let mut text = text.replace("\r\n", "\n").replace('\r', "\n");
+    loop {
+        let next = text.replace(PASTE_END, "").replace(PASTE_START, "");
+        if next == text {
+            break;
+        }
+        text = next;
+    }
+    text.chars()
+        .filter(|&c| match c {
+            '\t' | '\n' => true,
+            '\u{00}'..='\u{1f}' | '\u{7f}' | '\u{80}'..='\u{9f}' => false,
+            _ => true,
+        })
+        .collect()
+}
+
 /// The bytes `send_message` writes for `text` (Enter not included).
 fn frame_message(text: &str, bracketed_paste: bool) -> Vec<u8> {
-    if text.is_empty() {
+    let clean = sanitize_message(text);
+    if clean.is_empty() {
         return Vec::new();
     }
     if bracketed_paste {
-        // A paste-end marker INSIDE the text would close the paste early
-        // and turn the rest into keystrokes — review comments and file
-        // excerpts are exactly where such bytes could come from. Strip the
-        // delimiters rather than trust the content.
-        let clean = text.replace(PASTE_END, "").replace(PASTE_START, "");
+        // Sanitised first, so nothing inside can close the paste early and
+        // turn the rest into keystrokes.
         let mut out = Vec::with_capacity(clean.len() + PASTE_START.len() + PASTE_END.len());
         out.extend_from_slice(PASTE_START.as_bytes());
         out.extend_from_slice(clean.as_bytes());
@@ -630,10 +857,8 @@ fn frame_message(text: &str, bracketed_paste: bool) -> Vec<u8> {
         out
     } else {
         // Each line break would be an Enter; one message must stay one
-        // line. `\r\n` first so it becomes a single space, not two.
-        text.replace("\r\n", " ")
-            .replace(['\n', '\r'], " ")
-            .into_bytes()
+        // line (CRs were already normalised to `\n`).
+        clean.replace('\n', " ").into_bytes()
     }
 }
 
@@ -1806,6 +2031,33 @@ mod tests {
         );
         assert!(frame_message("", true).is_empty());
         assert!(frame_message("", false).is_empty());
+    }
+
+    /// The single-pass strip turned this into a REAL paste-end; the
+    /// sanitiser must leave no ESC behind however the markers nest.
+    #[test]
+    fn frame_message_survives_nested_paste_markers() {
+        let framed = frame_message("a\x1b[20\x1b[201~1~b; rm -rf ~", true);
+        assert_eq!(framed, b"\x1b[200~ab; rm -rf ~\x1b[201~".to_vec());
+        let body = &framed[PASTE_START.len()..framed.len() - PASTE_END.len()];
+        assert!(!body.contains(&0x1b));
+        // Doubly nested, too.
+        let framed = frame_message("\x1b[20\x1b[20\x1b[201~1~1~x", true);
+        assert_eq!(framed, b"\x1b[200~x\x1b[201~".to_vec());
+    }
+
+    #[test]
+    fn frame_message_strips_raw_control_bytes_in_both_modes() {
+        // ESC sequence, C1 CSI (U+009B), Ctrl-C, Ctrl-U, BEL, DEL, NUL — none
+        // may reach the program; tabs and newlines survive.
+        let nasty = "x\x1b[A\u{9b}2~\x03\x15\x07\x7f\x00y\tz\nw";
+        assert_eq!(
+            frame_message(nasty, true),
+            b"\x1b[200~x[A2~y\tz\nw\x1b[201~".to_vec()
+        );
+        assert_eq!(frame_message(nasty, false), b"x[A2~y\tz w".to_vec());
+        // A message that is ONLY controls frames to nothing.
+        assert!(frame_message("\x1b\x03\x07", true).is_empty());
     }
 
     #[test]

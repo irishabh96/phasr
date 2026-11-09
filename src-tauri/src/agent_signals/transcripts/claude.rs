@@ -148,7 +148,7 @@ impl ClaudeReader {
         }
     }
 
-    fn discover(&mut self) {
+    pub(super) fn discover(&mut self) {
         for dir in self.project_dirs() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;

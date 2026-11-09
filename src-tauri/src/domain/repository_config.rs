@@ -137,6 +137,23 @@ impl RepositoryConfig {
     }
 }
 
+/// Whether `name` may be handed to git as a base branch. Branch names
+/// reach `git fetch` / `worktree add` / `merge-base` / `checkout` as
+/// arguments, and a per-task base is a SYNCED column — so another machine
+/// (or a crafted row) could supply `--upload-pack=…`. A leading `-` would
+/// be parsed as an option; whitespace and control characters are never
+/// part of a real branch name. (git's own `check-ref-format` rules are
+/// stricter still; git rejects the rest itself.)
+pub fn validate_branch_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!("`{name}` isn't a branch name"));
+    }
+    Ok(())
+}
+
 fn non_blank(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
@@ -241,5 +258,15 @@ mod tests {
         assert_eq!(globs_from_json("not json"), Vec::<String>::new());
         let globs = vec![".env".to_string(), "*.pem".to_string()];
         assert_eq!(globs_from_json(&globs_to_json(&globs)), globs);
+    }
+
+    #[test]
+    fn branch_names_that_git_would_parse_as_options_are_rejected() {
+        for bad in ["--upload-pack=touch /tmp/x", "-b", "", "has space", "tab\there", "nl\n"] {
+            assert!(validate_branch_name(bad).is_err(), "{bad:?}");
+        }
+        for ok in ["main", "release/1.2", "feature-x", "origin/main", "a-b-"] {
+            assert!(validate_branch_name(ok).is_ok(), "{ok}");
+        }
     }
 }

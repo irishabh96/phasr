@@ -28,6 +28,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::agent_signals::{AgentSignals, AttentionResponse, LaunchTask};
+use crate::domain::repository_config::validate_branch_name;
 use crate::domain::{Agent, PermissionMode, Repository, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::git;
 use crate::pty::handle::PtyHandle;
@@ -42,6 +43,8 @@ use super::setup::{self, SetupLog, TaskConfig, TaskSetup};
 /// How long we wait for SIGINT to gracefully shut a process down
 /// before escalating to SIGKILL (via portable_pty's killer).
 const SIGINT_GRACE: Duration = Duration::from_secs(3);
+/// Per step of the SIGHUP → SIGTERM → SIGKILL escalation on stop.
+const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 /// Pause between the keystrokes of a multi-key attention answer: long
 /// enough for an Ink TUI to process (and re-render) one key before the
@@ -242,9 +245,14 @@ impl TaskOrchestrator {
         let (Some(signals), Some(agent), Some(stored)) =
             (self.signals.as_ref(), workspace.agent, command.clone())
         else {
+            // Without signals: still never type a prompt the command line
+            // already carries.
+            let embeds = command
+                .as_deref()
+                .is_some_and(|c| crate::agent_signals::launch::command_embeds_prompt(c, prompt.as_deref()));
             return AgentLaunch {
+                prompt: if embeds { None } else { prompt },
                 command,
-                prompt,
                 env: key_env,
                 generation: None,
                 shell,
@@ -485,6 +493,7 @@ impl TaskOrchestrator {
 
         let setup = self.setup_for(&request.repository_id).await;
         let base = setup.base_branch(request.base_branch.as_deref(), &repository.default_branch);
+        validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
         let mut log = SetupLog::default();
         let start_point = self.start_point(&repository_path, &base, &setup, &mut log).await;
 
@@ -590,6 +599,9 @@ impl TaskOrchestrator {
                 .await
                 .map_err(|_| OrchestratorError::InvalidDependency(dependency.to_string()))?;
         }
+        if let Some(base) = row.base_branch.as_deref() {
+            validate_branch_name(base.trim()).map_err(OrchestratorError::InvalidBaseBranch)?;
+        }
         let workspace = Self::new_task_row(row);
         match user_id {
             Some(user_id) => self.workspaces.insert_for_user(&workspace, user_id).await?,
@@ -614,6 +626,9 @@ impl TaskOrchestrator {
         let current = self.get_task(task_id, user_id).await?;
         if !current.is_unlaunched() {
             return Err(OrchestratorError::AlreadyLaunched);
+        }
+        if let Some(Some(base)) = patch.base_branch.as_ref() {
+            validate_branch_name(base.trim()).map_err(OrchestratorError::InvalidBaseBranch)?;
         }
         if let Some(Some(dependency)) = patch.depends_on.as_ref() {
             if dependency == task_id || self.depends_on_transitively(dependency, task_id).await {
@@ -700,7 +715,9 @@ impl TaskOrchestrator {
             .task_repository(&workspace.repository_id, user_id)
             .await?;
         let setup = self.setup_for(&workspace.repository_id).await;
+        // The stored base is a synced column: re-validate at use.
         let base = setup.base_branch(workspace.base_branch.as_deref(), &repository.default_branch);
+        validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
         let mut log = SetupLog::default();
         let start_point = self.start_point(&repository_path, &base, &setup, &mut log).await;
 
@@ -946,7 +963,9 @@ impl TaskOrchestrator {
                 .get(&task_id_for_escalation)
                 .is_some()
             {
-                let _ = handle_for_escalation.kill();
+                // The whole terminal session (the agent and anything it
+                // or the user started), HUP → TERM → KILL.
+                handle_for_escalation.terminate(TERMINATE_GRACE);
             }
         });
 
@@ -1006,7 +1025,7 @@ impl TaskOrchestrator {
                 },
             )
             .await;
-        let _ = handle.kill();
+        handle.terminate(TERMINATE_GRACE);
         self.runtime.drop_task(task_id);
     }
 
@@ -2637,6 +2656,51 @@ mod tests {
         orchestrator.quiesce_task(&started.task_id).await;
     }
 
+    /// A base branch is handed to `git fetch` / `worktree add`; one git
+    /// would read as an option is refused on input AND at launch (the
+    /// stored column syncs from other machines).
+    #[tokio::test]
+    async fn a_base_branch_that_looks_like_an_option_is_refused() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let evil = "--upload-pack=touch /tmp/phasr-pwned";
+        let mut request = sleep_request(&repo.id, "evil");
+        request.base_branch = Some(evil.into());
+        let err = orchestrator.start_task(request).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::InvalidBaseBranch(_)), "{err}");
+
+        let row = TaskRow {
+            repository_id: repo.id.clone(),
+            agent: Agent::Claude,
+            command: "sleep 30".into(),
+            name: "queued-evil".into(),
+            prompt: None,
+            base_branch: Some(evil.into()),
+            permission_mode: None,
+            notify_on_attention: true,
+            queued: false,
+            depends_on: None,
+        };
+        assert!(matches!(
+            orchestrator.create_row(row.clone(), None).await,
+            Err(OrchestratorError::InvalidBaseBranch(_))
+        ));
+        // Arrived via sync (no input validation on that path): launch refuses.
+        let mut synced = TaskRow { base_branch: None, ..row };
+        synced.name = "synced-evil".into();
+        let saved = orchestrator.create_row(synced, None).await.unwrap();
+        sqlx::query("UPDATE workspaces SET base_branch = ? WHERE id = ?")
+            .bind(evil)
+            .bind(&saved.id)
+            .execute(orchestrator.workspaces.pool())
+            .await
+            .unwrap();
+        assert!(matches!(
+            orchestrator.launch(&saved.id, None, None, None).await,
+            Err(OrchestratorError::InvalidBaseBranch(_))
+        ));
+    }
+
     #[tokio::test]
     async fn send_message_reaches_the_task_and_requires_a_live_pty() {
         let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
@@ -2647,8 +2711,10 @@ mod tests {
         let mut request = sleep_request(&repo.id, "echo-back");
         // Announces it's reading (`rea%s` so the shell's echo of the typed
         // line can't match), reads one line and echoes it with a marker —
-        // proving the text was delivered AND submitted.
-        request.command = r#"printf 'rea%s\n' dy; IFS= read -r line; echo "got[$line]""#.into();
+        // proving the text was delivered AND submitted. Run as its own
+        // process (like a real agent): with the shell itself in the
+        // foreground, `send_message` refuses ("agent not running").
+        request.command = r#"sh -c 'printf "rea%s\n" dy; IFS= read -r line; echo "got[$line]"'"#.into();
         let started = orchestrator.start_task(request).await.unwrap();
         let handle = orchestrator.runtime.get(&started.task_id).unwrap();
         let (replay, mut rx) = handle.subscribe_with_replay();
@@ -3017,7 +3083,8 @@ exit 1
     #[test]
     fn interpolate_for_task_substitutes_prompt() {
         let out = interpolate_for_task(r#"claude -p "{{prompt}}""#, Some("hi"));
-        assert_eq!(out, r#"claude -p "hi""#);
+        // Always single-quoted (closing/reopening the template's "…").
+        assert_eq!(out, r#"claude -p ""'hi'"""#);
     }
 
     #[test]
@@ -3029,6 +3096,6 @@ exit 1
     #[test]
     fn interpolate_for_task_handles_missing_prompt_as_empty() {
         let out = interpolate_for_task(r#"agent --p "{{prompt}}""#, None);
-        assert_eq!(out, r#"agent --p """#);
+        assert_eq!(out, r#"agent --p ""''"""#);
     }
 }

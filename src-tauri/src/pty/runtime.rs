@@ -56,6 +56,20 @@ impl TaskRuntime {
     pub fn drop_task(&self, task_id: &str) {
         self.running.lock().remove(task_id);
     }
+
+    /// App quit: take down every PTY's whole session (agents, dev servers,
+    /// background jobs), in parallel, bounded by about `2 × grace`. Without
+    /// this, jobs started in phasr terminals outlived the app.
+    pub fn terminate_all_blocking(&self, grace: std::time::Duration) {
+        let handles: Vec<Arc<PtyHandle>> = self.running.lock().values().cloned().collect();
+        let threads: Vec<_> = handles
+            .into_iter()
+            .map(|h| std::thread::spawn(move || h.terminate_blocking(grace)))
+            .collect();
+        for t in threads {
+            let _ = t.join();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -446,6 +460,112 @@ mod tests {
         .await
         .unwrap();
         assert!(output.contains("got[one two]"));
+    }
+
+    /// An agent that exited back to the shell must not receive a message:
+    /// pasted text + Enter would run as a shell command.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_refuses_when_the_shell_is_back_in_the_foreground() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(SpawnSpec::new("bare-shell", std::env::temp_dir()).with_shell(Some("/bin/sh".into())))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while handle.shell_in_foreground() != Some(true) {
+            assert!(std::time::Instant::now() < deadline, "shell never took the foreground");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let err = handle.send_message("echo `id`", true).await.unwrap_err();
+        assert_eq!(err.to_string(), "agent not running");
+        handle.kill().unwrap();
+    }
+
+    /// Exec mode: the final burst of output is broadcast BEFORE `Exit`, so
+    /// a viewer that stops at `Exit` still sees the failing summary.
+    #[test]
+    fn exec_output_is_flushed_before_exit() {
+        let (runtime, _dir) = fresh_runtime();
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("flush", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_launch(LaunchMode::Exec("printf 'summary-%s' tail; exit 3".into())),
+            )
+            .unwrap();
+        let mut rx = handle.subscribe();
+        let mut combined = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "no exit; output: {combined:?}");
+            match rx.try_recv() {
+                Ok(super::super::PtyEvent::Output { chunk, .. }) => {
+                    combined.push_str(&String::from_utf8_lossy(&chunk))
+                }
+                Ok(super::super::PtyEvent::Exit { exit_code, .. }) => {
+                    assert_eq!(exit_code, Some(3));
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("unexpected recv error: {e:?}"),
+            }
+        }
+        assert!(combined.contains("summary-tail"), "output before Exit: {combined:?}");
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: i32) -> bool {
+        // Exists and isn't a zombie awaiting its reaper.
+        let exists = unsafe { libc::kill(pid, 0) == 0 };
+        exists
+            && !std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+                .unwrap_or(false)
+    }
+
+    /// Stop must reach every job the terminal started — a background job
+    /// and a foreground one in their own process groups, one of them
+    /// ignoring SIGHUP and SIGTERM (only SIGKILL gets it).
+    #[cfg(unix)]
+    #[test]
+    fn terminate_kills_the_whole_session_with_escalation() {
+        let (runtime, dir) = fresh_runtime();
+        let pids = dir.path().join("pids");
+        let script = format!(
+            "sleep 300 & echo $! >> {p}; sh -c 'trap \"\" HUP TERM; echo $$ >> {p}; while :; do sleep 1; done'",
+            p = pids.display()
+        );
+        let handle = runtime
+            .spawn(
+                SpawnSpec::new("session", std::env::temp_dir())
+                    .with_shell(Some("/bin/sh".into()))
+                    .with_initial_command(Some(script)),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let read = || -> Vec<i32> {
+            std::fs::read_to_string(&pids)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect()
+        };
+        while read().len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "jobs never started");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let jobs = read();
+        assert!(jobs.iter().all(|p| alive(*p)));
+
+        handle.terminate_blocking(Duration::from_millis(400));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while jobs.iter().any(|p| alive(*p)) {
+            assert!(std::time::Instant::now() < deadline, "survivors: {:?}", jobs.iter().filter(|p| alive(**p)).collect::<Vec<_>>());
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     #[test]

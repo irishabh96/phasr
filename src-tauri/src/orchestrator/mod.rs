@@ -14,7 +14,7 @@ mod repo_locks;
 mod service;
 pub mod setup;
 pub mod worktrees;
-mod templating;
+pub(crate) mod templating;
 
 pub use board::{TaskBoard, TaskCard};
 pub use error::OrchestratorError;

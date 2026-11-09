@@ -17,6 +17,7 @@ use crate::checks::{CheckError, CheckService};
 use crate::domain::{CheckRun, CheckStatus, Repository, TaskOutcome, Workspace, WorkspaceKind};
 use crate::git::{self, GitError, MergeOutcome, MergeStrategy};
 use crate::orchestrator::RepoLockRegistry;
+use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 
 #[derive(Debug, Error)]
@@ -42,6 +43,17 @@ pub enum ReviewError {
     NoRemote,
     #[error("couldn't derive a pull-request URL from remote `{0}`")]
     UnknownHost(String),
+    /// Approve pushes the BRANCH; uncommitted work would be left out of the
+    /// PR while checks/review (which include the worktree) vouched for it.
+    /// The frontend matches this exact string to offer "Commit & push".
+    #[error("worktree has uncommitted changes")]
+    DirtyWorktree,
+    /// Merging checks the target branch out in the repository's own
+    /// checkout — the very directory an in-place agent is working in.
+    #[error("an in-place agent is running in this repository's checkout; stop it before merging locally")]
+    InPlaceAgentRunning,
+    #[error("the repository's own checkout can't be discarded")]
+    LocalNotDiscardable,
     #[error("{0}")]
     Other(String),
 }
@@ -64,6 +76,11 @@ pub struct ApproveInput {
     /// Open the PR even though required checks aren't passing.
     #[serde(default)]
     pub override_checks: Option<bool>,
+    /// The worktree has uncommitted (incl. untracked) changes: commit them
+    /// all (message = the task's name) before pushing. Without it a dirty
+    /// worktree is refused with "worktree has uncommitted changes".
+    #[serde(default)]
+    pub commit_dirty: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -141,6 +158,9 @@ pub struct ReviewService {
     repositories: RepositoryRepo,
     repo_locks: Arc<RepoLockRegistry>,
     checks: CheckService,
+    /// To see whether an in-place agent is live in the main checkout
+    /// before a local merge checks a branch out under it.
+    runtime: Option<Arc<TaskRuntime>>,
 }
 
 async fn blocking<T, F>(f: F) -> Result<T, ReviewError>
@@ -166,7 +186,36 @@ impl ReviewService {
             repositories,
             repo_locks,
             checks,
+            runtime: None,
         }
+    }
+
+    pub fn with_runtime(mut self, runtime: Arc<TaskRuntime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    /// Discard refuses the repository's own checkout. Exposed so the
+    /// command can ask BEFORE it stops the agent, run commands and checks.
+    pub fn ensure_discardable(ws: &Workspace) -> Result<(), ReviewError> {
+        if ws.workspace_kind == WorkspaceKind::Local {
+            return Err(ReviewError::LocalNotDiscardable);
+        }
+        Ok(())
+    }
+
+    /// An agent is running in place (on the `local` row, in the main
+    /// checkout) for this repository right now.
+    async fn in_place_agent_running(&self, repository_id: &str) -> Result<bool, ReviewError> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Ok(false);
+        };
+        let Some(local) = self.workspaces.get_local_by_repository(repository_id).await? else {
+            return Ok(false);
+        };
+        Ok(local.agent.is_some()
+            && local.status == crate::domain::WorkspaceStatus::Running
+            && runtime.get(&local.id).is_some())
     }
 
     fn worktree(ws: &Workspace) -> Result<PathBuf, ReviewError> {
@@ -202,6 +251,22 @@ impl ReviewService {
         let branch = ws.branch.clone().ok_or(ReviewError::NoBranch)?;
         let cwd = Self::worktree(ws)?;
         let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
+        let dirty = {
+            let cwd = cwd.clone();
+            blocking(move || git::is_dirty(&cwd)).await?
+        };
+        if dirty {
+            if !input.commit_dirty.unwrap_or(false) {
+                return Err(ReviewError::DirtyWorktree);
+            }
+            let (cwd, message) = (cwd.clone(), ws.name.clone());
+            blocking(move || {
+                git::stage(&cwd, &[])?;
+                git::commit(&cwd, &message)?;
+                Ok(())
+            })
+            .await?;
+        }
         {
             let (cwd, branch) = (cwd.clone(), branch.clone());
             blocking(move || git::push(&cwd, "origin", &branch)).await?;
@@ -368,6 +433,11 @@ impl ReviewService {
         // every worktree-add / branch-delete on this repo (F6).
         let lock = self.repo_locks.for_repository(&ws.repository_id);
         let guard = lock.lock().await;
+        // Under the lock: an in-place start holds it through its spawn, so
+        // the answer can't change before the checkout below.
+        if self.in_place_agent_running(&ws.repository_id).await? {
+            return Err(ReviewError::InPlaceAgentRunning);
+        }
         let outcome = {
             let target = target.clone();
             blocking(move || git::merge_to(&main_repo, &target, &branch, strategy)).await?
@@ -428,9 +498,7 @@ impl ReviewService {
     /// its history stay — the Board shows "closed without merge". Callers
     /// stop the agent, run commands and checks first.
     pub async fn discard(&self, ws: &Workspace, user_id: &str) -> Result<Workspace, ReviewError> {
-        if ws.workspace_kind == WorkspaceKind::Local {
-            return Err(ReviewError::Other("the repository's own checkout can't be discarded".into()));
-        }
+        Self::ensure_discardable(ws)?;
         let repository = self.repositories.get_for_user(&ws.repository_id, user_id).await?;
         if let Some(repo_path) = repository.local_path.as_deref().map(PathBuf::from) {
             let lock = self.repo_locks.for_repository(&ws.repository_id);
@@ -608,6 +676,77 @@ mod tests {
         assert!(f.repo_path.join("feature.txt").exists());
     }
 
+    /// The one local-merge path merges into the TASK's base (not the
+    /// repository default) and records it there.
+    #[tokio::test]
+    async fn merge_locally_targets_the_tasks_own_base_branch() {
+        let f = fx().await;
+        git(&f.repo_path, &["branch", "develop"]);
+        let mut ws = Workspace::new(f.repository.id.clone(), "on-develop".into(), "c".into());
+        let wt = f.repo_path.parent().unwrap().join("wt-on-develop");
+        git::create_worktree(&f.repo_path, &wt, "phasr/on-develop", "develop").unwrap();
+        std::fs::write(wt.join("d.txt"), "d\n").unwrap();
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-qm", "d"]);
+        ws.branch = Some("phasr/on-develop".into());
+        ws.worktree_path = Some(wt.to_string_lossy().into_owned());
+        ws.base_branch = Some("develop".into());
+        f.workspaces.insert_for_user(&ws, "u").await.unwrap();
+
+        let outcome = f.review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.unwrap();
+        assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+        let row = f.workspaces.get(&ws.id).await.unwrap();
+        assert_eq!(row.merged_into.as_deref(), Some("develop"));
+        let on_develop = Command::new("git")
+            .args(["cat-file", "-e", "develop:d.txt"])
+            .current_dir(&f.repo_path)
+            .status()
+            .unwrap();
+        assert!(on_develop.success(), "merged into develop");
+        let on_main = Command::new("git")
+            .args(["cat-file", "-e", "main:d.txt"])
+            .current_dir(&f.repo_path)
+            .status()
+            .unwrap();
+        assert!(!on_main.success(), "main untouched");
+    }
+
+    /// "Merge locally" checks a branch out in the main checkout: refused
+    /// while an in-place agent is live there.
+    #[tokio::test]
+    async fn merge_locally_refuses_while_an_in_place_agent_runs() {
+        let f = fx().await;
+        let ws = task_with_worktree(&f, "busy").await;
+        let mut local = Workspace::new(f.repository.id.clone(), "local".into(), "claude".into());
+        local.workspace_kind = WorkspaceKind::Local;
+        local.worktree_path = Some(f.repo_path.to_string_lossy().into_owned());
+        local.agent = Some(crate::domain::Agent::Claude);
+        local.status = crate::domain::WorkspaceStatus::Running;
+        f.workspaces.insert_for_user(&local, "u").await.unwrap();
+        let runtime = Arc::new(TaskRuntime::new(f.repo_path.parent().unwrap().join("logs")));
+        let handle = runtime
+            .spawn(crate::pty::SpawnSpec::new(local.id.clone(), f.repo_path.clone()).with_shell(Some("/bin/sh".into())))
+            .unwrap();
+        let review = f.review.clone().with_runtime(runtime.clone());
+
+        let err = review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.unwrap_err();
+        assert!(matches!(err, ReviewError::InPlaceAgentRunning), "{err}");
+        assert!(!f.repo_path.join("busy.txt").exists(), "nothing was merged");
+
+        handle.kill().unwrap();
+        runtime.drop_task(&local.id);
+        assert!(review.merge_locally(&ws, "u", MergeStrategy::Merge, None).await.is_ok());
+    }
+
+    #[test]
+    fn the_main_checkout_is_never_discardable() {
+        let mut local = Workspace::new("r".into(), "local".into(), String::new());
+        local.workspace_kind = WorkspaceKind::Local;
+        assert!(matches!(ReviewService::ensure_discardable(&local), Err(ReviewError::LocalNotDiscardable)));
+        let task = Workspace::new("r".into(), "t".into(), "c".into());
+        assert!(ReviewService::ensure_discardable(&task).is_ok());
+    }
+
     #[tokio::test]
     async fn a_continued_merge_marks_only_the_matching_task_in_the_main_checkout() {
         let f = fx().await;
@@ -640,6 +779,62 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    /// Approve pushes the branch, so uncommitted work would silently miss
+    /// the PR: refused unless `commitDirty`, which commits everything
+    /// (untracked included) under the task's name, then pushes.
+    #[tokio::test]
+    async fn approve_refuses_a_dirty_worktree_unless_asked_to_commit_it() {
+        let f = fx().await;
+        let ws = task_with_worktree(&f, "dirty").await;
+        let wt = PathBuf::from(ws.worktree_path.clone().unwrap());
+        let origin = f.repo_path.parent().unwrap().join("origin.git");
+        git(f.repo_path.parent().unwrap(), &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        git(&wt, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        std::fs::write(wt.join("untracked.txt"), "agent output\n").unwrap();
+
+        let err = f
+            .review
+            .approve_and_create_pr(&ws, "u", ApproveInput::default(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "worktree has uncommitted changes");
+        // Nothing was pushed.
+        let pushed = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "refs/heads/phasr/dirty"])
+            .current_dir(&origin)
+            .status()
+            .unwrap();
+        assert!(!pushed.success());
+
+        // With commitDirty: committed (message = task name) and pushed.
+        // (It then fails deriving a PR URL from a local-path remote.)
+        let _ = f
+            .review
+            .approve_and_create_pr(
+                &ws,
+                "u",
+                ApproveInput {
+                    commit_dirty: Some(true),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        assert!(!git::is_dirty(&wt).unwrap(), "everything committed");
+        let subject = Command::new("git")
+            .args(["log", "-1", "--format=%s", "phasr/dirty"])
+            .current_dir(&origin)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "dirty", "pushed with the task's name");
+        let files = Command::new("git")
+            .args(["ls-tree", "-r", "--name-only", "phasr/dirty"])
+            .current_dir(&origin)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&files.stdout).contains("untracked.txt"));
     }
 
     #[tokio::test]

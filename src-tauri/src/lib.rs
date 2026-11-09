@@ -24,6 +24,7 @@ mod pty;
 mod review;
 mod run_commands;
 mod secrets;
+mod settings_trust;
 mod store;
 mod sync;
 mod util;
@@ -175,6 +176,8 @@ pub fn run() {
             commands::agents::preview_agent_command,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
+            commands::settings::list_unconfirmed_settings,
+            commands::settings::confirm_settings_on_this_machine,
             commands::settings::list_shells,
             commands::repository_config::get_repository_config,
             commands::repository_config::update_repository_config,
@@ -235,7 +238,6 @@ pub fn run() {
             commands::review::request_changes,
             commands::review::approve_and_create_pr,
             commands::review::refresh_pr_states,
-            commands::review::merge_task_locally,
             commands::review::discard_workspace,
             commands::notifications::register_notification_route,
             commands::notifications::activate_notification,
@@ -252,6 +254,7 @@ pub fn run() {
             commands::run_commands::list_run_commands,
             commands::run_commands::update_run_command,
             commands::run_commands::delete_run_command,
+            commands::run_commands::attach_run_command,
             commands::run_commands::start_run_command,
             commands::run_commands::stop_run_command,
             commands::run_commands::send_run_command_input,
@@ -279,6 +282,11 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // Nothing started in a phasr terminal (agents, dev servers,
+                // background jobs) may outlive the app. Bounded: ~1s.
+                if let Some(runtime) = app_handle.try_state::<Arc<TaskRuntime>>() {
+                    runtime.terminate_all_blocking(std::time::Duration::from_millis(500));
+                }
                 // Last chance before the process dies: fold the WAL into the
                 // main db file and close the pool. Tauri never drops managed
                 // state, so without this the WAL grows forever and the
@@ -343,6 +351,9 @@ async fn initialize_database_state(
     // agent's API key from the Keychain.
     let repository_configs = RepositoryConfigRepo::new(pool.clone());
     let app_meta = AppMetaRepo::new(pool.clone());
+    // Before anything can launch: what's stored today already ran on this
+    // machine; from now on synced agent templates / shells need confirming.
+    settings_trust::grandfather_existing(&app_meta, &SettingsRepo::new(pool.clone())).await;
     let api_keys = secrets::ApiKeys::new(
         Arc::new(secrets::KeychainStore::default()),
         app_meta.clone(),
@@ -354,11 +365,14 @@ async fn initialize_database_state(
         repo_locks.clone(),
     )
     .with_agent_signals(agent_signals.clone())
-    .with_task_config(orchestrator::TaskConfig::new(
-        repository_configs.clone(),
-        SettingsRepo::new(pool.clone()),
-        Some(api_keys.clone()),
-    ));
+    .with_task_config(
+        orchestrator::TaskConfig::new(
+            repository_configs.clone(),
+            SettingsRepo::new(pool.clone()),
+            Some(api_keys.clone()),
+        )
+        .with_trust(app_meta.clone()),
+    );
     commands::events::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
 
     // The Board: derived lanes + diff cache, and the queue that starts
@@ -413,7 +427,8 @@ async fn initialize_database_state(
         repository_repo.clone(),
         repo_locks.clone(),
         checks.clone(),
-    );
+    )
+    .with_runtime(task_runtime.clone());
 
     // The inbox.
     let notification_repo = NotificationRepo::new(pool.clone());
@@ -422,7 +437,8 @@ async fn initialize_database_state(
         workspace_repo.clone(),
         Some(checks.clone()),
     );
-    notifier.prune_old().await;
+    // At startup and hourly after (not only at launch).
+    notifier.start_pruning();
     notifier.start(
         orchestrator.subscribe_status(),
         Some(agent_signals.subscribe()),

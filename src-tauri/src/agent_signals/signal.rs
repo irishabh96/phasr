@@ -43,11 +43,16 @@ pub enum AgentSignal {
         tool_name: String,
         tool_input: Value,
     },
+    /// `tool_input` identifies WHICH call finished: with parallel tool
+    /// calls or subagents, an unrelated call finishing must not resolve
+    /// the card for the one awaiting approval.
     PostToolUse {
         tool_name: String,
+        tool_input: Value,
     },
     PermissionDenied {
         tool_name: String,
+        tool_input: Value,
     },
     Notification {
         notification_type: Option<String>,
@@ -113,9 +118,11 @@ pub fn parse_hook_payload(agent: &str, raw: &str) -> Option<(AgentSignal, Sessio
         },
         "PostToolUse" => AgentSignal::PostToolUse {
             tool_name: tool_name(),
+            tool_input: tool_input(),
         },
         "PermissionDenied" => AgentSignal::PermissionDenied {
             tool_name: tool_name(),
+            tool_input: tool_input(),
         },
         "Notification" => AgentSignal::Notification {
             notification_type: str_field(&v, "notification_type"),

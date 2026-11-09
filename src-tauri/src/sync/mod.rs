@@ -889,6 +889,14 @@ async fn upsert_workspace_from_cloud(
                 notify_on_attention = COALESCE(?, notify_on_attention),
                 last_turn_ended_at = CASE WHEN ? THEN ? ELSE last_turn_ended_at END,
                 base_branch = CASE WHEN ? THEN ? ELSE base_branch END,
+                -- Another machine re-queued (or unqueued / launched) it: it is
+                -- theirs to start now. The RHS sees the OLD queued_at. Compared
+                -- as instants with a little slack, not as text: the cloud
+                -- round-trip trims nanoseconds, and an unrelated edit made
+                -- elsewhere (a rename) must not unqueue it here.
+                queued_here = CASE WHEN ? AND (? IS NULL OR queued_at IS NULL
+                        OR abs(julianday(queued_at) - julianday(?)) > 0.00002)
+                    THEN 0 ELSE queued_here END,
                 queued_at = CASE WHEN ? THEN ? ELSE queued_at END,
                 depends_on_workspace_id = CASE WHEN ? THEN ? ELSE depends_on_workspace_id END,
                 outcome = CASE WHEN ? THEN ? ELSE outcome END,
@@ -921,6 +929,9 @@ async fn upsert_workspace_from_cloud(
         .bind(row.last_turn_ended_at.flatten().map(|dt| dt.to_rfc3339()))
         .bind(base_branch.0)
         .bind(base_branch.1.clone())
+        .bind(queued_at.0)
+        .bind(queued_at.1.clone())
+        .bind(queued_at.1.clone())
         .bind(queued_at.0)
         .bind(queued_at.1.clone())
         .bind(depends_on.0)
@@ -2442,6 +2453,38 @@ mod tests {
         .unwrap();
         assert_eq!(queued, Some(later.to_rfc3339()));
         assert_eq!(dep.as_deref(), Some("ws-b"));
+
+        // Queued elsewhere: the local "queued on this machine" marker is
+        // never set by a pull, so this machine's scheduler won't start it.
+        let queued_here = |db: Db, id: &'static str| async move {
+            sqlx::query_scalar::<_, i64>("SELECT queued_here FROM workspaces WHERE id = ?")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(queued_here(db.clone(), "ws-new").await, 0);
+        // Queued HERE, then an unrelated edit from elsewhere (same queued_at,
+        // trimmed to microseconds by the cloud round-trip) keeps it ours…
+        let mine = Utc::now();
+        sqlx::query("UPDATE workspaces SET queued_at = ?, queued_here = 1 WHERE id = 'ws-new'")
+            .bind(mine.to_rfc3339_opts(chrono::SecondsFormat::Nanos, false))
+            .execute(&db)
+            .await
+            .unwrap();
+        let mut row = cloud_workspace("ws-new", later + chrono::Duration::minutes(2));
+        row.queued_at = Some(Some(
+            DateTime::parse_from_rfc3339(&mine.to_rfc3339_opts(chrono::SecondsFormat::Micros, false))
+                .unwrap()
+                .with_timezone(&Utc),
+        ));
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(queued_here(db.clone(), "ws-new").await, 1);
+        // …while another machine re-queueing (or launching) it hands it over.
+        let mut row = cloud_workspace("ws-new", later + chrono::Duration::minutes(3));
+        row.queued_at = Some(None);
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(queued_here(db.clone(), "ws-new").await, 0);
     }
 
     /// Absent vs null must survive JSON decoding, not just struct literals.

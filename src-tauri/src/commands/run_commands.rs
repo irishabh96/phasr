@@ -43,6 +43,11 @@ pub enum RunCommandError {
     WrongRepository,
     #[error("no running PTY for run command `{0}`")]
     NotRunning(String),
+    /// `attach_run_command` found nothing live under the key. The exact
+    /// string is part of the contract: the run pane treats it as "show the
+    /// Run button", not as a failure.
+    #[error("not running")]
+    NotAttached,
 }
 
 impl serde::Serialize for RunCommandError {
@@ -102,7 +107,7 @@ pub async fn create_run_command(
     rc.required_for_approve = input.required_for_approve.unwrap_or(false);
     repo.insert_for_user(&rc, &current_session.user_id).await?;
     // Typed here, by this user: trusted to auto-run on this machine.
-    meta.trust_command(&rc.command).await?;
+    meta.trust_run_command(&rc).await?;
     sync_state.request_sync();
     Ok(rc)
 }
@@ -146,7 +151,7 @@ pub async fn update_run_command(
     // NOT: that would let one click auto-run a command synced from
     // elsewhere without the user ever looking at its text.
     if edited_command {
-        meta.trust_command(&run_command.command).await?;
+        meta.trust_run_command(&run_command).await?;
     }
     sync_state.request_sync();
     Ok(run_command)
@@ -163,7 +168,7 @@ pub async fn confirm_run_command(
 ) -> Result<RunCommand, RunCommandError> {
     let current = require_user(&session)?;
     let rc = repo.get_for_user(&id, &current.user_id).await?;
-    meta.trust_command(&rc.command).await?;
+    meta.trust_run_command(&rc).await?;
     Ok(rc)
 }
 
@@ -214,8 +219,50 @@ pub async fn detect_package_scripts(
 
 // ── Runtime ─────────────────────────────────────────────────────────
 
-/// Start (or re-attach to) a run command. With `workspaceId` it runs in
-/// that task's worktree; without, in the repository's own checkout.
+/// Attach a viewer (with replay) to a run command that is ALREADY running
+/// for this task (`workspaceId`) or the repository checkout (none).
+/// Rejects with `"not running"` otherwise — it never spawns. The run pane
+/// calls this on mount; only an explicit Run calls `start_run_command`, so
+/// visiting a task (or returning after an exec command exited) can never
+/// start a command by itself.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn attach_run_command(
+    id: String,
+    on_event: Channel<PtyEvent>,
+    rows: Option<u16>,
+    cols: Option<u16>,
+    workspace_id: Option<String>,
+    run_commands: State<'_, RunCommandRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
+    runs: State<'_, RunCommandRuntime>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), RunCommandError> {
+    let current = require_user(&session)?;
+    // Ownership of both halves of the key before handing out its output.
+    let rc = run_commands.get_for_user(&id, &current.user_id).await?;
+    if let Some(workspace_id) = workspace_id.as_deref() {
+        let workspace = workspaces.get_for_user(workspace_id, &current.user_id).await?;
+        if workspace.repository_id != rc.repository_id {
+            return Err(RunCommandError::WrongRepository);
+        }
+    }
+    let handle = runs
+        .attachable(&pty_key(&id, workspace_id.as_deref()))
+        .ok_or(RunCommandError::NotAttached)?;
+    if let (Some(rows), Some(cols)) = (rows, cols) {
+        // Best effort: the viewer's size, so the replay reflows correctly.
+        let _ = handle.resize(rows, cols);
+    }
+    let (replay, rx) = handle.subscribe_with_replay();
+    forward(replay, rx, on_event);
+    Ok(())
+}
+
+/// Explicitly start a run command (the user pressed Run). With
+/// `workspaceId` it runs in that task's worktree; without, in the
+/// repository's own checkout. If it is already running this attaches to
+/// the live PTY instead of starting a second copy.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn start_run_command(
@@ -228,7 +275,6 @@ pub async fn start_run_command(
     repositories: State<'_, RepositoryRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     runs: State<'_, RunCommandRuntime>,
-    runtime: State<'_, Arc<TaskRuntime>>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<(), RunCommandError> {
     let current = require_user(&session)?;
@@ -239,7 +285,7 @@ pub async fn start_run_command(
 
     // Idempotent: re-attach to an already-running PTY (including one
     // auto-started headless for the task).
-    if let Some(handle) = runtime.get(&key) {
+    if let Some(handle) = runs.attachable(&key) {
         let (replay, rx) = handle.subscribe_with_replay();
         forward(replay, rx, on_event);
         return Ok(());

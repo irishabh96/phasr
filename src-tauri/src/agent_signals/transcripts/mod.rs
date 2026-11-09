@@ -182,8 +182,14 @@ impl TranscriptReader {
     }
 
     /// Whether any session for this cwd exists — resume needs one.
+    /// Whether any of the task's sessions exist. Discovery only (file
+    /// names / Codex's first line) — a resume decision must not parse every
+    /// transcript in full, which `refresh` would.
     pub fn has_sessions(&mut self) -> bool {
-        self.refresh();
+        match self {
+            Self::Claude(r) => r.discover(),
+            Self::Codex(r) => r.discover(),
+        }
         match self {
             Self::Claude(r) => r.has_sessions(),
             Self::Codex(r) => r.has_sessions(),

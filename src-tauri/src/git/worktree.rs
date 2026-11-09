@@ -40,6 +40,14 @@ pub fn create_worktree(
     }
 
     let worktree_path_str = worktree_path.to_str().ok_or(GitError::InvalidPath)?;
+    // Refs here can come from synced rows: never let one be parsed as an
+    // option. (`--` below covers `worktree add`; `rev-parse --verify`
+    // has no `--` for revisions, hence the explicit check.)
+    for r in [branch, base_ref] {
+        if r.starts_with('-') {
+            return Err(GitError::CommandFailed(format!("`{r}` isn't a valid ref")));
+        }
+    }
 
     // If `branch` already exists locally, skip the `-b` flag.
     let branch_exists = run_git(
@@ -49,7 +57,7 @@ pub fn create_worktree(
     .is_ok();
 
     if branch_exists {
-        run_git(repo_path, &["worktree", "add", worktree_path_str, branch])?;
+        run_git(repo_path, &["worktree", "add", "--", worktree_path_str, branch])?;
         return Ok(());
     }
 
@@ -70,6 +78,7 @@ pub fn create_worktree(
             "add",
             "-b",
             branch,
+            "--",
             worktree_path_str,
             &resolved_base,
         ],

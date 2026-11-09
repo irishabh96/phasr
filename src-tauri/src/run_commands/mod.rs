@@ -33,6 +33,8 @@ const RUN_PTY_PREFIX: &str = "run:";
 /// The key's scope for a command run in the repository's own checkout.
 const REPO_SCOPE: &str = "repo";
 const EVENT_CAPACITY: usize = 256;
+/// Per step of the SIGHUP → SIGTERM → SIGKILL escalation on stop.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `run:<run command id>@<workspace id | "repo">`. Scoped by task so the
 /// same command (say `pnpm dev`) runs once PER TASK, each in its own
@@ -137,10 +139,28 @@ impl RunCommandRuntime {
         self.inner.runtime.get(key)
     }
 
+    /// The PTY under `key` to attach a viewer to — ONLY if its process is
+    /// still running. Never spawns: opening a run tab in another task (or
+    /// coming back after an exec-mode command exited) must not start the
+    /// command; only an explicit Run does (`start`). An exited PTY can
+    /// linger in the runtime map for a moment before its monitor
+    /// unregisters it, hence the exit-code check.
+    pub fn attachable(&self, key: &str) -> Option<Arc<PtyHandle>> {
+        self.inner
+            .runtime
+            .get(key)
+            .filter(|handle| handle.exit_code().is_none())
+    }
+
     /// Start `rc` for `target` in exec mode. Errors with `AlreadyRunning`
     /// if that key has a live PTY — callers re-attach instead.
     pub fn start(&self, rc: &RunCommand, target: RunTarget) -> Result<Arc<PtyHandle>, PtyError> {
         let key = pty_key(&rc.id, target.workspace_id.as_deref());
+        // An exited PTY its monitor hasn't unregistered yet must not block
+        // an explicit re-run with "already running".
+        if self.inner.runtime.get(&key).is_some_and(|h| h.exit_code().is_some()) {
+            self.inner.runtime.drop_task(&key);
+        }
         let handle = self.inner.runtime.spawn(
             SpawnSpec::new(key.clone(), target.cwd)
                 .with_launch(LaunchMode::Exec(rc.command.clone()))
@@ -177,7 +197,9 @@ impl RunCommandRuntime {
         if let Some(entry) = self.inner.entries.lock().get_mut(key) {
             entry.stopped_by_user = true;
         }
-        handle.kill()?;
+        // The command's whole session: `pnpm dev` → node → esbuild etc.
+        // A SIGHUP to the shell alone left the server holding its port.
+        handle.terminate(STOP_GRACE);
         Ok(true)
     }
 
@@ -226,6 +248,19 @@ impl RunCommandRuntime {
             .collect();
         out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
         out
+    }
+
+    /// Whether `port`'s listener runs in this command's terminal (not
+    /// another task's dev server, not a database it connects to).
+    async fn owns_port(&self, handle: &Weak<PtyHandle>, port: u16) -> bool {
+        let Some(handle) = handle.upgrade() else {
+            return false;
+        };
+        let listeners = ports::listener_pids(port).await;
+        let members = tokio::task::spawn_blocking(move || handle.process_ids())
+            .await
+            .unwrap_or_default();
+        ports::owned_by(listeners.as_deref(), &members)
     }
 
     fn has_port(&self, key: &str) -> bool {
@@ -281,7 +316,7 @@ impl RunCommandRuntime {
                                 let key = key.clone();
                                 let weak = weak.clone();
                                 tokio::spawn(async move {
-                                    if ports::confirm(port).await {
+                                    if ports::confirm(port).await && this.owns_port(&weak, port).await {
                                         this.update(&key, &weak, |e| {
                                             if e.state.running && e.state.port.is_none() {
                                                 e.state.port = Some(port);
@@ -339,7 +374,7 @@ impl RunCommandRuntime {
         };
         let mut started = Vec::new();
         for rc in commands.into_iter().filter(|rc| rc.run_when == RunWhen::TaskStart) {
-            if !meta.is_command_trusted(&rc.command).await.unwrap_or(false) {
+            if !meta.is_run_command_trusted(&rc).await.unwrap_or(false) {
                 continue;
             }
             if self.handle(&pty_key(&rc.id, Some(task_id))).is_some() {
@@ -424,6 +459,31 @@ mod tests {
         }
     }
 
+    /// Attaching never spawns: nothing running → `None`, and an exec-mode
+    /// command that already exited is not started again by an attach.
+    #[tokio::test]
+    async fn attach_never_starts_or_respawns_a_command() {
+        let logs = tempfile::tempdir().unwrap();
+        let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(logs.path().to_path_buf())));
+        let dir = tempfile::tempdir().unwrap();
+        let key = pty_key("once", Some("ws"));
+        assert!(rt.attachable(&key).is_none(), "nothing was ever started");
+        assert!(rt.handle(&key).is_none(), "attach must not spawn");
+
+        std::fs::write(dir.path().join("count"), "").unwrap();
+        rt.start(&rc("once", "echo x >> count"), target(Some("ws"), dir.path())).unwrap();
+        wait_for("exit", || !rt.is_running(&key)).await;
+        assert!(rt.attachable(&key).is_none(), "an exited exec command is not attachable");
+        assert!(rt.handle(&key).is_none(), "and attaching did not respawn it");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let runs = std::fs::read_to_string(dir.path().join("count")).unwrap();
+        assert_eq!(runs.lines().count(), 1, "ran exactly once");
+
+        rt.start(&rc("long", "sleep 30"), target(Some("ws"), dir.path())).unwrap();
+        assert!(rt.attachable(&pty_key("long", Some("ws"))).is_some());
+        rt.stop(&pty_key("long", Some("ws"))).unwrap();
+    }
+
     #[test]
     fn keys_are_scoped_by_task() {
         assert_eq!(pty_key("rc1", Some("ws-a")), "run:rc1@ws-a");
@@ -481,21 +541,49 @@ mod tests {
         assert!(!rt.stop("run:rc2@ws").unwrap(), "nothing left to stop");
     }
 
+    /// A port the command prints and accepts connections on, but that
+    /// some OTHER process listens on (here: the test itself — think
+    /// another task's `:3000`), is not this command's server.
     #[tokio::test]
-    async fn detects_a_port_only_once_it_accepts_connections() {
+    async fn a_port_owned_by_another_process_is_not_detected() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        if ports::listener_pids(port).await.is_none() {
+            return; // no lsof here: ownership can't be checked
+        }
         let logs = tempfile::tempdir().unwrap();
         let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(logs.path().to_path_buf())));
         let dir = tempfile::tempdir().unwrap();
-        let mut cmd = rc("dev", &format!("printf '\\033[32m  ➜  Local:   http://localhost:{port}/\\033[0m\\n'; sleep 30"));
+        let mut cmd = rc("other", &format!("printf 'http://localhost:{port}/\\n'; sleep 30"));
+        cmd.detect_port = true;
+        rt.start(&cmd, target(Some("ws"), dir.path())).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(rt.list("u", Some("ws"))[0].port, None);
+        rt.stop("run:other@ws").unwrap();
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn detects_a_port_only_once_it_accepts_connections() {
+        // The listener must be the command's own (see the test above), so
+        // it is a child of the command; here a tiny `nc` server.
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let logs = tempfile::tempdir().unwrap();
+        let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(logs.path().to_path_buf())));
+        let dir = tempfile::tempdir().unwrap();
+        let mut cmd = rc(
+            "dev",
+            &format!("printf '\\033[32m  ➜  Local:   http://localhost:{port}/\\033[0m\\n'; exec nc -lk 127.0.0.1 {port} || exec nc -l {port}"),
+        );
         cmd.detect_port = true;
         rt.start(&cmd, target(Some("ws"), dir.path())).unwrap();
         wait_for("port", || rt.list("u", Some("ws"))[0].port == Some(port)).await;
         rt.stop("run:dev@ws").unwrap();
         wait_for("exit", || !rt.is_running("run:dev@ws")).await;
         assert_eq!(rt.list("u", Some("ws"))[0].port, None, "a stopped server has no port");
-        drop(listener);
     }
 
     /// `task_start` commands auto-start in the task's worktree only when
@@ -530,7 +618,7 @@ mod tests {
 
         let rt = RunCommandRuntime::new(Arc::new(TaskRuntime::new(dir.path().join("logs"))));
         assert!(rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta).await.is_empty());
-        meta.trust_command(&dev.command).await.unwrap();
+        meta.trust_run_command(&dev).await.unwrap();
         assert_eq!(rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta).await, vec![dev.id.clone()]);
         // Already running → not started twice.
         assert!(rt.auto_start_for_task(&ws.id, "u", &workspaces, &run_commands, &meta).await.is_empty());

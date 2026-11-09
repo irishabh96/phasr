@@ -119,10 +119,37 @@ pub fn diff_stats_vs_base(worktree: &Path, base: &str) -> Result<DiffStats, GitE
     Ok(stats)
 }
 
+/// Open an untracked path for reading ONLY if it is a regular file — never
+/// through a symlink, never a FIFO / device / socket.
+///
+/// Untracked paths are agent- or repo-controlled. `File::open` follows a
+/// symlink, so `x -> /dev/zero` read to the end exhausts memory, and
+/// opening a FIFO (directly or via a link) blocks until a writer appears —
+/// which hung `list_check_runs` and Approve. So: `symlink_metadata` first,
+/// then open with `O_NOFOLLOW | O_NONBLOCK` and re-check the opened file's
+/// type, which also closes the swap-between-check-and-open race. Callers
+/// still cap every read with `.take()`.
+pub(super) fn open_regular_untracked(path: &Path) -> Option<std::fs::File> {
+    if !std::fs::symlink_metadata(path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    file.metadata().ok()?.file_type().is_file().then_some(file)
+}
+
 /// Line count of the first `UNTRACKED_READ_CAP` bytes; 0 for binary
-/// content (a NUL byte, git's own heuristic) or an unreadable file.
+/// content (a NUL byte, git's own heuristic), an unreadable file, or
+/// anything that isn't a regular file (symlinks, FIFOs, devices — see
+/// `open_regular_untracked`).
 pub(super) fn count_lines_capped(path: &Path) -> u64 {
-    let Ok(file) = std::fs::File::open(path) else {
+    let Some(file) = open_regular_untracked(path) else {
         return 0;
     };
     let mut buf = Vec::new();
@@ -197,16 +224,37 @@ impl DiffStatCache {
     }
 }
 
+/// Largest untracked file synthesised as a new-file diff; past it the file
+/// gets the "no preview" state instead of a multi-megabyte diff.
+const SYNTH_READ_CAP: u64 = 4 * 1024 * 1024;
+
 pub(super) fn synthesise_new_file_diff(cwd: &Path, rel_path: &str) -> Result<String, GitError> {
     let full = cwd.join(rel_path);
-    if full.is_dir() {
-        // An untracked directory git didn't expand (e.g. a nested git repo /
-        // submodule, which `-uall` won't descend into). There's no single-file
-        // diff to show — return empty so the UI renders a clean "no preview"
-        // state instead of an "Is a directory" IO error.
+    let meta = std::fs::symlink_metadata(&full).map_err(GitError::Io)?;
+    if meta.file_type().is_symlink() {
+        // What git itself stores for a symlink: the link target as the
+        // blob, mode 120000. Never what it points at.
+        let target = std::fs::read_link(&full).map_err(GitError::Io)?;
+        let target = target.to_string_lossy();
+        return Ok(format!(
+            "diff --git a/{rel_path} b/{rel_path}\nnew file mode 120000\n--- /dev/null\n+++ b/{rel_path}\n\
+             @@ -0,0 +1 @@\n+{target}\n\\ No newline at end of file\n"
+        ));
+    }
+    // A directory git didn't expand (a nested repo / submodule, which
+    // `-uall` won't descend into), a FIFO, a device: there's no single-file
+    // diff to show — empty, so the UI renders a clean "no preview" state
+    // instead of an IO error (or, for a FIFO, a read that never returns).
+    let Some(file) = open_regular_untracked(&full) else {
+        return Ok(String::new());
+    };
+    let mut bytes = Vec::new();
+    file.take(SYNTH_READ_CAP + 1).read_to_end(&mut bytes).map_err(GitError::Io)?;
+    if bytes.len() as u64 > SYNTH_READ_CAP {
         return Ok(String::new());
     }
-    let content = std::fs::read_to_string(&full).map_err(GitError::Io)?;
+    let content = String::from_utf8(bytes)
+        .map_err(|e| GitError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
     let lines: Vec<&str> = content.lines().collect();
     let line_count = lines.len();
 

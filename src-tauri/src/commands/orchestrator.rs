@@ -18,7 +18,7 @@ use crate::orchestrator::{
     launch, OrchestratorError, RunIn, StartTaskRequest, StartedTask, TaskOrchestrator,
 };
 use crate::pty::PtyEvent;
-use crate::store::SettingsRepo;
+use crate::store::{AppMetaRepo, SettingsRepo};
 use crate::sync::CloudSyncState;
 
 use super::require_user;
@@ -89,11 +89,13 @@ pub async fn start_task(
     input: StartTaskInput,
     orchestrator: State<'_, TaskOrchestrator>,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<StartedTask, OrchestratorError> {
     let current_session = require_user(&session)?;
-    let user_settings = settings.get_or_init().await?;
+    // Synced templates not confirmed on this machine fall back to the default.
+    let user_settings = crate::settings_trust::launch_settings(&settings, &meta).await?;
     let (mode, command) =
         launch::resolve_launch(input.agent, input.permission_mode, &user_settings)?;
     let request = StartTaskRequest {

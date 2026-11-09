@@ -107,6 +107,9 @@ pub struct TaskConfig {
     configs: RepositoryConfigRepo,
     settings: SettingsRepo,
     api_keys: Option<ApiKeys>,
+    /// Per-machine trust for the synced command-like settings (the shell);
+    /// `None` (tests) uses them as stored.
+    trust: Option<crate::store::AppMetaRepo>,
 }
 
 impl TaskConfig {
@@ -115,7 +118,13 @@ impl TaskConfig {
             configs,
             settings,
             api_keys,
+            trust: None,
         }
+    }
+
+    pub fn with_trust(mut self, meta: crate::store::AppMetaRepo) -> Self {
+        self.trust = Some(meta);
+        self
     }
 
     /// Never fails a launch: an unreadable row means the built-in behaviour.
@@ -128,6 +137,11 @@ impl TaskConfig {
             eprintln!("user settings unreadable, using defaults: {err}");
             UserSettings::default()
         });
+        // A synced terminal shell / template not confirmed here isn't used.
+        let settings = match &self.trust {
+            Some(meta) => crate::settings_trust::usable(meta, settings).await,
+            None => settings,
+        };
         TaskSetup { config, settings }
     }
 
@@ -198,7 +212,9 @@ pub async fn fetch_base(repository_path: &Path, base: &str, log: &mut SetupLog) 
     }
     let output = run_with_timeout(
         "git",
-        &["fetch", "--quiet", "origin", base],
+        // `--` before the remote/refspec: `base` must never be read as an
+        // option (`--upload-pack=…`), whatever validation upstream missed.
+        &["fetch", "--quiet", "--", "origin", base],
         Some(repository_path),
         &[],
         FETCH_TIMEOUT,
@@ -246,7 +262,7 @@ fn pick_start_point(repo: &Path, base: &str, remote: &str) -> Option<String> {
         return None;
     }
     let local_exists = git_ok(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")]);
-    if !local_exists || git_ok(&["merge-base", "--is-ancestor", base, remote]) {
+    if !local_exists || git_ok(&["merge-base", "--is-ancestor", "--", base, remote]) {
         Some(remote.to_string())
     } else {
         Some(base.to_string())

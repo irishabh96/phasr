@@ -71,6 +71,13 @@ impl WorkspaceRepo {
         Self { db }
     }
 
+    /// Raw pool for tests that simulate writes made outside this repo
+    /// (e.g. a sync pull).
+    #[cfg(test)]
+    pub fn pool(&self) -> &Db {
+        &self.db
+    }
+
     pub async fn insert(&self, workspace: &Workspace) -> Result<(), StoreError> {
         self.insert_with_user(workspace, None).await
     }
@@ -101,9 +108,9 @@ impl WorkspaceRepo {
                 permission_mode, notify_on_attention,
                 base_branch, queued_at, depends_on_workspace_id,
                 outcome, outcome_at, merged_into, pr_number, pr_url, pr_state,
-                synced_at, dirty
+                synced_at, dirty, queued_here
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
         )
         .bind(&workspace.id)
         .bind(user_id)
@@ -134,6 +141,8 @@ impl WorkspaceRepo {
         .bind(&workspace.pr_url)
         .bind(&workspace.pr_state)
         .bind(dirty)
+        // Created on this machine: if it's queued, it was queued HERE.
+        .bind(workspace.queued_at.is_some() as i64)
         .execute(&self.db)
         .await?;
         Ok(())
@@ -390,6 +399,9 @@ impl WorkspaceRepo {
         if let Some(base_branch) = patch.base_branch {
             current.base_branch = base_branch;
         }
+        // Queueing / unqueueing through this repo is always this machine
+        // acting (sync writes its own SQL), so it moves the local marker.
+        let queued_here = patch.queued_at.map(|q| q.is_some() as i64);
         if let Some(queued_at) = patch.queued_at {
             current.queued_at = queued_at;
         }
@@ -405,6 +417,7 @@ impl WorkspaceRepo {
                 started_at = ?, finished_at = ?, archived_at = ?, updated_at = ?,
                 permission_mode = ?, notify_on_attention = ?,
                 base_branch = ?, queued_at = ?, depends_on_workspace_id = ?,
+                queued_here = COALESCE(?, queued_here),
                 dirty = CASE WHEN workspace_kind = 'local' THEN 0 ELSE 1 END
              WHERE id = ?",
         )
@@ -425,6 +438,7 @@ impl WorkspaceRepo {
         .bind(&current.base_branch)
         .bind(current.queued_at.map(|dt| dt.to_rfc3339()))
         .bind(&current.depends_on_workspace_id)
+        .bind(queued_here)
         .bind(id)
         .execute(&self.db)
         .await?;
@@ -475,8 +489,11 @@ impl WorkspaceRepo {
         rows.iter().map(row_to_workspace).collect()
     }
 
-    /// Queued (never-launched) tasks, oldest in the queue first — the
-    /// scheduler's work list. `user_id: None` = every owner (tests).
+    /// Queued (never-launched) tasks QUEUED ON THIS MACHINE, oldest in the
+    /// queue first — the scheduler's work list. A row queued on another
+    /// machine (synced here) is excluded: it shows as queued on the board
+    /// but only its own machine starts it. `user_id: None` = every owner
+    /// (tests).
     pub async fn list_queued(&self, user_id: Option<&str>) -> Result<Vec<Workspace>, StoreError> {
         let rows = sqlx::query(concat!(
             "SELECT ",
@@ -485,7 +502,7 @@ impl WorkspaceRepo {
              FROM workspaces
              WHERE ",
             unlaunched_sql!(),
-            " AND queued_at IS NOT NULL AND deleted_at IS NULL
+            " AND queued_at IS NOT NULL AND queued_here = 1 AND deleted_at IS NULL
                AND (? IS NULL OR user_id = ?)
              ORDER BY queued_at ASC",
         ))

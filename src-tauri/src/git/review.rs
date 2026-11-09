@@ -9,7 +9,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use super::diff::{count_lines_capped, synthesise_new_file_diff};
+use super::diff::{count_lines_capped, open_regular_untracked, synthesise_new_file_diff};
 use super::error::{run_git, GitError};
 use super::status::{parse_porcelain, FileChange, FileStatus};
 
@@ -40,13 +40,13 @@ pub fn merge_base(worktree: &Path, base: &str) -> Result<String, GitError> {
         )
         .is_ok();
     if has_remote {
-        if let Ok(sha) = run_git(worktree, &["merge-base", "HEAD", base, &remote]) {
+        if let Ok(sha) = run_git(worktree, &["merge-base", "--", "HEAD", base, &remote]) {
             return Ok(sha.trim().to_string());
         }
     }
-    match run_git(worktree, &["merge-base", "HEAD", base]) {
+    match run_git(worktree, &["merge-base", "--", "HEAD", base]) {
         Ok(sha) => Ok(sha.trim().to_string()),
-        Err(local_err) => run_git(worktree, &["merge-base", "HEAD", &remote])
+        Err(local_err) => run_git(worktree, &["merge-base", "--", "HEAD", &remote])
             .map(|sha| sha.trim().to_string())
             .map_err(|_| local_err),
     }
@@ -171,6 +171,45 @@ fn untracked(worktree: &Path) -> Result<Vec<String>, GitError> {
         .collect())
 }
 
+/// A CHEAP key for `worktree_fingerprint`'s cache: HEAD, the status
+/// listing, and each listed path's mtime/size — so an edit to an
+/// already-modified file, whose status line doesn't change, still changes
+/// the key. Two git calls and some `stat`s, versus the full fingerprint's
+/// `git diff HEAD` plus reading every untracked file, which
+/// `list_check_runs` used to pay on every call. (The index isn't part of
+/// it: the fingerprint's diff is worktree-vs-HEAD, and staging shows up in
+/// the status letters. Its mtime would also move on every `git status`
+/// refresh, making the cache useless.)
+///
+/// Blocking: call from `spawn_blocking`.
+pub fn fingerprint_key(worktree: &Path) -> Result<String, GitError> {
+    let mut hasher = Sha256::new();
+    let head = run_git(worktree, &["rev-parse", "HEAD"]).unwrap_or_default();
+    hasher.update(head.trim().as_bytes());
+    hasher.update([0]);
+    let status = run_git(
+        worktree,
+        &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    hasher.update(status.as_bytes());
+    for change in parse_porcelain(&status) {
+        hasher.update([0]);
+        match std::fs::symlink_metadata(worktree.join(&change.path)) {
+            Ok(meta) => {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                hasher.update(format!("{mtime}:{}", meta.len()).as_bytes());
+            }
+            Err(_) => hasher.update(b"-"),
+        }
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// sha256 over the worktree's exact state: HEAD, `git status --porcelain=v1
 /// -z`, `git diff HEAD`, and the contents of untracked files.
 ///
@@ -199,11 +238,27 @@ pub fn worktree_fingerprint(worktree: &Path) -> Result<String, GitError> {
         hasher.update([0]);
         hasher.update(rel.as_bytes());
         hasher.update([0]);
-        if let Ok(file) = std::fs::File::open(worktree.join(&rel)) {
-            let mut buf = Vec::new();
-            if file.take(FINGERPRINT_READ_CAP).read_to_end(&mut buf).is_ok() {
-                hasher.update(&buf);
+        let path = worktree.join(&rel);
+        // Only regular files are read (capped). A symlink contributes its
+        // TARGET (what git would commit), anything else (FIFO, device) just
+        // its type — following them could block forever or never end.
+        match open_regular_untracked(&path) {
+            Some(file) => {
+                let mut buf = Vec::new();
+                if file.take(FINGERPRINT_READ_CAP).read_to_end(&mut buf).is_ok() {
+                    hasher.update(&buf);
+                }
             }
+            None => match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    hasher.update(b"symlink:");
+                    if let Ok(target) = std::fs::read_link(&path) {
+                        hasher.update(target.to_string_lossy().as_bytes());
+                    }
+                }
+                Ok(meta) => hasher.update(format!("special:{:?}", meta.file_type()).as_bytes()),
+                Err(_) => hasher.update(b"missing"),
+            },
         }
     }
     Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
@@ -331,5 +386,68 @@ mod tests {
         git(p, &["add", "-A"]);
         git(p, &["commit", "-qm", "wip"]);
         assert_ne!(untracked_edit, worktree_fingerprint(p).unwrap());
+    }
+
+    /// Untracked symlinks are never followed: a link to /dev/zero must not
+    /// be read to the end (OOM) and a link to a FIFO must not block (hung
+    /// `list_check_runs` / Approve). Both count 0 lines; the fingerprint
+    /// hashes the link target, so retargeting a link still changes it.
+    #[cfg(unix)]
+    #[test]
+    fn untracked_symlinks_to_devices_and_fifos_are_not_followed() {
+        let dir = repo();
+        let p = dir.path().to_path_buf();
+        git(&p, &["checkout", "-q", "task"]);
+        let fifo = p.join("pipe-target");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        std::os::unix::fs::symlink("/dev/zero", p.join("zero-link")).unwrap();
+        std::os::unix::fs::symlink(&fifo, p.join("fifo-link")).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = p.clone();
+        std::thread::spawn(move || {
+            let files = review_files(&worker, "main").unwrap();
+            let diff = diff_vs_base(&worker, "main", None).unwrap();
+            let one = diff_vs_base(&worker, "main", Some("zero-link")).unwrap();
+            let fifo_one = diff_vs_base(&worker, "main", Some("fifo-link")).unwrap();
+            let fp = worktree_fingerprint(&worker).unwrap();
+            let stats = super::super::diff::diff_stats_vs_base(&worker, "main").unwrap();
+            let fifo_lines = count_lines_capped(&worker.join("pipe-target"));
+            let _ = tx.send((files, diff, one, fifo_one, fp, stats, fifo_lines));
+        });
+        let (files, diff, one, fifo_one, fp, _stats, fifo_lines) = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("reading untracked links hung (followed a FIFO?)");
+        for link in ["zero-link", "fifo-link"] {
+            let f = files.iter().find(|f| f.path == link).unwrap_or_else(|| panic!("{link} listed"));
+            assert_eq!(f.adds, Some(0), "{link} counts 0 lines");
+        }
+        assert_eq!(fifo_lines, 0, "a raw FIFO is never opened for reading");
+        assert!(diff.len() < 64 * 1024, "no /dev/zero contents in the diff");
+        assert!(one.contains("new file mode 120000") && one.contains("+/dev/zero"), "{one}");
+        assert!(fifo_one.contains("new file mode 120000"), "{fifo_one}");
+
+        std::fs::remove_file(p.join("zero-link")).unwrap();
+        std::os::unix::fs::symlink("/dev/null", p.join("zero-link")).unwrap();
+        assert_ne!(worktree_fingerprint(&p).unwrap(), fp, "retargeting a link changes the fingerprint");
+    }
+
+    /// The cache key moves whenever the fingerprint would: HEAD, the
+    /// status, AND an edit to a file that was already modified.
+    #[test]
+    fn fingerprint_key_tracks_edits_to_already_dirty_files() {
+        let dir = repo();
+        let p = dir.path();
+        git(p, &["checkout", "-q", "task"]);
+        std::fs::write(p.join("a.txt"), "dirty 1\n").unwrap();
+        let k1 = fingerprint_key(p).unwrap();
+        assert_eq!(fingerprint_key(p).unwrap(), k1, "stable while nothing changes");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(p.join("a.txt"), "dirty 22\n").unwrap();
+        let k2 = fingerprint_key(p).unwrap();
+        assert_ne!(k1, k2, "same status line, new contents");
+        git(p, &["commit", "-qam", "c"]);
+        assert_ne!(fingerprint_key(p).unwrap(), k2, "HEAD moved");
     }
 }

@@ -34,17 +34,24 @@ pub enum CleanupAction {
 
 /// What to do for a merged task. Pure.
 ///
-/// An agent still running in the worktree is never pulled out from under
-/// it: `always` degrades to a suggestion the user can act on once it's
-/// stopped.
-pub fn decide(policy: CleanupAfterMerge, has_worktree: bool, agent_running: bool) -> CleanupAction {
+/// `always` degrades to a suggestion the user can act on when removal
+/// would hurt: an agent still running in the worktree is never pulled out
+/// from under it, and removal (`worktree remove -f` + `branch -D`) never
+/// destroys `unsaved_work` — uncommitted changes, or commits that are in
+/// neither the merge target nor `origin` (e.g. pushed after the PR merged).
+pub fn decide(
+    policy: CleanupAfterMerge,
+    has_worktree: bool,
+    agent_running: bool,
+    unsaved_work: bool,
+) -> CleanupAction {
     if !has_worktree {
         return CleanupAction::None;
     }
     match policy {
         CleanupAfterMerge::Never => CleanupAction::None,
         CleanupAfterMerge::Ask => CleanupAction::Suggested,
-        CleanupAfterMerge::Always if agent_running => CleanupAction::Suggested,
+        CleanupAfterMerge::Always if agent_running || unsaved_work => CleanupAction::Suggested,
         CleanupAfterMerge::Always => CleanupAction::Removed,
     }
 }
@@ -106,7 +113,12 @@ impl MergeCleanup {
             }
         };
         let running = self.runtime.get(&task.id).is_some();
-        match decide(policy, worktree.is_some(), running) {
+        // Only `always` deletes anything, so only it pays for the probe.
+        let unsaved = match (&worktree, policy) {
+            (Some(worktree), CleanupAfterMerge::Always) => self.has_unsaved_work(task, user_id, worktree).await,
+            _ => false,
+        };
+        match decide(policy, worktree.is_some(), running, unsaved) {
             CleanupAction::None => CleanupAction::None,
             CleanupAction::Suggested => match &self.notifier {
                 Some(notifier) => match notifier.suggest_cleanup(user_id, task).await {
@@ -129,6 +141,36 @@ impl MergeCleanup {
                 }
             }
         }
+    }
+
+    /// Uncommitted changes in the worktree, or commits on the task's branch
+    /// kept neither in what it merged into (or its base) nor on `origin`.
+    /// A probe that fails counts as "yes": never force-delete on a guess.
+    async fn has_unsaved_work(&self, task: &Workspace, user_id: &str, worktree: &Path) -> bool {
+        let Ok(repository) = self.repositories.get_for_user(&task.repository_id, user_id).await else {
+            return true;
+        };
+        let Some(repo_path) = repository.local_path.as_deref().map(PathBuf::from) else {
+            return true;
+        };
+        let kept_in: Vec<String> = task
+            .merged_into
+            .iter()
+            .chain(task.base_branch.iter())
+            .cloned()
+            .chain(std::iter::once(repository.default_branch.clone()))
+            .collect();
+        let (worktree, branch) = (worktree.to_path_buf(), task.branch.clone());
+        tokio::task::spawn_blocking(move || {
+            if git::is_dirty(&worktree).unwrap_or(true) {
+                return true;
+            }
+            let Some(branch) = branch else { return false };
+            let kept: Vec<&str> = kept_in.iter().map(String::as_str).collect();
+            git::has_unsaved_commits(&repo_path, &branch, &kept).unwrap_or(true)
+        })
+        .await
+        .unwrap_or(true)
     }
 
     async fn remove(&self, task: &Workspace, user_id: &str, worktree: &Path) -> Result<(), String> {
@@ -176,11 +218,12 @@ mod tests {
     #[test]
     fn decide_follows_the_policy_and_never_yanks_a_running_agent() {
         use CleanupAfterMerge::*;
-        assert_eq!(decide(Always, true, false), CleanupAction::Removed);
-        assert_eq!(decide(Always, true, true), CleanupAction::Suggested);
-        assert_eq!(decide(Ask, true, false), CleanupAction::Suggested);
-        assert_eq!(decide(Never, true, false), CleanupAction::None);
-        assert_eq!(decide(Always, false, false), CleanupAction::None, "nothing on disk");
+        assert_eq!(decide(Always, true, false, false), CleanupAction::Removed);
+        assert_eq!(decide(Always, true, true, false), CleanupAction::Suggested);
+        assert_eq!(decide(Always, true, false, true), CleanupAction::Suggested, "unsaved work");
+        assert_eq!(decide(Ask, true, false, false), CleanupAction::Suggested);
+        assert_eq!(decide(Never, true, false, true), CleanupAction::None);
+        assert_eq!(decide(Always, false, false, false), CleanupAction::None, "nothing on disk");
     }
 
     fn git(cwd: &Path, args: &[&str]) {
@@ -267,6 +310,29 @@ mod tests {
         assert!(!Path::new(f.task.worktree_path.as_deref().unwrap()).exists());
         assert!(!branch_exists(&f.repo_path, "phasr/task"));
         assert_eq!(f.notifications.unread_count("u").await.unwrap(), 0);
+    }
+
+    /// `always` must not `remove -f` + `branch -D` over work that exists
+    /// nowhere else: a dirty worktree, or a commit made after the merge.
+    #[tokio::test]
+    async fn always_falls_back_to_ask_when_work_would_be_lost() {
+        let f = fixture().await;
+        set_policy(&f, CleanupAfterMerge::Always).await;
+        let wt = PathBuf::from(f.task.worktree_path.as_deref().unwrap());
+        std::fs::write(wt.join("uncommitted.txt"), "x\n").unwrap();
+        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
+        assert!(wt.join("uncommitted.txt").exists(), "worktree kept");
+
+        // Committed on the branch but not in main / origin: still at risk.
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-qm", "after the merge"]);
+        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Suggested);
+        assert!(branch_exists(&f.repo_path, "phasr/task"), "branch kept");
+
+        // Once that commit is in main, nothing would be lost → removed.
+        git(&f.repo_path, &["merge", "-q", "--no-ff", "-m", "m", "phasr/task"]);
+        assert_eq!(f.cleanup.on_merged(&f.task, "u").await, CleanupAction::Removed);
+        assert!(!wt.exists());
     }
 
     #[tokio::test]

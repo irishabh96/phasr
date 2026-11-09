@@ -240,10 +240,15 @@ mod version_compat {
     ///   v0.3.4 → 0001..=0012      v0.3.5 → 0001..=0013
     ///   v0.3.6 → 0001..=0013      v0.3.7 → 0001..=0014
     ///   v0.4.0 … v0.4.3 → 0001..=0014 (no migration added since 0.3.7)
-    ///   v0.4.4 → 0001..=0014, the first build with `ignore_missing` (M0)
+    ///   v0.4.4 → 0001..=0014, the first build with `ignore_missing` (M0).
+    ///          NOT RELEASED YET — it must ship (master + `migrator()`'s
+    ///          `set_ignore_missing`) BEFORE any release containing 0015+,
+    ///          or there is no build a user can roll back to: see
+    ///          `rolling_back_to_0_4_3_is_impossible_so_0_4_4_must_ship_first`
+    ///          and RELEASING.md → "Rollback safety".
     ///   this build → adds 0015 (permission modes), 0016 (agent signals),
     ///   0017 (board), 0018 (review), 0019 (notifications),
-    ///   0020 (settings expansion)
+    ///   0020 (settings expansion), 0021 (local queue marker)
     const V0_3_4: usize = 12;
     const V0_3_5: usize = 13;
     const V0_3_6: usize = 13;
@@ -284,6 +289,8 @@ mod version_compat {
         (19, "b4019d8ad5a8aba115e6c67940c7452af44419890fc65d7af348eb50f8bf6a15e28801ce9779a32d5e2da0e5454912c8"),
         // Settings expansion: terminal shell, copy on select, repo rules (M11).
         (20, "af073f3614f7ae5a6b2d178c15c30bf2a5f450531816594ecbc112a6bc4f63b5aa12060adeb24355311715cf97f72459"),
+        // Local-only "queued on this machine" marker (review fix #8).
+        (21, "38c571b805d08e217cf726b17d6e498db5bac0489fe5f7437f9d8f24945626a0668d99ed670234fdefe1f2678164fe90"),
     ];
 
     fn migrations_dir() -> PathBuf {
@@ -699,6 +706,35 @@ mod version_compat {
         assert_eq!(from_old.permission_mode, None);
         assert!(from_old.notify_on_attention);
         pool.close().await;
+    }
+
+    /// Why 0.4.4 must be RELEASED before this build ships (RELEASING.md →
+    /// "Rollback safety"): once this build has migrated a database, the
+    /// newest released build today — 0.4.3, strict migrator — refuses it at
+    /// launch ("migration 15 was previously applied but is missing"), the
+    /// 0.3.7 incident again. Only a build with `ignore_missing` (0.4.4,
+    /// `rolling_back_to_0_4_4_opens_a_db_this_build_wrote`) can open it, so
+    /// that build has to exist for users to roll back to.
+    #[tokio::test]
+    async fn rolling_back_to_0_4_3_is_impossible_so_0_4_4_must_ship_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("phasr.sqlite");
+        init_pool(&db_path).await.unwrap().close().await;
+
+        let err = open_as_version(&db_path, V0_4_3)
+            .await
+            .expect_err("0.4.3 cannot open a database this build migrated");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("previously applied but is missing") && msg.contains("15"),
+            "expected VersionMissing for 0015, got: {msg}"
+        );
+        // 0.4.4 (same 14 migrations + ignore_missing) can.
+        open_as_0_4_4(&db_path)
+            .await
+            .expect("0.4.4 is the rollback target")
+            .close()
+            .await;
     }
 
     /// Negative control — proves the strict-migrator path really does fail,

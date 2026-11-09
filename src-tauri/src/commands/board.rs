@@ -13,7 +13,7 @@ use crate::orchestrator::{
     launch, OrchestratorError, QueueScheduler, StartedTask, TaskBoard, TaskCard,
     TaskOrchestrator, TaskRow, TaskRowPatch,
 };
-use crate::store::{SettingsRepo, WorkspaceRepo};
+use crate::store::{AppMetaRepo, SettingsRepo, WorkspaceRepo};
 use crate::sync::{CloudSyncState, SyncPhase};
 
 use super::require_user;
@@ -108,6 +108,7 @@ pub async fn create_task_draft(
     orchestrator: State<'_, TaskOrchestrator>,
     scheduler: State<'_, QueueScheduler>,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, OrchestratorError> {
@@ -115,7 +116,7 @@ pub async fn create_task_draft(
     let (mode, command) = launch::resolve_launch(
         input.agent,
         input.permission_mode,
-        &settings.get_or_init().await?,
+        &crate::settings_trust::launch_settings(&settings, &meta).await?,
     )?;
     let created = orchestrator
         .create_row(
@@ -150,6 +151,7 @@ pub async fn update_task_draft(
     workspaces: State<'_, WorkspaceRepo>,
     scheduler: State<'_, QueueScheduler>,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, OrchestratorError> {
@@ -165,7 +167,7 @@ pub async fn update_task_draft(
                 agent,
                 requested,
                 existing.permission_mode,
-                &settings.get_or_init().await?,
+                &crate::settings_trust::launch_settings(&settings, &meta).await?,
             )?)
         }
     };
@@ -177,7 +179,7 @@ pub async fn update_task_draft(
                 agent,
                 None,
                 existing.permission_mode,
-                &settings.get_or_init().await?,
+                &crate::settings_trust::launch_settings(&settings, &meta).await?,
             )?)
         }
         (relaunch, _) => relaunch,

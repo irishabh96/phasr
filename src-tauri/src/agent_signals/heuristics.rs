@@ -201,6 +201,8 @@ pub fn detect(agent: Agent, text: &str) -> Option<Detection> {
             }
         } else if agent == Agent::Codex {
             codex_hotkeys(after)
+        } else if agent == Agent::Claude {
+            claude_option_keys(after)
         } else {
             KeyOverrides::default()
         };
@@ -264,6 +266,49 @@ fn codex_hotkeys(after_question: &str) -> KeyOverrides {
             break;
         }
         rest = &rest[next..];
+    }
+    keys
+}
+
+/// Claude's permission-dialog options, read off the screen:
+/// `1. Yes  2. Yes, <grant>  [3. Yes, and switch to auto mode]  N. No`.
+/// What option 2 grants varies per dialog — "always allow access to <dir>
+/// from this project" and "don't ask again for <cmd> commands in <dir>" are
+/// PERSISTENT project rules (written to the user's checkout for in-place
+/// tasks), while "allow all edits during this session" is scoped to this
+/// session. Only a session-scoped option becomes `allow_task`; with none,
+/// "Allow for this task" is unavailable rather than silently saving a rule.
+fn claude_option_keys(after_question: &str) -> KeyOverrides {
+    static OPTION: OnceLock<Regex> = OnceLock::new();
+    let option = OPTION.get_or_init(|| Regex::new(r"([1-9])\.\s*(Yes|No)\b").expect("claude option regex"));
+    let starts: Vec<(usize, usize, String)> = option
+        .captures_iter(after_question)
+        .filter_map(|c| {
+            let m = c.get(0)?;
+            Some((m.start(), m.end(), c[1].to_string()))
+        })
+        .collect();
+    let mut keys = KeyOverrides::default();
+    for (i, (start, label_from, number)) in starts.iter().enumerate() {
+        let label_to = starts.get(i + 1).map_or(after_question.len(), |next| next.0);
+        let full = &after_question[*start..label_to];
+        if !full.contains("Yes") {
+            continue;
+        }
+        let label = &after_question[(*label_from).min(label_to)..label_to];
+        // Words may be glued together where the TUI moved the cursor
+        // instead of printing a space.
+        let squashed: String = label.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
+        if number == "1" && squashed.is_empty() {
+            keys.allow_once = Some("1".into());
+        } else if squashed.contains("session")
+            && !squashed.contains("always")
+            && !squashed.contains("project")
+            && !squashed.contains("automode")
+            && keys.allow_task.is_none()
+        {
+            keys.allow_task = Some(number.clone());
+        }
     }
     keys
 }
@@ -640,6 +685,27 @@ mod tests {
         assert_eq!(d.kind, AttentionKind::Shell);
         assert_eq!(d.title, "Run a shell command");
         assert!(d.can_respond);
+        // Option 2 here is "always allow access to <dir> from this
+        // project" — a persistent rule, so NOT "allow for this task".
+        assert_eq!(d.keys.allow_once.as_deref(), Some("1"));
+        assert_eq!(d.keys.allow_task, None);
+    }
+
+    #[test]
+    fn claude_allow_task_is_only_a_session_scoped_option() {
+        let edit = " ❯ 1. Yes  2. Yes, allow all edits during this session (shift+tab)  3. No, and tell Claude what to do differently (esc)";
+        let keys = claude_option_keys(edit);
+        assert_eq!(keys.allow_once.as_deref(), Some("1"));
+        assert_eq!(keys.allow_task.as_deref(), Some("2"));
+        // Glued words still read.
+        assert_eq!(claude_option_keys("1.Yes 2.Yes,allowalleditsduringthissession 3.No").allow_task.as_deref(), Some("2"));
+        for persistent in [
+            " ❯ 1. Yes  2. Yes, and always allow access to /w from this project  3. Yes, and switch to auto mode  4. No",
+            " ❯ 1. Yes  2. Yes, and don't ask again for git commands in /w  3. No",
+            " ❯ 1. Yes  2. Yes, and always allow this session's project  3. No",
+        ] {
+            assert_eq!(claude_option_keys(persistent).allow_task, None, "{persistent}");
+        }
     }
 
     /// Captured from a real codex-cli 0.165 PTY: the sandbox-escalation

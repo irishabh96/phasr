@@ -131,11 +131,17 @@ pub fn try_compose(
 /// Whether a user template baked the prompt into the command line (via
 /// `{{prompt}}`). Resuming such a command would submit the prompt again, so
 /// those tasks keep the pre-M6 behaviour instead.
+///
+/// Also decides whether the prompt is TYPED after launch: a command that
+/// already carries it must not get it a second time. The probe is matched
+/// both raw and in the escaped form `interpolate_for_task` writes (`'` →
+/// `'\''`, control characters dropped).
 pub fn command_embeds_prompt(command: &str, prompt: Option<&str>) -> bool {
     match prompt.map(str::trim) {
         Some(p) if !p.is_empty() => {
             let probe: String = p.chars().take(40).collect();
             command.contains(probe.as_str())
+                || command.contains(crate::orchestrator::templating::single_quote_inner(&probe).as_str())
         }
         _ => false,
     }
@@ -222,6 +228,9 @@ mod tests {
     #[test]
     fn detects_a_prompt_baked_into_the_command() {
         assert!(command_embeds_prompt("claude 'fix the bug'", Some("fix the bug")));
+        // As `interpolate_for_task` writes it (quotes escaped).
+        let cmd = crate::orchestrator::launch::interpolate_for_task("claude {{prompt}}", Some("don't break it"));
+        assert!(command_embeds_prompt(&cmd, Some("don't break it")), "{cmd}");
         assert!(!command_embeds_prompt("claude", Some("fix the bug")));
         assert!(!command_embeds_prompt("claude", None));
     }

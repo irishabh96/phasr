@@ -1,0 +1,11 @@
+-- "Queued on THIS machine" (local-only, never synced).
+--
+-- `queued_at`, `depends_on_workspace_id` and `command` sync, so without a
+-- machine-local marker every signed-in Mac's scheduler would start the same
+-- queued task — and run a command string it received from the cloud
+-- unattended, bypassing the per-machine trust that run commands require.
+-- Only rows queued here (by this machine's own create/edit) carry 1; rows
+-- pulled from the cloud take the DEFAULT and show as queued but never
+-- auto-start here. Additive (see 0015): older builds ignore it, and their
+-- INSERTs take the default.
+ALTER TABLE workspaces ADD COLUMN queued_here INTEGER NOT NULL DEFAULT 0;

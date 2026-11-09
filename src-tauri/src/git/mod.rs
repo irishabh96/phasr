@@ -32,6 +32,7 @@ pub use hunks::{revert_hunk, RevertHunkError};
 pub use init::init_repo;
 pub use log::{commit_files, log as git_log_query, Commit, CommitFileChange, LogOptions};
 pub use merge::{
+    has_unsaved_commits,
     abort as merge_abort, continue_after_resolution as merge_continue, current_branch,
     has_unpushed_commits, in_progress as merge_in_progress, merge_head_branches, merge_into,
     merge_to, set_resolution as merge_set_resolution, ConflictSide, InProgress, MergeOutcome,
@@ -43,8 +44,8 @@ pub use naming::{
 };
 pub use pr::{build_pull_request_target, parse_remote_url, resolve_base_branch};
 pub use remote::{get_default_branch, get_remote_url, list_local_branches};
-pub use review::{diff_vs_base, review_files, worktree_fingerprint};
-pub use status::{status, FileChange};
+pub use review::{diff_vs_base, fingerprint_key, review_files, worktree_fingerprint};
+pub use status::{is_dirty, status, FileChange};
 pub use template::init_from_template;
 pub use workspace_files::{
     list_tree as list_workspace_tree, read_file as read_workspace_file,

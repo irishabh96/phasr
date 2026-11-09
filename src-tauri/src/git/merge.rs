@@ -75,6 +75,31 @@ pub fn has_unpushed_commits(repo_path: &Path, branch: &str) -> Result<bool, GitE
     Ok(stdout.trim().parse::<u64>().unwrap_or(0) > 0)
 }
 
+/// Whether `branch` has commits that would be LOST if it (and its
+/// worktree) went away: reachable from nowhere else that keeps them —
+/// not `origin/<branch>`, and not any of `kept_in` (e.g. the branch it was
+/// merged into, its base; local or `origin/`). A branch fully merged into
+/// its target (a local merge, which never pushes) has nothing to lose,
+/// unlike what `has_unpushed_commits` would say for it. Refs that don't
+/// exist are skipped. `false` when the branch itself doesn't exist.
+pub fn has_unsaved_commits(repo_path: &Path, branch: &str, kept_in: &[&str]) -> Result<bool, GitError> {
+    let exists = |r: &str| run_git(repo_path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    let head = format!("refs/heads/{branch}");
+    if !exists(&head) {
+        return Ok(false);
+    }
+    let mut keepers = vec![format!("refs/remotes/origin/{branch}")];
+    for other in kept_in {
+        keepers.push(format!("refs/heads/{other}"));
+        keepers.push(format!("refs/remotes/origin/{other}"));
+    }
+    let mut args: Vec<String> = vec!["rev-list".into(), "--count".into(), head, "--not".into()];
+    args.extend(keepers.into_iter().filter(|r| exists(r)));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let stdout = run_git(repo_path, &args)?;
+    Ok(stdout.trim().parse::<u64>().unwrap_or(0) > 0)
+}
+
 /// Merges `source_ref` into the current branch of `worktree`. Used by
 /// the Sync-with-main flow — `worktree` is the workspace's worktree
 /// and `source_ref` is typically `origin/<defaultBranch>`.
@@ -107,6 +132,11 @@ pub fn merge_to(
     source_branch: &str,
     strategy: MergeStrategy,
 ) -> Result<MergeOutcome, GitError> {
+    for r in [target_branch, source_branch] {
+        if r.starts_with('-') {
+            return Err(GitError::CommandFailed(format!("`{r}` isn't a valid ref")));
+        }
+    }
     require_clean_worktree(main_repo)?;
     let resolved = resolve_target(main_repo, target_branch)?;
     run_git(main_repo, &["checkout", &resolved])?;
@@ -612,5 +642,27 @@ mod tests {
         set_resolution(p, "f.txt", ConflictSide::Theirs).unwrap();
         assert!(matches!(continue_after_resolution(p).unwrap(), MergeOutcome::Clean { .. }));
         assert!(merge_head_branches(p).unwrap().is_empty());
+    }
+
+    /// A branch merged into its target loses nothing; a commit only on the
+    /// branch (not pushed, not merged) would be lost.
+    #[test]
+    fn unsaved_commits_are_ones_kept_nowhere_else() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let git = |args: &[&str]| {
+            assert!(Command::new("git").args(args).current_dir(dir.path()).status().unwrap().success());
+        };
+        git(&["checkout", "-qb", "phasr/t"]);
+        add_commit(dir.path(), "t.txt", "t\n", "work");
+        assert!(has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(), "only on the branch");
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--no-ff", "-m", "merge", "phasr/t"]);
+        assert!(!has_unsaved_commits(dir.path(), "phasr/t", &["main"]).unwrap(), "merged into main");
+        // …though it was never pushed.
+        assert!(has_unpushed_commits(dir.path(), "phasr/t").unwrap());
+        // A missing branch / missing keeper refs are fine.
+        assert!(!has_unsaved_commits(dir.path(), "nope", &["main"]).unwrap());
+        assert!(!has_unsaved_commits(dir.path(), "phasr/t", &["main", "no-such-base"]).unwrap());
     }
 }

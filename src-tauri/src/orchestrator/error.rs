@@ -53,6 +53,9 @@ pub enum OrchestratorError {
     /// One in-place task per repository: they'd share one checkout.
     #[error("an in-place task is already running in this repository")]
     InPlaceTaskRunning,
+    /// A base branch git would parse as an option (or that can't be one).
+    #[error("{0}")]
+    InvalidBaseBranch(String),
 }
 
 impl serde::Serialize for OrchestratorError {

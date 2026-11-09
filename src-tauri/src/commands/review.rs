@@ -16,9 +16,9 @@ use crate::domain::{
     review::format_review_comments, CheckRun, CheckSummary, CommentSide, CommentStatus, ReviewComment, Workspace,
 };
 use crate::fswatch::WorktreeWatchRegistry;
-use crate::git::{self, FileChange, GitError, MergeOutcome, MergeStrategy};
+use crate::git::{self, FileChange, GitError};
 use crate::orchestrator::{OrchestratorError, TaskBoard, TaskOrchestrator};
-use crate::domain::{PrMode, TaskOutcome};
+use crate::domain::PrMode;
 use crate::review::cleanup::MergeCleanup;
 use crate::review::{ApproveInput, PullRequestOutcome, ReviewError, ReviewService};
 use crate::run_commands::RunCommandRuntime;
@@ -71,7 +71,8 @@ impl From<ReviewError> for ReviewCmdError {
 impl From<OrchestratorError> for ReviewCmdError {
     fn from(e: OrchestratorError) -> Self {
         match e {
-            OrchestratorError::TaskNotRunning(_) => Self::AgentNotRunning,
+            OrchestratorError::TaskNotRunning(_)
+            | OrchestratorError::Pty(crate::pty::handle::PtyError::AgentNotRunning) => Self::AgentNotRunning,
             OrchestratorError::Store(e) => Self::Store(e),
             other => Self::Review(ReviewError::Other(other.to_string())),
         }
@@ -438,35 +439,6 @@ pub async fn refresh_pr_states(
     Ok(changed)
 }
 
-/// "Merge locally": merge the task's branch into its base in the main
-/// checkout; a clean merge records `merged`.
-#[tauri::command]
-pub async fn merge_task_locally(
-    workspace_id: String,
-    strategy: MergeStrategy,
-    workspaces: State<'_, WorkspaceRepo>,
-    review: State<'_, ReviewService>,
-    cleanup: State<'_, MergeCleanup>,
-    board: State<'_, TaskBoard>,
-    session: State<'_, Arc<SessionState>>,
-    sync_state: State<'_, Arc<CloudSyncState>>,
-) -> Result<MergeOutcome, ReviewCmdError> {
-    let current = require_user(&session)?;
-    let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
-    let outcome = review
-        .merge_locally(&workspace, &current.user_id, strategy, None)
-        .await?;
-    if matches!(outcome, MergeOutcome::Clean { .. }) {
-        let merged = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
-        if workspace.outcome != Some(TaskOutcome::Merged) {
-            cleanup.on_merged(&merged, &current.user_id).await;
-        }
-        board.notify_changed(&workspace.repository_id);
-        sync_state.request_sync();
-    }
-    Ok(outcome)
-}
-
 /// "Discard worktree": stop everything running for the task, remove its
 /// worktree and branch, and close it. The row and its notes are kept.
 #[tauri::command]
@@ -483,8 +455,11 @@ pub async fn discard_workspace(
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Workspace, ReviewCmdError> {
     let current = require_user(&session)?;
-    // Ownership before any side effect.
+    // Ownership — and discardability — before any side effect: refusing the
+    // repository's own checkout AFTER stopping its agent, run commands and
+    // checks would still have killed them.
     let workspace = workspaces.get_for_user(&workspace_id, &current.user_id).await?;
+    ReviewService::ensure_discardable(&workspace)?;
     watchers.stop(&workspace_id);
     // Row → stopped BEFORE the kill (see `quiesce_task`), so the exit isn't
     // reported as an agent failure.

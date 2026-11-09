@@ -52,6 +52,11 @@ pub enum WorktreeRemoveError {
     OutsideBase(String),
     #[error("`{0}` has a running agent; stop the task first")]
     Running(String),
+    /// Removal is `git worktree remove --force` + delete: uncommitted work
+    /// (and commits kept nowhere else) would be destroyed. Refused unless
+    /// the caller passes `force`.
+    #[error("uncommitted changes or unpushed commits would be lost in: {}; remove anyway to discard them", .0.join(", "))]
+    UnsavedWork(Vec<String>),
 }
 
 fn canonical(p: &Path) -> PathBuf {
@@ -103,15 +108,19 @@ pub fn classify(
 
 /// Check every requested path before removing any: each must be a
 /// worktree of this repository (per git), not its main checkout, inside a
-/// phasr worktree base, and not running an agent. Returns the canonical
-/// paths to remove, in request order. All-or-nothing, so a bad entry in a
-/// multi-select never leaves a half-done removal.
+/// phasr worktree base, and not running an agent — and, unless `force`,
+/// not holding unsaved work (`unsaved`: dirty, or commits kept nowhere
+/// else). Returns the canonical paths to remove, in request order.
+/// All-or-nothing, so a bad entry in a multi-select never leaves a
+/// half-done removal; every unsaved path is named in one error.
 pub fn validate_removal(
     requested: &[String],
     main_checkout: &Path,
     bases: &[PathBuf],
     refs: &[WorktreeRef],
     running: &dyn Fn(&Path) -> bool,
+    unsaved: &dyn Fn(&Path) -> bool,
+    force: bool,
 ) -> Result<Vec<PathBuf>, WorktreeRemoveError> {
     let main = canonical(main_checkout);
     let registered: Vec<PathBuf> = refs.iter().map(|r| canonical(Path::new(&r.path))).collect();
@@ -132,6 +141,16 @@ pub fn validate_removal(
         }
         if !out.contains(&path) {
             out.push(path);
+        }
+    }
+    if !force {
+        let at_risk: Vec<String> = out
+            .iter()
+            .filter(|p| unsaved(p))
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        if !at_risk.is_empty() {
+            return Err(WorktreeRemoveError::UnsavedWork(at_risk));
         }
     }
     Ok(out)
@@ -248,11 +267,11 @@ mod tests {
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
         assert!(matches!(
-            validate_removal(&[s(&l.main)], &l.main, &bases, &refs, &idle),
+            validate_removal(&[s(&l.main)], &l.main, &bases, &refs, &idle, &idle, false),
             Err(WorktreeRemoveError::MainCheckout)
         ));
         assert!(matches!(
-            validate_removal(&[s(&l.external_wt)], &l.main, &bases, &refs, &idle),
+            validate_removal(&[s(&l.external_wt)], &l.main, &bases, &refs, &idle, &idle, false),
             Err(WorktreeRemoveError::OutsideBase(_))
         ));
         // Under the base but not one of this repository's worktrees (another
@@ -260,28 +279,55 @@ mod tests {
         let stray = l.base.join("someone-elses");
         std::fs::create_dir_all(&stray).unwrap();
         assert!(matches!(
-            validate_removal(&[s(&stray)], &l.main, &bases, &refs, &idle),
+            validate_removal(&[s(&stray)], &l.main, &bases, &refs, &idle, &idle, false),
             Err(WorktreeRemoveError::NotAWorktree(_))
         ));
         // The base folder itself is never "under" itself.
         let with_base = [refs.clone(), vec![wt(&l.base, "x")]].concat();
         assert!(matches!(
-            validate_removal(&[s(&l.base)], &l.main, &bases, &with_base, &idle),
+            validate_removal(&[s(&l.base)], &l.main, &bases, &with_base, &idle, &idle, false),
             Err(WorktreeRemoveError::OutsideBase(_))
         ));
         // A running task's worktree.
         let task_wt = canonical(&l.task_wt);
         let running = move |p: &Path| p == task_wt;
         assert!(matches!(
-            validate_removal(&[s(&l.task_wt)], &l.main, &bases, &refs, &running),
+            validate_removal(&[s(&l.task_wt)], &l.main, &bases, &refs, &running, &idle, false),
             Err(WorktreeRemoveError::Running(_))
         ));
         // All-or-nothing: one bad path refuses the batch.
-        assert!(validate_removal(&[s(&l.orphan_wt), s(&l.main)], &l.main, &bases, &refs, &idle).is_err());
+        assert!(validate_removal(&[s(&l.orphan_wt), s(&l.main)], &l.main, &bases, &refs, &idle, &idle, false).is_err());
         // Good ones pass, deduplicated.
-        let ok = validate_removal(&[s(&l.orphan_wt), s(&l.task_wt), s(&l.orphan_wt)], &l.main, &bases, &refs, &idle)
+        let ok = validate_removal(&[s(&l.orphan_wt), s(&l.task_wt), s(&l.orphan_wt)], &l.main, &bases, &refs, &idle, &idle, false)
             .unwrap();
         assert_eq!(ok, vec![canonical(&l.orphan_wt), canonical(&l.task_wt)]);
+    }
+
+    /// Dirty / unpushed worktrees are refused (all named) unless forced.
+    #[test]
+    fn removal_refuses_unsaved_work_unless_forced() {
+        let l = layout();
+        let refs = vec![wt(&l.main, "main"), wt(&l.task_wt, "phasr/fix"), wt(&l.orphan_wt, "phasr/old")];
+        let bases = vec![l.base.clone()];
+        let idle = |_: &Path| false;
+        let everything = |_: &Path| true;
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let both = [s(&l.task_wt), s(&l.orphan_wt)];
+        match validate_removal(&both, &l.main, &bases, &refs, &idle, &everything, false) {
+            Err(WorktreeRemoveError::UnsavedWork(paths)) => {
+                assert_eq!(paths, vec![s(&canonical(&l.task_wt)), s(&canonical(&l.orphan_wt))]);
+            }
+            other => panic!("expected UnsavedWork, got {other:?}"),
+        }
+        let forced = validate_removal(&both, &l.main, &bases, &refs, &idle, &everything, true).unwrap();
+        assert_eq!(forced.len(), 2);
+        // `force` never overrides the hard refusals.
+        let task_wt = canonical(&l.task_wt);
+        let running = move |p: &Path| p == task_wt;
+        assert!(matches!(
+            validate_removal(&both, &l.main, &bases, &refs, &running, &idle, true),
+            Err(WorktreeRemoveError::Running(_))
+        ));
     }
 
     #[tokio::test]

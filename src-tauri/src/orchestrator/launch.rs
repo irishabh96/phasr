@@ -16,7 +16,7 @@ use crate::domain::agent::collapse_whitespace;
 use crate::domain::{Agent, PermissionMode, UserSettings};
 
 use super::error::OrchestratorError;
-use super::templating::interpolate_command;
+use super::templating::{interpolate_command, interpolate_trusted};
 
 /// Where a task's agent runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -48,7 +48,9 @@ pub fn resolve_command(
         .unwrap_or_else(|| agent.default_template());
     let mut vars = HashMap::new();
     vars.insert("permissions", args);
-    Ok(collapse_whitespace(&interpolate_command(template, &vars)))
+    // Trusted constants, spliced verbatim; `{{prompt}}` is left for
+    // `interpolate_for_task`, which quotes it.
+    Ok(collapse_whitespace(&interpolate_trusted(template, &vars)))
 }
 
 /// The command (and mode to record) when an existing workspace's agent or

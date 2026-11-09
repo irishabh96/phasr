@@ -109,7 +109,7 @@ impl CodexReader {
             .any(|c| c == candidate || canonical.as_deref() == Some(c.as_path()))
     }
 
-    fn discover(&mut self) {
+    pub(super) fn discover(&mut self) {
         for dir in self.day_dirs() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;

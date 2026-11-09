@@ -13,8 +13,9 @@ use crate::git::{
     self, BranchStatus, Commit, CommitFileChange, CommitOutput, ConflictSide, DiffScope,
     FileChange, GitError, InProgress, LogOptions, MergeOutcome, MergeStrategy,
 };
-use crate::orchestrator::{RepoLockRegistry, TaskBoard};
+use crate::orchestrator::TaskBoard;
 use crate::review::cleanup::MergeCleanup;
+use crate::review::{ReviewError, ReviewService};
 use crate::store::{RepositoryRepo, StoreError, WorkspaceRepo};
 
 use super::require_user;
@@ -24,7 +25,18 @@ pub enum GitCmdError {
     Store(StoreError),
     Git(GitError),
     Auth(AuthError),
+    Review(ReviewError),
     NoWorktree,
+}
+
+impl From<ReviewError> for GitCmdError {
+    fn from(e: ReviewError) -> Self {
+        match e {
+            ReviewError::Store(e) => Self::Store(e),
+            ReviewError::Git(e) => Self::Git(e),
+            other => Self::Review(other),
+        }
+    }
 }
 
 impl From<StoreError> for GitCmdError {
@@ -51,6 +63,7 @@ impl std::fmt::Display for GitCmdError {
             Self::Store(e) => write!(f, "{e}"),
             Self::Git(e) => write!(f, "{e}"),
             Self::Auth(e) => write!(f, "{e}"),
+            Self::Review(e) => write!(f, "{e}"),
             Self::NoWorktree => write!(f, "workspace has no worktree yet"),
         }
     }
@@ -373,8 +386,7 @@ pub async fn git_merge_to_main(
     workspace_id: String,
     strategy: MergeStrategy,
     workspaces: State<'_, WorkspaceRepo>,
-    repositories: State<'_, RepositoryRepo>,
-    repo_locks: State<'_, Arc<RepoLockRegistry>>,
+    review: State<'_, ReviewService>,
     board: State<'_, TaskBoard>,
     cleanup: State<'_, MergeCleanup>,
     session: State<'_, Arc<SessionState>>,
@@ -382,55 +394,24 @@ pub async fn git_merge_to_main(
 ) -> Result<MergeOutcome, GitCmdError> {
     let current = require_user(&session)?;
     let workspace = owned_workspace(&workspaces, &workspace_id, &current.user_id).await?;
-    let branch = workspace.branch.clone().ok_or_else(|| {
-        GitCmdError::Git(GitError::CommandFailed("workspace has no branch".into()))
-    })?;
-    let repository = repositories
-        .get_for_user(&workspace.repository_id, &current.user_id)
+    // THE local-merge path (the former `merge_task_locally` duplicated it
+    // and disagreed on the target): merges into the TASK's base branch —
+    // the one it was cut from — under the per-repo lock (F6: it checks the
+    // target out in the SHARED main checkout), refuses while an in-place
+    // agent works in that checkout, and records the `merged` outcome
+    // against that same branch. A merge completed after resolving
+    // conflicts is recorded by `git_continue_merge`.
+    let outcome = review
+        .merge_locally(&workspace, &current.user_id, strategy, None)
         .await?;
-    let main_repo = repository
-        .local_path
-        .as_ref()
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            GitCmdError::Git(GitError::CommandFailed(
-                "repository has no local path".into(),
-            ))
-        })?;
-    let default_branch = repository.default_branch.clone();
-
-    // F6: merge-to-main checks out the target branch directly in the
-    // SHARED main repo `.git`, touching the same `.git/index`/refs that
-    // every worktree-add and branch-delete on this repo touches. Serialize
-    // against them via the shared per-repo lock so a concurrent
-    // create/start/delete can't corrupt `index.lock`/refs mid-merge. The
-    // guard is held across the `spawn_blocking` await (tokio Mutex).
-    let lock = repo_locks.for_repository(&workspace.repository_id);
-    let guard = lock.lock().await;
-    let target = default_branch.clone();
-    let outcome =
-        blocking_git(move || git::merge_to(&main_repo, &default_branch, &branch, strategy)).await?;
-    drop(guard);
-
-    // A clean merge finishes the task: the Board's Done lane ("merged into
-    // main"). A merge completed after resolving conflicts is recorded by
-    // `git_continue_merge`.
-    if matches!(outcome, MergeOutcome::Clean { .. })
-        && workspace.workspace_kind == WorkspaceKind::Agent
-    {
-        match workspaces
-            .set_outcome(&workspace.id, Some(TaskOutcome::Merged), Some(&target))
-            .await
-        {
-            Ok(merged) => {
-                if workspace.outcome != Some(TaskOutcome::Merged) {
-                    cleanup.on_merged(&merged, &current.user_id).await;
-                }
-                board.notify_changed(&workspace.repository_id);
-                sync_state.request_sync();
+    if matches!(outcome, MergeOutcome::Clean { .. }) && workspace.workspace_kind == WorkspaceKind::Agent {
+        if workspace.outcome != Some(TaskOutcome::Merged) {
+            if let Ok(merged) = workspaces.get_for_user(&workspace.id, &current.user_id).await {
+                cleanup.on_merged(&merged, &current.user_id).await;
             }
-            Err(err) => eprintln!("failed to record merge outcome for {}: {err}", workspace.id),
         }
+        board.notify_changed(&workspace.repository_id);
+        sync_state.request_sync();
     }
     Ok(outcome)
 }

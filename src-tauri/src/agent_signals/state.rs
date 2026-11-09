@@ -80,6 +80,13 @@ pub struct Attention {
     /// Whether phasr knows the keystrokes that answer this dialog. False →
     /// the UI offers "Open terminal" instead of Allow/Deny.
     pub can_respond: bool,
+    /// Whether "Allow for this task" is answerable: the dialog on screen has
+    /// an option scoped to THIS session/task. Claude's option 2 is often a
+    /// persistent project rule ("always allow access to <dir> from this
+    /// project"), which must never be what "for this task" sends, so for
+    /// Claude this stays false until the options are read off the screen
+    /// and one of them is session-scoped.
+    pub can_allow_for_task: bool,
     #[serde(skip)]
     pub keys: KeyOverrides,
 }
@@ -152,6 +159,8 @@ pub struct TaskSignalState {
 pub enum ClaimError {
     Stale,
     NotRespondable,
+    /// "Allow for this task" on a dialog with no task-scoped option.
+    NoTaskScope,
 }
 
 impl TaskSignalState {
@@ -217,6 +226,14 @@ impl TaskSignalState {
             .is_some_and(|a| a.source == AttentionSource::Hook)
     }
 
+    /// Whether `call` is the one the current hook card is about. A card
+    /// raised without knowing its call (a bare permission notification)
+    /// can't be matched, so any call resolves it — the pre-matching
+    /// behaviour, kept for that case only.
+    fn card_is_for(&self, call: &ToolCall) -> bool {
+        self.attention_tool.as_ref().is_none_or(|t| t == call)
+    }
+
     /// Apply one hook event. Returns the effects to run; compare `to_wire()`
     /// before/after to know whether to broadcast.
     pub fn apply_hook(
@@ -262,8 +279,11 @@ impl TaskSignalState {
                 };
                 if tool_name == "AskUserQuestion" {
                     self.raise(question_attention(tool_input, now), Some(call.clone()), now);
-                } else if self.has_hook_attention() && self.attention_tool.as_ref() == Some(&call) {
-                    // Its own PermissionRequest got here first: keep the card.
+                } else if self.has_hook_attention() && self.attention_tool.is_some() {
+                    // A card for a known call stays up until THAT call
+                    // finishes or is denied. Its own late PreToolUse, a
+                    // parallel call or a subagent's tool starting says
+                    // nothing about whether the dialog was answered.
                 } else {
                     self.set_kind(AgentStateKind::Working, now);
                 }
@@ -287,18 +307,43 @@ impl TaskSignalState {
                 notification_type,
                 message,
             } => self.apply_notification(notification_type.as_deref(), message, now),
-            AgentSignal::PostToolUse { .. } => {
-                self.pending_tool = None;
-                if self.kind == AgentStateKind::NeedsYou || self.kind == AgentStateKind::Idle {
+            AgentSignal::PostToolUse {
+                tool_name,
+                tool_input,
+            } => {
+                let call = ToolCall {
+                    name: tool_name.clone(),
+                    input: tool_input.clone(),
+                };
+                if self.pending_tool.as_ref() == Some(&call) {
+                    self.pending_tool = None;
+                }
+                if self.has_hook_attention() {
+                    // Only the card's own call finishing means its dialog
+                    // was answered (allowed) and the tool ran.
+                    if self.card_is_for(&call) {
+                        self.set_kind(AgentStateKind::Working, now);
+                    }
+                } else if self.kind == AgentStateKind::NeedsYou || self.kind == AgentStateKind::Idle {
                     self.set_kind(AgentStateKind::Working, now);
                 }
             }
-            AgentSignal::PermissionDenied { .. } => {
+            AgentSignal::PermissionDenied {
+                tool_name,
+                tool_input,
+            } => {
                 // Denied in the terminal (or by Claude's classifier): Claude
                 // either waits for the user or carries on, in which case the
                 // next PreToolUse flips it back to Working.
-                self.pending_tool = None;
-                if self.kind == AgentStateKind::NeedsYou {
+                let call = ToolCall {
+                    name: tool_name.clone(),
+                    input: tool_input.clone(),
+                };
+                if self.pending_tool.as_ref() == Some(&call) {
+                    self.pending_tool = None;
+                }
+                let resolves = !self.has_hook_attention() || self.card_is_for(&call);
+                if resolves && self.kind == AgentStateKind::NeedsYou {
                     self.set_kind(AgentStateKind::Idle, now);
                 }
             }
@@ -365,6 +410,8 @@ impl TaskSignalState {
                             since: now,
                             source: AttentionSource::Hook,
                             can_respond: self.agent.approval_keys().is_some(),
+                            can_allow_for_task: allow_task_by_default(self.agent)
+                                && self.agent.approval_keys().is_some(),
                             keys: KeyOverrides::default(),
                         },
                         None,
@@ -391,6 +438,7 @@ impl TaskSignalState {
                         since: now,
                         source: AttentionSource::Hook,
                         can_respond: false,
+                        can_allow_for_task: false,
                         keys: KeyOverrides::default(),
                     };
                     self.raise(attention, None, now);
@@ -403,6 +451,9 @@ impl TaskSignalState {
     /// Heuristic result after an output-quiet period. `None` = no dialog
     /// recognised at the end of the output.
     pub fn apply_heuristic(&mut self, detection: Option<Detection>, now: DateTime<Utc>) {
+        if let Some(found) = detection.as_ref() {
+            self.refine_hook_attention(found);
+        }
         // Hooks win: once a Claude session reports through hooks, PTY
         // pattern-matching would only add false positives. The trust
         // dialog is the exception: it is drawn before any hook can fire,
@@ -443,6 +494,9 @@ impl TaskSignalState {
                         since: now,
                         source: AttentionSource::Heuristic,
                         can_respond: found.can_respond && self.agent.approval_keys().is_some(),
+                        can_allow_for_task: found.can_respond
+                            && self.agent.approval_keys().is_some()
+                            && (allow_task_by_default(self.agent) || found.keys.allow_task.is_some()),
                         keys: found.keys,
                     },
                     None,
@@ -457,14 +511,18 @@ impl TaskSignalState {
         }
     }
 
-    /// The user typed into the terminal / sent a composer message.
+    /// The user typed into the terminal / sent a composer message. The
+    /// caller has already dropped the terminal's own automatic replies
+    /// (`is_meaningful_input`), so this is a human acting on the screen.
     ///
-    /// A heuristic card can't know whether that answered the dialog, so it's
-    /// cleared; if the dialog is still up, the next quiet period re-raises it
-    /// (with a new id). Hook attention is left for the hooks to resolve —
-    /// except a lone Esc / Ctrl-C: denying in the terminal fires NO hook
-    /// (verified on Claude 2.1.319: no PermissionDenied, no Stop), so without
-    /// this the card would stay up until the next prompt.
+    /// Whatever card is up can no longer be trusted to describe the screen:
+    /// the user is answering in the terminal. A heuristic card is cleared
+    /// (the next quiet period re-raises it, with a new id, if the dialog is
+    /// still there). A hook card moves to Working ("answered in the
+    /// terminal") — left up, a later in-app Allow would send `1` into
+    /// whatever dialog came NEXT. A lone Esc / Ctrl-C is a deny, which fires
+    /// NO hook (verified on Claude 2.1.319: no PermissionDenied, no Stop), so
+    /// that one goes to Idle.
     /// Returns whether anything changed.
     pub fn on_user_input(&mut self, bytes: &[u8], now: DateTime<Utc>) -> bool {
         match self.attention.as_ref().map(|a| a.source) {
@@ -477,7 +535,39 @@ impl TaskSignalState {
                 self.set_kind(AgentStateKind::Idle, now);
                 true
             }
-            _ => false,
+            Some(AttentionSource::Hook) => {
+                self.set_kind(AgentStateKind::Working, now);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A hook card is raised before the dialog is drawn, so it can't know
+    /// the dialog's options. Once the screen shows them (the detector's
+    /// quiet pass), record whether a task-scoped "allow" exists and its key.
+    fn refine_hook_attention(&mut self, found: &Detection) {
+        if found.kind == AttentionKind::Trust || self.kind != AgentStateKind::NeedsYou {
+            return;
+        }
+        let agent = self.agent;
+        let Some(attention) = self
+            .attention
+            .as_mut()
+            .filter(|a| a.source == AttentionSource::Hook && a.can_respond)
+        else {
+            return;
+        };
+        match found.keys.allow_task.clone() {
+            Some(key) => {
+                attention.keys.allow_task = Some(key);
+                attention.can_allow_for_task = true;
+            }
+            None if !allow_task_by_default(agent) => {
+                attention.keys.allow_task = None;
+                attention.can_allow_for_task = false;
+            }
+            None => {}
         }
     }
 
@@ -504,6 +594,9 @@ impl TaskSignalState {
         if !current.can_respond {
             return Err(ClaimError::NotRespondable);
         }
+        if response == AttentionResponse::AllowTask && !current.can_allow_for_task {
+            return Err(ClaimError::NoTaskScope);
+        }
         // Allowed → the tool runs; denied → the agent stops and waits.
         let next = match response {
             AttentionResponse::AllowOnce | AttentionResponse::AllowTask => AgentStateKind::Working,
@@ -517,6 +610,13 @@ impl TaskSignalState {
 
 fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// Whether the agent's static "allow for this task" key (`approval_keys`)
+/// is safe to send without reading the dialog. Not for Claude: its option 2
+/// varies per dialog and is often a persistent project rule.
+fn allow_task_by_default(agent: Agent) -> bool {
+    agent != Agent::Claude
 }
 
 fn str_input<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
@@ -653,6 +753,7 @@ pub fn tool_attention(
         since: now,
         source: AttentionSource::Hook,
         can_respond,
+        can_allow_for_task: can_respond && allow_task_by_default(agent),
         keys: KeyOverrides::default(),
     }
 }
@@ -685,6 +786,7 @@ fn question_attention(input: &Value, now: DateTime<Utc>) -> Attention {
         source: AttentionSource::Hook,
         // Answering means picking options in the agent's own UI.
         can_respond: false,
+        can_allow_for_task: false,
         keys: KeyOverrides::default(),
     }
 }
@@ -721,6 +823,13 @@ mod tests {
         }
     }
 
+    fn post(tool: &str, input: Value) -> AgentSignal {
+        AgentSignal::PostToolUse {
+            tool_name: tool.into(),
+            tool_input: input,
+        }
+    }
+
     fn permission_notification() -> AgentSignal {
         AgentSignal::Notification {
             notification_type: Some("permission_prompt".into()),
@@ -745,13 +854,7 @@ mod tests {
         assert!(a.can_respond);
 
         // PostToolUse = the dialog was answered and the tool ran.
-        s.apply_hook(
-            &AgentSignal::PostToolUse {
-                tool_name: "Bash".into(),
-            },
-            &no_session(),
-            now,
-        );
+        s.apply_hook(&post("Bash", json!({"command": "pnpm test"})), &no_session(), now);
         assert_eq!(s.kind, AgentStateKind::Working);
         assert!(s.attention.is_none());
     }
@@ -794,9 +897,85 @@ mod tests {
         // The delayed (6s) permission_prompt notification doesn't re-mint.
         s.apply_hook(&permission_notification(), &no_session(), now);
         assert_eq!(s.attention.as_ref().unwrap().id, id);
-        // A different tool starting means the dialog was answered.
+        // A different (parallel / subagent) tool starting says nothing
+        // about the dialog: the card stays.
         s.apply_hook(&pre("Read", json!({"file_path": "/work/a"})), &no_session(), now);
+        assert_eq!(s.attention.as_ref().unwrap().id, id);
+    }
+
+    /// Unrelated Pre/PostToolUse (parallel calls, subagents) and an
+    /// unrelated PermissionDenied leave the card; only its own call's
+    /// PostToolUse / PermissionDenied resolves it.
+    #[test]
+    fn hook_card_resolves_only_on_its_own_tool_call() {
+        let now = Utc::now();
+        let mine = json!({"command": "rm -rf build"});
+        let raise = |s: &mut TaskSignalState| {
+            s.apply_hook(
+                &AgentSignal::PermissionRequest {
+                    tool_name: "Bash".into(),
+                    tool_input: mine.clone(),
+                },
+                &no_session(),
+                now,
+            );
+            s.attention.as_ref().unwrap().id.clone()
+        };
+        let mut s = state(Agent::Claude);
+        let id = raise(&mut s);
+        s.apply_hook(&pre("Grep", json!({"pattern": "x"})), &no_session(), now);
+        s.apply_hook(&post("Grep", json!({"pattern": "x"})), &no_session(), now);
+        // Same tool, different call (a subagent's Bash).
+        s.apply_hook(&post("Bash", json!({"command": "ls"})), &no_session(), now);
+        s.apply_hook(
+            &AgentSignal::PermissionDenied {
+                tool_name: "Bash".into(),
+                tool_input: json!({"command": "curl x"}),
+            },
+            &no_session(),
+            now,
+        );
+        assert_eq!(s.kind, AgentStateKind::NeedsYou);
+        assert_eq!(s.attention.as_ref().unwrap().id, id);
+        // Its own call finishing → answered, tool ran.
+        s.apply_hook(&post("Bash", mine.clone()), &no_session(), now);
         assert_eq!(s.kind, AgentStateKind::Working);
+        assert!(s.attention.is_none());
+
+        // Its own call denied → idle.
+        let mut s = state(Agent::Claude);
+        raise(&mut s);
+        s.apply_hook(
+            &AgentSignal::PermissionDenied {
+                tool_name: "Bash".into(),
+                tool_input: mine.clone(),
+            },
+            &no_session(),
+            now,
+        );
+        assert_eq!(s.kind, AgentStateKind::Idle);
+        assert!(s.attention.is_none());
+    }
+
+    /// Answered in the terminal with anything (not just Esc): the hook card
+    /// moves to Working, so a later in-app Allow can't land on the NEXT
+    /// dialog.
+    #[test]
+    fn real_terminal_input_moves_a_hook_card_to_working() {
+        let now = Utc::now();
+        let mut s = state(Agent::Claude);
+        s.apply_hook(
+            &AgentSignal::PermissionRequest {
+                tool_name: "Bash".into(),
+                tool_input: json!({"command": "ls"}),
+            },
+            &no_session(),
+            now,
+        );
+        let id = s.attention.as_ref().unwrap().id.clone();
+        assert!(s.on_user_input(b"1", now));
+        assert_eq!(s.kind, AgentStateKind::Working);
+        assert_eq!(s.claim_attention(&id, AttentionResponse::AllowOnce, now), Err(ClaimError::Stale));
     }
 
     #[test]
@@ -944,13 +1123,13 @@ mod tests {
         assert_ne!(s.attention.as_ref().unwrap().id, id);
         s.apply_heuristic(None, now);
         assert_eq!(s.kind, AgentStateKind::Working);
-        // Typing doesn't clear hook attention (the hooks will)…
+        // Typing moves a hook card to Working (answered in the terminal)…
         let mut c = state(Agent::Claude);
         c.apply_hook(&permission_notification(), &no_session(), now);
-        assert!(!c.on_user_input(b"\x1b[B", now));
-        assert!(!c.on_user_input(b"1", now));
-        assert_eq!(c.kind, AgentStateKind::NeedsYou);
-        // …except Esc, a terminal deny that no hook reports.
+        assert!(c.on_user_input(b"1", now));
+        assert_eq!(c.kind, AgentStateKind::Working);
+        // …and Esc, a terminal deny that no hook reports, to Idle.
+        c.apply_hook(&permission_notification(), &no_session(), now);
         assert!(c.on_user_input(b"\x1b", now));
         assert_eq!(c.kind, AgentStateKind::Idle);
         assert!(c.attention.is_none());
@@ -1021,6 +1200,63 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(s.kind, AgentStateKind::Idle);
+    }
+
+    fn claude_options(allow_task: Option<&str>) -> Detection {
+        Detection {
+            kind: AttentionKind::Shell,
+            title: "Run a shell command".into(),
+            detail: None,
+            can_respond: true,
+            keys: KeyOverrides {
+                allow_once: Some("1".into()),
+                allow_task: allow_task.map(str::to_string),
+                deny: Some("\x1b".into()),
+            },
+        }
+    }
+
+    /// Claude's option 2 can be a persistent project rule: "allow for this
+    /// task" is only answerable once the screen shows a session-scoped
+    /// option, and is refused otherwise.
+    #[test]
+    fn claude_allow_task_needs_a_session_scoped_option_on_screen() {
+        let now = Utc::now();
+        let mut s = state(Agent::Claude);
+        s.apply_hook(
+            &AgentSignal::PermissionRequest {
+                tool_name: "Bash".into(),
+                tool_input: json!({"command": "touch x"}),
+            },
+            &no_session(),
+            now,
+        );
+        s.hooks_seen = true;
+        let a = s.attention.clone().unwrap();
+        assert!(a.can_respond && !a.can_allow_for_task);
+        assert_eq!(
+            s.claim_attention(&a.id, AttentionResponse::AllowTask, now),
+            Err(ClaimError::NoTaskScope)
+        );
+        assert_eq!(s.kind, AgentStateKind::NeedsYou, "a refused claim changes nothing");
+        // Screen: "2. Yes, and always allow access to … from this project".
+        s.apply_heuristic(Some(claude_options(None)), now);
+        assert!(!s.attention.as_ref().unwrap().can_allow_for_task);
+        // Screen: "2. Yes, allow all edits during this session".
+        s.apply_heuristic(Some(claude_options(Some("2"))), now);
+        let a = s.attention.clone().unwrap();
+        assert!(a.can_allow_for_task);
+        assert_eq!(a.id, s.attention.as_ref().unwrap().id, "same card, refined");
+        let claimed = s.claim_attention(&a.id, AttentionResponse::AllowTask, now).unwrap();
+        assert_eq!(claimed.keys.allow_task.as_deref(), Some("2"));
+
+        // Codex reads its own hotkeys: allow-task stays available.
+        let mut c = state(Agent::Codex);
+        c.apply_heuristic(Some(claude_options(Some("p"))), now);
+        assert!(c.attention.as_ref().unwrap().can_allow_for_task);
+        // Wire field.
+        let v = serde_json::to_value(c.to_wire()).unwrap();
+        assert_eq!(v["attention"]["canAllowForTask"], true);
     }
 
     #[test]

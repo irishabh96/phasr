@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
 use crate::domain::UserSettings;
-use crate::store::{SettingsRepo, StoreError};
+use crate::store::{AppMetaRepo, SettingsRepo, StoreError};
 use crate::sync::CloudSyncState;
 
 /// Wraps `StoreError` so we can carry an auth-rejection variant on the
@@ -115,14 +115,46 @@ impl UserSettingsInput {
 pub async fn update_user_settings(
     settings: UserSettingsInput,
     repo: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<UserSettings, SettingsCmdError> {
     session.require()?;
     let stored = repo.get_or_init().await?;
     let updated = repo.update(&settings.merged_over(&stored)).await?;
+    // An agent template / shell the user CHANGED here was typed on this
+    // machine: trusted to run here. Unchanged (possibly synced) values keep
+    // their status — see `settings_trust::trust_edits`.
+    crate::settings_trust::trust_edits(&meta, &stored, &updated).await?;
     sync_state.request_sync();
     Ok(updated)
+}
+
+/// Synced settings that would run as commands here but haven't been
+/// confirmed on this machine: `agentCommands.<agent>` / `terminalShell`.
+/// Until confirmed, launches use the default template / login shell.
+#[tauri::command]
+pub async fn list_unconfirmed_settings(
+    repo: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, SettingsCmdError> {
+    session.require()?;
+    let settings = repo.get_or_init().await?;
+    Ok(crate::settings_trust::unconfirmed(&meta, &settings).await?)
+}
+
+/// "Allow on this machine" for the current agent templates and terminal
+/// shell. Returns the entries that were unconfirmed.
+#[tauri::command]
+pub async fn confirm_settings_on_this_machine(
+    repo: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<String>, SettingsCmdError> {
+    session.require()?;
+    let settings = repo.get_or_init().await?;
+    Ok(crate::settings_trust::confirm_all(&meta, &settings).await?)
 }
 
 /// Shells from `/etc/shells` that exist here (Settings → Terminal → Shell).

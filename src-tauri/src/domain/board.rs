@@ -112,12 +112,30 @@ pub fn derive_lane(
 }
 
 /// Whether a queued task waiting on `dependency` may start: the dependency
-/// reached review or finished. A failed or still-running dependency keeps
-/// it waiting (the user can always "Start now").
+/// FINISHED — an outcome (merged/closed), a clean exit (`completed`), the
+/// user archived it, or its agent ended a turn during its latest run and it
+/// now sits in review/done. A failed or still-running dependency keeps it
+/// waiting (the user can always "Start now").
+///
+/// "Stopped" alone is NOT finished: startup recovery turns every task that
+/// was `running` when the app quit into `stopped`, and a stopped task with
+/// (or with unknown) changes lands in NeedsReview — accepting that started
+/// dependents on top of half-finished work on every relaunch. The turn end
+/// must postdate `started_at` (bumped on every launch/resume), so an old
+/// turn from a previous run doesn't count either.
 pub fn dependency_satisfied(dependency: &Workspace, lane: Option<Lane>) -> bool {
-    dependency.outcome.is_some()
+    if dependency.outcome.is_some()
         || dependency.status == WorkspaceStatus::Completed
-        || matches!(lane, Some(Lane::NeedsReview | Lane::Done | Lane::Archived))
+        || dependency.status == WorkspaceStatus::Archived
+    {
+        return true;
+    }
+    let finished_a_turn = match (dependency.last_turn_ended_at, dependency.started_at) {
+        (Some(ended), Some(started)) => ended >= started,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    finished_a_turn && matches!(lane, Some(Lane::NeedsReview | Lane::Done))
 }
 
 #[cfg(test)]
@@ -208,11 +226,33 @@ mod tests {
         assert_eq!(derive_lane(&local, Some(AgentPhase::Idle), Some(&CHANGES)), None);
     }
 
+    /// The relaunch case: the app quit mid-turn, startup recovery marked
+    /// the dependency `stopped`, and its half-finished diff puts it in
+    /// NeedsReview. That is not "finished" — no turn ended in this run.
+    #[test]
+    fn a_dependency_stopped_by_recovery_is_not_finished() {
+        let started = Utc::now() - chrono::Duration::minutes(10);
+        let mut recovered = ws(WorkspaceStatus::Stopped);
+        recovered.started_at = Some(started);
+        assert_eq!(derive_lane(&recovered, None, Some(&CHANGES)), Some(Lane::NeedsReview));
+        assert!(!dependency_satisfied(&recovered, Some(Lane::NeedsReview)));
+        assert!(!dependency_satisfied(&recovered, Some(Lane::Done)));
+        // A turn from a PREVIOUS run (before this run's start) doesn't count.
+        recovered.last_turn_ended_at = Some(started - chrono::Duration::minutes(1));
+        assert!(!dependency_satisfied(&recovered, Some(Lane::NeedsReview)));
+        // Its agent finished a turn in this run → finished.
+        recovered.last_turn_ended_at = Some(started + chrono::Duration::minutes(5));
+        assert!(dependency_satisfied(&recovered, Some(Lane::NeedsReview)));
+    }
+
     #[test]
     fn dependency_is_satisfied_at_review_or_later() {
-        let running = ws(WorkspaceStatus::Running);
+        let mut running = ws(WorkspaceStatus::Running);
         assert!(!dependency_satisfied(&running, Some(Lane::Running)));
         assert!(!dependency_satisfied(&running, Some(Lane::NeedsYou)));
+        assert!(!dependency_satisfied(&running, Some(Lane::NeedsReview)), "no turn ended yet");
+        running.started_at = Some(Utc::now() - chrono::Duration::minutes(1));
+        running.last_turn_ended_at = Some(Utc::now());
         assert!(dependency_satisfied(&running, Some(Lane::NeedsReview)));
         assert!(!dependency_satisfied(&ws(WorkspaceStatus::Failed), Some(Lane::Failed)));
         assert!(dependency_satisfied(&ws(WorkspaceStatus::Completed), Some(Lane::Running)));

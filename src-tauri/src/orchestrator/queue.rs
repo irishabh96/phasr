@@ -312,13 +312,53 @@ mod tests {
         assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
         assert!(f.workspaces.get(&b.id).await.unwrap().is_queued());
 
-        // A produces work and stops → needs review → B goes.
+        // A produces work and stops → needs review. Stopped alone (what
+        // startup recovery also produces) isn't finished: B still waits.
         let a_path = a.workspace.worktree_path.clone().unwrap();
         std::fs::write(Path::new(&a_path).join("work.txt"), "done\n").unwrap();
         f.orchestrator.stop_task(&a.task_id).await.unwrap();
+        assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
+        // A's agent had ended its turn (the Stop hook's stamp) → B goes.
+        f.workspaces.set_last_turn_ended_at(&a.task_id, chrono::Utc::now()).await.unwrap();
         assert_eq!(f.scheduler.run_pass(None).await.unwrap(), vec![b.id.clone()]);
         assert_eq!(f.workspaces.get(&b.id).await.unwrap().status, WorkspaceStatus::Running);
         teardown(&f, &[&a.task_id, &b.id]).await;
+    }
+
+    /// A row queued on ANOTHER machine arrives through sync (its own SQL,
+    /// which never sets the local marker): it shows as queued here but the
+    /// scheduler never starts it. Re-queueing it on this machine does.
+    #[tokio::test]
+    async fn a_task_queued_on_another_machine_never_auto_starts_here() {
+        let f = fixture().await;
+        let mut synced = Workspace::new(f.repo.id.clone(), "from-elsewhere".into(), "sleep 30".into());
+        synced.agent = Some(Agent::Claude);
+        synced.queued_at = Some(chrono::Utc::now());
+        f.workspaces.insert(&synced).await.unwrap();
+        // What a sync pull leaves behind: no local marker.
+        sqlx::query("UPDATE workspaces SET queued_here = 0 WHERE id = ?")
+            .bind(&synced.id)
+            .execute(f.workspaces.pool())
+            .await
+            .unwrap();
+        assert!(f.workspaces.get(&synced.id).await.unwrap().is_queued(), "still shows as queued");
+        assert!(f.scheduler.run_pass(None).await.unwrap().is_empty());
+        assert_eq!(phasr_branches(&f.repo), 0);
+
+        // The user queues it on THIS machine → it's ours to start.
+        f.orchestrator
+            .update_unlaunched(
+                &synced.id,
+                None,
+                crate::orchestrator::TaskRowPatch {
+                    queued: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(f.scheduler.run_pass(None).await.unwrap(), vec![synced.id.clone()]);
+        teardown(&f, &[&synced.id]).await;
     }
 
     #[tokio::test]

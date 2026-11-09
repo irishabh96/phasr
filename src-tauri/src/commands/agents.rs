@@ -6,7 +6,7 @@ use crate::auth::{AuthError, SessionState};
 use crate::detect::{AgentDetection, DetectionCache, EnvironmentCheck};
 use crate::domain::{Agent, PermissionMode};
 use crate::orchestrator::{launch, OrchestratorError};
-use crate::store::{SettingsRepo, StoreError};
+use crate::store::{AppMetaRepo, SettingsRepo, StoreError};
 
 /// One built-in agent as exposed to the frontend.
 #[derive(Debug, serde::Serialize)]
@@ -75,10 +75,14 @@ impl serde::Serialize for AgentsCmdError {
 #[tauri::command]
 pub async fn list_agents(
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<AgentOption>, AgentsCmdError> {
     session.require()?;
-    let settings = settings.get_or_init().await?;
+    // `template` shows what's saved (so a synced, unconfirmed one can be
+    // reviewed); `command` is what a launch here would actually run.
+    let saved = settings.get_or_init().await?;
+    let settings = crate::settings_trust::usable(&meta, saved.clone()).await;
     Agent::ALL
         .into_iter()
         .map(|agent| {
@@ -89,7 +93,7 @@ pub async fn list_agents(
                 command,
                 is_default: agent == Agent::default(),
                 default_template: agent.default_template(),
-                template: settings
+                template: saved
                     .agent_command_override(agent)
                     .unwrap_or_else(|| agent.default_template())
                     .to_string(),
@@ -131,9 +135,10 @@ pub async fn preview_agent_command(
     agent: Agent,
     mode: PermissionMode,
     settings: State<'_, SettingsRepo>,
+    meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, AgentsCmdError> {
     session.require()?;
-    let settings = settings.get_or_init().await?;
+    let settings = crate::settings_trust::launch_settings(&settings, &meta).await?;
     Ok(launch::resolve_command(agent, mode, &settings)?)
 }
