@@ -2302,6 +2302,7 @@ mod tests {
 
     // 0016: `last_turn_ended_at` travels both ways; `agent_session_id` is
     // machine-local and must never reach the cloud nor be cleared by a pull.
+    // 0023: `agent_view` (transcript / terminal) is local in exactly the same way.
     #[tokio::test]
     async fn last_turn_ended_at_syncs_and_agent_session_id_stays_local() {
         use wiremock::matchers::{method, path};
@@ -2313,7 +2314,7 @@ mod tests {
         insert_agent_workspace(&db, "ws-t", "user-a", "repo-a", "claude").await;
         sqlx::query(
             "UPDATE workspaces SET last_turn_ended_at = '2026-11-09T10:00:00+00:00',
-                    agent_session_id = 'local-session'
+                    agent_session_id = 'local-session', agent_view = 'transcript'
              WHERE id = 'ws-t'",
         )
         .execute(&db)
@@ -2332,6 +2333,7 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["last_turn_ended_at"], "2026-11-09T10:00:00+00:00");
         assert!(body.get("agent_session_id").is_none());
+        assert!(body.get("agent_view").is_none());
 
         let read = |db: Db| async move {
             sqlx::query_as::<_, (Option<String>, Option<String>)>(
@@ -2360,6 +2362,12 @@ mod tests {
         let (ended, session) = read(db.clone()).await;
         assert_eq!(ended, Some(other.to_rfc3339()));
         assert_eq!(session.as_deref(), Some("local-session"));
+        let view: Option<String> =
+            sqlx::query_scalar("SELECT agent_view FROM workspaces WHERE id = 'ws-t'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(view.as_deref(), Some("transcript"), "a pull never clears the view");
     }
 
     // 0017: the board columns travel both ways.

@@ -37,4 +37,4 @@ pub use review::{CheckRun, CheckStatus, CheckSummary, CommentSide, CommentStatus
 pub use run_command::{RunCommand, RunWhen};
 pub use settings::{agent_commands_from_json, agent_commands_to_json, UserSettings};
 pub use user::User;
-pub use workspace::{TaskOutcome, Workspace, WorkspaceKind, WorkspaceStatus};
+pub use workspace::{AgentView, TaskOutcome, Workspace, WorkspaceKind, WorkspaceStatus};

@@ -249,7 +249,7 @@ mod version_compat {
     ///   this build → adds 0015 (permission modes), 0016 (agent signals),
     ///   0017 (board), 0018 (review), 0019 (notifications),
     ///   0020 (settings expansion), 0021 (local queue marker),
-    ///   0022 (task usage partial cost)
+    ///   0022 (task usage partial cost), 0023 (local-only agent view)
     const V0_3_4: usize = 12;
     const V0_3_5: usize = 13;
     const V0_3_6: usize = 13;
