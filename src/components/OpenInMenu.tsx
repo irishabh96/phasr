@@ -56,7 +56,8 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
     terminal: [],
     filemanager: [],
   };
-  for (const launcher of launchers ?? []) {
+  // Only installed apps; unavailable ones are noise.
+  for (const launcher of (launchers ?? []).filter((l) => l.available)) {
     grouped[launcher.kind].push(launcher);
   }
 
@@ -90,7 +91,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
 
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden surface-floating animate-popover-in">
-          {launchers && launchers.length === 0 && (
+          {launchers && !launchers.some((l) => l.available) && (
             <div className="px-3 py-3 text-[12px] text-(--color-text-muted)">
               No editors or terminals detected.
             </div>

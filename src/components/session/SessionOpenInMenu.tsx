@@ -41,8 +41,11 @@ export function SessionOpenInMenu({ workspace }: { workspace: Workspace }) {
 
   if (!path && actions.length === 0) return null;
 
+  // Only apps that are actually installed — a menu of greyed-out editors
+  // you don't have is noise.
+  const installed = (launchers ?? []).filter((l) => l.available);
   const grouped: Record<LauncherKind, Launcher[]> = { editor: [], terminal: [], filemanager: [] };
-  for (const l of launchers ?? []) grouped[l.kind].push(l);
+  for (const l of installed) grouped[l.kind].push(l);
 
   const launch = async (l: Launcher) => {
     if (!l.available || !path) return;
@@ -80,7 +83,7 @@ export function SessionOpenInMenu({ workspace }: { workspace: Workspace }) {
         <MenuContent align="end" width={260}>
           {path ? (
             <>
-              {launchers && launchers.length === 0 ? (
+              {launchers && installed.length === 0 ? (
                 <p className="m-0 px-[8px] py-[8px] text-(--color-text-muted)">No editors or terminals detected.</p>
               ) : null}
               {KIND_ORDER.map((kind) =>
