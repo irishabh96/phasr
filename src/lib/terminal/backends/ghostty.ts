@@ -9,6 +9,11 @@ import {
   type GhosttyClipboardTerminal,
 } from "@/lib/terminal/backends/ghostty/clipboard";
 import {
+  instantiateVt,
+  isolateGrids,
+} from "@/lib/terminal/backends/ghostty/engine";
+import ghosttyWasmUrl from "ghostty-web/ghostty-vt.wasm?url";
+import {
   installGhosttySelection,
   type GhosttySelectionTerminal,
 } from "@/lib/terminal/backends/ghostty/selection";
@@ -99,12 +104,12 @@ import type {
  */
 
 /**
- * One WASM instance for the whole app. `ghostty-web` keeps its own module
- * singleton behind `init()`, but this is ours and explicit: the instance
- * is passed through `ITerminalOptions.ghostty`, so N terminals share ONE
- * `WebAssembly.Memory` rather than N. That is what makes the per-terminal
- * memory number in ADR-002 (question 5) incremental growth of one heap
- * instead of a fixed per-instance cost.
+ * One compiled WASM module for the whole app, and one INSTANCE per grid.
+ * `ghostty-web` keeps its own module singleton behind `init()`, but this is
+ * ours and explicit: the engine is passed through `ITerminalOptions.ghostty`
+ * as a wrapper whose `createTerminal` gives every grid fresh, zeroed memory
+ * (`ghostty/engine.ts`). Sharing one heap recycled a freed grid's pages
+ * into the next grid — stale cells on screen and out-of-bounds traps.
  */
 let enginePromise: Promise<GhosttyEngine> | null = null;
 
@@ -115,13 +120,32 @@ interface GhosttyEngine {
 
 export function preloadGhosttyEngine(): Promise<GhosttyEngine> {
   enginePromise ??= import("ghostty-web").then(async (mod) => {
-    // No network: `Ghostty.load()` with no argument fetches the inlined
-    // data: URL, so this is a compile + instantiate, not a download.
-    const ghostty = await mod.Ghostty.load();
-    exposeWasmProbe(ghostty);
-    return { ghostty, Terminal: mod.Terminal };
+    // Compile once; each grid then gets its own instance of the module
+    // (`ghostty/engine.ts` — recycled WASM pages are the stale-cell and
+    // out-of-bounds bugs). The `?url` asset is bundled, so this is a local
+    // read, not a download.
+    try {
+      const bytes = await (await fetch(ghosttyWasmUrl)).arrayBuffer();
+      const module = await WebAssembly.compile(bytes);
+      const shared = new mod.Ghostty(await instantiateVt(module));
+      const engine = isolateGrids(mod.Ghostty, shared, module);
+      exposeWasmProbe(engine.wasmBytes);
+      return { ghostty: engine.ghostty, Terminal: mod.Terminal };
+    } catch (err) {
+      // The bundled asset should always load; if it ever doesn't, the
+      // inlined copy still gives a working (shared-instance) terminal.
+      console.error("[terminal] per-grid engine unavailable; sharing one instance", err);
+      const ghostty = await mod.Ghostty.load();
+      exposeWasmProbe(() => sharedWasmBytes(ghostty));
+      return { ghostty, Terminal: mod.Terminal };
+    }
   });
   return enginePromise;
+}
+
+function sharedWasmBytes(ghostty: Ghostty): number {
+  const memory = (ghostty as unknown as { memory?: WebAssembly.Memory }).memory;
+  return memory?.buffer.byteLength ?? 0;
 }
 
 declare global {
@@ -141,16 +165,10 @@ declare global {
  * answer is load-bearing for the LRU bound in `cache.ts` — a number that
  * should be re-measurable rather than quoted from a one-off session.
  */
-function exposeWasmProbe(ghostty: Ghostty): void {
+function exposeWasmProbe(wasmBytes: () => number): void {
   if (!import.meta.env.DEV) return;
   if (typeof window === "undefined") return;
-  window.__PHASR_GHOSTTY__ = {
-    wasmBytes: () => {
-      const memory = (ghostty as unknown as { memory?: WebAssembly.Memory })
-        .memory;
-      return memory?.buffer.byteLength ?? 0;
-    },
-  };
+  window.__PHASR_GHOSTTY__ = { wasmBytes };
 }
 
 /** Test seam — drops the memoized instance so a spec can count loads. */
@@ -225,6 +243,10 @@ const MAX_HISTORY_ROWS = 25000;
 const MAX_REBUILD_ATTEMPTS = 3;
 
 /**
+ * Backstop since grids got their own instances (`ghostty/engine.ts`),
+ * which removed the recycled pages this was built around; it still guards
+ * the shared-instance fallback.
+ *
  * Grids that trapped mid-write, held forever so their pages are never
  * recycled into a future create. Deliberately a leak: each entry is one
  * poisoned allocator region discovered at runtime, kept out of circulation
@@ -340,6 +362,14 @@ export class GhosttySurface implements TerminalSurface {
 
   /** Has this terminal been shown anything? See `fitAnchored`. */
   private written = false;
+  /**
+   * The cell size changed (font size/family) since the last fit. The next
+   * width change is applied at once instead of after `REBUILD_QUIET_MS`:
+   * a font step is one deliberate change, not a drag, and waiting painted
+   * the old grid in the new font for a few frames before the rebuild
+   * re-laid it — the jump the user saw on ⌘+ / ⌘−.
+   */
+  private cellSizeChanged = false;
   /** Pending rebuild, waiting for the container to stop moving. */
   private rebuildTimer: number | null = null;
   /**
@@ -558,6 +588,8 @@ export class GhosttySurface implements TerminalSurface {
     const target = this.measureGrid();
     if (!target) return;
 
+    const immediate = this.cellSizeChanged;
+    this.cellSizeChanged = false;
     switch (planResize({ cols: term.cols, rows: term.rows }, target)) {
       case "none":
         // A width change that came back before it settled — an open/close
@@ -572,6 +604,11 @@ export class GhosttySurface implements TerminalSurface {
         this.fit();
         return;
       case "rebuild":
+        if (immediate) {
+          this.cancelRebuild();
+          this.applySettledWidth();
+          return;
+        }
         this.scheduleRebuild();
     }
   }
@@ -1525,6 +1562,8 @@ export class GhosttySurface implements TerminalSurface {
     // mechanism: a `fontSize` write runs `handleFontChange()` (canvas
     // resize + full re-render) and `fontFamily` re-runs `measureFont()`.
     const written = applyChangedOptions(this.term.options, next);
+    if (written.includes("fontSize") || written.includes("fontFamily"))
+      this.cellSizeChanged = true;
     // `scrollback` is in the options bag but the engine only reads it at
     // terminal construction (`buildWasmConfig`) — `handleOptionChange` has
     // no case for it. A rebuild constructs a fresh terminal through that
