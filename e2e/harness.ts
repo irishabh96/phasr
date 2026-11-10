@@ -285,7 +285,11 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   //    (`get_transcript` / `set_agent_view` / `interrupt_task` /
   //    `stop_background_shell`, and `send_message_to_task` when the task's
   //    `agentView` is "transcript"; `world.transcript` / `subagent` /
-  //    `backgroundShell` / `turnStarts` / `turnEnds` drive the agent).
+  //    `backgroundShell` / `turnStarts` / `turnEnds` drive the agent),
+  //  - `phasr://suggestions` when a turn's reply suggestions are ready
+  //    (`world.suggestionsReady`). Until then `suggest_replies` answers
+  //    `[]` — or, with `fixtures.holdSuggestions`, stays pending like a
+  //    generation in flight and resolves with them.
   //
   // Events fire a beat AFTER the command resolves, as over real IPC. The
   // store survives a reload (sessionStorage), like the backend outlives
@@ -325,6 +329,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         // (`fixtures.transcripts` seeds them) and whether a turn runs.
         transcripts: clone(fx.transcripts ?? {}) as Record<string, any[]>,
         turns: {} as Record<string, true>,
+        // Reply suggestions per task, once "generated".
+        suggestions: {} as Record<string, any[]>,
       };
       for (const c of seededCards) {
         const i = db.workspaces.findIndex((w: any) => w.id === c.workspace.id);
@@ -344,6 +350,7 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     }
     db.transcripts ??= {};
     db.turns ??= {};
+    db.suggestions ??= {};
     // The store answers these now; a spec can still inject a failure with
     // setResponse.
     delete overrides.list_task_cards;
@@ -357,6 +364,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   const fire = (event: string, payload: unknown) =>
     (listeners[event] ?? []).slice().forEach((h) => h({ event, id: 1, payload: clone(payload) }));
   const later = (fn: () => void) => window.setTimeout(fn, EVENT_DELAY);
+  /** `suggest_replies` calls held until `world.suggestionsReady`. */
+  const suggestWaiters: Array<(v: unknown) => void> = [];
 
   // Board change notifications, coalesced per repository like
   // `TaskBoard::queue_change`: task ids when every cause named one.
@@ -780,6 +789,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       // ── agent transcript view ──
       case "get_transcript":
         return db.transcripts[a?.taskId] ?? [];
+      case "suggest_replies":
+        return db.suggestions[a?.taskId] ?? [];
       case "set_agent_view": {
         const w = findWs(a?.taskId);
         if (!w) return reject("not found");
@@ -1074,6 +1085,18 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       save();
     },
     /** The turn ends (agent state `idle`), optionally with its result line. */
+    /**
+     * The turn's reply suggestions are ready (`turnId` = its result item's
+     * id): a `suggest_replies` waiting on them resolves, later ones answer
+     * them, and `phasr://suggestions` fires.
+     */
+    suggestionsReady(taskId: string, turnId: string, suggestions: any[]) {
+      if (!findWs(taskId)) throw new Error(`no task ${taskId}`);
+      db.suggestions[taskId] = suggestions;
+      for (const resolve of suggestWaiters.splice(0)) resolve(clone(suggestions));
+      later(() => fire("phasr://suggestions", { taskId, turnId, suggestions }));
+      save();
+    },
     turnEnds(taskId: string, result: Record<string, unknown> | null = null) {
       const w = findWs(taskId);
       if (!w) throw new Error(`no task ${taskId}`);
@@ -1268,6 +1291,9 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       const clean = args ? { ...args } : args;
       if (clean && "onEvent" in clean) clean.onEvent = "<Channel>";
       calls.push({ cmd, args: clean });
+      // A generation in flight: answers when `world.suggestionsReady` runs.
+      if (stateful && cmd === "suggest_replies" && !(cmd in overrides) && !db.suggestions[args?.taskId] && (f as any).holdSuggestions)
+        return new Promise((resolve) => suggestWaiters.push(resolve));
       let val: unknown = NOT_HANDLED;
       if (cmd in overrides) val = overrides[cmd];
       else if (stateful) {
@@ -1420,6 +1446,9 @@ export const world = {
   /** A turn starts: agent state `working` (Stop shows, sends queue). */
   turnStarts: (page: Page, taskId: string) =>
     page.evaluate((id) => (window as any).__E2E__.world.turnStarts(id), taskId),
+  /** A turn's reply suggestions are ready: held `suggest_replies` calls resolve, `phasr://suggestions` fires. */
+  suggestionsReady: (page: Page, taskId: string, turnId: string, suggestions: Array<{ label: string; text: string; source: string }>) =>
+    page.evaluate(([id, t, s]) => (window as any).__E2E__.world.suggestionsReady(id, t, s), [taskId, turnId, suggestions] as const),
   /** The turn ends (`idle`), optionally appending its result line. */
   turnEnds: (page: Page, taskId: string, result: Record<string, unknown> | null = null) =>
     page.evaluate(([id, r]) => (window as any).__E2E__.world.turnEnds(id, r), [taskId, result] as const),
