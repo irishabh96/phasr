@@ -276,15 +276,21 @@ function WorkspaceDetail() {
     { sessionPane: { [workspaceId]: pane }, innerTabs: { [workspaceId]: innerState } },
     workspaceId,
   );
+  // In transcript view the agent pane is the app's own surface (bg), not a
+  // terminal.
+  const transcriptView = showsTranscript(workspace);
+  // Transcript view: a stopped task keeps its composer — sending a message
+  // resumes the same Claude session (the backend respawns `--resume`).
+  // Completed/failed tasks can't move back to running, so they don't.
   const showComposer =
-    isAgent && pane === "tabs" && activeInner?.kind === "main" && workspace.status === "running";
+    isAgent &&
+    pane === "tabs" &&
+    activeInner?.kind === "main" &&
+    (workspace.status === "running" || (transcriptView && workspace.status === "stopped"));
   // A terminal fills the pane edge to edge (A-Workspace's transcript has no
   // inner panel). The pane and the strips under it (approval card, the
   // composer's slot) take the terminal's own black so nothing reads as a
   // seam; other panes keep the bg tone.
-  // In transcript view the agent pane is the app's own surface (bg), not a
-  // terminal.
-  const transcriptView = showsTranscript(workspace);
   const terminalFront =
     (pane === "tabs" &&
       ((activeInner?.kind === "main" && !transcriptView) || activeInner?.kind === "terminal")) ||
