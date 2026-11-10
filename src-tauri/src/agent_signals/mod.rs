@@ -713,7 +713,8 @@ impl AgentSignals {
         out
     }
 
-    #[cfg(test)]
+    /// One task's current state (`notify_attention` checks its dialog is
+    /// still the one up).
     pub fn state(&self, task_id: &str) -> Option<TaskAgentState> {
         self.inner
             .tasks

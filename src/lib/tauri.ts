@@ -11,6 +11,7 @@ import type {
   AgentOption,
   AppNotification,
   AttentionResponse,
+  NotifyAttentionOutcome,
   BranchStatus,
   CheckRun,
   CheckSummary,
@@ -647,6 +648,15 @@ export const tauri = {
     attentionId: string,
     response: AttentionResponse,
   ) => invoke<void>("respond_to_attention", { taskId, attentionId, response }),
+  /**
+   * Show the native needs-you notification for `attentionId` (macOS: Allow /
+   * Deny buttons that answer allow-once / deny without opening Phasr; a click
+   * emits `phasr://attention-activated`). Call only once the notification
+   * policy says to. `"unsupported"` → show your own banner; `"stale"` → that
+   * dialog is gone, show nothing.
+   */
+  notifyAttention: (taskId: string, attentionId: string, sound: boolean) =>
+    invoke<NotifyAttentionOutcome>("notify_attention", { taskId, attentionId, sound }),
   /** `null` for agents without readable transcripts (Gemini/Copilot/OpenCode). */
   getTaskUsage: (taskId: string) =>
     invoke<TaskUsage | null>("get_task_usage", { taskId }),

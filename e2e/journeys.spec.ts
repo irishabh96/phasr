@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { boardFixtures } from "./fixtures/board";
-import { bootApp, calls, clearCalls, clearResponse, setResponse, waitForCall, world } from "./harness";
+import { bootApp, calls, clearCalls, clearResponse, emit, setResponse, waitForCall, world } from "./harness";
 
 /**
  * User journeys, end to end, against the STATEFUL harness backend
@@ -423,6 +423,104 @@ test.describe("Needs you", () => {
     await expect(page.getByLabel("Message Claude")).toBeVisible();
     await expectSidebarGroup(page, "fix login redirect bug", "Running");
     await expect(sidebarRow(page, "fix login redirect bug").locator("span[style*='status-running']")).toHaveCount(1);
+  });
+
+  test("on a shell tab the card stays on the agent's pane: the agent tab says needs you, ⌘Y does nothing", async ({ page }) => {
+    await bootBoard(page);
+    await openTask(page, "fix login redirect bug", "ws-running");
+    const tabs = page.getByRole("tablist", { name: "Workspace tabs" });
+    const agentTab = tabs.getByRole("tab", { name: /^Claude/ });
+    await page.getByRole("button", { name: "New pane" }).click();
+    await page.getByRole("menuitem", { name: "New terminal" }).click();
+    await expect(tabs.getByRole("tab", { name: /^Terminal/ })).toHaveAttribute("aria-selected", "true");
+
+    await world.agentAsks(page, "ws-running", { detail: "rm -rf node_modules" });
+    // The sidebar still says so…
+    await expectSidebarGroup(page, "fix login redirect bug", "Needs you");
+    // …but no card over the shell; the agent tab carries it instead.
+    const card = page.getByRole("alertdialog", { name: "Claude wants to run a shell command" });
+    await expect(agentTab).toContainText("needs you");
+    await expect(agentTab.locator("[data-needs-you] span[style*='status-attention']")).toHaveCount(1);
+    await expect(card).toHaveCount(0);
+
+    // ⌘Y / ⌘⌫ answer only a card you can see — even from the page, where
+    // they'd fire if the card were up.
+    await focusPage(page);
+    await page.keyboard.press("Meta+y");
+    await page.keyboard.press("Meta+Backspace");
+    await page.waitForTimeout(300);
+    expect(await callsOf(page, "respond_to_attention")).toEqual([]);
+
+    // Changes / Files: still no card, still marked.
+    await tabs.getByRole("tab", { name: /^Changes/ }).click();
+    await expect(card).toHaveCount(0);
+    await expect(agentTab).toContainText("needs you");
+
+    // The agent tab is the way there.
+    await agentTab.click();
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("rm -rf node_modules");
+    await expect(agentTab).not.toContainText("needs you");
+    await focusPage(page);
+    await page.keyboard.press("Meta+y");
+    await expect(card).toBeHidden();
+    expect(await callsOf(page, "respond_to_attention")).toEqual([
+      expect.objectContaining({ taskId: "ws-running", response: "allow-once" }),
+    ]);
+  });
+
+  test("the OS banner is asked for off the agent pane, not on it; clicking one opens the agent pane", async ({ page }) => {
+    // Banners even while focused, so only "is the card on screen" decides.
+    const base = journeyFixtures();
+    await bootBoard(page, {
+      ...base,
+      userSettings: {
+        ...(base as { userSettings: Record<string, unknown> }).userSettings,
+        notificationPrefs: { matrix: {}, backgroundOnly: false, quietHours: { enabled: false, start: "22:00", end: "08:00" } },
+      },
+    } as Fixtures);
+    await page.evaluate(() => {
+      document.hasFocus = () => true;
+    });
+    await openTask(page, "fix login redirect bug", "ws-running");
+    const tabs = page.getByRole("tablist", { name: "Workspace tabs" });
+    const agentTab = tabs.getByRole("tab", { name: /^Claude/ });
+    const card = page.getByRole("alertdialog", { name: "Claude wants to run a shell command" });
+    await page.getByRole("button", { name: "New pane" }).click();
+    await page.getByRole("menuitem", { name: "New terminal" }).click();
+
+    const attId = await world.agentAsks(page, "ws-running", { detail: "pnpm test && pnpm lint" });
+    const entry = (id: string) => ({
+      id,
+      kind: "needs_approval",
+      title: "fix login redirect bug · Claude needs you",
+      body: "Run: pnpm test",
+      workspaceId: "ws-running",
+      repositoryId: "repo-1",
+      payload: { taskId: "ws-running", repositoryId: "repo-1", attentionId: attId },
+      createdAt: new Date().toISOString(),
+      readAt: null,
+    });
+    await emit(page, "phasr://notification-created", entry("n-1"));
+    await expect
+      .poll(() => callsOf(page, "notify_attention"))
+      .toEqual([{ taskId: "ws-running", attentionId: attId, sound: true }]);
+
+    // On the agent pane the card is the news: no banner.
+    await agentTab.click();
+    await expect(card).toBeVisible();
+    await clearCalls(page);
+    await emit(page, "phasr://notification-created", entry("n-2"));
+    await page.waitForTimeout(300);
+    expect(await callsOf(page, "notify_attention")).toEqual([]);
+
+    // A click on a banner (backend → event) from elsewhere: the task, on its agent pane.
+    await tabs.getByRole("tab", { name: /^Terminal/ }).click();
+    await gotoBoard(page);
+    await emit(page, "phasr://attention-activated", { taskId: "ws-running", repositoryId: "repo-1" });
+    await expect(page).toHaveURL(/workspaces\/ws-running/);
+    await expect(agentTab).toHaveAttribute("aria-selected", "true");
+    await expect(card).toBeVisible();
   });
 
   test("Allow from the board card moves it out of Needs you", async ({ page }) => {

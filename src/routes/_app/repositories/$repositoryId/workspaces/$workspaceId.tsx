@@ -9,6 +9,7 @@ import { ReviewPane } from "@/components/review/ReviewPane";
 import { ReviewInspector } from "@/components/review/ReviewInspector";
 import { ApprovalCard } from "@/components/session/ApprovalCard";
 import { useSettingsRoute } from "@/components/settings/useSettingsRoute";
+import { isAgentPaneActive } from "@/lib/agentPane";
 import { useRespondToAttention, useTaskAgentState } from "@/lib/hooks/useAgentSignals";
 import { useRunningCommands } from "@/lib/hooks/useReview";
 import { activeRunTabFor, runTabsForTask, runTarget } from "@/lib/runScope";
@@ -267,6 +268,13 @@ function WorkspaceDetail() {
 
   const isAgent = workspace.workspaceKind === "agent";
   const activeInner = innerState?.tabs.find((t) => t.id === innerState.activeTabId) ?? null;
+  // The approval card (and its ⌘Y / ⌘⌫, which live in it) only on the
+  // agent's own pane: on a shell tab, a run tab, Changes, Files or Notes
+  // the agent tab in the pane bar says "needs you" instead.
+  const onAgentPane = isAgentPaneActive(
+    { sessionPane: { [workspaceId]: pane }, innerTabs: { [workspaceId]: innerState } },
+    workspaceId,
+  );
   const showComposer =
     isAgent && pane === "tabs" && activeInner?.kind === "main" && workspace.status === "running";
 
@@ -370,7 +378,7 @@ function WorkspaceDetail() {
             </div>
           ) : null}
         </div>
-        {agentState?.state === "needs-you" && agentState.attention ? (
+        {onAgentPane && agentState?.state === "needs-you" && agentState.attention ? (
           <ApprovalCard
             agent={workspace.agent}
             attention={agentState.attention}

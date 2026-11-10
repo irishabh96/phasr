@@ -68,6 +68,10 @@ objc2-foundation = { version = "0.3", features = ["NSData"] }
 # never in SQLite or the cloud. macOS-only: elsewhere `secrets::KeychainStore`
 # reports "keychain unavailable" and the in-memory store backs tests.
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
+# Needs-you notifications with Allow / Deny buttons (`notifications::native`).
+# Already in the tree under `tauri-plugin-notification`, which can't show
+# buttons or report a click on desktop.
+mac-notification-sys = "0.6.15"
 
 # VT engine selection for `src/vt` (B1).
 #

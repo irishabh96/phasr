@@ -6,6 +6,7 @@ import { AGENT_META } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { DiffCount } from "@/components/ui/Chip";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
+import { isAgentPaneActive } from "@/lib/agentPane";
 import { formatElapsed } from "@/lib/board";
 import { useGitBranchStatus, useGitStatus } from "@/lib/hooks/useGit";
 import { useNotes } from "@/lib/hooks/useNotes";
@@ -192,6 +193,8 @@ function NeedsYouBanner({ workspace }: { workspace: Workspace }) {
   const state = useTaskAgentState(workspace.id);
   const respond = useRespondToAttention();
   const now = useNow(state?.state === "needs-you");
+  // ⌘Y lives on the approval card, which is only on the agent pane.
+  const keyWorks = useUiStore((s) => isAgentPaneActive(s, workspace.id));
   const att = state?.state === "needs-you" ? state.attention : null;
   if (!att) return null;
   return (
@@ -221,7 +224,7 @@ function NeedsYouBanner({ workspace }: { workspace: Workspace }) {
             variant="primary"
             size="sm"
             className="h-[28px] px-[12px]"
-            shortcut="⌘Y"
+            {...(keyWorks ? { shortcut: "⌘Y" } : {})}
             disabled={respond.isPending}
             onClick={() => respond.mutate({ taskId: workspace.id, attentionId: att.id, response: "allow-once" })}
           >

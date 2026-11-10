@@ -31,7 +31,9 @@
 //! LIMITATION (do not overstate): no OS-level banner click currently reaches
 //! `activate_notification` on desktop — the plugin can't deliver it. Every piece
 //! here is wired, tested, and callable, but the banner-click → activate loop is
-//! not automatically closed on macOS today.
+//! not automatically closed on macOS today. (Needs-you notifications don't go
+//! through the plugin: `notifications::native` posts them itself and handles
+//! their click and Allow / Deny buttons.)
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -9,6 +9,7 @@ import { Kbd } from "@/components/ui/Kbd";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from "@/components/ui/Menu";
 import { PaneTab } from "@/components/ui/PaneTab";
 import { useAgents } from "@/lib/hooks/useAgents";
+import { useTaskAgentState } from "@/lib/hooks/useAgentSignals";
 import { useGitStatus } from "@/lib/hooks/useGit";
 import { useRunCommands } from "@/lib/hooks/useRunCommands";
 import { useRunningCommands } from "@/lib/hooks/useReview";
@@ -28,6 +29,23 @@ const closeGlyph =
 
 /** A-Workspace tab box: 0 10px, 8px gap (explicit px: 1rem is 13px here). */
 const tabBox = "gap-[8px] px-[10px]";
+
+/**
+ * On the agent tab while another pane is in front: the agent is paused on
+ * a dialog whose card only shows on its own pane. The tab is the button
+ * that goes there.
+ */
+function NeedsYouMark() {
+  return (
+    <span
+      data-needs-you
+      className="flex shrink-0 items-center gap-[5px] text-[11px] font-medium text-(--color-status-attention)"
+    >
+      <span aria-hidden className="size-[6px] rounded-full" style={{ background: "var(--color-status-attention)" }} />
+      needs you
+    </span>
+  );
+}
 
 /** 28px ghost icon button used on the bar (+, inspector toggle). */
 const iconButton =
@@ -70,7 +88,10 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
   const setActiveInnerTab = useUiStore((s) => s.setActiveInnerTab);
   const closeInnerTab = useUiStore((s) => s.closeInnerTab);
   const openInnerTerminalTab = useUiStore((s) => s.openInnerTerminalTab);
+  const openInnerAgentTab = useUiStore((s) => s.openInnerAgentTab);
   const runPanel = useUiStore((s) => s.runPanel);
+  const agentState = useTaskAgentState(workspaceId);
+  const needsYou = agentState?.state === "needs-you" && !!agentState.attention;
   const { data: runCommands } = useRunCommands(workspace.repositoryId);
   const { data: changes } = useGitStatus(workspace.worktreePath ? workspaceId : null);
   const { data: agents } = useAgents();
@@ -164,9 +185,26 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
               <span className="max-w-[140px] truncate">
                 {tab.kind === "main" && workspace.agent ? AGENT_META[workspace.agent].label : tab.title}
               </span>
+              {tab.kind === "main" && needsYou && !active ? <NeedsYouMark /> : null}
             </PaneTab>
           );
         })}
+        {needsYou && !tabs.some((t) => t.kind === "main") ? (
+          // The agent tab was closed while the agent waits: a stand-in that
+          // reopens it (on the agent's live terminal), card and all.
+          <PaneTab
+            className={tabBox}
+            active={false}
+            tabIndex={-1}
+            onClick={() => openInnerAgentTab(workspaceId, workspace.command || workspace.name || "Main")}
+            icon={<AgentMark agent={workspace.agent} className="size-[14px] text-[8px]" />}
+          >
+            <span className="max-w-[140px] truncate">
+              {workspace.agent ? AGENT_META[workspace.agent].label : "Agent"}
+            </span>
+            <NeedsYouMark />
+          </PaneTab>
+        ) : null}
         {runTabs.map((rc) => {
           const active = isActive("run", rc.id);
           const live = isRunning(running, rc.id);

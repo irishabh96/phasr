@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  attentionOnScreen,
   DEFAULT_NOTIFICATION_PREFS,
   inQuietHours,
   parseClock,
@@ -96,5 +97,15 @@ describe("shouldDeliver", () => {
     });
     // Missing from the stored matrix → that kind's default.
     expect(shouldDeliver(prefs, "needs_approval", { focused: false, now: at(12) }).sound).toBe(true);
+  });
+});
+
+describe("attentionOnScreen", () => {
+  it("is only the focused window on that task's agent pane", () => {
+    expect(attentionOnScreen({ focused: true, viewingTask: true, onAgentPane: true })).toBe(true);
+    // A shell tab of the same task: the card isn't there, so the banner is news.
+    expect(attentionOnScreen({ focused: true, viewingTask: true, onAgentPane: false })).toBe(false);
+    expect(attentionOnScreen({ focused: true, viewingTask: false, onAgentPane: true })).toBe(false);
+    expect(attentionOnScreen({ focused: false, viewingTask: true, onAgentPane: true })).toBe(false);
   });
 });

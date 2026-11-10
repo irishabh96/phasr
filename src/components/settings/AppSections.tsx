@@ -662,6 +662,38 @@ const NOTIFICATION_ROWS: { kind: NotificationKind; label: string; help: string }
   { kind: "run_command_failed", label: "Run command exited non-zero", help: "" },
 ];
 
+const ALERTS_HINT_KEY = "phasr.hint.notificationAlertsStyle";
+
+/**
+ * Shown until dismissed: the needs-you banner's Allow / Deny buttons only
+ * stay on screen when macOS shows Phasr's notifications as Alerts — a
+ * per-app setting Phasr can't change or read.
+ */
+function AlertsStyleHint() {
+  const [dismissed, setDismissed] = useState(
+    () => typeof window !== "undefined" && window.localStorage.getItem(ALERTS_HINT_KEY) === "1",
+  );
+  if (dismissed) return null;
+  return (
+    <SettingsRow
+      id="settings-row-alerts-style"
+      label="Allow or deny from the notification"
+      help="So the buttons stay on screen until you answer, set Phasr's style to Alerts in System Settings › Notifications › Phasr."
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          window.localStorage.setItem(ALERTS_HINT_KEY, "1");
+          setDismissed(true);
+        }}
+      >
+        Got it
+      </Button>
+    </SettingsRow>
+  );
+}
+
 export function NotificationsSection() {
   const [granted, setGranted] = useState<boolean | null>(null);
   const { data: settings } = useUserSettings();
@@ -773,6 +805,7 @@ export function NotificationsSection() {
           {granted === null ? "Checking…" : granted ? "Allowed" : "Not allowed"}
         </span>
       </SettingsRow>
+      <AlertsStyleHint />
     </SettingsCard>
     </div>
   );

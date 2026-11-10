@@ -198,6 +198,7 @@ pub fn run() {
             commands::orchestrator::interrupt_task,
             commands::agent_signals::list_agent_states,
             commands::agent_signals::respond_to_attention,
+            commands::agent_signals::notify_attention,
             commands::agent_signals::get_task_usage,
             commands::agent_signals::get_agent_summary,
             commands::agent_signals::list_agent_file_edits,
@@ -382,6 +383,12 @@ async fn initialize_database_state(
         .with_trust(app_meta.clone()),
     );
     commands::events::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+    let attention_notifications = commands::events::start_attention_notifications(
+        handle,
+        orchestrator.clone(),
+        &agent_signals,
+        current_user_fn(handle),
+    );
 
     // The Board: derived lanes + diff cache, and the queue that starts
     // queued tasks once their dependency reaches review.
@@ -487,6 +494,7 @@ async fn initialize_database_state(
     handle.manage(repo_locks);
     handle.manage(orchestrator);
     handle.manage(agent_signals);
+    handle.manage(attention_notifications);
     handle.manage(board);
     handle.manage(scheduler);
 
