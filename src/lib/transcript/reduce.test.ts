@@ -62,6 +62,20 @@ describe("applyTranscriptEvents", () => {
     }
   });
 
+  it("keeps a background command that ended ended, while a running one takes its live output", () => {
+    const bg = (backgroundStatus: "running" | "done" | "killed", output: string): TranscriptItem => ({
+      ...(tool("bg", "done", output) as Extract<TranscriptItem, { kind: "tool" }>),
+      background: true,
+      backgroundStatus,
+    });
+    const live = applyTranscriptEvents([bg("running", "tick 1")], [update(bg("running", "tick 1\ntick 2"))]);
+    expect(live[0]).toMatchObject({ output: "tick 1\ntick 2", backgroundStatus: "running" });
+    const killed = bg("killed", "tick 1\ntick 2\ntick 3");
+    // A coalesced live tail landing after the final state.
+    expect(applyTranscriptEvents([killed], [update(bg("running", "tick 1\ntick 2"))])[0]).toBe(killed);
+    expect(applyTranscriptEvents([bg("done", "a")], [update(killed)])[0]).toBe(killed);
+  });
+
   it("still lets a finished tool change between settled states", () => {
     const out = applyTranscriptEvents([tool("t1", "done")], [update(tool("t1", "error", "boom"))]);
     expect(out[0]).toMatchObject({ status: "error", output: "boom" });
