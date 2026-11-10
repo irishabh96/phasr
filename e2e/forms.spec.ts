@@ -196,7 +196,7 @@ test.describe("New task form (NewTaskModal)", () => {
     });
   });
 
-  test("Run chip: the picked command starts in the new task's worktree", async ({ page }) => {
+  test("Run chip: the picked command goes with start_task", async ({ page }) => {
     const { errors } = await boot(page);
     const dialog = await openNewTask(page);
     await clearCalls(page);
@@ -207,15 +207,12 @@ test.describe("New task form (NewTaskModal)", () => {
     await expect(dialog.getByRole("button", { name: "Run command: dev" })).toBeVisible();
 
     await page.getByRole("button", { name: "Start task", exact: true }).click();
-    await waitForCall(page, "start_run_command_for_task");
-    const all = await calls(page);
-    const names = all.map((c) => c.cmd);
-    // After the task exists, for that task.
-    expect(names.indexOf("start_task")).toBeLessThan(names.indexOf("start_run_command_for_task"));
-    expect(all.find((c) => c.cmd === "start_run_command_for_task")?.args).toEqual({
-      id: "rc-1",
-      workspaceId: "ws-created",
-    });
+    await waitForCall(page, "start_task");
+    const [args] = await argsFor(page, "start_task");
+    // The backend starts it in the task's worktree once the agent is up
+    // (start_task returns before the worktree exists).
+    expect((args as { input: { runCommandId?: string } }).input.runCommandId).toBe("rc-1");
+    expect(await argsFor(page, "start_run_command_for_task")).toHaveLength(0);
     await expect(page).toHaveURL(/workspaces\/ws-created/, { timeout: 10_000 });
     expect(realErrors(errors), realErrors(errors).join("\n")).toHaveLength(0);
   });

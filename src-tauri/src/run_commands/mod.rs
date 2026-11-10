@@ -19,7 +19,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::agent_signals::heuristics::AnsiStripper;
-use crate::domain::{RunCommand, RunWhen, WorkspaceStatus};
+use crate::domain::{RunCommand, RunWhen, Workspace, WorkspaceStatus};
 use crate::orchestrator::TaskStatusEvent;
 use crate::pty::handle::{PtyError, PtyHandle};
 use crate::pty::{LaunchMode, PtyEvent, SpawnSpec, TaskRuntime};
@@ -60,6 +60,10 @@ pub enum TaskRunError {
     NoWorktree,
     #[error("that run command belongs to another repository")]
     WrongRepository,
+    /// Its launch didn't leave the task running (it failed — that has its
+    /// own notification — or was closed during setup).
+    #[error("the task didn't start")]
+    TaskNotRunning,
 }
 
 /// `list_running_commands` / `phasr://run-command-state`.
@@ -505,6 +509,33 @@ impl RunCommandRuntime {
             },
         )?;
         Ok(true)
+    }
+
+    /// New task's Run chip, for a task whose setup ran in the background
+    /// (`TaskOrchestrator::start_task`): `launched` is the row its launch
+    /// ended with. Only a running task gets the command — its worktree
+    /// exists from then on; the trust guard is `start_trusted_for_task`'s.
+    pub async fn start_once_launched(
+        &self,
+        launched: &Workspace,
+        run_command_id: &str,
+        user_id: &str,
+        workspaces: &WorkspaceRepo,
+        run_commands: &RunCommandRepo,
+        meta: &AppMetaRepo,
+    ) -> Result<bool, TaskRunError> {
+        if launched.status != WorkspaceStatus::Running {
+            return Err(TaskRunError::TaskNotRunning);
+        }
+        self.start_trusted_for_task(
+            run_command_id,
+            &launched.id,
+            user_id,
+            workspaces,
+            run_commands,
+            meta,
+        )
+        .await
     }
 
     /// Auto-start `task_start` commands whenever a task goes running.

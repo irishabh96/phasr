@@ -378,7 +378,7 @@ describe("NewTaskForm", () => {
     expect(screen.queryByRole("button", { name: /^Run command:/ })).not.toBeInTheDocument();
   });
 
-  it("starts the picked run command in the new task; untrusted ones are disabled", async () => {
+  it("hands the picked run command to start_task; untrusted ones are disabled", async () => {
     listRunCommands.mockResolvedValue([
       makeRunCommand(),
       makeRunCommand({ id: "rc-synced", name: "seed", command: "make seed" }),
@@ -400,15 +400,19 @@ describe("NewTaskForm", () => {
 
     fireEvent.change(screen.getByLabelText("Task name"), { target: { value: "with dev" } });
     fireEvent.click(screen.getByRole("button", { name: "Start task" }));
-    await waitFor(() => expect(startRunCommandForTask).toHaveBeenCalledWith("rc-dev", "task-9"));
-    expect(startTask.mock.invocationCallOrder[0]!).toBeLessThan(startRunCommandForTask.mock.invocationCallOrder[0]!);
+    // The backend starts it once the task's worktree exists (after
+    // start_task has returned); the form never calls it itself.
+    await waitFor(() => expect(startTask).toHaveBeenCalledTimes(1));
+    expect(startTask.mock.calls[0]?.[0]).toMatchObject({ runCommandId: "rc-dev" });
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(startRunCommandForTask).not.toHaveBeenCalled();
   });
 
-  it("a run command that fails to start doesn't fail the task", async () => {
+  it("the task opens while it is still being set up", async () => {
     listRunCommands.mockResolvedValue([makeRunCommand()]);
-    startRunCommandForTask.mockRejectedValue("allow this run command on this Mac first");
-    startTask.mockResolvedValue({ taskId: "task-1", workspace: makeWorkspace() });
+    // What start_task returns now: the row, before its worktree exists.
+    const pending = makeWorkspace({ id: "task-1", status: "pending", branch: null, worktreePath: null });
+    startTask.mockResolvedValue({ taskId: "task-1", workspace: pending });
     const onCreated = vi.fn();
     renderWithClient(<NewTaskForm repositoryId="repo-1" onCreated={onCreated} />);
     await agentReady();
@@ -416,8 +420,20 @@ describe("NewTaskForm", () => {
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /dev/ }));
     fireEvent.change(screen.getByLabelText("Task name"), { target: { value: "t" } });
     fireEvent.click(screen.getByRole("button", { name: "Start task" }));
-    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(pending));
+    expect(startRunCommandForTask).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("starts without a run command when none is picked", async () => {
+    listRunCommands.mockResolvedValue([makeRunCommand()]);
+    startTask.mockResolvedValue({ taskId: "task-1", workspace: makeWorkspace() });
+    renderWithClient(<NewTaskForm repositoryId="repo-1" />);
+    await agentReady();
+    fireEvent.change(screen.getByLabelText("Task name"), { target: { value: "t" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => expect(startTask).toHaveBeenCalledTimes(1));
+    expect(startTask.mock.calls[0]?.[0]).not.toHaveProperty("runCommandId");
   });
 
   it("opens the branch list from the chip and commits a clicked branch", async () => {

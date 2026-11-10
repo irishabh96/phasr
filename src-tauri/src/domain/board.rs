@@ -67,7 +67,8 @@ impl DiffStats {
 /// Precedence, first match wins:
 /// 1. an outcome → Done (whatever the status; a merged task is done);
 /// 2. archived → Archived;
-/// 3. never launched → Queued (if `queued_at`) or Draft;
+/// 3. never launched → Queued (if `queued_at`) or Draft — unless it is
+///    being set up right now (its worktree not cut yet), → Running;
 /// 4. failed → Failed;
 /// 5. running: needs-you → NeedsYou; idle/exited at its prompt with a
 ///    non-empty diff → NeedsReview; otherwise Running;
@@ -93,6 +94,10 @@ pub fn derive_lane(
     let has_changes = diff.map(|d| !d.is_empty());
     Some(match ws.status {
         WorkspaceStatus::Archived => Lane::Archived,
+        // Started, its worktree not cut yet (`start_task` returns before
+        // the setup; "Start now" claims before the fetch): the starting
+        // claim reports a working agent. Running, not a second "Start now".
+        _ if ws.is_unlaunched() && agent == Some(AgentPhase::Working) => Lane::Running,
         _ if ws.is_queued() => Lane::Queued,
         _ if ws.is_draft() => Lane::Draft,
         WorkspaceStatus::Failed => Lane::Failed,
@@ -204,6 +209,9 @@ mod tests {
             ("draft ignores diff",          draft(),                 none,           Some(&CHANGES), L::Draft),
             ("queued",                      queued(),                none,           None,           L::Queued),
             ("queued with outcome",         with_outcome(queued()),  none,           None,           L::Done),
+            ("draft, being set up",         draft(),                 Some(Working),  None,           L::Running),
+            ("queued, being set up",        queued(),                Some(Working),  None,           L::Running),
+            ("draft, setup ended",          draft(),                 Some(Exited),   None,           L::Draft),
             ("running, working",            ws(S::Running),          Some(Working),  Some(&CHANGES), L::Running),
             ("running, untracked agent",    ws(S::Running),          none,           Some(&CHANGES), L::Running),
             ("running, needs you",          ws(S::Running),          Some(NeedsYou), Some(&CHANGES), L::NeedsYou),

@@ -215,6 +215,11 @@ impl NotificationService {
             (WorkspaceStatus::Failed, Some(code)) => {
                 Some(format!("The agent exited with code {code}."))
             }
+            // Never ran: its setup (worktree, spawn) failed, or the queue
+            // gave up on it. The reason is in its log.
+            (WorkspaceStatus::Failed, None) if task.started_at.is_none() => {
+                Some("It couldn't start. Its log says why.".into())
+            }
             (WorkspaceStatus::Failed, None) => Some("The agent exited unexpectedly.".into()),
             _ => Some("Ready for review.".into()),
         };
@@ -320,6 +325,34 @@ impl NotificationService {
             format!("{} failed: {}", failed.len(), failed.join(", "))
         });
         n.payload = json!({ "failed": failed, "passed": passed });
+        self.record(user_id, &task, n, Dedupe::Replace).await
+    }
+
+    /// New task's Run chip couldn't start its command once the task was up
+    /// (the start happens in the background, after the dialog closed, so
+    /// there's no caller left to show the error). Same kind as a run
+    /// command that exited: one inbox row per task and command failure.
+    pub async fn run_command_not_started(
+        &self,
+        user_id: &str,
+        task_id: &str,
+        run_command_id: &str,
+        name: &str,
+        reason: &str,
+    ) -> Result<Option<AppNotification>, StoreError> {
+        let Some(task) = self.task(user_id, task_id).await else {
+            return Ok(None);
+        };
+        let mut n = AppNotification::new(
+            NotificationKind::RunCommandFailed,
+            format!("Couldn't start {name}"),
+        );
+        n.body = Some(reason.to_string());
+        n.payload = json!({
+            "runCommandId": run_command_id,
+            "workspaceId": task_id,
+            "exitCode": null,
+        });
         self.record(user_id, &task, n, Dedupe::Replace).await
     }
 
@@ -544,6 +577,45 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(repo.unread_count("u").await.unwrap(), 1);
+    }
+
+    /// A task whose background setup failed never ran: its entry says it
+    /// couldn't start (not that an agent exited). A Run chip command that
+    /// couldn't start once the task was up gets its own entry.
+    #[tokio::test]
+    async fn setup_failures_and_unstarted_run_chips_are_explained() {
+        let (svc, _repo, _w, ws, _d) = fx().await;
+        let failed = TaskStatusEvent {
+            task_id: ws.id.clone(),
+            repository_id: ws.repository_id.clone(),
+            status: WorkspaceStatus::Failed,
+            exit_code: None,
+        };
+        let n = svc.on_status("u", &failed).await.unwrap().unwrap();
+        assert_eq!(n.title, "Fix login failed");
+        assert_eq!(n.body.as_deref(), Some("It couldn't start. Its log says why."));
+
+        let n = svc
+            .run_command_not_started("u", &ws.id, "rc-dev", "dev", "allow this run command on this Mac first")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (n.kind, n.title.as_str(), n.body.as_deref()),
+            (
+                NotificationKind::RunCommandFailed,
+                "Couldn't start dev",
+                Some("allow this run command on this Mac first")
+            )
+        );
+        assert_eq!(n.payload["taskId"], ws.id.as_str());
+        assert_eq!(n.payload["runCommandId"], "rc-dev");
+        // Another account's task: nothing.
+        assert!(svc
+            .run_command_not_started("someone-else", &ws.id, "rc-dev", "dev", "x")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
