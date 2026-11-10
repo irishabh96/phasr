@@ -59,9 +59,12 @@ const STREAM_FLAGS: &str = "-p --input-format stream-json --output-format stream
 const RICH_FLAGS: &str = "--thinking-display summarized --forward-subagent-text";
 
 /// Whether the `claude` on the login PATH accepts `RICH_FLAGS`, probed once
-/// per run with `--version` (no API call; an unknown option fails before
-/// it). Unknown — no `claude`, a timeout — counts as unsupported: the
-/// transcript then runs without summaries rather than not at all.
+/// per run. `--version` / `--help` ignore unknown options (they exit 0
+/// regardless), so the probe runs `-p` in stream mode with the flags and NO
+/// input: a CLI that knows them stops at "Input must be provided" without
+/// any API call; one that doesn't says "unknown option". Anything else (no
+/// `claude`, a timeout) counts as unsupported — the transcript then runs
+/// without summaries rather than not at all.
 pub async fn supports_rich_flags() -> bool {
     static RICH: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
     *RICH
@@ -70,22 +73,29 @@ pub async fn supports_rich_flags() -> bool {
             let Some(binary) = crate::launcher::which_in("claude", std::ffi::OsStr::new(&path_env)) else {
                 return false;
             };
-            let mut args: Vec<&str> = RICH_FLAGS.split_whitespace().collect();
-            args.push("--version");
+            let mut args: Vec<&str> = vec!["-p", "--output-format", "stream-json", "--verbose"];
+            args.extend(RICH_FLAGS.split_whitespace());
             let env = [("PATH".to_string(), path_env.clone())];
-            matches!(
-                crate::util::proc::run_with_timeout(
-                    &binary.to_string_lossy(),
-                    &args,
-                    None,
-                    &env,
-                    std::time::Duration::from_secs(5),
-                )
-                .await,
-                Ok(output) if output.status.success()
+            match crate::util::proc::run_with_timeout(
+                &binary.to_string_lossy(),
+                &args,
+                None,
+                &env,
+                std::time::Duration::from_secs(10),
             )
+            .await
+            {
+                Ok(output) => rich_probe_accepts(&output.stdout, &output.stderr),
+                Err(_) => false,
+            }
         })
         .await
+}
+
+/// The probe's verdict from its output: rejected flags say "unknown option".
+fn rich_probe_accepts(stdout: &[u8], stderr: &[u8]) -> bool {
+    let text = format!("{}{}", String::from_utf8_lossy(stdout), String::from_utf8_lossy(stderr));
+    !text.contains("unknown option") && !text.trim().is_empty()
 }
 
 /// `command` (the task's resolved launch line, permission flags included)
@@ -192,6 +202,18 @@ mod tests {
     use super::*;
 
     const SID: &str = "18973063-efa9-4584-9f03-bd619e5c4e80";
+
+    #[test]
+    fn rich_probe_reads_unknown_option_as_unsupported() {
+        // What claude 2.1.322 prints for each case (probed).
+        assert!(rich_probe_accepts(
+            b"",
+            b"Error: Input must be provided either through stdin or as a prompt argument when using --print\n",
+        ));
+        assert!(!rich_probe_accepts(b"", b"error: unknown option '--thinking-display'\n"));
+        // No output at all (a wrapper that swallowed everything): don't assume.
+        assert!(!rich_probe_accepts(b"", b""));
+    }
 
     #[test]
     fn stream_flags_go_right_after_the_binary_and_keep_the_mode() {
