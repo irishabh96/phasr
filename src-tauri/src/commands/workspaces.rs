@@ -179,9 +179,21 @@ pub async fn create_workspace(
             // `index.lock`/refs.
             let lock = repo_locks.for_repository(&input.repository_id);
             let _guard = lock.lock().await;
-            let branch =
-                setup.branch_for(&repo_path, &workspace.name, &workspace.id, workspace.agent);
-            git::create_worktree(&repo_path, &worktree_path, &branch, &base)?;
+            // A full checkout (tens of seconds on a large repository): on
+            // the blocking pool, not a Tokio worker other IPC calls share.
+            let (name, id, agent, wt, base_ref) = (
+                workspace.name.clone(),
+                workspace.id.clone(),
+                workspace.agent,
+                worktree_path.clone(),
+                base.clone(),
+            );
+            let branch = tokio::task::spawn_blocking(move || {
+                let branch = setup.branch_for(&repo_path, &name, &id, agent);
+                git::create_worktree(&repo_path, &wt, &branch, &base_ref).map(|()| branch)
+            })
+            .await
+            .map_err(|e| git::GitError::CommandFailed(format!("git task failed: {e}")))??;
             workspace.branch = Some(branch);
             workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
             // The board measures the task's diff against this.
