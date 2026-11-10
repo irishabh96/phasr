@@ -1,6 +1,7 @@
 import { FileCode2, NotebookPen, PanelRight, Plus, Settings2, Terminal as TerminalIcon, X } from "lucide-react";
-import type { KeyboardEvent, ReactNode } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
+import { AgentViewMenu } from "@/components/transcript/AgentViewMenu";
 import { useSettingsRoute } from "@/components/settings/useSettingsRoute";
 import { disposeMainTerminal } from "@/components/Terminal";
 import { AGENT_META, AgentMark } from "@/components/ui/AgentMark";
@@ -18,6 +19,7 @@ import { activeRunTabFor, runTabsForTask, runTarget } from "@/lib/runScope";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore, type InnerTab, type SessionPane } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
+import { canUseTranscript } from "@/lib/transcript/contract";
 import type { Workspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -98,6 +100,9 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
   const settingsRoute = useSettingsRoute();
   const target = runTarget(workspace);
   const { data: running } = useRunningCommands(target);
+  // Transcript / terminal toggle on the agent tab: Claude tasks only (phase 1).
+  const viewToggle = canUseTranscript(workspace);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
 
   const tabs = state?.tabs ?? [];
   const runTabIds = runTabsForTask(runPanel.openTabs, runPanel.shown, running, workspaceId, target).filter((id) =>
@@ -156,6 +161,14 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
               active={active}
               tabIndex={active ? 0 : -1}
               onClick={() => setActiveInnerTab(workspaceId, tab.id)}
+              onContextMenu={
+                tab.kind === "main" && viewToggle
+                  ? (e) => {
+                      e.preventDefault();
+                      setViewMenuOpen(true);
+                    }
+                  : undefined
+              }
               icon={
                 tab.kind === "main" ? (
                   <AgentMark agent={workspace.agent} className="size-[14px] text-[8px]" />
@@ -166,20 +179,31 @@ export function SessionPaneBar({ workspace, actions }: { workspace: Workspace; a
                 )
               }
               trailing={
-                tab.closable ? (
-                  <span
-                    role="button"
-                    tabIndex={-1}
-                    aria-label={`Close ${tab.title}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      close(tab);
-                    }}
-                    className={closeGlyph}
-                  >
-                    <X className="size-[12px]" aria-hidden />
-                  </span>
-                ) : null
+                <>
+                  {tab.kind === "main" && viewToggle ? (
+                    <AgentViewMenu
+                      workspace={workspace}
+                      open={viewMenuOpen}
+                      onOpenChange={setViewMenuOpen}
+                      // Clear of the close glyph overlaid on the tab's right edge.
+                      {...(tab.closable ? { className: "mr-[8px]" } : {})}
+                    />
+                  ) : null}
+                  {tab.closable ? (
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={`Close ${tab.title}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        close(tab);
+                      }}
+                      className={closeGlyph}
+                    >
+                      <X className="size-[12px]" aria-hidden />
+                    </span>
+                  ) : null}
+                </>
               }
             >
               <span className="max-w-[140px] truncate">

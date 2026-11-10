@@ -2,8 +2,10 @@ import { Plus, Zap } from "lucide-react";
 import { FilePreviewTab } from "@/components/FilePreviewTab";
 import { SessionTerminalTab } from "@/components/SessionTerminalTab";
 import { Terminal } from "@/components/Terminal";
+import { Transcript } from "@/components/transcript/Transcript";
 import { GlassButton } from "@/components/ui/GlassButton";
 import { useUiStore } from "@/lib/store";
+import { showsTranscript } from "@/lib/transcript/contract";
 import type { Workspace } from "@/lib/types";
 
 interface WorkspaceTabContentProps {
@@ -24,7 +26,8 @@ interface WorkspaceTabContentProps {
  * session shells) survive switching to/from a tab.
  *
  * Kind dispatch:
- *  - "main"     → <Terminal> bound to the workspace's primary PTY
+ *  - "main"     → <Terminal> bound to the workspace's primary PTY, or
+ *                 <Transcript> when the task's agent view is "transcript"
  *  - "terminal" → <SessionTerminalTab> (ad-hoc shell with worktree as cwd)
  *  - "preview"  → <FilePreviewTab> (read-only file viewer)
  *
@@ -44,6 +47,7 @@ export function WorkspaceTabContent({
   const tabs = state?.tabs ?? [];
   const activeTabId = state?.activeTabId ?? null;
   const worktreePath = workspace.worktreePath ?? "";
+  const transcript = showsTranscript(workspace);
 
   if (tabs.length === 0) {
     if (suspended) return null;
@@ -86,6 +90,15 @@ export function WorkspaceTabContent({
       {tabs.map((tab) => {
         const active = tab.id === activeTabId && !suspended;
         if (tab.kind === "main") {
+          // Transcript view (Claude, spec §3): the conversation renders in
+          // the app and the composer is the only input — no PTY here.
+          if (transcript) {
+            return (
+              <div key={tab.id} className="absolute inset-0">
+                <Transcript taskId={workspaceId} visible={active} />
+              </div>
+            );
+          }
           return (
             <div key={tab.id} className="absolute inset-0">
               <Terminal
