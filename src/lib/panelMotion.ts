@@ -1,11 +1,12 @@
 /**
  * Side-panel motion bookkeeping (spec P1).
  *
- * The sidebar and the inspector collapse with a transform inside a clipped
- * container, so the centre column changes width once, not on every frame.
- * While one of them animates, the shell carries `data-panel-animating` and
- * terminals hold their refits; when the last animation ends the panel's
- * final width is already committed, and every terminal refits exactly once.
+ * The sidebar and the inspector collapse by animating their slot's width
+ * (<SlidePanel>), so the centre column grows and shrinks with it. While one
+ * of them animates, the shell carries `data-panel-animating` and terminals
+ * hold their refits (their canvas keeps its old size, clipped or with
+ * background at the edge); when the last animation ends the slot's final
+ * width is already committed, and every terminal refits exactly once.
  */
 
 type Listener = () => void;

@@ -160,7 +160,7 @@ The dialog is 640px wide, with a surface background, radius 12 and the floating 
   - Underline tabs: `[C Claude]` `[● dev :3000]` `Changes +46 −1` `Files` `+`.
   - Right side, all ghost: **Open in ▾**, **Stop** (ghost, confirm on click) and an inspector-toggle icon.
   - "Run ▾" moves into the `+` menu and the inspector's Run section, and the "…" menu folds into Open in / the `+` menu. Today the bar has Run, Open in, a red Stop and "…".
-- **Main:** the terminal on bg with 20/24px padding (D3).
+- **Main:** the terminal fills the pane edge to edge (under the tab bar, to the dividers, down to the composer) on the terminal black, with ~12px top / 16px side text padding and no inner rounded panel (D3). The pane and the composer's strip take the same black so there's no seam.
 - **Composer:**
   - One surface, radius 10, floating shadow, no border.
   - A single-line input that grows; the placeholder is "Reply to Claude…".
@@ -199,10 +199,10 @@ The concrete changes:
 |---|---|---|
 | Durations | 120ms hover/press · 160ms panels and popovers · 200ms dialogs and route changes · nothing over 240 | 100/150/160/200 mixed, one 700ms; `--ease-glass` = `cubic-bezier(.16,1,.3,1)` |
 | Easing | enter `cubic-bezier(.2,.8,.2,1)`, exit `ease-in` 100ms, no spring | single overshoot-free "glass" curve for both |
-| Properties | **transform and opacity only** | `transition-[width]` on TaskSidebar and Inspector; `transition-all` in 3 places |
+| Properties | **transform and opacity only**, except the side-panel slot's width (below) | `transition-[width]` on TaskSidebar and Inspector; `transition-all` in 3 places |
 | Dialog | opacity 0→1 + scale .98→1 over 200ms; backdrop opacity only; exit 100ms | `modal-in` keyframes (check values) |
 | Popover / menu | opacity + translateY(-4→0) over 160ms, origin at the trigger; exit 80ms | menus reuse `modal-in` over 120ms |
-| Sidebar / inspector collapse | translateX over 160ms inside a clipped container; the icon rail cross-fades in after a 60ms delay; `will-change: transform` only while animating | width tween over 200ms |
+| Sidebar / inspector collapse | the panel's slot tweens its **width** over 160ms `--ease-out`, so the centre column grows/shrinks with it (no blank strip, no end snap); inside, the panel keeps its full width, clipped, and fades out while the icon rail fades in over the same transition. Width is allowed here because terminals don't refit during it (P1). Toggling mid-flight retargets from the current width. Reduced motion: instant | width tween over 200ms |
 | Rows | hover = background only, no transform | ok |
 | Reduced motion | all transitions 0ms, opacity only | partial (`index.css` has two blocks; components use `motion-reduce` sporadically) |
 
@@ -220,8 +220,8 @@ New tokens: `--dur-1: 120ms; --dur-2: 160ms; --dur-3: 200ms; --ease-out: cubic-b
 ### 6.2 Requirements
 
 - **P1 — panel animation doesn't touch the terminal.**
-  - The sidebar and inspector animate with `transform` inside an `overflow:hidden` wrapper. The centre column's final width is applied **once**, at the transition start (instant) or the end, not interpolated.
-  - The terminal suspends `fit` while a `data-animating` flag is set on the shell, and refits once on `transitionend`.
+  - The sidebar and inspector animate their slot's width (§5); the centre column follows it every frame. (This replaces an earlier "transform only, width applied once" rule, whose only purpose was to stop per-frame terminal reflow; it read as a jump and could strand the panel mid-slide.)
+  - The terminal suspends `fit` while a `data-panel-animating` flag is set on the shell: its canvas keeps its old size (clipped, or terminal background at the edge) and refits **once** when the slot's `width` transition for the final target ends (`transitionend`, with a fallback timer restarted on every toggle).
 - **P2 — terminal resize at most once per animation frame.** Coalesce `ResizeObserver` callbacks into a single rAF.
 - **P3 — terminal output batched per frame.** Verify the ghostty-web write path coalesces PTY chunks per rAF; if not, add a per-surface queue that is flushed in rAF.
 - **P4 — agent-state updates ≤ 30 Hz into the store.** Coalesce the `task-agent-state` and `task-usage` events, and make sure no sidebar row re-renders for another task's events.
@@ -251,7 +251,7 @@ Each step is reviewable and leaves the app working, and each lands with screensh
    - `Button` looks, `Chip`, `Input` ring, card ring;
    - the `group-header` utility goes sentence case;
    - remove `uppercase` app-wide.
-2. **Shell:** title bar (§4.1), sidebar (§4.2), status bar removal (D1), and the transform-based collapse (P1, P2).
+2. **Shell:** title bar (§4.1), sidebar (§4.2), status bar removal (D1), and the panel collapse (§5, P1, P2).
 3. **Board** (§4.4): the four columns, the Done summary line, and cards per lane.
 4. **Task session** (§4.5): underline tabs, the composer (⌘↵ send), and the inspector.
 5. **New task** (§4.3): title + prompt + chip row with popovers, plus the Run chip (D5).

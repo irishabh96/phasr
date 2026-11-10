@@ -36,6 +36,7 @@ import {
   installGhosttyMouse,
   type MouseModes,
 } from "@/lib/terminal/backends/ghostty/mouse";
+import { isPanelAnimating } from "@/lib/panelMotion";
 import { reportP0Error } from "@/lib/sentry";
 import {
   diagAttach,
@@ -47,6 +48,7 @@ import {
   terminalDiagnosticsEnabled,
 } from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
+import { disableTextAssistance } from "@/lib/terminal/textAssist";
 import {
   applyChangedOptions,
   applyChangedTheme,
@@ -433,6 +435,10 @@ export class GhosttySurface implements TerminalSurface {
     // on a still-detached element is safe — the caller re-parents
     // `element` into its mount and the first `fit()` sizes the grid.
     term.open(this.element);
+    // Both of the editable elements `open` just made: no Writing Tools /
+    // "Write with Siri", predictions or autocorrect over the terminal.
+    disableTextAssistance(this.element);
+    if (term.textarea) disableTextAssistance(term.textarea);
 
     for (const cb of this.dataCbs) term.onData(cb);
     for (const cb of this.resizeCbs) term.onResize(cb);
@@ -611,6 +617,15 @@ export class GhosttySurface implements TerminalSurface {
   private applySettledWidth(): void {
     const term = this.term;
     if (this.disposed || !term) return;
+    // A side panel started tweening the pane's width after this was
+    // scheduled (a quick collapse-then-expand): the width now is a frame of
+    // that tween, not where it settles. Wait it out. The panels-settled
+    // refit re-plans against the final width and cancels this if the pane
+    // came back to the grid's width (lib/terminal/refit).
+    if (isPanelAnimating()) {
+      this.scheduleRebuild();
+      return;
+    }
     const target = this.measureGrid();
     // Parked, hidden, or mid-layout. The next `fitAnchored()` reschedules;
     // rebuilding against a 1px park host would collapse the grid to its

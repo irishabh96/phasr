@@ -738,30 +738,14 @@ body {
   }
 }
 
-/* Side-panel collapse (A-Polish, spec P1): the sidebar and inspector slide
-   with translateX inside a clipped container (<SlidePanel>); the centre
-   column's width changes once, never per frame. The icon rail cross-fades
-   in 60ms after the slide starts. `will-change` is set inline only while a
-   panel animates. Under reduced motion SlidePanel skips the slide. */
-.panel-slide {
-  transition: transform var(--dur-2) var(--ease-out);
-}
-
+/* Side-panel collapse (spec §5, P1): the <SlidePanel> slot animates its
+   width (inline, only while toggling, so drag-resize stays instant); the
+   panel inside keeps its full width, is clipped, and fades out while the
+   icon rail fades in over the same 160ms. Terminals hold their refits until
+   the width transition ends. Reduced motion: no transition at all. */
+.panel-content,
 .panel-rail {
   transition: opacity var(--dur-2) var(--ease-out);
-}
-
-.panel-rail-in {
-  animation: panel-rail-in var(--dur-2) var(--ease-out) 60ms backwards;
-}
-
-@keyframes panel-rail-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 /* ---------- Reduced motion ----------

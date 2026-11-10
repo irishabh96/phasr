@@ -64,6 +64,9 @@ libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+# The main webview's configuration (Writing Tools off; src/writing_tools.rs).
+# Same crate and version tauri/wry already link.
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
 # API keys for agents (Settings → Agents & keys) live in the login Keychain,
 # never in SQLite or the cloud. macOS-only: elsewhere `secrets::KeychainStore`
 # reports "keychain unavailable" and the in-memory store backs tests.

@@ -277,10 +277,20 @@ function WorkspaceDetail() {
   );
   const showComposer =
     isAgent && pane === "tabs" && activeInner?.kind === "main" && workspace.status === "running";
+  // A terminal fills the pane edge to edge (A-Workspace's transcript has no
+  // inner panel). The pane and the strips under it (approval card, the
+  // composer's slot) take the terminal's own black so nothing reads as a
+  // seam; other panes keep the bg tone.
+  const terminalFront =
+    (pane === "tabs" && (activeInner?.kind === "main" || activeInner?.kind === "terminal")) ||
+    (pane === "run" && !!activeRunTab);
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        data-terminal-front={terminalFront || undefined}
+        className={cn("flex min-h-0 min-w-0 flex-1 flex-col", terminalFront && "bg-(--color-bg-terminal)")}
+      >
         <SessionPaneBar
           workspace={workspace}
           actions={
@@ -304,27 +314,26 @@ function WorkspaceDetail() {
             </>
           }
         />
-        <div className="relative min-h-0 flex-1 bg-(--color-bg-base)">
-          {/* Terminals sit on the bg tone (D3): the gutter plus the
-              terminal's own 8/16px padding lands its text ~20px from the
-              top and 24px from the left, as A-Workspace's transcript. */}
-          <div className={cn("absolute inset-0 flex flex-col px-[8px] pb-[8px] pt-[12px]", pane !== "tabs" && "invisible")}>
-            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--radius-control)">
-              <WorkspaceTabContent
-                workspaceId={workspaceId}
-                workspace={workspace}
-                onMainExit={refresh}
-                suspended={pane !== "tabs"}
-              />
-            </div>
+        <div
+          className={cn(
+            "relative min-h-0 flex-1",
+            terminalFront ? "bg-(--color-bg-terminal)" : "bg-(--color-bg-base)",
+          )}
+        >
+          {/* Terminals fill the pane edge to edge — no gutter, no rounded
+              inner panel; their own padding places the text (D3). */}
+          <div className={cn("absolute inset-0 flex flex-col", pane !== "tabs" && "invisible")}>
+            <WorkspaceTabContent
+              workspaceId={workspaceId}
+              workspace={workspace}
+              onMainExit={refresh}
+              suspended={pane !== "tabs"}
+            />
           </div>
           {runTabs.map((id) => (
             <div
               key={id}
-              className={cn(
-                "absolute inset-0 px-[8px] pb-[8px] pt-[12px] [&>*]:rounded-(--radius-control)",
-                !(pane === "run" && activeRunTab === id) && "invisible",
-              )}
+              className={cn("absolute inset-0", !(pane === "run" && activeRunTab === id) && "invisible")}
             >
               <RunCommandTerminal
                 runCommandId={id}
