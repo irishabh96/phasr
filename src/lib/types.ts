@@ -630,6 +630,15 @@ export interface TaskAgentState {
 /** `respond_to_attention` answers. */
 export type AttentionResponse = "allow-once" | "allow-task" | "deny";
 
+/** `notify_attention` (Rust `NotifyOutcome`, lowercase). */
+export type NotifyAttentionOutcome = "sent" | "stale" | "unsupported";
+
+/** `phasr://attention-activated`: a needs-you notification was clicked. */
+export interface AttentionActivatedPayload {
+  taskId: string;
+  repositoryId: string;
+}
+
 /** Token/cost totals for a task, from the agent's own transcript. */
 export interface TaskUsage {
   source: "claude" | "codex";

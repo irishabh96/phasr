@@ -12,6 +12,7 @@ use crate::agent_signals::{
 };
 use crate::auth::{AuthError, SessionState};
 use crate::domain::usage::TaskUsage;
+use crate::notifications::native::{AttentionNotifications, NotifyOutcome};
 use crate::orchestrator::{OrchestratorError, TaskOrchestrator};
 use crate::store::{StoreError, WorkspaceRepo};
 
@@ -106,6 +107,27 @@ pub async fn respond_to_attention(
     Ok(orchestrator
         .respond_to_attention(&task_id, &attention_id, response)
         .await?)
+}
+
+/// Show the native "needs you" notification for `attention_id` (macOS:
+/// Allow / Deny buttons that answer without opening Phasr; a click opens
+/// the task's agent pane). The frontend calls this once its policy
+/// (`notificationPolicy.ts`) says to notify. `"stale"` when that dialog is
+/// no longer up; `"unsupported"` where there's no native notifier — the
+/// caller then shows its own banner.
+#[tauri::command]
+pub async fn notify_attention(
+    task_id: String,
+    attention_id: String,
+    sound: bool,
+    signals: State<'_, AgentSignals>,
+    workspaces: State<'_, WorkspaceRepo>,
+    notifications: State<'_, AttentionNotifications>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<NotifyOutcome, AgentSignalsCmdError> {
+    let current = require_user(&session)?;
+    let task = workspaces.get_for_user(&task_id, &current.user_id).await?;
+    Ok(notifications.notify_if_current(&task, signals.state(&task_id), &attention_id, sound))
 }
 
 /// Token/cost totals for a task (`null` for agents without readable

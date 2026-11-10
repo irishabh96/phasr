@@ -3082,6 +3082,7 @@ dependencies = [
  "jsonwebtoken",
  "keyring",
  "libc",
+ "mac-notification-sys",
  "machine-uid",
  "notify",
  "notify-debouncer-mini",

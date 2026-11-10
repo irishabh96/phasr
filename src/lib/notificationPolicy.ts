@@ -76,3 +76,17 @@ export function shouldDeliver(
     sound: channels.sound && interrupting,
   };
 }
+
+/**
+ * A needs-you entry's dialog is already on screen — the window focused on
+ * that task's agent pane, where the approval card is — so no OS banner,
+ * whatever the prefs say. Anywhere else (another app, another task, a shell
+ * tab of the same task) the card isn't in view and the banner is the news.
+ */
+export function attentionOnScreen(context: {
+  focused: boolean;
+  viewingTask: boolean;
+  onAgentPane: boolean;
+}): boolean {
+  return context.focused && context.viewingTask && context.onAgentPane;
+}

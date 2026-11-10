@@ -9,9 +9,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-use crate::agent_signals::{AgentSignalEvent, AgentSignals};
+use crate::agent_signals::{AgentSignalEvent, AgentSignals, AttentionResponse};
 use crate::checks::{CheckEvent, CheckService};
 use crate::domain::usage::TaskUsage;
+use crate::notifications::native::{AttentionActions, AttentionNotifications, AttentionNotifier};
 use crate::notifications::NotificationService;
 use crate::run_commands::RunCommandRuntime;
 use crate::orchestrator::board::BoardEvent;
@@ -43,6 +44,10 @@ pub const RUN_COMMAND_STATE_EVENT: &str = "phasr://run-command-state";
 /// becomes a banner/sound is decided in the frontend
 /// (`notificationPolicy.ts`).
 pub const NOTIFICATION_CREATED_EVENT: &str = "phasr://notification-created";
+/// A needs-you notification's body was clicked: open the task on its
+/// agent pane (the window was already brought forward). Payload:
+/// `AttentionActivatedPayload`.
+pub const ATTENTION_ACTIVATED_EVENT: &str = "phasr://attention-activated";
 
 /// Drain `rx` on the async runtime, handing each event to `forward`.
 /// A lagging receiver skips what it missed rather than stopping: every
@@ -188,4 +193,103 @@ pub fn spawn_notification_bridge(notifications: &NotificationService, app: AppHa
     spawn_forwarder(notifications.subscribe(), move |n| {
         let _ = app.emit(NOTIFICATION_CREATED_EVENT, n);
     });
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionActivatedPayload {
+    pub task_id: String,
+    pub repository_id: String,
+}
+
+/// What an answer on a needs-you notification does in the running app.
+struct AppAttentionActions {
+    app: AppHandle,
+    orchestrator: TaskOrchestrator,
+    current_user: Box<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
+#[async_trait::async_trait]
+impl AttentionActions for AppAttentionActions {
+    /// Exactly `respond_to_attention`: the signed-in owner only, and the
+    /// attention id guard (`"stale attention"`, nothing typed).
+    async fn respond(
+        &self,
+        task_id: &str,
+        attention_id: &str,
+        response: AttentionResponse,
+    ) -> Result<(), String> {
+        let user_id = (self.current_user)().ok_or_else(|| "not signed in".to_string())?;
+        self.orchestrator
+            .assert_owner(task_id, &user_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.orchestrator
+            .respond_to_attention(task_id, attention_id, response)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    fn open(&self, task_id: &str, repository_id: &str) {
+        let window = self
+            .app
+            .get_webview_window("main")
+            .or_else(|| self.app.webview_windows().into_values().next());
+        if let Some(window) = window {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        let _ = self.app.emit(
+            ATTENTION_ACTIVATED_EVENT,
+            AttentionActivatedPayload {
+                task_id: task_id.to_string(),
+                repository_id: repository_id.to_string(),
+            },
+        );
+    }
+}
+
+/// Needs-you notifications with Allow / Deny (macOS), following agent
+/// state so a banner for a dialog answered in the app comes down. Call
+/// once at startup, inside the runtime.
+pub fn start_attention_notifications(
+    app: &AppHandle,
+    orchestrator: TaskOrchestrator,
+    signals: &AgentSignals,
+    current_user: impl Fn() -> Option<String> + Send + Sync + 'static,
+) -> AttentionNotifications {
+    let actions = AppAttentionActions {
+        app: app.clone(),
+        orchestrator,
+        current_user: Box::new(current_user),
+    };
+    let service = AttentionNotifications::new(native_notifier(app), Arc::new(actions));
+    service.start(signals.subscribe());
+    service
+}
+
+#[cfg(target_os = "macos")]
+fn native_notifier(app: &AppHandle) -> Option<Arc<dyn AttentionNotifier>> {
+    use crate::notifications::native::mac::MacNotifier;
+    // Same choice as `tauri-plugin-notification`: an unbundled dev binary
+    // has no registered bundle id to post as. Set-once and process-wide,
+    // so the two must agree.
+    let bundle_id = if tauri::is_dev() {
+        "com.apple.Terminal".to_string()
+    } else {
+        app.config().identifier.clone()
+    };
+    let main = app.clone();
+    Some(Arc::new(MacNotifier::new(
+        bundle_id,
+        Box::new(move |f| {
+            let _ = main.run_on_main_thread(f);
+        }),
+    )))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_notifier(_app: &AppHandle) -> Option<Arc<dyn AttentionNotifier>> {
+    None
 }

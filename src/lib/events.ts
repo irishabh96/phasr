@@ -43,6 +43,13 @@ export const RUN_COMMAND_STATE_EVENT = "phasr://run-command-state";
 export const NOTIFICATION_CREATED_EVENT = "phasr://notification-created";
 
 /**
+ * A needs-you notification's body was clicked (macOS, `notify_attention`).
+ * The backend already brought the window forward; open the task on its
+ * agent pane. Payload: `AttentionActivatedPayload`.
+ */
+export const ATTENTION_ACTIVATED_EVENT = "phasr://attention-activated";
+
+/**
  * Files changed in a watched worktree (debounced; `.git`, `node_modules`,
  * `target`, `dist` filtered). Emitted by `src-tauri/src/fswatch.rs` while a
  * workspace is watched (`watch_workspace`). Payload:

@@ -7,6 +7,7 @@
 //! `phasr://notification-created`.
 
 pub mod attention_text;
+pub mod native;
 
 use std::collections::HashMap;
 use std::sync::Arc;
