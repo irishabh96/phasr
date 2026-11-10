@@ -58,6 +58,7 @@ import type {
   TaskAgentState,
   TaskCard,
   TaskUsage,
+  Suggestion,
   TranscriptItem,
   UnconfirmedSetting,
   UserSettings,
@@ -651,6 +652,15 @@ export const tauri = {
   /** A transcript-view task's transcript, oldest first. */
   getTranscript: (taskId: string) =>
     invoke<TranscriptItem[]>("get_transcript", { taskId }),
+  /**
+   * Reply suggestions for a transcript-view task's last turn: cached, or
+   * generated now by one Haiku call through the user's `claude` (single-
+   * flight per task; `phasr://suggestions` carries them too). Empty while
+   * a turn runs, before one ended, or when generation fails. Only call it
+   * with "Suggest replies" on: it's what spends the call.
+   */
+  suggestReplies: (taskId: string) =>
+    invoke<Suggestion[]>("suggest_replies", { taskId }),
   /**
    * Show the task as a transcript or a terminal on this machine; a running
    * agent restarts in the other mode on the same Claude session. Rejects

@@ -222,6 +222,7 @@ pub fn run() {
             commands::orchestrator::interrupt_task,
             commands::orchestrator::stop_background_shell,
             commands::orchestrator::get_transcript,
+            commands::orchestrator::suggest_replies,
             commands::orchestrator::set_agent_view,
             commands::agent_signals::list_agent_states,
             commands::agent_signals::respond_to_attention,
@@ -418,6 +419,7 @@ async fn initialize_database_state(
     );
     commands::events::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
     commands::events::spawn_transcript_bridge(orchestrator.streams(), handle.clone());
+    commands::events::spawn_suggestions_bridge(orchestrator.streams(), handle.clone());
     let attention_notifications = commands::events::start_attention_notifications(
         handle,
         orchestrator.clone(),
