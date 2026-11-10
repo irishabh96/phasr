@@ -75,6 +75,8 @@
      shortfall for 12px muted text. Do not "fix" it back. */
   --color-text-muted: #6e6e78;
   --color-text-faint: #4a4a54; /* decorative only: line numbers, separators */
+  /* Agent transcript body (A-Workspace "Transcript"): between text and text-2. */
+  --color-text-transcript: #c7c7ce;
   --color-text-inverse: #0c0c0e;
 
   /* ---------- Accent (user-selectable; coral default) ----------
@@ -296,6 +298,7 @@
   /* #6B7280 is 4.43:1 on bg-0; one step darker clears 4.5:1. */
   --color-text-muted: #636a77;
   --color-text-faint: #9aa0aa;
+  --color-text-transcript: #2b2f38;
   --color-text-inverse: #ffffff;
 
   /* Darker than A-SystemLight's swatches (#2F6FE0 / #1F8A5B / #B7791F),
@@ -620,6 +623,13 @@ body {
   70%,
   100% {
     transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+/* The transcript's streaming caret: stepped, opacity only. */
+@keyframes caret-blink {
+  50% {
     opacity: 0;
   }
 }
