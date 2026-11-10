@@ -15,6 +15,8 @@ import {
   type TranscriptActions,
   type TranscriptFocus,
 } from "./TranscriptItem";
+import { MarkdownLinkContext } from "./Markdown";
+import { useMarkdownLinks } from "./useMarkdownLinks";
 
 /** Past this many items only the visible ones render (A-Polish "Lists"). */
 export const VIRTUALIZE_ABOVE = 200;
@@ -42,6 +44,7 @@ const PAD_BOTTOM = 16;
  */
 export function Transcript({ taskId, visible }: { taskId: string; visible: boolean }) {
   const query = useTranscript(taskId);
+  const links = useMarkdownLinks(taskId);
   const all = query.data ?? [];
   const tree = useMemo(() => groupTranscript(all), [all]);
   const items = tree.top;
@@ -245,7 +248,7 @@ export function Transcript({ taskId, visible }: { taskId: string; visible: boole
         tabIndex={visible ? 0 : -1}
         className="h-full overflow-y-auto overflow-x-hidden font-mono text-[12.5px] leading-[1.7] text-(--color-text-transcript) focus-visible:outline-none"
       >
-        {body}
+        <MarkdownLinkContext.Provider value={links}>{body}</MarkdownLinkContext.Provider>
       </div>
       {!pinned && items.length > 0 ? (
         <button

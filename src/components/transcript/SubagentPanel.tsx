@@ -17,7 +17,8 @@ import {
 } from "@/lib/transcript/tree";
 import { useTranscript } from "@/lib/transcript/useTranscript";
 import { cn } from "@/lib/utils";
-import { Markdown } from "./Markdown";
+import { Markdown, MarkdownLinkContext } from "./Markdown";
+import { useMarkdownLinks } from "./useMarkdownLinks";
 import {
   CompactTranscript,
   TranscriptActionsContext,
@@ -43,6 +44,7 @@ const PIN_SLOP = 24;
  */
 export function SubagentPanel({ taskId, callId }: { taskId: string; callId: string }) {
   const query = useTranscript(taskId);
+  const links = useMarkdownLinks(taskId);
   const all = query.data ?? NO_ITEMS;
   const call = useMemo(
     () => all.find((i): i is ToolItem => i.id === callId && i.kind === "tool"),
@@ -89,21 +91,23 @@ export function SubagentPanel({ taskId, callId }: { taskId: string; callId: stri
   if (!call) return null;
   const description = call.subagent?.description || call.title.replace(/^Running a subagent:\s*/, "");
   return (
-    <section
-      ref={rootRef}
-      aria-label={`Subagent: ${description}`}
-      data-testid="subagent-panel"
-      data-subagent-id={callId}
-      className="flex min-h-0 flex-1 flex-col text-[12.5px] leading-[1.45]"
-    >
-      <Header call={call} description={description} items={all} steps={subagentSteps(call, tree.top)} onBack={back} />
-      <TranscriptChildrenContext.Provider value={childrenOf}>
-        <TranscriptActionsContext.Provider value={actions}>
-          <Body callId={callId} items={tree.top} nestedOf={tree.children} />
-        </TranscriptActionsContext.Provider>
-      </TranscriptChildrenContext.Provider>
-      <Footer taskId={taskId} call={call} />
-    </section>
+    <MarkdownLinkContext.Provider value={links}>
+      <section
+        ref={rootRef}
+        aria-label={`Subagent: ${description}`}
+        data-testid="subagent-panel"
+        data-subagent-id={callId}
+        className="flex min-h-0 flex-1 flex-col text-[12.5px] leading-[1.45]"
+      >
+        <Header call={call} description={description} items={all} steps={subagentSteps(call, tree.top)} onBack={back} />
+        <TranscriptChildrenContext.Provider value={childrenOf}>
+          <TranscriptActionsContext.Provider value={actions}>
+            <Body callId={callId} items={tree.top} nestedOf={tree.children} />
+          </TranscriptActionsContext.Provider>
+        </TranscriptChildrenContext.Provider>
+        <Footer taskId={taskId} call={call} />
+      </section>
+    </MarkdownLinkContext.Provider>
   );
 }
 

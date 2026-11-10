@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ToolItem, TranscriptItem } from "@/lib/transcript/contract";
-import { parseBlocks } from "./Markdown";
+import { linkTarget, Markdown, MarkdownLinkContext, parseBlocks } from "./Markdown";
 import {
   TranscriptActionsContext,
   TranscriptChildrenContext,
@@ -332,7 +332,112 @@ describe("markdown blocks", () => {
   it("renders an unclosed fence (still streaming) as code so far", () => {
     expect(parseBlocks("Here:\n```\nnpm i")).toEqual([
       { kind: "p", lines: ["Here:"] },
-      { kind: "code", lang: "", text: "npm i" },
+      { kind: "code", lang: "", text: "npm i", closed: false },
     ]);
+  });
+
+  it("parses a GFM table: alignment, escaped and code pipes, ragged rows", () => {
+    const blocks = parseBlocks(
+      "Scores:\n| Area | Score | Why |\n|:---|:---:|---:|\n| **Security** | 1/10 | keys in `a|b` and a\\|b |\n| Tests | 0/10 |\n\nAfter.",
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(["p", "table", "p"]);
+    expect(blocks[1]).toEqual({
+      kind: "table",
+      align: ["left", "center", "right"],
+      header: ["Area", "Score", "Why"],
+      rows: [
+        ["**Security**", "1/10", "keys in `a|b` and a\\|b"],
+        ["Tests", "0/10", ""],
+      ],
+    });
+  });
+
+  it("does not take a lone pipe line, or a mismatched delimiter, for a table", () => {
+    expect(parseBlocks("a | b\nnext").map((b) => b.kind)).toEqual(["p"]);
+    expect(parseBlocks("| a | b |\n|---|").map((b) => b.kind)).toEqual(["p"]);
+  });
+
+  it("keeps a fence inside a list item as code, and the list after it", () => {
+    const blocks = parseBlocks("1. Run:\n   ```bash\n   npm i\n   ```\n2. Then build");
+    expect(blocks.map((b) => b.kind)).toEqual(["list", "code", "list"]);
+    expect(blocks[1]).toMatchObject({ lang: "bash", text: "npm i", closed: true });
+    expect(blocks[2]).toMatchObject({ items: [{ marker: "2.", text: "Then build" }] });
+  });
+
+  it("parses task list items", () => {
+    expect(parseBlocks("- [x] done\n- [ ] todo\n- plain")[0]).toMatchObject({
+      items: [
+        { text: "done", task: true },
+        { text: "todo", task: false },
+        { text: "plain", task: null },
+      ],
+    });
+  });
+
+  it("marks a closed mermaid fence so it can be drawn", () => {
+    expect(parseBlocks("```mermaid\ngraph TD; A-->B\n```")[0]).toMatchObject({ lang: "mermaid", closed: true });
+  });
+});
+
+describe("markdown links", () => {
+  const root = "/Users/me/.phasr/worktrees/t1";
+  it("classifies web, file and other targets", () => {
+    expect(linkTarget("https://example.com/a_(b)")).toEqual({ kind: "web", href: "https://example.com/a_(b)" });
+    expect(linkTarget("src/env.js", root)).toEqual({ kind: "file", path: "src/env.js", line: undefined });
+    expect(linkTarget("./src/a.ts:42", root)).toEqual({ kind: "file", path: "src/a.ts", line: 42 });
+    expect(linkTarget("src/a.ts#L7-L9", root)).toEqual({ kind: "file", path: "src/a.ts", line: 7 });
+    expect(linkTarget(`${root}/src/My%20File.ts`, root)).toEqual({ kind: "file", path: "src/My File.ts", line: undefined });
+    expect(linkTarget(`file://${root}/x.md`, root)).toEqual({ kind: "file", path: "x.md", line: undefined });
+    // Nothing outside the worktree, no traversal, no other schemes.
+    expect(linkTarget("/etc/passwd", root)).toEqual({ kind: "none" });
+    expect(linkTarget("../secrets", root)).toEqual({ kind: "none" });
+    expect(linkTarget("javascript:alert(1)", root)).toEqual({ kind: "none" });
+    expect(linkTarget("mailto:a@b.c", root)).toEqual({ kind: "none" });
+    expect(linkTarget("#section", root)).toEqual({ kind: "none" });
+  });
+
+  const html = (md: string, links = {}) =>
+    render(
+      <MarkdownLinkContext.Provider value={links}>
+        <Markdown text={md} />
+      </MarkdownLinkContext.Provider>,
+    ).container;
+
+  it("renders web links, autolinks and bare URLs as anchors, trimming trailing punctuation", () => {
+    const c = html("See [docs](https://a.dev/x), <https://b.dev> and https://c.dev/p?q=1. Done");
+    expect([...c.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
+      "https://a.dev/x",
+      "https://b.dev",
+      "https://c.dev/p?q=1",
+    ]);
+  });
+
+  it("opens file links in the Files pane and never renders other schemes as links", () => {
+    const openFile = vi.fn();
+    const c = html("Edit [`env.js`](src/env.js:12) not [x](javascript:alert(1)) or [y](/etc/hosts)", { root, openFile });
+    const buttons = c.querySelectorAll("button");
+    expect(buttons).toHaveLength(1);
+    buttons[0]!.click();
+    expect(openFile).toHaveBeenCalledWith("src/env.js", 12);
+    expect(c.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  it("renders inline extras: strike, bold-italic, escapes, <br>, images as links", () => {
+    const c = html("~~old~~ ***both*** \\*not italic\\* a<br>b ![chart](https://x.dev/c.png)");
+    expect(c.querySelector("s")?.textContent).toBe("old");
+    expect(c.querySelector("strong em")?.textContent).toBe("both");
+    expect(c.textContent).toContain("*not italic*");
+    expect(c.querySelectorAll("p br")).toHaveLength(1);
+    expect(c.querySelector("img")).toBeNull();
+    expect(c.querySelector("a")?.textContent).toBe("chart");
+  });
+
+  it("renders a table with header cells and inline formatting in cells", () => {
+    const c = html("| Area | Score |\n|---|--:|\n| **Security** | `1|10` |");
+    expect([...c.querySelectorAll("th")].map((th) => th.textContent)).toEqual(["Area", "Score"]);
+    const cells = c.querySelectorAll("td");
+    expect(cells[0]!.querySelector("strong")?.textContent).toBe("Security");
+    expect(cells[1]!.textContent).toBe("1|10");
+    expect((cells[1] as HTMLElement).style.textAlign).toBe("right");
   });
 });
