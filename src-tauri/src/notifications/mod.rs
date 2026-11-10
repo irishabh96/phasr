@@ -6,6 +6,8 @@
 //! Tauri-agnostic: `commands::events` re-emits `subscribe()` as
 //! `phasr://notification-created`.
 
+pub mod attention_text;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -252,14 +254,16 @@ impl NotificationService {
         };
         match state.state {
             AgentStateKind::NeedsYou => {
+                // Short on purpose (`attention_text`): the banner and the
+                // toast reuse this; the full command is on the card.
                 let mut n = AppNotification::new(
                     NotificationKind::NeedsApproval,
-                    format!("{} needs you", task.name),
+                    attention_text::title(&task.name, task.agent),
                 );
-                n.body = state.attention.as_ref().map(|a| match a.detail.as_deref() {
-                    Some(detail) => format!("{}: {detail}", a.title),
-                    None => a.title.clone(),
-                });
+                n.body = state
+                    .attention
+                    .as_ref()
+                    .map(|a| attention_text::body(a.kind, &a.title, a.detail.as_deref()));
                 n.payload =
                     json!({ "attentionId": state.attention.as_ref().map(|a| a.id.clone()) });
                 self.record(user_id, &task, n, Dedupe::KeepExisting).await
@@ -548,8 +552,10 @@ mod tests {
             .unwrap();
         let n = first.expect("first approval is recorded");
         assert_eq!(n.kind, NotificationKind::NeedsApproval);
-        assert_eq!(n.title, "Fix login needs you");
-        assert_eq!(n.body.as_deref(), Some("Run a command: rm -rf build"));
+        // Short (`attention_text`): the banner/toast reuse it.
+        assert_eq!(n.title, "Fix login · The agent needs you");
+        assert_eq!(n.body.as_deref(), Some("Run: rm -rf build"));
+        assert_eq!(n.payload["attentionId"], "a1");
         assert_eq!(n.payload["taskId"], ws.id.as_str());
         assert_eq!(rx.try_recv().unwrap().id, n.id, "announced");
 
