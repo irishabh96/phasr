@@ -671,7 +671,14 @@ export const tauri = {
   /** Move a not-yet-started task into / out of the queue. */
   setTaskQueued: (id: string, queued: boolean) =>
     invoke<Workspace>("set_task_queued", { id, queued }),
-  /** "Start now" for a draft / queued task; an already-started task is returned as is. */
+  /**
+   * "Start now" for a draft / queued / failed-before-launch task. Resolves
+   * once the task is claimed, like `startTask`: its worktree setup and
+   * agent spawn continue in the backend, so `workspace.status` is usually
+   * `pending` (the board shows it Running, "Setting up the worktree…"). A
+   * setup that fails later marks it `failed` (status event). A task that
+   * already started, or is being set up, is returned as is.
+   */
   startQueuedTask: (id: string, rows?: number, cols?: number) =>
     invoke<StartedTask>("start_queued_task", { id, rows, cols }).then((started) => {
       // Same first-launch moment as `startTask` (DDR-003 §7).

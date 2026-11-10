@@ -156,7 +156,8 @@ pub(crate) struct RunAtStart {
     pub notifier: NotificationService,
 }
 
-/// The rest of a `start_task` after it returned: wait for the background
+/// The rest of a `start_task` (or `start_queued_task`, without a Run
+/// chip) after it returned: wait for the background
 /// launch, sync again (it recorded the branch, worktree and status), then
 /// start the Run chip's command. In the backend, not the form: the form's
 /// dialog is gone by then, and the worktree it needs doesn't exist before

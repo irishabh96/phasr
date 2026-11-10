@@ -331,8 +331,10 @@ export function checksVerdict(summary: CheckSummary | null | undefined): "passed
 
 /**
  * Queued / draft card: never started, so it opens nothing yet. "Start now"
- * launches it (worktree + agent) and opens the session. A queued task that
- * couldn't start sits in Needs you with the failed line and a retry.
+ * claims it and opens the session at once; the worktree + agent are set up
+ * in the backend meanwhile (the card moves to Running, the terminal says
+ * "Setting up the worktree…"). A task that couldn't start shows the failed
+ * line and a retry.
  */
 function QueuedCard({ task, showRepo }: { task: BoardTask; showRepo: boolean }) {
   const ws = task.workspace;

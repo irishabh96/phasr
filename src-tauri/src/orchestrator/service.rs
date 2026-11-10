@@ -201,6 +201,11 @@ pub struct TaskOrchestrator {
     /// opens of one task attach to a single agent instead of racing two
     /// registrations and spawns.
     spawn_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Why a background re-checkout of a deleted worktree (`open_terminal`)
+    /// failed, for the terminal's next poll to report — once. Without it
+    /// the poll would start the same failing checkout every two seconds and
+    /// sit on "Setting up the worktree…" forever.
+    recreate_failures: Arc<parking_lot::Mutex<HashMap<String, OrchestratorError>>>,
 }
 
 /// Removes a task from `TaskOrchestrator::starting` when setup ends —
@@ -225,6 +230,16 @@ impl Drop for StartingGuard {
 struct LaunchCommand {
     command: Option<String>,
     mode_downgraded: bool,
+}
+
+/// A deleted worktree to check out again (`recreate_missing_worktree`):
+/// checked up front, checked out later — possibly in the background.
+struct WorktreeRecreate {
+    repository_id: String,
+    repo_path: PathBuf,
+    worktree_path: PathBuf,
+    branch: String,
+    base_ref: String,
 }
 
 /// What actually gets typed into a fresh agent PTY.
@@ -262,6 +277,7 @@ impl TaskOrchestrator {
             task_config: None,
             starting: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             spawn_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            recreate_failures: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
     }
 
@@ -760,27 +776,135 @@ impl TaskOrchestrator {
             exit_code: None,
         });
 
-        let this = self.clone();
-        let task_id = workspace.id.clone();
-        let (user_id, rows, cols) = (request.user_id, request.rows, request.cols);
-        let launch = tokio::spawn(async move {
-            let launched = this
-                .launch_claimed(&task_id, user_id.as_deref(), rows, cols, &starting)
-                .await;
-            if let Err(err) = &launched {
-                eprintln!("[launch] task {task_id} failed to start: {err}");
-                // Still claimed: the row never reads as a Draft in between.
-                this.fail_start(&task_id, err).await;
-            }
-            drop(starting);
-            launched
-        });
+        let launch = self.launch_in_background(
+            workspace.id.clone(),
+            request.user_id,
+            request.rows,
+            request.cols,
+            starting,
+        );
         Ok(TaskStart {
             started: StartedTask {
                 task_id: workspace.id.clone(),
                 workspace,
             },
             launch: Some(launch),
+        })
+    }
+
+    /// "Start now" for a saved task (draft, queued, failed before launch,
+    /// or a setup an app quit interrupted): claim it and return at once;
+    /// the fetch / worktree / hook / spawn run in the background, as for
+    /// `start_task`. Inline (`launch`), a large repository left the card on
+    /// "Starting…" for the whole checkout.
+    ///
+    /// Unlike `launch`, a setup that fails marks the task `failed` with the
+    /// reason in its log (`fail_start`) — even a draft: the user asked for
+    /// it to run, sees why it didn't, and "Start now" retries it.
+    ///
+    /// What can be known up front stays a synchronous error that leaves the
+    /// row as it was: the repository, the base branch name. A task already
+    /// being set up (a second click, the queue, `start_task`) or already
+    /// launched is returned as is, with nothing started.
+    pub async fn start_now(
+        &self,
+        task_id: &str,
+        user_id: Option<&str>,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> Result<TaskStart, OrchestratorError> {
+        let workspace = self.get_task(task_id, user_id).await?;
+        let as_is = |workspace: Workspace| TaskStart {
+            started: StartedTask {
+                task_id: workspace.id.clone(),
+                workspace,
+            },
+            launch: None,
+        };
+        let uncut = workspace.is_unlaunched() || is_failed_before_launch(&workspace);
+        if !uncut && !is_interrupted_start(&workspace) {
+            return Ok(as_is(workspace));
+        }
+        if uncut {
+            let (repository, _) = self
+                .task_repository(&workspace.repository_id, user_id)
+                .await?;
+            let setup = self.setup_for(&workspace.repository_id).await;
+            let base =
+                setup.base_branch(workspace.base_branch.as_deref(), &repository.default_branch);
+            validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
+        }
+        let Some(starting) = self.begin_starting(task_id, &workspace.repository_id) else {
+            return Ok(as_is(self.get_task(task_id, user_id).await?));
+        };
+        // Re-read under the claim: another start may have run in between.
+        let workspace = self.get_task(task_id, user_id).await?;
+        // A retry of a start that failed before its worktree: `pending`
+        // again now (not in the background), so the row this returns and
+        // the board both read as a started task rather than Failed.
+        let workspace = if is_failed_before_launch(&workspace) {
+            self.workspaces
+                .update(
+                    task_id,
+                    WorkspaceUpdate {
+                        status: Some(WorkspaceStatus::Pending),
+                        exit_code: Some(None),
+                        finished_at: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .await?
+        } else {
+            workspace
+        };
+        // The board re-reads now: the claim turns the card Running.
+        self.broadcast_status(TaskStatusEvent {
+            task_id: workspace.id.clone(),
+            repository_id: workspace.repository_id.clone(),
+            status: workspace.status,
+            exit_code: None,
+        });
+        let launch = self.launch_in_background(
+            task_id.to_string(),
+            user_id.map(str::to_string),
+            rows,
+            cols,
+            starting,
+        );
+        Ok(TaskStart {
+            started: StartedTask {
+                task_id: workspace.id.clone(),
+                workspace,
+            },
+            launch: Some(launch),
+        })
+    }
+
+    /// Run `launch_claimed` for a claimed task on the runtime, and turn a
+    /// failure into a `failed` row with the reason in its log
+    /// (`fail_start`). The claim moves in and is held until then, so the
+    /// row never reads as a Draft in between. Shared by `start_task` and
+    /// `start_now`; the queue's `launch` stays inline (its backoff runs on
+    /// the error, and a queued task must stay queued until it gives up).
+    fn launch_in_background(
+        &self,
+        task_id: String,
+        user_id: Option<String>,
+        rows: Option<u16>,
+        cols: Option<u16>,
+        starting: StartingGuard,
+    ) -> tokio::task::JoinHandle<Result<StartedTask, OrchestratorError>> {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let launched = this
+                .launch_claimed(&task_id, user_id.as_deref(), rows, cols, &starting)
+                .await;
+            if let Err(err) = &launched {
+                eprintln!("[launch] task {task_id} failed to start: {err}");
+                this.fail_start(&task_id, err).await;
+            }
+            drop(starting);
+            launched
         })
     }
 
@@ -826,10 +950,12 @@ impl TaskOrchestrator {
         Ok(None)
     }
 
-    /// A background start (`start_task`) failed — fetch, worktree, spawn:
-    /// the row becomes `failed` with the reason in its log (the session's
-    /// log view shows it), and the status event raises the "task failed"
-    /// notification. A row that moved on meanwhile — closed, archived,
+    /// A background start (`start_task`, `start_now`) failed — fetch,
+    /// worktree, spawn: the row becomes `failed` with the reason in its log
+    /// (the session's log view shows it), and the status event raises the
+    /// "task failed" notification. A queued task leaves the queue, as when
+    /// the scheduler gives up on one (`fail_unlaunched`); "Start now"
+    /// retries either. A row that moved on meanwhile — closed, archived,
     /// deleted, or running after all — is left alone.
     async fn fail_start(&self, task_id: &str, err: &OrchestratorError) {
         let Ok(current) = self.workspaces.get(task_id).await else {
@@ -850,6 +976,7 @@ impl TaskOrchestrator {
                 task_id,
                 WorkspaceUpdate {
                     status: Some(WorkspaceStatus::Failed),
+                    queued_at: Some(None),
                     finished_at: Some(Some(Utc::now())),
                     ..Default::default()
                 },
@@ -1007,6 +1134,7 @@ impl TaskOrchestrator {
     /// then spawn exactly as `start_task` does — but inline: the queue
     /// scheduler needs the outcome (its retry/backoff runs on errors), and
     /// a failure leaves the task a draft / queued rather than `failed`.
+    /// "Start now" uses `start_now`, the same work in the background.
     ///
     /// Idempotent under the repo lock: the row is re-read inside it, and a
     /// task that has already launched (its branch exists) is returned as
@@ -1185,12 +1313,7 @@ impl TaskOrchestrator {
         rows: Option<u16>,
         cols: Option<u16>,
     ) -> Result<StartedTask, OrchestratorError> {
-        let never_ran = workspace.workspace_kind == WorkspaceKind::Agent
-            && workspace.status == WorkspaceStatus::Pending
-            && workspace.started_at.is_none()
-            && workspace.branch.is_some()
-            && workspace.agent.is_some();
-        if !never_ran || self.runtime.get(&workspace.id).is_some() {
+        if !is_interrupted_start(&workspace) || self.runtime.get(&workspace.id).is_some() {
             return Ok(StartedTask {
                 task_id: workspace.id.clone(),
                 workspace,
@@ -1565,6 +1688,41 @@ impl TaskOrchestrator {
             return Err(OrchestratorError::NotStarted);
         }
 
+        // Its worktree was deleted (by hand, a disk cleaner, another
+        // machine's row): re-checking it out is a full checkout — tens of
+        // seconds on a large repository — so it runs in the background
+        // under the starting claim, and this open says "still being set
+        // up" like a start in progress. The terminal polls; the open after
+        // the checkout resumes the agent as usual. A checkout that failed
+        // is reported to the next open (once; the one after retries).
+        let recreate_failed = self.recreate_failures.lock().remove(task_id);
+        if let Some(path) = workspace
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| !path.exists())
+        {
+            if let Some(err) = recreate_failed {
+                return Err(err);
+            }
+            // What makes it impossible is known at once: a calm error now.
+            let recreate = self.plan_worktree_recreate(&workspace, &path).await?;
+            let starting = self
+                .begin_starting(task_id, &workspace.repository_id)
+                .ok_or(OrchestratorError::Starting)?;
+            let this = self.clone();
+            let task_id = task_id.to_string();
+            tokio::spawn(async move {
+                if let Err(err) = this.recreate_worktree(recreate).await {
+                    eprintln!("[resume] task {task_id}: couldn't recreate its worktree: {err}");
+                    // Recorded before the claim ends, so no poll can miss it.
+                    this.recreate_failures.lock().insert(task_id, err);
+                }
+                drop(starting);
+            });
+            return Err(OrchestratorError::Starting);
+        }
+
         let cwd = self.cwd_for_task(&workspace).await?;
         let launch_command = self.launch_command(&workspace).await?;
         if launch_command.mode_downgraded {
@@ -1783,6 +1941,17 @@ impl TaskOrchestrator {
         workspace: &Workspace,
         worktree_path: &Path,
     ) -> Result<PathBuf, OrchestratorError> {
+        let recreate = self.plan_worktree_recreate(workspace, worktree_path).await?;
+        self.recreate_worktree(recreate).await
+    }
+
+    /// `recreate_missing_worktree`'s checks, which are quick: whether the
+    /// worktree can be recreated at all, and from what.
+    async fn plan_worktree_recreate(
+        &self,
+        workspace: &Workspace,
+        worktree_path: &Path,
+    ) -> Result<WorktreeRecreate, OrchestratorError> {
         // A merged/closed task's worktree is gone on purpose (discarded, or
         // cleaned up after merge): recreating it would resurrect a deleted
         // branch from its base as an empty task.
@@ -1806,14 +1975,33 @@ impl TaskOrchestrator {
             .base_branch
             .clone()
             .unwrap_or_else(|| repository.default_branch.clone());
-        let worktree_path = worktree_path.to_path_buf();
+        Ok(WorktreeRecreate {
+            repository_id: workspace.repository_id.clone(),
+            repo_path,
+            worktree_path: worktree_path.to_path_buf(),
+            branch: branch.to_string(),
+            base_ref,
+        })
+    }
 
+    /// `recreate_missing_worktree`'s checkout, which is slow.
+    async fn recreate_worktree(
+        &self,
+        recreate: WorktreeRecreate,
+    ) -> Result<PathBuf, OrchestratorError> {
+        let WorktreeRecreate {
+            repository_id,
+            repo_path,
+            worktree_path,
+            branch,
+            base_ref,
+        } = recreate;
         // Serialize the worktree-add against every other shared-`.git`
         // mutation for this repo (F6) — same lock start_task uses.
-        let lock = self.repo_locks.for_repository(&workspace.repository_id);
+        let lock = self.repo_locks.for_repository(&repository_id);
         let _guard = lock.lock().await;
         // A full checkout: off the async runtime (see `cut_worktree`).
-        let (branch, path) = (branch.to_string(), worktree_path.clone());
+        let path = worktree_path.clone();
         blocking_git(move || git::create_worktree(&repo_path, &path, &branch, &base_ref)).await?;
         Ok(worktree_path)
     }
@@ -1928,13 +2116,26 @@ where
         .map_err(OrchestratorError::from)
 }
 
-/// A queued task the scheduler gave up on before it ever launched (see
-/// `QueueScheduler`): `failed`, no branch. "Start now" may retry it.
+/// A task that failed before it ever launched: a queued task the scheduler
+/// gave up on (see `QueueScheduler`), or a background start (`start_task`,
+/// `start_now`) that failed before its worktree was cut. `failed`, no
+/// branch. "Start now" may retry it.
 fn is_failed_before_launch(workspace: &Workspace) -> bool {
     workspace.workspace_kind == WorkspaceKind::Agent
         && workspace.status == WorkspaceStatus::Failed
         && workspace.branch.is_none()
         && workspace.outcome.is_none()
+}
+
+/// A row with its worktree that never ran: a setup an app quit interrupted,
+/// or a legacy pre-created workspace. "Start now" finishes starting it
+/// (`finish_interrupted_start`).
+fn is_interrupted_start(workspace: &Workspace) -> bool {
+    workspace.workspace_kind == WorkspaceKind::Agent
+        && workspace.status == WorkspaceStatus::Pending
+        && workspace.started_at.is_none()
+        && workspace.branch.is_some()
+        && workspace.agent.is_some()
 }
 
 #[cfg(test)]
@@ -3347,6 +3548,15 @@ mod tests {
             orchestrator.launch(&saved.id, None, None, None).await,
             Err(OrchestratorError::InvalidBaseBranch(_))
         ));
+        // "Start now" refuses it up front, before any background setup:
+        // the draft stays a draft (not a failed task), nothing is claimed.
+        assert!(matches!(
+            orchestrator.start_now(&saved.id, None, None, None).await,
+            Err(OrchestratorError::InvalidBaseBranch(_))
+        ));
+        let row = orchestrator.workspaces.get(&saved.id).await.unwrap();
+        assert!(row.is_draft());
+        assert!(!orchestrator.is_starting(&saved.id));
     }
 
     #[tokio::test]
@@ -4339,5 +4549,266 @@ exit 1
         if let Some(path) = ended.workspace.worktree_path.as_deref() {
             let _ = std::fs::remove_dir_all(path);
         }
+    }
+
+    // ---- "Start now" returns before its setup ----------------------------
+
+    /// The servo report, for "Start now" on a queued card: `start_now`
+    /// returns while the after-create hook still runs, with the task
+    /// already claimed — Running on the board (not Queued), its terminal
+    /// saying it is being set up. A second click is a no-op. Then it runs,
+    /// out of the queue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_now_returns_while_setup_runs_then_reaches_running() {
+        use crate::domain::board::{derive_lane, Lane};
+        let (orchestrator, signals, workspaces, repo, gate, _tmp) = slow_setup_fixture().await;
+        let repo_path = PathBuf::from(repo.local_path.clone().unwrap());
+        let mut row = draft_row(&repo.id, "start me");
+        row.queued = true;
+        let queued = orchestrator.create_row(row, None).await.unwrap();
+        let mut status = orchestrator.subscribe_status();
+
+        let start = tokio::time::timeout(
+            Duration::from_secs(10),
+            orchestrator.start_now(&queued.id, None, None, None),
+        )
+        .await
+        .expect("start_now waited for the setup")
+        .unwrap();
+        assert_eq!(start.started.task_id, queued.id);
+        assert_eq!(start.started.workspace.status, WorkspaceStatus::Pending);
+        assert!(start.launch.is_some());
+        assert!(orchestrator.is_starting(&queued.id), "claimed before returning");
+        let first = status.try_recv().expect("announced at once");
+        assert_eq!(
+            (first.task_id.as_str(), first.status),
+            (queued.id.as_str(), WorkspaceStatus::Pending)
+        );
+
+        let row = workspaces.get(&queued.id).await.unwrap();
+        let phase = signals
+            .states()
+            .into_iter()
+            .find(|s| s.task_id == queued.id)
+            .map(|s| s.state.into());
+        assert_eq!(
+            derive_lane(&row, phase, None),
+            Some(Lane::Running),
+            "not Queued, offering Start now again"
+        );
+        assert!(matches!(
+            orchestrator.open_terminal(&queued.id, 24, 80).await,
+            Err(OrchestratorError::Starting)
+        ));
+
+        // A second click during setup: the same row, nothing started.
+        let again = orchestrator
+            .start_now(&queued.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(again.started.task_id, queued.id);
+        assert!(again.launch.is_none(), "the second click began no setup");
+        assert!(orchestrator.runtime.get(&queued.id).is_none());
+
+        std::fs::write(&gate, "").unwrap();
+        let started = start.launched().await.unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert!(started.workspace.queued_at.is_none(), "out of the queue");
+        assert!(!orchestrator.is_starting(&queued.id));
+        assert!(orchestrator.runtime.get(&queued.id).is_some());
+        assert_eq!(count_phasr_branches(&repo_path), 1);
+        let log = orchestrator.read_task_log(&queued.id).await.unwrap();
+        assert!(log.contains("setup-done"), "{log}");
+
+        // Running: Start now returns it as is, the same agent.
+        let agent = orchestrator.runtime.get(&queued.id).unwrap();
+        let after = orchestrator
+            .start_now(&queued.id, None, None, None)
+            .await
+            .unwrap();
+        assert!(after.launch.is_none());
+        assert_eq!(after.started.workspace.status, WorkspaceStatus::Running);
+        assert!(Arc::ptr_eq(
+            &agent,
+            &orchestrator.runtime.get(&queued.id).unwrap()
+        ));
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// "Start now" whose setup fails (the worktree base is a file): the
+    /// task — a queued one here — becomes `failed` with the reason in its
+    /// log, out of the queue. Once the cause is fixed, "Start now" retries
+    /// it: a started task again at once (not Failed), then running.
+    #[tokio::test]
+    async fn a_failed_start_now_marks_the_task_failed_and_start_now_retries_it() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let blocker = tmp.path().join("not-a-directory");
+        std::fs::write(&blocker, "").unwrap();
+        let configs = crate::store::RepositoryConfigRepo::new(pool.clone());
+        let mut cfg = configs.get(&repo.id).await.unwrap();
+        cfg.worktree_base_path = Some(blocker.join("worktrees").to_string_lossy().into_owned());
+        configs.upsert(&cfg, None).await.unwrap();
+        let orchestrator = orchestrator.with_task_config(TaskConfig::new(
+            configs.clone(),
+            crate::store::SettingsRepo::new(pool.clone()),
+            None,
+        ));
+        let mut row = draft_row(&repo.id, "no room");
+        row.queued = true;
+        let task = orchestrator.create_row(row, None).await.unwrap();
+        let mut status = orchestrator.subscribe_status();
+
+        let start = orchestrator
+            .start_now(&task.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(start.started.workspace.status, WorkspaceStatus::Pending);
+        let err = start.launched().await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::Git(_)), "{err}");
+
+        let failed = orchestrator.workspaces.get(&task.id).await.unwrap();
+        assert_eq!(failed.status, WorkspaceStatus::Failed);
+        assert!(failed.finished_at.is_some());
+        assert!(failed.queued_at.is_none(), "out of the queue");
+        assert!(is_failed_before_launch(&failed), "its card offers Start now");
+        assert!(!orchestrator.is_starting(&task.id));
+        let log = orchestrator.read_task_log(&task.id).await.unwrap();
+        assert!(log.contains("couldn't start this task"), "{log}");
+        assert!(log.contains(&err.to_string()), "the reason: {log}");
+        let statuses: Vec<WorkspaceStatus> = std::iter::from_fn(|| status.try_recv().ok())
+            .filter(|e| e.task_id == task.id)
+            .map(|e| e.status)
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![WorkspaceStatus::Pending, WorkspaceStatus::Failed]
+        );
+
+        cfg.worktree_base_path = Some(tmp.path().join("wt").to_string_lossy().into_owned());
+        configs.upsert(&cfg, None).await.unwrap();
+        let retry = orchestrator
+            .start_now(&task.id, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            retry.started.workspace.status,
+            WorkspaceStatus::Pending,
+            "a started task again at once, not Failed"
+        );
+        assert!(retry.started.workspace.finished_at.is_none());
+        assert!(retry.launch.is_some());
+        let started = retry.launched().await.unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert!(started.workspace.branch.is_some());
+        assert!(orchestrator.runtime.get(&task.id).is_some());
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// A stopped task whose worktree was deleted: reopening it checks the
+    /// worktree out again in the background, and the open says "still being
+    /// set up" (the terminal polls) instead of holding the IPC call for the
+    /// whole checkout. The open after it resumes the agent there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopening_a_task_whose_worktree_was_deleted_rechecks_it_out_in_the_background() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let worktree = tmp.path().join("gone-worktree");
+        let mut stopped = Workspace::new(repo.id.clone(), "restore me".into(), "sleep 30".into());
+        stopped.agent = Some(Agent::Claude);
+        stopped.status = WorkspaceStatus::Stopped;
+        stopped.started_at = Some(Utc::now());
+        stopped.branch = Some("phasr/restore".into());
+        stopped.worktree_path = Some(worktree.to_string_lossy().into_owned());
+        orchestrator.workspaces.insert(&stopped).await.unwrap();
+
+        assert!(matches!(
+            orchestrator.open_terminal(&stopped.id, 24, 80).await,
+            Err(OrchestratorError::Starting)
+        ));
+        assert!(
+            orchestrator.runtime.get(&stopped.id).is_none(),
+            "no agent before its worktree is back"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            match orchestrator.open_terminal(&stopped.id, 24, 80).await {
+                Ok(_) => break,
+                Err(OrchestratorError::Starting) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the re-checkout never finished"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(err) => panic!("reopen failed: {err}"),
+            }
+        }
+        assert!(worktree.join("README.md").exists());
+        assert!(!orchestrator.is_starting(&stopped.id));
+        assert!(orchestrator.runtime.get(&stopped.id).is_some());
+        assert_eq!(
+            orchestrator
+                .workspaces
+                .get(&stopped.id)
+                .await
+                .unwrap()
+                .status,
+            WorkspaceStatus::Running
+        );
+        orchestrator.quiesce_task(&stopped.id).await;
+    }
+
+    /// A background re-checkout that fails is reported to the next open —
+    /// once, not re-tried every poll — and the open after that retries it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_background_recheckout_is_reported_once_then_retried() {
+        let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        // Its parent is a file: git can't create it.
+        let blocker = tmp.path().join("not-a-directory");
+        std::fs::write(&blocker, "").unwrap();
+        let mut stopped = Workspace::new(repo.id.clone(), "stuck".into(), "sleep 30".into());
+        stopped.agent = Some(Agent::Claude);
+        stopped.status = WorkspaceStatus::Stopped;
+        stopped.started_at = Some(Utc::now());
+        stopped.branch = Some("phasr/stuck".into());
+        stopped.worktree_path = Some(blocker.join("wt").to_string_lossy().into_owned());
+        orchestrator.workspaces.insert(&stopped).await.unwrap();
+
+        assert!(matches!(
+            orchestrator.open_terminal(&stopped.id, 24, 80).await,
+            Err(OrchestratorError::Starting)
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let err = loop {
+            match orchestrator.open_terminal(&stopped.id, 24, 80).await {
+                Err(OrchestratorError::Starting) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the re-checkout never finished"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(err) => break err,
+                Ok(_) => panic!("opened without a worktree"),
+            }
+        };
+        assert!(matches!(err, OrchestratorError::Git(_)), "{err}");
+        assert!(orchestrator.runtime.get(&stopped.id).is_none());
+        assert_eq!(
+            orchestrator
+                .workspaces
+                .get(&stopped.id)
+                .await
+                .unwrap()
+                .status,
+            WorkspaceStatus::Stopped
+        );
+        // Retry (the terminal's button): another background attempt.
+        assert!(matches!(
+            orchestrator.open_terminal(&stopped.id, 24, 80).await,
+            Err(OrchestratorError::Starting)
+        ));
     }
 }
