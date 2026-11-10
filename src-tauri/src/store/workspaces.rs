@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::domain::{
-    Agent, PermissionMode, TaskOutcome, Workspace, WorkspaceKind, WorkspaceStatus,
+    Agent, AgentView, PermissionMode, TaskOutcome, Workspace, WorkspaceKind, WorkspaceStatus,
 };
 
 use super::error::StoreError;
@@ -17,7 +17,7 @@ macro_rules! workspace_columns {
          created_at, started_at, finished_at, archived_at, updated_at,
          permission_mode, notify_on_attention, last_turn_ended_at,
          base_branch, queued_at, depends_on_workspace_id,
-         outcome, outcome_at, merged_into, pr_number, pr_url, pr_state"
+         outcome, outcome_at, merged_into, pr_number, pr_url, pr_state, agent_view"
     };
 }
 
@@ -108,9 +108,9 @@ impl WorkspaceRepo {
                 permission_mode, notify_on_attention,
                 base_branch, queued_at, depends_on_workspace_id,
                 outcome, outcome_at, merged_into, pr_number, pr_url, pr_state,
-                synced_at, dirty, queued_here
+                synced_at, dirty, queued_here, agent_view
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
         )
         .bind(&workspace.id)
         .bind(user_id)
@@ -143,6 +143,7 @@ impl WorkspaceRepo {
         .bind(dirty)
         // Created on this machine: if it's queued, it was queued HERE.
         .bind(workspace.queued_at.is_some() as i64)
+        .bind(workspace.agent_view.map(AgentView::as_str))
         .execute(&self.db)
         .await?;
         Ok(())
@@ -705,6 +706,26 @@ impl WorkspaceRepo {
         Ok(())
     }
 
+    /// Switch the task between the transcript and the terminal view on this
+    /// machine. Local-only like the session id: no `updated_at`, no `dirty`.
+    pub async fn set_agent_view(
+        &self,
+        id: &str,
+        view: Option<AgentView>,
+    ) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            "UPDATE workspaces SET agent_view = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(view.map(AgentView::as_str))
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
     pub async fn get_agent_session_id(&self, id: &str) -> Result<Option<String>, StoreError> {
         let row: Option<(Option<String>,)> = sqlx::query_as(
             "SELECT agent_session_id FROM workspaces WHERE id = ? AND deleted_at IS NULL",
@@ -831,6 +852,10 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace, StoreErr
         pr_number: row.try_get("pr_number")?,
         pr_url: row.try_get("pr_url")?,
         pr_state: row.try_get("pr_state")?,
+        // Lenient: a view a newer build wrote reads as terminal.
+        agent_view: row
+            .try_get::<Option<String>, _>("agent_view")?
+            .and_then(|s| AgentView::from_str(&s)),
     })
 }
 
@@ -856,6 +881,48 @@ mod tests {
     use crate::domain::Repository;
     use crate::store::{init_pool, RepositoryRepo};
     use std::path::PathBuf;
+
+    /// The view is this machine's: it round-trips through every read, and
+    /// switching it neither bumps `updated_at` nor marks the row dirty (so
+    /// it never makes the row push).
+    #[tokio::test]
+    async fn agent_view_is_stored_but_never_marks_the_row_for_sync() {
+        let (_, repo, r) = fresh().await;
+        let mut ws = Workspace::new(r.id.clone(), "t".into(), "claude".into());
+        ws.agent = Some(Agent::Claude);
+        ws.agent_view = Some(AgentView::Transcript);
+        repo.insert(&ws).await.unwrap();
+        assert_eq!(repo.get(&ws.id).await.unwrap().agent_view, Some(AgentView::Transcript));
+        sqlx::query("UPDATE workspaces SET dirty = 0 WHERE id = ?")
+            .bind(&ws.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        let before = repo.get(&ws.id).await.unwrap().updated_at;
+
+        repo.set_agent_view(&ws.id, Some(AgentView::Terminal)).await.unwrap();
+        let read = repo.get(&ws.id).await.unwrap();
+        assert_eq!(read.agent_view, Some(AgentView::Terminal));
+        assert_eq!(read.updated_at, before);
+        let dirty: i64 = sqlx::query_scalar("SELECT dirty FROM workspaces WHERE id = ?")
+            .bind(&ws.id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(dirty, 0);
+
+        // An unknown value (a newer build) reads as terminal, not an error.
+        sqlx::query("UPDATE workspaces SET agent_view = 'hologram' WHERE id = ?")
+            .bind(&ws.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(repo.get(&ws.id).await.unwrap().agent_view, None);
+        assert!(matches!(
+            repo.set_agent_view("missing", None).await,
+            Err(StoreError::NotFound)
+        ));
+    }
 
     async fn fresh() -> (RepositoryRepo, WorkspaceRepo, Repository) {
         let dir = tempfile::tempdir().unwrap();

@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
 use crate::agent_signals::{AgentSignalEvent, AgentSignals, AttentionResponse};
+use crate::agent_stream::AgentStreams;
 use crate::checks::{CheckEvent, CheckService};
 use crate::domain::usage::TaskUsage;
 use crate::notifications::native::{AttentionActions, AttentionNotifications, AttentionNotifier};
@@ -48,6 +49,11 @@ pub const NOTIFICATION_CREATED_EVENT: &str = "phasr://notification-created";
 /// agent pane (the window was already brought forward). Payload:
 /// `AttentionActivatedPayload`.
 pub const ATTENTION_ACTIVATED_EVENT: &str = "phasr://attention-activated";
+/// A transcript-view task's transcript changed: an item was appended, or
+/// an existing one updated (streaming text, a tool's result). Always the
+/// FULL item, never a delta; streaming updates are coalesced to ≤ 30 Hz
+/// per task. Payload: `TranscriptEvent` (`{taskId, op, item}`).
+pub const TRANSCRIPT_EVENT: &str = "phasr://transcript";
 
 /// Drain `rx` on the async runtime, handing each event to `forward`.
 /// A lagging receiver skips what it missed rather than stopping: every
@@ -147,6 +153,15 @@ pub fn spawn_agent_signal_bridge(signals: &AgentSignals, app: AppHandle) {
         }
         // The board consumes it (diff cache) and emits its own event.
         AgentSignalEvent::ToolFinished { .. } => {}
+    });
+}
+
+/// Re-emit transcript changes from the headless Claude streams. Call once.
+/// A lagging receiver drops updates; a dropped streaming update is healed
+/// by the block's final one, and `get_transcript` is the full snapshot.
+pub fn spawn_transcript_bridge(streams: &AgentStreams, app: AppHandle) {
+    spawn_forwarder(streams.subscribe(), move |event| {
+        let _ = app.emit(TRANSCRIPT_EVENT, event);
     });
 }
 

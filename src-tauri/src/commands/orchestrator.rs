@@ -13,7 +13,8 @@ use tauri::State;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::SessionState;
-use crate::domain::{Agent, PermissionMode};
+use crate::agent_stream::TranscriptItem;
+use crate::domain::{Agent, AgentView, PermissionMode, Workspace};
 use crate::notifications::NotificationService;
 use crate::orchestrator::{
     launch, OrchestratorError, RunIn, StartTaskRequest, StartedTask, TaskOrchestrator, TaskStart,
@@ -127,6 +128,7 @@ pub async fn start_task(
         permission_mode: Some(mode),
         notify_on_attention: input.notify_on_attention.unwrap_or(true),
         run_in: input.run_in.unwrap_or_default(),
+        agent_view: None,
     };
     let start = orchestrator.start_task(request).await?;
     sync_state.request_sync();
@@ -344,7 +346,41 @@ pub async fn interrupt_task(
     orchestrator
         .assert_owner(&task_id, &current.user_id)
         .await?;
-    orchestrator.interrupt_task(&task_id)
+    orchestrator.interrupt_task(&task_id).await
+}
+
+/// The task's transcript (transcript view), oldest first: every item the
+/// stream produced, persisted per task, with updates folded in. Empty for
+/// a task that never ran headless. `phasr://transcript` carries what
+/// changes after this snapshot.
+#[tauri::command]
+pub async fn get_transcript(
+    task_id: String,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<TranscriptItem>, OrchestratorError> {
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
+    Ok(orchestrator.transcript(&task_id).await)
+}
+
+/// Show the task as a transcript or a terminal on this machine (local-only:
+/// never synced), restarting its running agent in the other mode on the
+/// same Claude session. Refused while a turn runs.
+#[tauri::command]
+pub async fn set_agent_view(
+    task_id: String,
+    view: AgentView,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Workspace, OrchestratorError> {
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
+    orchestrator.set_agent_view(&task_id, view).await
 }
 
 #[cfg(test)]
@@ -394,6 +430,7 @@ mod tests {
             permission_mode: None,
             notify_on_attention: true,
             run_in: RunIn::Worktree,
+            agent_view: None,
         }
     }
 

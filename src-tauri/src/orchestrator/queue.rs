@@ -419,6 +419,7 @@ mod tests {
                 permission_mode: None,
                 notify_on_attention: true,
                 run_in: RunIn::Worktree,
+                agent_view: None,
             })
             .await
             .unwrap();

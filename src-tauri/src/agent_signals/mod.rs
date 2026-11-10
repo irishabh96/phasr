@@ -156,6 +156,9 @@ struct TaskEntry {
     last_usage_refresh: Option<Instant>,
     last_usage: Option<TaskUsage>,
     gate: GateState,
+    /// Driven by a headless stream (`agent_stream`) rather than hooks and
+    /// the screen. Its usage comes from the stream too.
+    stream: bool,
 }
 
 /// The initial-prompt gate's memory of the folder-trust dialog.
@@ -381,6 +384,7 @@ impl AgentSignals {
                 last_usage_refresh: None,
                 last_usage: None,
                 gate: GateState::default(),
+                stream: false,
             },
         );
         self.emit(AgentSignalEvent::State(wire));
@@ -723,6 +727,236 @@ impl AgentSignals {
             .map(|e| e.state.to_wire())
     }
 
+    // ── stream (transcript view) ────────────────────────────────────────
+    //
+    // A Claude task in the transcript view runs headless (`agent_stream`):
+    // its turns, tool calls, permission requests and usage arrive on the
+    // stream, exactly. The same registry, events and attention guard serve
+    // it, so the board, sidebar, notifications and approvals don't know
+    // the difference. Every call names the registration `generation`, so a
+    // replaced process can't write over its successor.
+
+    /// Start tracking a stream-driven task: no PTY, no heuristics, no
+    /// transcript reader. `working` = a first message is on its way.
+    pub fn register_stream_task(&self, workspace: &Workspace, cwd: &Path, working: bool) -> u64 {
+        let generation = self.register_task(workspace, Agent::Claude, cwd, None);
+        self.update_stream(&workspace.id, generation, |state, now| {
+            if !working {
+                state.on_stream_turn_end(true, None, now);
+                // Not a turn that ended: keep the synced stamp as it was.
+                state.last_turn_ended_at = workspace.last_turn_ended_at;
+            }
+        });
+        if let Some(entry) = self.inner.tasks.lock().get_mut(&workspace.id) {
+            if entry.generation == generation {
+                entry.stream = true;
+            }
+        }
+        generation
+    }
+
+    /// `--settings` for a stream launch: the repository's permission rules,
+    /// without the hooks (the stream already reports what they would).
+    pub fn stream_settings_args(&self, task_id: &str, policy: &AgentPolicy) -> Option<String> {
+        self.inner.bridge.claude_policy_args(task_id, policy)
+    }
+
+    /// Apply `f` to a stream task's state (this generation only) and emit
+    /// the new state if it changed.
+    fn update_stream<R>(
+        &self,
+        task_id: &str,
+        generation: u64,
+        f: impl FnOnce(&mut TaskSignalState, DateTime<Utc>) -> R,
+    ) -> Option<R> {
+        let (out, changed) = {
+            let mut tasks = self.inner.tasks.lock();
+            let entry = tasks
+                .get_mut(task_id)
+                .filter(|e| e.generation == generation)?;
+            let before = entry.state.to_wire();
+            let out = f(&mut entry.state, Utc::now());
+            let after = entry.state.to_wire();
+            (out, (before != after).then_some(after))
+        };
+        if let Some(wire) = changed {
+            self.emit(AgentSignalEvent::State(wire));
+        }
+        Some(out)
+    }
+
+    /// A turn is running; `tool` = the call it just started.
+    pub fn stream_working(&self, task_id: &str, generation: u64, tool: Option<(&str, &serde_json::Value)>) {
+        self.update_stream(task_id, generation, |state, now| {
+            let activity = tool.map(|(name, input)| state::activity_line(name, input, &state.cwd));
+            state.on_stream_working(activity, now);
+        });
+    }
+
+    /// The CLI asks permission for `tool`: raise the card (summary text from
+    /// the same `tool_attention` the hooks use, so `attention_text` words
+    /// the notification). Returns its id; `None` if the task isn't this
+    /// generation's any more.
+    pub fn stream_permission(
+        &self,
+        task_id: &str,
+        generation: u64,
+        tool: &str,
+        input: &serde_json::Value,
+        can_allow_for_task: bool,
+    ) -> Option<String> {
+        self.update_stream(task_id, generation, |state, now| {
+            let mut attention = state::tool_attention(Agent::Claude, tool, input, &state.cwd, now);
+            // The control response answers any tool (plan approval too):
+            // there's no screen whose options could mean something else.
+            attention.can_respond = true;
+            attention.can_allow_for_task = can_allow_for_task;
+            let id = attention.id.clone();
+            state.raise_stream_attention(attention, now);
+            id
+        })
+    }
+
+    /// The CLI withdrew a request (an interrupt cancels it).
+    pub fn stream_attention_cleared(&self, task_id: &str, generation: u64, attention_id: &str) {
+        self.update_stream(task_id, generation, |state, now| {
+            state.on_stream_attention_cleared(attention_id, now)
+        });
+    }
+
+    /// Validate and consume an in-app answer to a stream permission card —
+    /// the same stale-id guard as `claim_attention`. On `Err` the caller
+    /// must send nothing. Allowed or denied, the turn carries on (a denied
+    /// tool goes back to the model), so the task is working again.
+    pub fn claim_stream_attention(
+        &self,
+        task_id: &str,
+        attention_id: &str,
+        response: AttentionResponse,
+    ) -> Result<(), AgentSignalError> {
+        let wire = {
+            let mut tasks = self.inner.tasks.lock();
+            let entry = tasks
+                .get_mut(task_id)
+                .ok_or(AgentSignalError::StaleAttention)?;
+            let now = Utc::now();
+            entry
+                .state
+                .claim_attention(attention_id, response, now)
+                .map_err(|e| match e {
+                    ClaimError::Stale => AgentSignalError::StaleAttention,
+                    ClaimError::NotRespondable => AgentSignalError::NotRespondable,
+                    ClaimError::NoTaskScope => AgentSignalError::AllowTaskUnavailable,
+                })?;
+            entry.state.on_stream_working(None, now);
+            entry.state.to_wire()
+        };
+        self.emit(AgentSignalEvent::State(wire));
+        Ok(())
+    }
+
+    /// A turn's `result`: stamp (and sync) the turn end; `idle` unless a
+    /// queued message starts the next turn.
+    pub async fn stream_turn_ended(
+        &self,
+        task_id: &str,
+        generation: u64,
+        idle: bool,
+        last_text: Option<String>,
+    ) {
+        let Some(at) = self.update_stream(task_id, generation, |state, now| {
+            state.on_stream_turn_end(idle, last_text, now);
+            now
+        }) else {
+            return;
+        };
+        match self.inner.workspaces.set_last_turn_ended_at(task_id, at).await {
+            Ok(()) => self.emit(AgentSignalEvent::TurnEnded),
+            Err(err) => eprintln!("failed to record turn end for {task_id}: {err}"),
+        }
+    }
+
+    /// The CLI's session id, for the next resume.
+    pub async fn stream_session(&self, task_id: &str, generation: u64, session_id: &str) {
+        let changed = self.update_stream(task_id, generation, |state, _| {
+            let changed = state.session_id.as_deref() != Some(session_id);
+            state.session_id = Some(session_id.to_string());
+            changed
+        });
+        if changed == Some(true) && launch::is_valid_session_id(session_id) {
+            if let Err(err) = self
+                .inner
+                .workspaces
+                .set_agent_session_id(task_id, session_id)
+                .await
+            {
+                eprintln!("failed to record agent session for {task_id}: {err}");
+            }
+        }
+    }
+
+    /// A tool call finished: a file-changing one makes the task's cached
+    /// diff stale (`ToolFinished`, as for `PostToolUse`).
+    pub fn stream_tool_finished(&self, task_id: &str, generation: u64, tool: &str) {
+        if !tool_may_modify_files(tool) {
+            return;
+        }
+        let repository_id = self
+            .inner
+            .tasks
+            .lock()
+            .get(task_id)
+            .filter(|e| e.generation == generation)
+            .map(|e| e.state.repository_id.clone());
+        if let Some(repository_id) = repository_id {
+            self.emit(AgentSignalEvent::ToolFinished {
+                task_id: task_id.to_string(),
+                repository_id,
+            });
+        }
+    }
+
+    /// Add one turn's exact usage (from its `result`) to the task's totals,
+    /// persist and emit them.
+    pub async fn stream_usage(&self, task_id: &str, generation: u64, turn: &TaskUsage) {
+        let known = {
+            let tasks = self.inner.tasks.lock();
+            let Some(entry) = tasks.get(task_id).filter(|e| e.generation == generation) else {
+                return;
+            };
+            entry.last_usage.clone()
+        };
+        let base = match known {
+            Some(usage) => Some(usage),
+            None => self.inner.usage_repo.get(task_id).await.ok().flatten(),
+        };
+        let total = add_usage(base, turn);
+        {
+            let mut tasks = self.inner.tasks.lock();
+            let Some(entry) = tasks.get_mut(task_id).filter(|e| e.generation == generation) else {
+                return;
+            };
+            entry.last_usage = Some(total.clone());
+        }
+        if let Err(err) = self.inner.usage_repo.upsert(task_id, &total).await {
+            eprintln!("failed to store usage for {task_id}: {err}");
+        }
+        self.emit(AgentSignalEvent::Usage {
+            task_id: task_id.to_string(),
+            usage: total,
+        });
+    }
+
+    /// Whether `task_id` is tracked from a headless stream right now.
+    #[cfg(test)]
+    pub fn is_stream_task(&self, task_id: &str) -> bool {
+        self.inner
+            .tasks
+            .lock()
+            .get(task_id)
+            .is_some_and(|e| e.stream)
+    }
+
     // ── hooks ───────────────────────────────────────────────────────────
 
     async fn run_hook_watcher(self) {
@@ -785,6 +1019,11 @@ impl AgentSignals {
             let Some(entry) = tasks.get_mut(task_id) else {
                 return;
             };
+            // A headless task reports on its stream; a hook file left by the
+            // terminal it replaced must not drive the same state twice.
+            if entry.stream {
+                return;
+            }
             let before = entry.state.to_wire();
             let effects = entry.state.apply_hook(signal, session, Utc::now());
             if effects.contains(&Effect::UsageDirty) {
@@ -1002,6 +1241,11 @@ impl AgentSignals {
             .await
             .ok()
             .flatten();
+        // Transcript view: the stream's exact per-turn usage is the source
+        // (`stream_usage`); re-pricing the session files would overwrite it.
+        if workspace.in_transcript_view() {
+            return stored;
+        }
         let Some(mut target) = self.target_for(workspace) else {
             return stored;
         };
@@ -1177,6 +1421,35 @@ pub fn split_keystrokes(keys: &str) -> Vec<&str> {
         out.push(&keys[start..i]);
     }
     out
+}
+
+/// `base` plus one turn's usage. A turn the CLI didn't price (or a base
+/// that never was) leaves the total a lower bound: `cost_partial`.
+fn add_usage(base: Option<TaskUsage>, turn: &TaskUsage) -> TaskUsage {
+    let Some(base) = base else {
+        return TaskUsage {
+            updated_at: Utc::now(),
+            ..turn.clone()
+        };
+    };
+    let (cost, partial) = match (base.cost_usd_micros, turn.cost_usd_micros) {
+        (Some(a), Some(b)) => (Some(a + b), false),
+        (Some(a), None) => (Some(a), true),
+        (None, Some(b)) => (Some(b), base.input_tokens + base.output_tokens > 0),
+        (None, None) => (None, false),
+    };
+    TaskUsage {
+        source: turn.source,
+        model: turn.model.clone().or(base.model),
+        input_tokens: base.input_tokens + turn.input_tokens,
+        output_tokens: base.output_tokens + turn.output_tokens,
+        cache_read_tokens: base.cache_read_tokens + turn.cache_read_tokens,
+        cache_write_tokens: base.cache_write_tokens + turn.cache_write_tokens,
+        cost_usd_micros: cost,
+        cost_partial: partial || base.cost_partial || turn.cost_partial,
+        updated_at: Utc::now(),
+        transcript_path: base.transcript_path,
+    }
 }
 
 /// Tools whose completion can change the worktree (so the task's cached
@@ -1938,5 +2211,113 @@ mod tests {
         // Still held well past the old 30 s blind-type path's trigger point
         // would matter: nothing here lets the prompt through.
         assert_eq!(gate.check(), PromptGateDecision::Wait);
+    }
+
+    fn turn_usage(input: i64, cost_micros: Option<i64>) -> TaskUsage {
+        TaskUsage {
+            source: crate::domain::usage::UsageSource::Claude,
+            model: Some("claude-haiku-5-5".into()),
+            input_tokens: input,
+            output_tokens: 10,
+            cache_read_tokens: 100,
+            cache_write_tokens: 5,
+            cost_usd_micros: cost_micros,
+            cost_partial: cost_micros.is_none(),
+            updated_at: Utc::now(),
+            transcript_path: None,
+        }
+    }
+
+    /// The stream path through the same registry: a permission card with
+    /// the exact tool, the stale-id guard, allow-for-task only when the
+    /// request offered it, turn end + session + usage persisted, and a
+    /// replaced generation that can't write.
+    #[tokio::test]
+    async fn stream_tasks_share_the_registry_events_and_guard() {
+        use serde_json::json;
+        let mut f = fixture(Agent::Claude).await;
+        f.workspace.agent_view = Some(crate::domain::AgentView::Transcript);
+        let mut rx = f.signals.subscribe();
+        let cwd = PathBuf::from(f.workspace.worktree_path.clone().unwrap());
+        let gen = f.signals.register_stream_task(&f.workspace, &cwd, false);
+        assert!(f.signals.is_stream_task(&f.workspace.id));
+        let id = f.workspace.id.clone();
+        assert_eq!(f.signals.state(&id).unwrap().state, AgentStateKind::Idle);
+
+        f.signals.stream_working(&id, gen, None);
+        let input = json!({"command": "touch a.txt"});
+        let attention_id = f.signals.stream_permission(&id, gen, "Bash", &input, false).unwrap();
+        let state = f.signals.state(&id).unwrap();
+        assert_eq!(state.state, AgentStateKind::NeedsYou);
+        assert!(f.signals.awaiting_answer(&id));
+        let card = state.attention.unwrap();
+        assert_eq!((card.kind, card.title.as_str()), (AttentionKind::Shell, "Run a shell command"));
+        assert_eq!(card.detail.as_deref(), Some("touch a.txt"));
+        assert!(card.can_respond && !card.can_allow_for_task);
+
+        assert!(matches!(
+            f.signals.claim_stream_attention(&id, "stale", AttentionResponse::AllowOnce),
+            Err(AgentSignalError::StaleAttention)
+        ));
+        assert!(matches!(
+            f.signals.claim_stream_attention(&id, &attention_id, AttentionResponse::AllowTask),
+            Err(AgentSignalError::AllowTaskUnavailable)
+        ));
+        f.signals
+            .claim_stream_attention(&id, &attention_id, AttentionResponse::Deny)
+            .unwrap();
+        assert_eq!(f.signals.state(&id).unwrap().state, AgentStateKind::Working);
+        assert!(
+            f.signals
+                .claim_stream_attention(&id, &attention_id, AttentionResponse::Deny)
+                .is_err(),
+            "answered once"
+        );
+
+        let second = f.signals.stream_permission(&id, gen, "Edit", &json!({"file_path": "/x"}), true).unwrap();
+        assert!(f.signals.state(&id).unwrap().attention.unwrap().can_allow_for_task);
+        f.signals.stream_attention_cleared(&id, gen, &second);
+        assert_eq!(f.signals.state(&id).unwrap().state, AgentStateKind::Working);
+
+        f.signals.stream_session(&id, gen, "7350341e-f7ae-4d3a-8fb8-95f7e09ab595").await;
+        assert_eq!(
+            f.workspaces.get_agent_session_id(&id).await.unwrap().as_deref(),
+            Some("7350341e-f7ae-4d3a-8fb8-95f7e09ab595")
+        );
+        f.signals.stream_turn_ended(&id, gen, true, Some("done".into())).await;
+        let state = f.signals.state(&id).unwrap();
+        assert_eq!(state.state, AgentStateKind::Idle);
+        assert!(f.workspaces.get(&id).await.unwrap().last_turn_ended_at.is_some());
+
+        f.signals.stream_usage(&id, gen, &turn_usage(4, Some(160_918))).await;
+        f.signals.stream_usage(&id, gen, &turn_usage(6, Some(21_344))).await;
+        let total = f.signals.usage_for(&f.workspace).await.unwrap();
+        assert_eq!((total.input_tokens, total.output_tokens), (10, 20));
+        assert_eq!((total.cost_usd_micros, total.cost_partial), (Some(182_262), false));
+        f.signals.stream_usage(&id, gen, &turn_usage(1, None)).await;
+        assert!(f.signals.usage_for(&f.workspace).await.unwrap().cost_partial);
+        let usage_events = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|e| matches!(e, AgentSignalEvent::Usage { .. }))
+            .count();
+        assert_eq!(usage_events, 3);
+
+        // A newer registration (the process was replaced): the old one's
+        // events are dropped.
+        let newer = f.signals.register_stream_task(&f.workspace, &cwd, false);
+        assert!(f.signals.stream_permission(&id, gen, "Bash", &input, false).is_none());
+        f.signals.stream_working(&id, newer, None);
+        assert_eq!(f.signals.state(&id).unwrap().state, AgentStateKind::Working);
+        f.signals.mark_exited(&id);
+        assert_eq!(f.signals.state(&id).unwrap().state, AgentStateKind::Exited);
+    }
+
+    #[test]
+    fn usage_adds_per_turn_and_marks_unpriced_turns_partial() {
+        let a = add_usage(None, &turn_usage(4, Some(10)));
+        assert_eq!((a.input_tokens, a.cost_usd_micros, a.cost_partial), (4, Some(10), false));
+        let b = add_usage(Some(a), &turn_usage(6, Some(5)));
+        assert_eq!((b.input_tokens, b.cache_read_tokens, b.cost_usd_micros), (10, 200, Some(15)));
+        let c = add_usage(Some(b), &turn_usage(1, None));
+        assert_eq!((c.cost_usd_micros, c.cost_partial), (Some(15), true));
     }
 }

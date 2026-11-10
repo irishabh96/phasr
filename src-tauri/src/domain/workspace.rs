@@ -114,6 +114,40 @@ impl TaskOutcome {
     }
 }
 
+/// How a task's agent is shown and run on this machine: Phasr's own
+/// transcript over Claude's headless stream mode, or the agent's TUI in a
+/// PTY. Local-only (`workspaces.agent_view`, never synced); `None` on the
+/// row means terminal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentView {
+    Transcript,
+    Terminal,
+}
+
+impl AgentView {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transcript => "transcript",
+            Self::Terminal => "terminal",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "transcript" => Self::Transcript,
+            "terminal" => Self::Terminal,
+            _ => return None,
+        })
+    }
+
+    /// The view a new task with `agent` starts in. Phase 1: only Claude has
+    /// a headless stream mode.
+    pub fn default_for(agent: Agent) -> Option<Self> {
+        (agent == Agent::Claude).then_some(Self::Transcript)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -173,6 +207,18 @@ pub struct Workspace {
     /// `open` | `draft` | `merged` | `closed`, as last seen. Open set.
     #[serde(default)]
     pub pr_state: Option<String>,
+    /// Transcript or terminal, on THIS machine. `None` = terminal (rows from
+    /// before the transcript view, synced rows, non-Claude agents).
+    #[serde(default)]
+    pub agent_view: Option<AgentView>,
+}
+
+impl Workspace {
+    /// Whether this task's agent runs headless with Phasr's transcript
+    /// (Claude only, and only when its view says so).
+    pub fn in_transcript_view(&self) -> bool {
+        self.agent == Some(Agent::Claude) && self.agent_view == Some(AgentView::Transcript)
+    }
 }
 
 fn default_true() -> bool {
@@ -211,6 +257,7 @@ impl Workspace {
             pr_number: None,
             pr_url: None,
             pr_state: None,
+            agent_view: None,
         }
     }
 
@@ -289,6 +336,27 @@ mod tests {
         assert_eq!(TaskOutcome::from_str("merged"), Some(TaskOutcome::Merged));
         assert_eq!(TaskOutcome::Closed.as_str(), "closed");
         assert_eq!(TaskOutcome::from_str("nope"), None);
+    }
+
+    #[test]
+    fn agent_view_round_trips_and_only_claude_defaults_to_transcript() {
+        for view in [AgentView::Transcript, AgentView::Terminal] {
+            assert_eq!(AgentView::from_str(view.as_str()), Some(view));
+            assert_eq!(serde_json::to_value(view).unwrap(), view.as_str());
+        }
+        assert_eq!(AgentView::from_str("tui"), None);
+        assert_eq!(AgentView::default_for(Agent::Claude), Some(AgentView::Transcript));
+        assert_eq!(AgentView::default_for(Agent::Codex), None);
+
+        let mut ws = Workspace::new("r".into(), "n".into(), "claude".into());
+        assert!(serde_json::to_value(&ws).unwrap()["agentView"].is_null());
+        ws.agent = Some(Agent::Claude);
+        assert!(!ws.in_transcript_view(), "null means terminal");
+        ws.agent_view = Some(AgentView::Transcript);
+        assert!(ws.in_transcript_view());
+        assert_eq!(serde_json::to_value(&ws).unwrap()["agentView"], "transcript");
+        ws.agent = Some(Agent::Codex);
+        assert!(!ws.in_transcript_view(), "Claude only");
     }
 
     #[test]

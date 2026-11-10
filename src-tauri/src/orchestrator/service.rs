@@ -28,8 +28,12 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::agent_signals::{AgentSignals, AttentionResponse, LaunchTask};
+use crate::agent_stream::protocol::{self, SessionArg};
+use crate::agent_stream::{AgentStreams, StreamHandle, StreamSpec, SystemLevel, TranscriptItem};
 use crate::domain::repository_config::validate_branch_name;
-use crate::domain::{Agent, PermissionMode, Repository, Workspace, WorkspaceKind, WorkspaceStatus};
+use crate::domain::{
+    Agent, AgentView, PermissionMode, Repository, Workspace, WorkspaceKind, WorkspaceStatus,
+};
 use crate::git;
 use crate::pty::handle::PtyHandle;
 use crate::pty::{PtyEvent, SpawnSpec, TaskRuntime};
@@ -45,6 +49,10 @@ use super::setup::{self, SetupLog, TaskConfig, TaskSetup};
 const SIGINT_GRACE: Duration = Duration::from_secs(3);
 /// Per step of the SIGHUP → SIGTERM → SIGKILL escalation on stop.
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
+/// How long a view switch waits for the old process to be gone before it
+/// starts the new one on the same session (TERM, then KILL at
+/// `TERMINATE_GRACE`, fits well inside).
+const SWITCH_WAIT: Duration = Duration::from_secs(5);
 
 /// Pause between the keystrokes of a multi-key attention answer: long
 /// enough for an Ink TUI to process (and re-render) one key before the
@@ -92,6 +100,9 @@ pub struct StartTaskRequest {
     pub permission_mode: Option<PermissionMode>,
     pub notify_on_attention: bool,
     pub run_in: RunIn,
+    /// `None` → the agent's default (`AgentView::default_for`: transcript
+    /// for Claude). In-place tasks always run in the terminal.
+    pub agent_view: Option<AgentView>,
 }
 
 /// A task row to save without starting it (`TaskOrchestrator::create_row`),
@@ -206,6 +217,9 @@ pub struct TaskOrchestrator {
     /// the poll would start the same failing checkout every two seconds and
     /// sit on "Setting up the worktree…" forever.
     recreate_failures: Arc<parking_lot::Mutex<HashMap<String, OrchestratorError>>>,
+    /// Headless Claude processes behind transcript-view tasks: the PTY
+    /// runtime's counterpart, under the same per-task spawn locks.
+    streams: AgentStreams,
 }
 
 /// Removes a task from `TaskOrchestrator::starting` when setup ends —
@@ -267,6 +281,7 @@ impl TaskOrchestrator {
     ) -> Self {
         let (status_tx, _rx) = broadcast::channel(STATUS_BROADCAST_CAPACITY);
         Self {
+            streams: AgentStreams::new(runtime.log_dir.clone()),
             workspaces,
             repositories,
             runtime,
@@ -295,6 +310,12 @@ impl TaskOrchestrator {
             signals: self.signals.clone(),
             task_id: task_id.to_string(),
         })
+    }
+
+    /// The headless Claude processes (transcript view): their transcript
+    /// events, and app-quit teardown.
+    pub fn streams(&self) -> &AgentStreams {
+        &self.streams
     }
 
     /// Whether `task_id` is being set up to launch right now.
@@ -535,9 +556,12 @@ impl TaskOrchestrator {
     }
 
     /// `(task_id, last-output wall-clock ms)` for every task with a live
-    /// PTY. Tasks whose PTY has exited are absent, not zero.
+    /// PTY or stream process (its last stdout line). Tasks whose process
+    /// has exited are absent, not zero.
     pub fn task_activity(&self) -> Vec<(String, i64)> {
-        self.runtime.activity()
+        let mut activity = self.runtime.activity();
+        activity.extend(self.streams.activity());
+        activity
     }
 
     /// The repository a task is created in, owner-scoped when there's a
@@ -736,7 +760,7 @@ impl TaskOrchestrator {
             });
         }
 
-        let workspace = Self::new_task_row(TaskRow {
+        let mut workspace = Self::new_task_row(TaskRow {
             repository_id: request.repository_id.clone(),
             agent: request.agent,
             command: request.command,
@@ -750,6 +774,9 @@ impl TaskOrchestrator {
             queued: false,
             depends_on: None,
         });
+        if let Some(view) = request.agent_view {
+            workspace.agent_view = Some(view);
+        }
         // Claimed before the row exists and held until the agent spawns or
         // the start fails: the row is `pending` without a branch until its
         // worktree is cut, and unclaimed it would read as a Draft ("Start
@@ -1003,6 +1030,8 @@ impl TaskOrchestrator {
         workspace.base_branch = row.base_branch;
         workspace.queued_at = row.queued.then(Utc::now);
         workspace.depends_on_workspace_id = row.depends_on;
+        // New Claude tasks show their conversation as a transcript.
+        workspace.agent_view = AgentView::default_for(row.agent);
         workspace
     }
 
@@ -1099,6 +1128,16 @@ impl TaskOrchestrator {
         if mode_changed.is_some() {
             self.trust_mode_here(task_id, mode_changed).await;
         }
+        // A draft that changed agent starts in that agent's default view.
+        let updated = match patch.agent.filter(|agent| current.agent != Some(*agent)) {
+            Some(agent) => {
+                self.workspaces
+                    .set_agent_view(task_id, AgentView::default_for(agent))
+                    .await?;
+                self.workspaces.get(task_id).await?
+            }
+            None => updated,
+        };
         self.broadcast_status(TaskStatusEvent {
             task_id: updated.id.clone(),
             repository_id: updated.repository_id.clone(),
@@ -1370,6 +1409,37 @@ impl TaskOrchestrator {
             )
             .await?;
 
+        if updated.in_transcript_view() {
+            let prompt = updated
+                .prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string);
+            if let Some(stream) = self
+                .start_stream(&updated, &worktree_path, command.command.as_deref(), false, prompt)
+                .await?
+            {
+                self.broadcast_status(TaskStatusEvent {
+                    task_id: task_id.to_string(),
+                    repository_id: updated.repository_id.clone(),
+                    status: WorkspaceStatus::Running,
+                    exit_code: None,
+                });
+                self.spawn_stream_exit_watcher(updated.repository_id.clone(), stream);
+                return Ok(StartedTask {
+                    task_id: task_id.to_string(),
+                    workspace: self.workspaces.get(task_id).await?,
+                });
+            }
+        }
+        // `start_stream` couldn't use it and moved it to the terminal view.
+        let updated = if updated.in_transcript_view() {
+            self.workspaces.get(task_id).await?
+        } else {
+            updated
+        };
+
         let launch = self
             .agent_launch(
                 &updated,
@@ -1406,13 +1476,9 @@ impl TaskOrchestrator {
         })
     }
 
-    /// Ids of tasks with a live PTY.
+    /// Ids of tasks with a live agent process (a PTY or a stream).
     pub fn running_task_ids(&self) -> std::collections::HashSet<String> {
-        self.runtime
-            .activity()
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect()
+        self.task_activity().into_iter().map(|(id, _)| id).collect()
     }
 
     /// Run the agent in the repository's own checkout, on its `local`
@@ -1558,27 +1624,33 @@ impl TaskOrchestrator {
         // one (whose delayed terminate would then kill what the user is
         // looking at). Its exit watcher sees it was replaced and leaves
         // the row alone; the row is settled below.
-        let handle = self
-            .runtime
-            .retire(task_id)
-            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        if let Some(stream) = self.streams.retire(task_id) {
+            // A headless Claude: its whole process group, TERM → KILL. The
+            // session is on disk; the next message resumes it.
+            stream.terminate(TERMINATE_GRACE);
+        } else {
+            let handle = self
+                .runtime
+                .retire(task_id)
+                .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
 
-        // Best-effort SIGINT. Errors are non-fatal — we'll escalate.
-        let _ = handle.interrupt();
+            // Best-effort SIGINT. Errors are non-fatal — we'll escalate.
+            let _ = handle.interrupt();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(SIGINT_GRACE).await;
+                // Only THIS handle: a session reopened meanwhile is another
+                // PTY and is never touched.
+                if handle.exit_code().is_none() {
+                    // The whole terminal session (the agent and anything it
+                    // or the user started), HUP → TERM → KILL.
+                    handle.terminate(TERMINATE_GRACE);
+                }
+            });
+        }
         if let Some(signals) = &self.signals {
             signals.mark_exited(task_id);
         }
-
-        tokio::spawn(async move {
-            tokio::time::sleep(SIGINT_GRACE).await;
-            // Only THIS handle: a session reopened meanwhile is another
-            // PTY and is never touched.
-            if handle.exit_code().is_none() {
-                // The whole terminal session (the agent and anything it
-                // or the user started), HUP → TERM → KILL.
-                handle.terminate(TERMINATE_GRACE);
-            }
-        });
 
         let updated = self
             .workspaces
@@ -1623,6 +1695,20 @@ impl TaskOrchestrator {
         if let Some(signals) = &self.signals {
             signals.forget_task(task_id);
         }
+        if let Some(stream) = self.streams.retire(task_id) {
+            let _ = self
+                .workspaces
+                .update(
+                    task_id,
+                    WorkspaceUpdate {
+                        status: Some(WorkspaceStatus::Stopped),
+                        finished_at: Some(Some(Utc::now())),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            stream.terminate(TERMINATE_GRACE);
+        }
         let Some(handle) = self.runtime.get(task_id) else {
             return;
         };
@@ -1656,7 +1742,17 @@ impl TaskOrchestrator {
         let lock = self.spawn_lock(task_id);
         let _spawning = lock.lock().await;
         let workspace = self.workspaces.get(task_id).await?;
+        self.open_terminal_locked(workspace, rows, cols).await
+    }
 
+    /// `open_terminal` for a caller holding the task's spawn lock.
+    async fn open_terminal_locked(
+        &self,
+        workspace: Workspace,
+        rows: u16,
+        cols: u16,
+    ) -> Result<TaskTerminalSubscription, OrchestratorError> {
+        let task_id = workspace.id.as_str();
         if let Some(handle) = self.runtime.get(task_id) {
             let (replay, rx) = handle.subscribe_with_replay();
             return Ok(TaskTerminalSubscription {
@@ -1686,6 +1782,11 @@ impl TaskOrchestrator {
         // `launch` — the explicit start — never by opening its terminal.
         if workspace.status == WorkspaceStatus::Pending && workspace.started_at.is_none() {
             return Err(OrchestratorError::NotStarted);
+        }
+        // Its agent runs headless: there is no terminal to resume, and one
+        // here would run a second Claude on the same session.
+        if workspace.in_transcript_view() {
+            return Err(OrchestratorError::TranscriptView);
         }
 
         // Its worktree was deleted (by hand, a disk cleaner, another
@@ -1804,7 +1905,13 @@ impl TaskOrchestrator {
         Ok(())
     }
 
-    pub fn interrupt_task(&self, task_id: &str) -> Result<(), OrchestratorError> {
+    /// Interrupt the agent's current turn without ending its session: the
+    /// CLI's own interrupt request for a headless Claude (a no-op between
+    /// turns), Ctrl-C in a terminal.
+    pub async fn interrupt_task(&self, task_id: &str) -> Result<(), OrchestratorError> {
+        if let Some(stream) = self.streams.get(task_id) {
+            return Ok(stream.interrupt().await?);
+        }
         let handle = self
             .runtime
             .get(task_id)
@@ -1835,10 +1942,10 @@ impl TaskOrchestrator {
         text: &str,
         submit: bool,
     ) -> Result<(), OrchestratorError> {
-        let handle = self
-            .runtime
-            .get(task_id)
-            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        let handle = match self.runtime.get(task_id) {
+            Some(handle) => handle,
+            None => return self.send_stream_message(task_id, text, submit).await,
+        };
         // A message ends in Enter, and Enter on an approval dialog picks
         // the highlighted option — "Yes". The dialog is answered through
         // `respond_to_attention` (or the terminal), never the composer.
@@ -1874,6 +1981,10 @@ impl TaskOrchestrator {
         attention_id: &str,
         response: AttentionResponse,
     ) -> Result<(), OrchestratorError> {
+        // A headless Claude asked over its control protocol: answer there.
+        if let Some(stream) = self.streams.get(task_id) {
+            return Ok(stream.respond(attention_id, response).await?);
+        }
         let handle = self
             .runtime
             .get(task_id)
@@ -1893,6 +2004,342 @@ impl TaskOrchestrator {
             handle.write(key.as_bytes())?;
         }
         Ok(())
+    }
+
+    // ── transcript view (headless Claude) ───────────────────────────────
+
+    /// Start `workspace`'s Claude in stream mode in `cwd`, registered with
+    /// `AgentSignals`. `command` is the task's resolved launch line (with
+    /// the permission mode's flags); `resuming` continues its recorded
+    /// session; `first_message` goes out once it's up.
+    ///
+    /// `Ok(None)` = this command can't run headless (a wrapper or alias
+    /// that hides `claude`, or a template that bakes the prompt into the
+    /// command line): the task is moved to the terminal view, for the
+    /// caller to launch there instead.
+    async fn start_stream(
+        &self,
+        workspace: &Workspace,
+        cwd: &Path,
+        command: Option<&str>,
+        resuming: bool,
+        first_message: Option<String>,
+    ) -> Result<Option<Arc<StreamHandle>>, OrchestratorError> {
+        let session = if resuming {
+            match self.workspaces.get_agent_session_id(&workspace.id).await? {
+                Some(id) if crate::agent_signals::launch::is_valid_session_id(&id) => {
+                    SessionArg::Resume(id)
+                }
+                // Ran before but never recorded a session (it predates
+                // session ids, or never got past boot).
+                _ => SessionArg::Continue,
+            }
+        } else {
+            SessionArg::New(uuid::Uuid::new_v4().to_string())
+        };
+        let setup = self.setup_for(&workspace.repository_id).await;
+        let settings = self
+            .signals
+            .as_ref()
+            .and_then(|s| s.stream_settings_args(&workspace.id, &setup.policy()));
+        let line = command
+            .filter(|c| {
+                !crate::agent_signals::launch::command_embeds_prompt(c, workspace.prompt.as_deref())
+            })
+            .and_then(|c| protocol::stream_command(c, &session, settings.as_deref()));
+        let Some(line) = line else {
+            eprintln!(
+                "[stream] task {}: its command can't run headless; using the terminal",
+                workspace.id
+            );
+            self.workspaces
+                .set_agent_view(&workspace.id, Some(AgentView::Terminal))
+                .await?;
+            return Ok(None);
+        };
+        let env = match &self.task_config {
+            Some(config) => config.api_env(Agent::Claude).await,
+            None => Vec::new(),
+        };
+        let registration = self.signals.as_ref().map(|signals| {
+            let generation =
+                signals.register_stream_task(workspace, cwd, first_message.is_some());
+            (signals.clone(), generation)
+        });
+        let spec = StreamSpec {
+            task_id: workspace.id.clone(),
+            cwd: cwd.to_path_buf(),
+            command: line,
+            env,
+            first_message,
+            signals: registration,
+        };
+        match self.streams.spawn(spec).await {
+            Ok(handle) => Ok(Some(handle)),
+            Err(err) => {
+                if let Some(signals) = &self.signals {
+                    signals.mark_exited(&workspace.id);
+                }
+                Err(err.into())
+            }
+        }
+    }
+
+    /// Watch a stream process for its exit. A headless Claude only exits
+    /// when killed or crashed — its conversation is safe on disk either
+    /// way — so a still-`running` row becomes `stopped` (with the code),
+    /// and the next message resumes the session. A process that was
+    /// replaced or retired (stop, view switch) is left to whoever did that.
+    fn spawn_stream_exit_watcher(&self, repository_id: String, handle: Arc<StreamHandle>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let exit_code = handle.wait_exit().await;
+            let task_id = handle.task_id.clone();
+            if !this.streams.is_current(&handle) {
+                return;
+            }
+            this.streams.drop_task(&task_id);
+            if let Some(signals) = &this.signals {
+                signals.mark_exited(&task_id);
+            }
+            let running = this
+                .workspaces
+                .get(&task_id)
+                .await
+                .is_ok_and(|w| w.status == WorkspaceStatus::Running);
+            if !running {
+                return;
+            }
+            let stopped = this
+                .workspaces
+                .update(
+                    &task_id,
+                    WorkspaceUpdate {
+                        status: Some(WorkspaceStatus::Stopped),
+                        exit_code: Some(exit_code),
+                        finished_at: Some(Some(Utc::now())),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            if stopped.is_ok() {
+                this.broadcast_status(TaskStatusEvent {
+                    task_id,
+                    repository_id,
+                    status: WorkspaceStatus::Stopped,
+                    exit_code,
+                });
+            }
+        });
+    }
+
+    /// The composer's send for a task with no PTY: a transcript-view task's
+    /// stream — resumed first if it isn't running. Same rules as the PTY
+    /// path: the text is sanitised, and refused while a permission card is
+    /// up (the card is answered with `respond_to_attention`).
+    async fn send_stream_message(
+        &self,
+        task_id: &str,
+        text: &str,
+        submit: bool,
+    ) -> Result<(), OrchestratorError> {
+        let live = self.streams.get(task_id);
+        if live.is_none()
+            && !self
+                .workspaces
+                .get(task_id)
+                .await
+                .is_ok_and(|w| w.in_transcript_view())
+        {
+            return Err(OrchestratorError::TaskNotRunning(task_id.to_string()));
+        }
+        if !submit {
+            return Err(OrchestratorError::MessageNotSubmitted);
+        }
+        if self
+            .signals
+            .as_ref()
+            .is_some_and(|s| s.awaiting_answer(task_id))
+        {
+            return Err(OrchestratorError::AwaitingAnswer);
+        }
+        let text = crate::pty::handle::sanitize_message(text);
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        match live {
+            Some(stream) => Ok(stream.send(&text).await?),
+            None => self.resume_stream(task_id, text).await,
+        }
+    }
+
+    /// Resume a stopped transcript-view task's session in stream mode, with
+    /// `message` as its next turn — what reopening a terminal does for a
+    /// terminal task.
+    async fn resume_stream(&self, task_id: &str, message: String) -> Result<(), OrchestratorError> {
+        let lock = self.spawn_lock(task_id);
+        let _spawning = lock.lock().await;
+        // Someone else resumed it while we waited.
+        if let Some(stream) = self.streams.get(task_id) {
+            return Ok(stream.send(&message).await?);
+        }
+        let workspace = self.workspaces.get(task_id).await?;
+        if matches!(
+            workspace.status,
+            WorkspaceStatus::Completed | WorkspaceStatus::Failed | WorkspaceStatus::Archived
+        ) {
+            return Err(OrchestratorError::AlreadyFinished(
+                workspace.status.as_str().into(),
+            ));
+        }
+        if self.is_starting(task_id) {
+            return Err(OrchestratorError::Starting);
+        }
+        if workspace.status == WorkspaceStatus::Pending && workspace.started_at.is_none() {
+            return Err(OrchestratorError::NotStarted);
+        }
+        let cwd = self.cwd_for_task(&workspace).await?;
+        let command = self.launch_command(&workspace).await?;
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Running),
+                    started_at: Some(Some(Utc::now())),
+                    exit_code: Some(None),
+                    finished_at: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let Some(stream) = self
+            .start_stream(&updated, &cwd, command.command.as_deref(), true, Some(message))
+            .await?
+        else {
+            // Moved to the terminal view: the frontend opens the terminal,
+            // which resumes the session there.
+            return Err(OrchestratorError::TranscriptView);
+        };
+        self.broadcast_status(TaskStatusEvent {
+            task_id: task_id.to_string(),
+            repository_id: updated.repository_id.clone(),
+            status: WorkspaceStatus::Running,
+            exit_code: None,
+        });
+        self.spawn_stream_exit_watcher(updated.repository_id, stream);
+        Ok(())
+    }
+
+    /// The task's transcript (`get_transcript`). Reads the file off the
+    /// async runtime.
+    pub async fn transcript(&self, task_id: &str) -> Vec<TranscriptItem> {
+        let streams = self.streams.clone();
+        let task_id = task_id.to_string();
+        tokio::task::spawn_blocking(move || streams.transcript(&task_id))
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Show `task_id` as a transcript or a terminal on this machine.
+    ///
+    /// If its agent is running, the running process is stopped and the
+    /// other one started on the SAME Claude session (`--resume`), so the
+    /// conversation carries over. Refused while a turn runs or a permission
+    /// is pending (`TurnRunning`): the restart would cut it off. A task
+    /// with no agent running just flips; its next start uses the new view.
+    pub async fn set_agent_view(
+        &self,
+        task_id: &str,
+        view: AgentView,
+    ) -> Result<Workspace, OrchestratorError> {
+        let lock = self.spawn_lock(task_id);
+        let _spawning = lock.lock().await;
+        let workspace = self.workspaces.get(task_id).await?;
+        if view == AgentView::Transcript
+            && (workspace.agent != Some(Agent::Claude)
+                || workspace.workspace_kind == WorkspaceKind::Local)
+        {
+            return Err(OrchestratorError::NoTranscriptView);
+        }
+        let current = if workspace.in_transcript_view() {
+            AgentView::Transcript
+        } else {
+            AgentView::Terminal
+        };
+        if current == view {
+            if workspace.agent_view != Some(view) {
+                self.workspaces.set_agent_view(task_id, Some(view)).await?;
+                return Ok(self.workspaces.get(task_id).await?);
+            }
+            return Ok(workspace);
+        }
+        let busy = self.signals.as_ref().and_then(|s| s.phase(task_id)).is_some_and(|phase| {
+            matches!(
+                phase,
+                crate::domain::board::AgentPhase::Working | crate::domain::board::AgentPhase::NeedsYou
+            )
+        });
+        match view {
+            AgentView::Terminal => {
+                let Some(stream) = self.streams.get(task_id) else {
+                    self.workspaces.set_agent_view(task_id, Some(view)).await?;
+                    return Ok(self.workspaces.get(task_id).await?);
+                };
+                if stream.turn_running() || busy {
+                    return Err(OrchestratorError::TurnRunning);
+                }
+                self.streams.retire(task_id);
+                stream.terminate(TERMINATE_GRACE);
+                // One Claude per session at a time.
+                let _ = tokio::time::timeout(SWITCH_WAIT, stream.wait_exit()).await;
+                self.workspaces.set_agent_view(task_id, Some(view)).await?;
+                self.streams
+                    .note(task_id, SystemLevel::Info, "Continued in the terminal.");
+                // The terminal resumes the session (`claude --resume`): the
+                // row is still `running`, with no process, which is what
+                // reopening a terminal resumes.
+                let workspace = self.workspaces.get(task_id).await?;
+                drop(self.open_terminal_locked(workspace, 24, 80).await?);
+            }
+            AgentView::Transcript => {
+                let Some(pty) = self.runtime.get(task_id) else {
+                    self.workspaces.set_agent_view(task_id, Some(view)).await?;
+                    return Ok(self.workspaces.get(task_id).await?);
+                };
+                if busy {
+                    return Err(OrchestratorError::TurnRunning);
+                }
+                // Out of the map first: its exit watcher then sees it was
+                // replaced and leaves the row (still `running`) alone.
+                self.runtime.retire(task_id);
+                pty.terminate(TERMINATE_GRACE);
+                let deadline = tokio::time::Instant::now() + SWITCH_WAIT;
+                while pty.exit_code().is_none() && tokio::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                self.workspaces.set_agent_view(task_id, Some(view)).await?;
+                let workspace = self.workspaces.get(task_id).await?;
+                let cwd = self.cwd_for_task(&workspace).await?;
+                let command = self.launch_command(&workspace).await?;
+                self.streams
+                    .note(task_id, SystemLevel::Info, "Continued from the terminal.");
+                match self
+                    .start_stream(&workspace, &cwd, command.command.as_deref(), true, None)
+                    .await?
+                {
+                    Some(stream) => {
+                        self.spawn_stream_exit_watcher(workspace.repository_id.clone(), stream)
+                    }
+                    // Can't run headless after all: back in the terminal.
+                    None => {
+                        let workspace = self.workspaces.get(task_id).await?;
+                        drop(self.open_terminal_locked(workspace, 24, 80).await?);
+                    }
+                }
+            }
+        }
+        Ok(self.workspaces.get(task_id).await?)
     }
 
     async fn cwd_for_task(&self, workspace: &Workspace) -> Result<PathBuf, OrchestratorError> {
@@ -2260,6 +2707,7 @@ mod tests {
             permission_mode: None,
             notify_on_attention: true,
             run_in: RunIn::Worktree,
+            agent_view: None,
         }
     }
 
@@ -2312,6 +2760,7 @@ mod tests {
                 permission_mode: None,
                 notify_on_attention: true,
                 run_in: RunIn::Worktree,
+                agent_view: None,
             })
             .await
             .expect("start_task should succeed");
@@ -2493,6 +2942,7 @@ mod tests {
             permission_mode: None,
             notify_on_attention: true,
             run_in: RunIn::Worktree,
+            agent_view: None,
         };
 
         // Fire both concurrently. The per-repo lock serializes them: one
@@ -3013,6 +3463,7 @@ mod tests {
                 permission_mode: None,
                 notify_on_attention: true,
                 run_in: RunIn::Worktree,
+                agent_view: None,
             })
             .await
             .expect("start_task should succeed");
@@ -3053,6 +3504,7 @@ mod tests {
                 permission_mode: None,
                 notify_on_attention: true,
                 run_in: RunIn::Worktree,
+                agent_view: None,
             })
             .await
             .unwrap_err();
@@ -3104,6 +3556,7 @@ mod tests {
                 permission_mode: None,
                 notify_on_attention: true,
                 run_in: RunIn::Worktree,
+                agent_view: None,
             })
             .await
             .expect("start_task should succeed");
@@ -3730,6 +4183,8 @@ sleep 30
 
         let mut request = sleep_request(&repo.id, "fake claude");
         request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
+        // These drive the TUI in a PTY: the terminal view.
+        request.agent_view = Some(AgentView::Terminal);
         request.prompt = Some("do the thing".into());
         let started = orchestrator.start_task_and_wait(request).await.unwrap();
         let task_id = started.task_id.clone();
@@ -3890,6 +4345,8 @@ exit 1
         let fake = fake_trust_claude(tmp);
         let mut request = sleep_request(&repo.id, "trust me");
         request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
+        // These drive the TUI in a PTY: the terminal view.
+        request.agent_view = Some(AgentView::Terminal);
         request.prompt = Some("do the thing".into());
         let started = orchestrator.start_task_and_wait(request).await.unwrap();
         let task_id = started.task_id.clone();
@@ -4810,5 +5267,391 @@ exit 1
             orchestrator.open_terminal(&stopped.id, 24, 80).await,
             Err(OrchestratorError::Starting)
         ));
+    }
+
+    /// A stand-in `claude` that speaks the probed stream protocol under
+    /// `-p` (see `agent_stream/fixtures/PROTOCOL.md`) and acts as the TUI
+    /// otherwise: it reports `SessionStart` through the hook settings it was
+    /// given, then idles. Every invocation's args go to `<script>.args`,
+    /// every stdin line to `<script>.stdin`.
+    ///
+    /// Stream messages: `PERMIT` → a Bash call that asks permission (with
+    /// an `addRules` suggestion); `SLOW` → 200 text deltas, then nothing
+    /// until interrupted; `DIE` → exits 3 with a line on stderr; anything
+    /// else → `echo: <text>` and a result. Its first stdout line is garbage.
+    const FAKE_STREAM_CLAUDE: &str = r#"#!/bin/sh
+me="$0"
+printf '%s\n' "$*" >> "$me.args"
+stream=""; settings=""; sid=""; resume=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) stream=1; shift ;;
+    --settings) settings="$2"; shift 2 ;;
+    --session-id) sid="$2"; shift 2 ;;
+    --resume) resume="$2"; sid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$stream" ]; then
+  cmd=$(sed -n 's/.*"command": *"\(.*\)",*$/\1/p' "$settings" | head -n 1)
+  printf '\033[?1049h'
+  echo "fake-tui resume=[$resume]"
+  printf '%s' "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$resume\",\"transcript_path\":\"/t.jsonl\",\"source\":\"resume\"}" | eval "$cmd"
+  sleep 30; exit 0
+fi
+out() { printf '%s\n' "$1"; }
+result() { out "{\"type\":\"result\",\"subtype\":\"$1\",\"is_error\":$2,\"duration_ms\":1200,\"session_id\":\"$sid\",\"usage\":{\"input_tokens\":3,\"output_tokens\":7,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":10},\"model_usage_since_last_result\":{\"claude-haiku-5-5\":{\"costUSD\":0.002}}}"; }
+say() { out "{\"type\":\"assistant\",\"message\":{\"id\":\"m$n\",\"model\":\"claude-haiku-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"$1\"}]}}"; }
+n=0
+out "garbage that is not json"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$me.stdin"
+  n=$((n+1))
+  case "$line" in
+    *'"subtype":"interrupt"'*)
+      out '{"type":"control_response","response":{"subtype":"success","request_id":"x","response":{"still_queued":[]}}}'
+      out '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
+      result error_during_execution true ;;
+    *'"behavior":"allow"'*)
+      out '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"'"$tid"'","type":"tool_result","content":"made it","is_error":false}]}}'
+      say "touched"; result success false ;;
+    *'"behavior":"deny"'*)
+      out '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"'"$tid"'","type":"tool_result","content":"The user denied this in Phasr.","is_error":true}]}}'
+      say "ok"; result success false ;;
+    *'"type":"user"'*)
+      out "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\",\"model\":\"claude-haiku-5-5\"}"
+      case "$line" in
+        *PERMIT*)
+          tid="toolu_$n"
+          out '{"type":"assistant","message":{"id":"mt","content":[{"type":"tool_use","id":"'"$tid"'","name":"Bash","input":{"command":"touch a.txt"}}]}}'
+          out '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch a.txt"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch a.txt"}],"behavior":"allow","destination":"localSettings"},{"type":"setMode","mode":"acceptEdits","destination":"session"}],"tool_use_id":"'"$tid"'"}}' ;;
+        *SLOW*)
+          out "{\"type\":\"stream_event\",\"api_message_id\":\"ms$n\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+          i=0
+          while [ $i -lt 200 ]; do
+            out "{\"type\":\"stream_event\",\"api_message_id\":\"ms$n\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}}"
+            i=$((i+1))
+          done ;;
+        *DIE*) echo "fatal: simulated crash" >&2; exit 3 ;;
+        *)
+          text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+          say "echo: $text"; result success false ;;
+      esac ;;
+  esac
+done
+"#;
+
+    fn fake_stream_claude(tmp: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let fake = tmp.path().join("stream-bin").join("claude");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(&fake, FAKE_STREAM_CLAUDE).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    fn read_side(fake: &Path, ext: &str) -> String {
+        std::fs::read_to_string(fake.with_extension(ext)).unwrap_or_default()
+    }
+
+    fn kinds(items: &[TranscriptItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                TranscriptItem::User { text, .. } => format!("user:{text}"),
+                TranscriptItem::Assistant { text, .. } => format!("assistant:{text}"),
+                TranscriptItem::Thinking { .. } => "thinking".into(),
+                TranscriptItem::Tool { status, .. } => format!("tool:{status:?}"),
+                TranscriptItem::Result { is_error, .. } => format!("result:{is_error}"),
+                TranscriptItem::System { text, .. } => format!("system:{text}"),
+            })
+            .collect()
+    }
+
+    async fn wait_for_status(workspaces: &WorkspaceRepo, id: &str, status: WorkspaceStatus) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while workspaces.get(id).await.unwrap().status != status {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {status:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// End to end through a real process: a new Claude task launches
+    /// headless with its prompt; a permission request becomes a needs-you
+    /// card (stale ids send nothing, the composer is refused); allow-for-
+    /// task and deny write the matching control responses; deltas are
+    /// coalesced; interrupt ends the turn; the result idles the task and
+    /// records usage; stop kills it; the next message resumes the SAME
+    /// session; a crash is shown and leaves the task resumable; and the
+    /// transcript survives on disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fake_claude_stream_drives_the_transcript_approvals_and_resume() {
+        use crate::agent_signals::state::{AgentStateKind, AttentionKind};
+        use crate::agent_stream::transcript::{ToolStatus, TranscriptOp};
+        let (orchestrator, signals, repositories, workspaces, tmp) =
+            orchestrator_with_signals().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let fake = fake_stream_claude(&tmp);
+        let state_of = |id: &str| signals.state(id).map(|s| s.state);
+
+        let mut request = sleep_request(&repo.id, "stream task");
+        request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
+        request.prompt = Some("hello there".into());
+        let started = orchestrator.start_task_and_wait(request).await.unwrap();
+        let id = started.task_id.clone();
+        assert_eq!(started.workspace.agent_view, Some(AgentView::Transcript));
+        assert!(orchestrator.streams.get(&id).is_some(), "headless, not a PTY");
+        assert!(orchestrator.runtime.get(&id).is_none());
+        assert!(orchestrator.running_task_ids().contains(&id));
+        assert!(matches!(
+            orchestrator.open_terminal(&id, 24, 80).await,
+            Err(OrchestratorError::TranscriptView)
+        ));
+
+        wait_for("the first turn", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+        let args = read_side(&fake, "args");
+        for flag in [
+            "-p --input-format stream-json --output-format stream-json",
+            "--include-partial-messages --permission-prompt-tool stdio",
+            "--disallowed-tools AskUserQuestion",
+            "--session-id ",
+            "--settings ",
+            "--permission-mode acceptEdits",
+        ] {
+            assert!(args.contains(flag), "{flag} missing from {args}");
+        }
+        let sid = workspaces.get_agent_session_id(&id).await.unwrap().unwrap();
+        assert!(args.contains(&format!("--session-id {sid}")), "{args}");
+        assert_eq!(
+            kinds(&orchestrator.transcript(&id).await),
+            vec!["user:hello there", "assistant:echo: hello there", "result:false"]
+        );
+        let usage = signals
+            .usage_for(&workspaces.get(&id).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!((usage.input_tokens, usage.cost_usd_micros), (3, Some(2_000)));
+        assert!(workspaces.get(&id).await.unwrap().last_turn_ended_at.is_some());
+
+        // A permission request: the card, exactly as asked.
+        orchestrator.send_message(&id, "PERMIT please", true).await.unwrap();
+        wait_for("needs-you", || state_of(&id) == Some(AgentStateKind::NeedsYou)).await;
+        let card = signals.state(&id).unwrap().attention.unwrap();
+        assert_eq!(card.kind, AttentionKind::Shell);
+        assert_eq!(card.detail.as_deref(), Some("touch a.txt"));
+        assert!(card.can_respond && card.can_allow_for_task);
+        assert!(matches!(
+            orchestrator.send_message(&id, "hi", true).await,
+            Err(OrchestratorError::AwaitingAnswer)
+        ));
+        let err = orchestrator
+            .respond_to_attention(&id, "not-the-card", AttentionResponse::AllowTask)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "stale attention");
+        assert!(!read_side(&fake, "stdin").contains("control_response"));
+        orchestrator
+            .respond_to_attention(&id, &card.id, AttentionResponse::AllowTask)
+            .await
+            .unwrap();
+        wait_for("allowed turn", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+        let response: serde_json::Value = read_side(&fake, "stdin")
+            .lines()
+            .find(|l| l.contains("control_response"))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .unwrap();
+        assert_eq!(response["response"]["request_id"], "req-1");
+        assert_eq!(
+            response["response"]["response"]["updatedPermissions"],
+            serde_json::json!([{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "touch a.txt"}],
+                                "behavior": "allow", "destination": "session"}])
+        );
+
+        // Deny.
+        orchestrator.send_message(&id, "PERMIT again", true).await.unwrap();
+        wait_for("needs-you again", || state_of(&id) == Some(AgentStateKind::NeedsYou)).await;
+        let card = signals.state(&id).unwrap().attention.unwrap();
+        orchestrator
+            .respond_to_attention(&id, &card.id, AttentionResponse::Deny)
+            .await
+            .unwrap();
+        wait_for("denied turn", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+        assert!(read_side(&fake, "stdin").contains(r#""behavior":"deny""#));
+        let tools: Vec<ToolStatus> = orchestrator
+            .transcript(&id)
+            .await
+            .into_iter()
+            .filter_map(|i| match i {
+                TranscriptItem::Tool { status, .. } => Some(status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools, vec![ToolStatus::Done, ToolStatus::Denied]);
+
+        // A streaming turn, coalesced; then interrupted.
+        let mut events = orchestrator.streams().subscribe();
+        orchestrator.send_message(&id, "SLOW", true).await.unwrap();
+        wait_for("200 deltas", || {
+            orchestrator.streams().transcript(&id).iter().any(
+                |i| matches!(i, TranscriptItem::Assistant { text, .. } if text.len() == 200),
+            )
+        })
+        .await;
+        assert_eq!(state_of(&id), Some(AgentStateKind::Working));
+        orchestrator.interrupt_task(&id).await.unwrap();
+        wait_for("interrupted", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+        let mut updates = 0;
+        while let Ok(event) = events.try_recv() {
+            if event.op == TranscriptOp::Update
+                && matches!(event.item, TranscriptItem::Assistant { .. })
+            {
+                updates += 1;
+            }
+        }
+        assert!(updates > 0 && updates < 60, "200 deltas → {updates} events");
+        let after = kinds(&orchestrator.transcript(&id).await);
+        let slow = format!("assistant:{}", "x".repeat(200));
+        assert_eq!(
+            after[after.len() - 4..].to_vec(),
+            vec!["user:SLOW", slow.as_str(), "system:Interrupted", "result:false"]
+        );
+
+        // Stop, then the next message resumes the same session.
+        orchestrator.stop_task(&id).await.unwrap();
+        assert_eq!(workspaces.get(&id).await.unwrap().status, WorkspaceStatus::Stopped);
+        assert_eq!(state_of(&id), Some(AgentStateKind::Exited));
+        assert!(orchestrator.streams().get(&id).is_none());
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        orchestrator.send_message(&id, "welcome back", true).await.unwrap();
+        assert_eq!(workspaces.get(&id).await.unwrap().status, WorkspaceStatus::Running);
+        wait_for("resumed turn", || {
+            kinds(&orchestrator.streams().transcript(&id))
+                .contains(&"assistant:echo: welcome back".to_string())
+        })
+        .await;
+        let args = read_side(&fake, "args");
+        assert!(
+            args.lines().last().unwrap().contains(&format!("--resume {sid}")),
+            "{args}"
+        );
+
+        // A crash: shown, and the task is left stopped (resumable).
+        orchestrator.send_message(&id, "DIE", true).await.unwrap();
+        wait_for_status(&workspaces, &id, WorkspaceStatus::Stopped).await;
+        assert!(orchestrator.streams().get(&id).is_none());
+        assert_eq!(state_of(&id), Some(AgentStateKind::Exited));
+        assert_eq!(workspaces.get(&id).await.unwrap().exit_code, Some(3));
+        let last = orchestrator.transcript(&id).await;
+        assert!(
+            matches!(last.last(), Some(TranscriptItem::System { text, .. })
+                if text.starts_with("Claude exited with code 3.") && text.contains("fatal: simulated crash")),
+            "{:?}",
+            last.last()
+        );
+
+        // Persisted: a fresh reader of the same log dir sees the same thing.
+        let fresh = AgentStreams::new(orchestrator.runtime.log_dir.clone());
+        assert_eq!(fresh.transcript(&id), last);
+
+        orchestrator.quiesce_task(&id).await;
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// `set_agent_view` swaps the process on the same session: transcript →
+    /// terminal resumes the TUI with `--resume`; back again resumes the
+    /// stream. Refused mid-turn; a stopped task just flips; other agents
+    /// have no transcript view.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_agent_view_switches_the_process_on_the_same_session() {
+        use crate::agent_signals::state::AgentStateKind;
+        let (orchestrator, signals, repositories, workspaces, tmp) =
+            orchestrator_with_signals().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let fake = fake_stream_claude(&tmp);
+        let state_of = |id: &str| signals.state(id).map(|s| s.state);
+
+        let mut request = sleep_request(&repo.id, "switch me");
+        request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
+        request.prompt = Some("first".into());
+        let started = orchestrator.start_task_and_wait(request).await.unwrap();
+        let id = started.task_id.clone();
+        wait_for("first turn", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+        let sid = workspaces.get_agent_session_id(&id).await.unwrap().unwrap();
+
+        // Mid-turn: refused, nothing restarted.
+        orchestrator.send_message(&id, "SLOW", true).await.unwrap();
+        let err = orchestrator
+            .set_agent_view(&id, AgentView::Terminal)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Claude is in the middle of a turn; stop it or wait for it to finish, then switch views"
+        );
+        assert!(orchestrator.streams().get(&id).is_some());
+        orchestrator.interrupt_task(&id).await.unwrap();
+        wait_for("idle", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+
+        let ws = orchestrator.set_agent_view(&id, AgentView::Terminal).await.unwrap();
+        assert_eq!(ws.agent_view, Some(AgentView::Terminal));
+        assert_eq!(ws.status, WorkspaceStatus::Running);
+        assert!(orchestrator.streams().get(&id).is_none());
+        let pty = orchestrator.runtime.get(&id).expect("the TUI took over");
+        let (replay, mut rx) = pty.subscribe_with_replay();
+        let mut out = String::new();
+        for event in replay {
+            if let PtyEvent::Output { chunk, .. } = event {
+                out.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+        wait_for("TUI resumed the session", || {
+            collect_output(&mut rx, &mut out);
+            out.contains(&format!("fake-tui resume=[{sid}]"))
+        })
+        .await;
+        // Its hooks say it's at its prompt: free to switch back.
+        wait_for("TUI idle", || state_of(&id) == Some(AgentStateKind::Idle)).await;
+        assert!(!signals.is_stream_task(&id));
+
+        let ws = orchestrator.set_agent_view(&id, AgentView::Transcript).await.unwrap();
+        assert_eq!(ws.agent_view, Some(AgentView::Transcript));
+        assert!(orchestrator.runtime.get(&id).is_none(), "the TUI was stopped");
+        assert!(orchestrator.streams().get(&id).is_some());
+        assert!(signals.is_stream_task(&id));
+        assert_eq!(state_of(&id), Some(AgentStateKind::Idle));
+        orchestrator.send_message(&id, "still you?", true).await.unwrap();
+        wait_for("stream resumed", || {
+            kinds(&orchestrator.streams().transcript(&id))
+                .contains(&"assistant:echo: still you?".to_string())
+        })
+        .await;
+        let args = read_side(&fake, "args");
+        let last = args.lines().last().unwrap();
+        assert!(last.contains("-p --input-format stream-json"), "{last}");
+        assert!(last.contains(&format!("--resume {sid}")), "{last}");
+        let notes: Vec<String> = kinds(&orchestrator.transcript(&id).await)
+            .into_iter()
+            .filter(|k| k.starts_with("system:Continued"))
+            .collect();
+        assert_eq!(
+            notes,
+            vec!["system:Continued in the terminal.", "system:Continued from the terminal."]
+        );
+
+        // Stopped: the view just flips, nothing starts.
+        orchestrator.stop_task(&id).await.unwrap();
+        let ws = orchestrator.set_agent_view(&id, AgentView::Terminal).await.unwrap();
+        assert_eq!(ws.agent_view, Some(AgentView::Terminal));
+        assert!(orchestrator.runtime.get(&id).is_none() && orchestrator.streams().get(&id).is_none());
+        // Other agents have no transcript view.
+        let mut codex = sleep_request(&repo.id, "codex");
+        codex.agent = Agent::Codex;
+        let codex = orchestrator.start_task_and_wait(codex).await.unwrap();
+        assert_eq!(codex.workspace.agent_view, None);
+        assert!(matches!(
+            orchestrator.set_agent_view(&codex.task_id, AgentView::Transcript).await,
+            Err(OrchestratorError::NoTranscriptView)
+        ));
+        cleanup(&orchestrator, &[&started, &codex]).await;
     }
 }

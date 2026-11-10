@@ -179,6 +179,25 @@ impl HookBridge {
         Some(format!("--settings {}", shell_quote(&path.to_string_lossy())))
     }
 
+    /// `--settings <file>` with the repository's permission rules and NO
+    /// hooks, for a headless stream launch: the stream reports every turn,
+    /// tool and prompt itself, and hook events on top would drive the same
+    /// state twice. `None` when there are no rules to add.
+    pub fn claude_policy_args(&self, task_id: &str, policy: &AgentPolicy) -> Option<String> {
+        if !is_safe_task_id(task_id) {
+            return None;
+        }
+        let permissions = claude_permission_rules(policy)?;
+        let dir = self.config_dir.join(task_id);
+        let path = dir.join("claude-stream-settings.json");
+        let body = serde_json::to_vec_pretty(&serde_json::json!({ "permissions": permissions })).ok()?;
+        if let Err(err) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, body)) {
+            eprintln!("failed to write Claude stream settings for {task_id}: {err}");
+            return None;
+        }
+        Some(format!("--settings {}", shell_quote(&path.to_string_lossy())))
+    }
+
     /// `-c 'notify=[…]'` for Codex, chaining the user's own `notify` command
     /// (from their config.toml) after ours.
     pub fn codex_args(&self, user_notify: &[String]) -> Option<String> {
@@ -562,6 +581,23 @@ mod tests {
         assert!(written["hooks"]["PreToolUse"].is_array(), "hooks kept alongside");
         bridge.clean_task("t-1");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn stream_settings_carry_the_policy_without_hooks() {
+        let (bridge, _dir) = bridge();
+        let args = bridge.claude_policy_args("t-2", &AgentPolicy::default()).unwrap();
+        assert!(args.contains("claude-stream-settings.json"), "{args}");
+        let path = bridge.config_dir.join("t-2").join("claude-stream-settings.json");
+        let written: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written, json!({"permissions": {"ask": ["Bash(git push:*)"]}}));
+        assert!(written.get("hooks").is_none());
+        let none = AgentPolicy {
+            protected_paths: Vec::new(),
+            agents_may_push: PushPolicy::Allow,
+        };
+        assert_eq!(bridge.claude_policy_args("t-2", &none), None);
+        assert_eq!(bridge.claude_policy_args("../x", &AgentPolicy::default()), None);
     }
 
     #[test]

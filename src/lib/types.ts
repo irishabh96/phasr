@@ -87,6 +87,70 @@ export interface Workspace {
   prUrl?: string | null;
   /** "open" | "draft" | "merged" | "closed" as last seen (open set). */
   prState?: string | null;
+  /**
+   * How the agent is shown on THIS machine (local-only, never synced).
+   * `"transcript"` = Claude runs headless and the pane renders
+   * `get_transcript` + `phasr://transcript`; `"terminal"` / `null` = the
+   * agent's TUI in a PTY. New Claude tasks start as `"transcript"`.
+   * `?` for the same fixture reason; treat `undefined` as `null`.
+   */
+  agentView?: AgentView | null;
+}
+
+/** `Workspace.agentView` / `set_agent_view`. */
+export type AgentView = "transcript" | "terminal";
+
+/**
+ * One row of a transcript-view task's transcript (Rust
+ * `agent_stream::TranscriptItem`). Raw CLI events never reach the UI.
+ * `ts` is ISO-8601. Optional fields are omitted when absent.
+ */
+export type TranscriptItem =
+  | { kind: "user"; id: string; ts: string; text: string }
+  | { kind: "assistant"; id: string; ts: string; text: string; streaming: boolean }
+  | {
+      kind: "thinking";
+      id: string;
+      ts: string;
+      /** Empty with Claude 2.1.322: it streams thinking without text. */
+      text: string;
+      /** Absent while the block is still open. */
+      durationMs?: number;
+    }
+  | {
+      kind: "tool";
+      /** The tool_use id. */
+      id: string;
+      ts: string;
+      tool: string;
+      input: unknown;
+      /** e.g. "Editing src/a.ts", "Running pnpm test". */
+      title: string;
+      status: "running" | "done" | "error" | "denied";
+      /** The result's last ~64 KB. */
+      output?: string;
+      outputTruncated?: boolean;
+    }
+  | {
+      kind: "result";
+      id: string;
+      ts: string;
+      durationMs: number;
+      /** This turn's cost; `null` when the CLI didn't price it. */
+      costUsd: number | null;
+      /** A failed turn (an interrupted one is NOT an error). */
+      isError: boolean;
+    }
+  | { kind: "system"; id: string; ts: string; level: "info" | "error"; text: string };
+
+/**
+ * `phasr://transcript`. Always the FULL item: `append` adds it at the end,
+ * `update` replaces the item with the same `id`.
+ */
+export interface TranscriptEvent {
+  taskId: string;
+  op: "append" | "update";
+  item: TranscriptItem;
 }
 
 /** One built-in agent as returned by `list_agents`. */
