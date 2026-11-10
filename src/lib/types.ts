@@ -112,6 +112,10 @@ export interface SubagentInfo {
   steps: number;
   /** Its latest activity ("Reading src/a.ts"). */
   latest?: string;
+  /** Tokens it has used so far (the CLI reports no cost per subagent). */
+  tokens?: number;
+  /** When it finished (RFC 3339); it started at the call's `ts`. */
+  finishedAt?: string;
 }
 
 /**
