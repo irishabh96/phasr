@@ -160,7 +160,7 @@ The dialog is 640px wide, with a surface background, radius 12 and the floating 
   - Underline tabs: `[C Claude]` `[● dev :3000]` `Changes +46 −1` `Files` `+`.
   - Right side, all ghost: **Open in ▾**, **Stop** (ghost, confirm on click) and an inspector-toggle icon.
   - "Run ▾" moves into the `+` menu and the inspector's Run section, and the "…" menu folds into Open in / the `+` menu. Today the bar has Run, Open in, a red Stop and "…".
-- **Main:** the terminal on bg with 20/24px padding (D3).
+- **Main:** the terminal fills the pane edge to edge (under the tab bar, to the dividers, down to the composer) on the terminal black, with ~12px top / 16px side text padding and no inner rounded panel (D3). The pane and the composer's strip take the same black so there's no seam.
 - **Composer:**
   - One surface, radius 10, floating shadow, no border.
   - A single-line input that grows; the placeholder is "Reply to Claude…".

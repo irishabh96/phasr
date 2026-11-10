@@ -13,6 +13,7 @@ import {
 } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { TERMINAL_PADDING } from "@/lib/terminal/padding";
 import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
@@ -429,13 +430,7 @@ export function Terminal({
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
       className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
-      style={{
-        display: visible ? "block" : "none",
-        paddingTop: 8,
-        paddingRight: 8,
-        paddingBottom: 4,
-        paddingLeft: 16,
-      }}
+      style={{ display: visible ? "block" : "none", ...TERMINAL_PADDING }}
     >
       <div ref={mountRef} className="h-full w-full" />
       {termStatus && (
