@@ -371,7 +371,7 @@ test.describe("Agent transcript view", () => {
     // The transcript goes on; the command's line scrolls out of view.
     for (const item of filler(40, 40)) await world.transcript(page, TASK, item);
 
-    const strip = page.getByRole("group", { name: "Background commands" });
+    const strip = page.getByRole("group", { name: "Running", exact: true });
     await expect(strip).toBeVisible();
     const chip = strip.getByRole("button", { name: /Show background command pnpm dev --port 1420/ });
     await expect(chip).toContainText("pnpm dev --port 1420");
@@ -395,13 +395,15 @@ test.describe("Agent transcript view", () => {
     await expect(row.getByText("VITE ready in 312 ms")).toBeVisible();
     await expect(row).toContainText(/in background · 1m \d+s/);
 
-    // × stops it: the item says so, and the strip empties.
+    // × stops it: the item says so; the chip shows its end for a moment,
+    // then the strip empties.
     await clearCalls(page);
     await strip.getByRole("button", { name: "Stop pnpm dev --port 1420" }).click();
     await expect.poll(() => callsOf(page, "stop_background_shell")).toEqual([{ taskId: TASK, toolUseId: "bg-dev" }]);
     await expect(row).toHaveAttribute("data-background-status", "killed");
     await expect(row).toContainText("stopped");
-    await expect(strip).toHaveCount(0);
+    await expect(strip.locator('[data-running-chip="bg-dev"]')).toHaveAttribute("data-status", "stopped");
+    await expect(strip).toHaveCount(0, { timeout: 8_000 });
     expect(realErrors(errors)).toEqual([]);
   });
 

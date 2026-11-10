@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "./contract";
-import { ancestorsOf, formatElapsed, groupTranscript, runningBackgroundShells } from "./tree";
+import { ancestorsOf, descendantsOf, formatElapsed, groupTranscript, isSubagentRunning, subagentSteps, subagentTree } from "./tree";
 
 const ts = "2026-11-11T10:00:00.000Z";
 const user = (id: string, parentId?: string): TranscriptItem => ({ kind: "user", id, ts, text: id, ...(parentId ? { parentId } : {}) });
@@ -59,22 +59,56 @@ describe("groupTranscript", () => {
   });
 });
 
-describe("runningBackgroundShells", () => {
-  it("lists only background commands still running, with their command", () => {
-    const items = [
-      tool("bg1", { tool: "Bash", input: { command: "pnpm dev\n# server", run_in_background: true }, background: true, backgroundStatus: "running" }),
-      tool("bg2", { tool: "Bash", input: { command: "sleep 3" }, background: true, backgroundStatus: "done" }),
-      tool("bg3", { tool: "Bash", input: { command: "sleep 60" }, background: true, backgroundStatus: "killed" }),
-      tool("fg", { tool: "Bash", input: { command: "ls" } }),
-      tool("nested", { tool: "Bash", input: {}, title: "Running make watch", parentId: "agent", background: true, backgroundStatus: "running" }),
-    ];
-    expect(runningBackgroundShells(items)).toEqual([
-      { id: "bg1", command: "pnpm dev", startedAt: ts, status: "running" },
-      { id: "nested", command: "make watch", startedAt: ts, status: "running" },
-    ]);
-    expect(runningBackgroundShells([])).toEqual([]);
+describe("a subagent's own items (its panel)", () => {
+  const sub = (id: string, extra: Partial<Extract<TranscriptItem, { kind: "tool" }>> = {}) =>
+    tool(id, { tool: "Agent", status: "running", subagent: { type: "general-purpose", description: id, steps: 0 }, ...extra });
+  const items = [
+    user("u1"),
+    sub("outer"),
+    tool("o1", { parentId: "outer" }),
+    sub("other"),
+    tool("x1", { parentId: "other" }),
+    sub("inner", { parentId: "outer" }),
+    tool("i1", { parentId: "inner" }),
+    sub("deeper", { parentId: "inner" }),
+    tool("d1", { parentId: "deeper" }),
+    tool("o2", { parentId: "outer" }),
+    tool("t2"),
+  ];
+
+  it("lists a call's direct items in order, nested subagents' items under their own calls", () => {
+    const tree = subagentTree(items, "outer");
+    expect(tree.top.map((i) => i.id)).toEqual(["o1", "inner", "o2"]);
+    expect(tree.children.get("inner")?.map((i) => i.id)).toEqual(["i1", "deeper"]);
+    expect(tree.children.get("deeper")?.map((i) => i.id)).toEqual(["d1"]);
+    // A nested subagent is a panel of its own too.
+    expect(subagentTree(items, "inner").top.map((i) => i.id)).toEqual(["i1", "deeper"]);
+    // A sibling's items aren't its own; an unknown call has none.
+    expect(subagentTree(items, "other").top.map((i) => i.id)).toEqual(["x1"]);
+    expect(subagentTree(items, "nope").top).toEqual([]);
   });
 
+  it("collects everything under a call, recursively, in transcript order", () => {
+    expect(descendantsOf(items, "outer").map((i) => i.id)).toEqual(["o1", "inner", "i1", "deeper", "d1", "o2"]);
+    expect(descendantsOf(items, "deeper").map((i) => i.id)).toEqual(["d1"]);
+    expect(descendantsOf(items, "t2")).toEqual([]);
+    // A cycle can't loop it.
+    const cyclic = [tool("a", { parentId: "b" }), tool("b", { parentId: "a" })];
+    expect(descendantsOf(cyclic, "a").map((i) => i.id)).toEqual(["b"]);
+  });
+
+  it("counts its steps (the CLI's count or the calls under it, the larger) and whether it's at work", () => {
+    const call = sub("s", { subagent: { type: "Explore", description: "s", steps: 1 } }) as Extract<TranscriptItem, { kind: "tool" }>;
+    expect(subagentSteps(call, [tool("a"), tool("b"), user("c")])).toBe(2);
+    expect(subagentSteps(call, undefined)).toBe(1);
+    expect(isSubagentRunning(call)).toBe(true);
+    expect(isSubagentRunning({ ...call, status: "done" })).toBe(false);
+    // Backgrounded: its call returned, it works on.
+    expect(isSubagentRunning({ ...call, status: "done", backgroundStatus: "running" })).toBe(true);
+  });
+});
+
+describe("formatElapsed", () => {
   it("formats how long a command has run", () => {
     const start = Date.parse(ts);
     expect(formatElapsed(ts, start + 12_400)).toBe("12s");
