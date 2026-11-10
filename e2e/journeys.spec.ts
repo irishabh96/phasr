@@ -425,6 +425,50 @@ test.describe("Needs you", () => {
     await expect(sidebarRow(page, "fix login redirect bug").locator("span[style*='status-running']")).toHaveCount(1);
   });
 
+  test("on a shell tab the card stays on the agent's pane: the agent tab says needs you, ⌘Y does nothing", async ({ page }) => {
+    await bootBoard(page);
+    await openTask(page, "fix login redirect bug", "ws-running");
+    const tabs = page.getByRole("tablist", { name: "Workspace tabs" });
+    const agentTab = tabs.getByRole("tab", { name: /^Claude/ });
+    await page.getByRole("button", { name: "New pane" }).click();
+    await page.getByRole("menuitem", { name: "New terminal" }).click();
+    await expect(tabs.getByRole("tab", { name: /^Terminal/ })).toHaveAttribute("aria-selected", "true");
+
+    await world.agentAsks(page, "ws-running", { detail: "rm -rf node_modules" });
+    // The sidebar still says so…
+    await expectSidebarGroup(page, "fix login redirect bug", "Needs you");
+    // …but no card over the shell; the agent tab carries it instead.
+    const card = page.getByRole("alertdialog", { name: "Claude wants to run a shell command" });
+    await expect(agentTab).toContainText("needs you");
+    await expect(agentTab.locator("[data-needs-you] span[style*='status-attention']")).toHaveCount(1);
+    await expect(card).toHaveCount(0);
+
+    // ⌘Y / ⌘⌫ answer only a card you can see — even from the page, where
+    // they'd fire if the card were up.
+    await focusPage(page);
+    await page.keyboard.press("Meta+y");
+    await page.keyboard.press("Meta+Backspace");
+    await page.waitForTimeout(300);
+    expect(await callsOf(page, "respond_to_attention")).toEqual([]);
+
+    // Changes / Files: still no card, still marked.
+    await tabs.getByRole("tab", { name: /^Changes/ }).click();
+    await expect(card).toHaveCount(0);
+    await expect(agentTab).toContainText("needs you");
+
+    // The agent tab is the way there.
+    await agentTab.click();
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("rm -rf node_modules");
+    await expect(agentTab).not.toContainText("needs you");
+    await focusPage(page);
+    await page.keyboard.press("Meta+y");
+    await expect(card).toBeHidden();
+    expect(await callsOf(page, "respond_to_attention")).toEqual([
+      expect.objectContaining({ taskId: "ws-running", response: "allow-once" }),
+    ]);
+  });
+
   test("Allow from the board card moves it out of Needs you", async ({ page }) => {
     await bootBoard(page);
     const attId = await world.agentAsks(page, "ws-running", { detail: "pnpm test" });
