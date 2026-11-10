@@ -279,6 +279,7 @@ pub fn run() {
             commands::files::read_workspace_file,
             commands::files::write_workspace_file,
             commands::files::revert_hunk,
+            commands::attachments::save_attachment,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

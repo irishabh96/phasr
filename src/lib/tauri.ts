@@ -253,6 +253,11 @@ export const tauri = {
     invoke<string[]>("list_local_branches", { path }),
   /** Absolute path inside one of your repositories / worktrees; else rejects. */
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
+  /** Write pasted image bytes to `<app_data>/attachments/<uuid>.<ext>`
+   *  (png/jpg/jpeg/gif/webp, ≤ 20 MB); resolves to the absolute path.
+   *  A plain array: serde's `Vec<u8>` can't read a JSON'd Uint8Array. */
+  saveAttachment: (bytes: Uint8Array, extension: string) =>
+    invoke<string>("save_attachment", { bytes: Array.from(bytes), extension }),
 
   // ── session terminals (in-app shell PTYs for the repo tab system) ──
   startSessionTerminal: (

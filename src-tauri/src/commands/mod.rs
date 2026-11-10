@@ -4,6 +4,7 @@
 pub mod agent_signals;
 pub mod agents;
 pub mod api_keys;
+pub mod attachments;
 pub mod board;
 pub mod events;
 pub mod files;
