@@ -230,6 +230,7 @@ pub async fn update_workspace(
     meta: State<'_, AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
+    app: tauri::AppHandle,
 ) -> Result<Workspace, WorkspaceCmdError> {
     let current = require_user(&session)?;
     // Ownership first: `update` itself is keyed by id alone.
@@ -274,6 +275,7 @@ pub async fn update_workspace(
     if let (Some(_), Some(mode)) = (input.permission_mode, workspace.permission_mode) {
         launch::trust_task_mode(&meta, &workspace.id, mode).await?;
     }
+    notify_board(&app, &workspace.repository_id);
     sync_state.request_sync();
     Ok(workspace)
 }
@@ -312,8 +314,18 @@ pub async fn archive_workspace(
         ..Default::default()
     };
     let workspace = repo.update(&id, patch).await?;
+    notify_board(&app, &workspace.repository_id);
     sync_state.request_sync();
     Ok(workspace)
+}
+
+/// The board and sidebar read task cards, not the workspace list: without
+/// this a renamed, archived or deleted task stays on screen until some
+/// unrelated event refreshes the cards.
+fn notify_board(app: &tauri::AppHandle, repository_id: &str) {
+    if let Some(board) = app.try_state::<crate::orchestrator::TaskBoard>() {
+        board.notify_changed(repository_id);
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -458,7 +470,9 @@ pub async fn delete_workspace(
         checks.cancel(&workspace.id);
     }
     if workspace.workspace_kind.is_local() {
-        return Ok(repo.delete(&id).await?);
+        repo.delete(&id).await?;
+        notify_board(&app, &workspace.repository_id);
+        return Ok(());
     }
     if let Ok(repository) = repositories
         .get_for_user(&workspace.repository_id, &current.user_id)
@@ -481,6 +495,7 @@ pub async fn delete_workspace(
     }
 
     repo.delete(&id).await?;
+    notify_board(&app, &workspace.repository_id);
     sync_state.request_sync();
     Ok(())
 }

@@ -10,7 +10,9 @@ import {
   useCheckWorkspaceDelete,
   useDeleteWorkspace,
 } from "@/lib/hooks/useWorkspaces";
+import { humanizeError } from "@/lib/humanizeError";
 import { useUiStore } from "@/lib/store";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type { Workspace } from "@/lib/types";
 
@@ -94,6 +96,11 @@ export function WorkspaceSidebarMenu({
           if (store.activeWorkspaceContext?.workspaceId === workspace.id) {
             void navigate({ to: "/" });
           }
+        },
+        // Never leave the dialog sitting there silently.
+        onError: (err) => {
+          setConfirming(false);
+          showToast({ intent: "error", title: `Couldn't close "${workspace.name}"`, message: humanizeError(err) });
         },
       },
     );
