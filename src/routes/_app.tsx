@@ -255,7 +255,7 @@ function AppShell() {
 
   return (
     // `data-app-shell` carries `data-panel-animating` while the sidebar or
-    // inspector slides (lib/panelMotion).
+    // inspector collapses or expands (lib/panelMotion).
     <div data-app-shell className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
       <TitleBar />
       <div className="flex min-h-0 min-w-0 flex-1">

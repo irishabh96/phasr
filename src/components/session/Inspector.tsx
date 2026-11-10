@@ -73,8 +73,8 @@ export function Inspector({
   const adds = changes?.reduce((n, f) => n + (f.adds ?? 0), 0) ?? 0;
   const removes = changes?.reduce((n, f) => n + (f.removes ?? 0), 0) ?? 0;
 
-  // Collapse mechanics (spec P1): the panel slides inside a clipped box and
-  // the rail cross-fades in; see SlidePanel.
+  // Collapse mechanics (spec §5, P1): the slot tweens its width, the panel
+  // inside fades out as the rail fades in; see SlidePanel.
   const rail = (
     <div className="flex flex-1 flex-col items-center gap-3 py-3">
       <GlassTooltip content={`Show inspector (${SHORTCUTS.toggleRightPanel.display.join("")})`} side="left">

@@ -135,8 +135,8 @@ async function snap(page: Page): Promise<Snap> {
 }
 
 async function settlePane(page: Page) {
-  // Panels slide with a transform (spec P1) and the pane changes width once,
-  // at the end of a collapse — so wait for the slide itself first.
+  // A panel toggle tweens the pane's width and the terminal refits once,
+  // after the tween — so wait for the tween itself first.
   await expect
     .poll(() => page.evaluate(() => !document.querySelector("[data-panel-animating]")), { timeout: 5_000 })
     .toBe(true);

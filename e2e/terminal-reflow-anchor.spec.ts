@@ -269,10 +269,10 @@ async function seedColouredScreen(page: Page) {
  * second half is the pane-fit invariant, which means every test that
  * changes a width is enforcing it whether it asks or not.
  *
- * Panels slide with a transform now (spec P1): a collapse keeps its width
- * for the whole slide and the pane changes once, at the end. A steady pane
- * width alone is therefore not "done" — the shell dropping
- * `data-panel-animating` is, so that is waited on first.
+ * A panel toggle tweens its slot's width (spec §5, P1) while the terminal
+ * holds its refit until the tween ends. A steady pane width alone is
+ * therefore not "done" — the shell dropping `data-panel-animating` is, so
+ * that is waited on first.
  */
 async function settle(page: Page) {
   await expect
