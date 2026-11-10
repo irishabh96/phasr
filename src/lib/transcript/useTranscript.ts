@@ -84,11 +84,13 @@ export function useTranscriptEvents() {
 /**
  * One task's transcript: the persisted snapshot, then live events. Kept in
  * the query cache by task, so switching tasks and back renders at once.
+ * `enabled: false` (a terminal-view task) never loads it.
  */
-export function useTranscript(taskId: string) {
+export function useTranscript(taskId: string, enabled = true) {
   return useQuery({
     queryKey: transcriptKeys.task(taskId),
     queryFn: () => loadTranscript(taskId),
+    enabled,
     // Events keep it current (`useTranscriptEvents`).
     staleTime: Infinity,
     gcTime: 30 * 60_000,

@@ -39,6 +39,7 @@ import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { showToast } from "@/lib/toast";
 import { showsTranscript, transcriptApi } from "@/lib/transcript/contract";
+import { useReplySuggestions } from "@/lib/transcript/useReplySuggestions";
 import type { Workspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -85,6 +86,8 @@ function WorkspaceDetail() {
   const activeRunTab = activeRunTabFor(runPanel.activeTab, runTabs);
   const [changesView, setChangesView] = useState<"review" | "stage">("review");
   const agentState = useTaskAgentState(workspaceId);
+  // Transcript view's composer chips: replies the last turn suggests.
+  const replies = useReplySuggestions(workspaceId, showsTranscript(workspace), agentState?.state ?? null);
   const respond = useRespondToAttention();
   const { open: openSettings } = useSettingsRoute();
   const { pane: paneParam } = Route.useSearch();
@@ -444,7 +447,10 @@ function WorkspaceDetail() {
             awaitingAnswer={agentState?.state === "needs-you"}
             // Transcript view: Stop interrupts the turn, sends queue meanwhile.
             {...(transcriptView
-              ? { turn: { state: agentState?.state ?? null, onStop: () => transcriptApi.interruptTask(workspaceId) } }
+              ? {
+                  turn: { state: agentState?.state ?? null, onStop: () => transcriptApi.interruptTask(workspaceId) },
+                  suggestions: replies,
+                }
               : {})}
           />
         ) : null}

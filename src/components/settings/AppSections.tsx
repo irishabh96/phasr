@@ -8,6 +8,7 @@ import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Switch } from "@/components/ui/Switch";
 import { SyncedSettingsBanner } from "./SyncedSettingsBanner";
 import { readAutoCollapse, writeAutoCollapse } from "@/lib/hooks/useAutoCollapse";
+import { useSuggestReplies, writeSuggestReplies } from "@/lib/transcript/suggestPref";
 import { SettingsCard, SettingsRow } from "@/components/ui/SettingsRow";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { agentKeys, useAgentDetection, useAgents } from "@/lib/hooks/useAgents";
@@ -494,8 +495,23 @@ export function AgentsSection() {
             }))}
           />
         </SettingsRow>
+        <SuggestRepliesRow />
       </SettingsCard>
     </div>
+  );
+}
+
+/** Transcript view's composer chips: off = only what the conversation itself suggests, no Haiku call. */
+function SuggestRepliesRow() {
+  const on = useSuggestReplies();
+  return (
+    <SettingsRow
+      id="settings-row-suggest-replies"
+      label="Suggest replies"
+      help="After each turn, a quick Haiku call through your Claude login suggests what to say next (≈$0.001 per turn). Off: suggestions come only from the conversation itself."
+    >
+      <Switch checked={on} label="Suggest replies" onChange={writeSuggestReplies} />
+    </SettingsRow>
   );
 }
 
