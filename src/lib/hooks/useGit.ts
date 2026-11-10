@@ -52,6 +52,21 @@ function invalidateWorkspaceGit(
 }
 
 /**
+ * A merge into the base can finish the task (outcome "merged"): the
+ * workspace row and the task cards change too, not only git state. Without
+ * this the Review inspector kept offering Approve / Merge locally / Discard
+ * on a task that was already merged.
+ */
+function invalidateAfterMerge(
+  qc: ReturnType<typeof useQueryClient>,
+  workspaceId: string,
+) {
+  invalidateWorkspaceGit(qc, workspaceId);
+  qc.invalidateQueries({ queryKey: ["workspaces", "detail", workspaceId] });
+  qc.invalidateQueries({ queryKey: ["task-cards"] });
+}
+
+/**
  * Invalidate git queries in response to an fs-watcher `worktree-changed`
  * event. Status / branch / merge always refresh (cheap, and a change can
  * flip any of them). Per-file diffs are the expensive part, so we
@@ -249,7 +264,7 @@ export function useGitMergeToMain(workspaceId: string) {
         ...(overrideChecks ? { overrideChecks: true } : {}),
         ...(commitDirty ? { commitDirty: true } : {}),
       }),
-    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+    onSuccess: () => invalidateAfterMerge(qc, workspaceId),
   });
 }
 
@@ -265,7 +280,7 @@ export function useGitContinueMerge(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => tauri.gitContinueMerge(workspaceId),
-    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+    onSuccess: () => invalidateAfterMerge(qc, workspaceId),
   });
 }
 
