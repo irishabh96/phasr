@@ -349,6 +349,23 @@ pub async fn interrupt_task(
     orchestrator.interrupt_task(&task_id).await
 }
 
+/// Stop one background command of a transcript-view task (the Background
+/// strip's ×). `tool_use_id` is the id of the `Bash` call that started it
+/// (its transcript item's id). Claude's turn and session go on.
+#[tauri::command]
+pub async fn stop_background_shell(
+    task_id: String,
+    tool_use_id: String,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<(), OrchestratorError> {
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
+    orchestrator.stop_background_shell(&task_id, &tool_use_id).await
+}
+
 /// The task's transcript (transcript view), oldest first: every item the
 /// stream produced, persisted per task, with updates folded in. Empty for
 /// a task that never ran headless. `phasr://transcript` carries what

@@ -1920,6 +1920,20 @@ impl TaskOrchestrator {
         Ok(())
     }
 
+    /// Stop one background command of a transcript-view task. Only a
+    /// stream process has them (a terminal task's are the TUI's own).
+    pub async fn stop_background_shell(
+        &self,
+        task_id: &str,
+        tool_use_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        let stream = self
+            .streams
+            .get(task_id)
+            .ok_or_else(|| OrchestratorError::TaskNotRunning(task_id.to_string()))?;
+        Ok(stream.stop_background(tool_use_id).await?)
+    }
+
     /// Write bytes to the task's PTY stdin — used by the React
     /// terminal for live agent input.
     pub fn send_input(&self, task_id: &str, bytes: &[u8]) -> Result<(), OrchestratorError> {
@@ -5277,8 +5291,10 @@ exit 1
     ///
     /// Stream messages: `PERMIT` → a Bash call that asks permission (with
     /// an `addRules` suggestion); `SLOW` → 200 text deltas, then nothing
-    /// until interrupted; `DIE` → exits 3 with a line on stderr; anything
-    /// else → `echo: <text>` and a result. Its first stdout line is garbage.
+    /// until interrupted; `BG` → a background Bash (`bt1`) writing
+    /// `<script dir>/tasks/bt1.output`, which a `stop_task` kills; `DIE` →
+    /// exits 3 with a line on stderr; anything else → `echo: <text>` and a
+    /// result. Its first stdout line is garbage.
     const FAKE_STREAM_CLAUDE: &str = r#"#!/bin/sh
 me="$0"
 printf '%s\n' "$*" >> "$me.args"
@@ -5318,6 +5334,12 @@ while IFS= read -r line; do
     *'"behavior":"deny"'*)
       out '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"'"$tid"'","type":"tool_result","content":"The user denied this in Phasr.","is_error":true}]}}'
       say "ok"; result success false ;;
+    *'"subtype":"stop_task"'*)
+      bg="$(dirname "$me")/tasks/bt1.output"
+      printf 'tick 2\n' >> "$bg"
+      out '{"type":"system","subtype":"task_updated","task_id":"bt1","patch":{"status":"killed"}}'
+      out '{"type":"system","subtype":"task_notification","task_id":"bt1","tool_use_id":"toolu_bg","status":"stopped","output_file":"'"$bg"'","summary":"dev server"}'
+      out '{"type":"control_response","response":{"subtype":"success","request_id":"x","response":{}}}' ;;
     *'"type":"user"'*)
       out "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\",\"model\":\"claude-haiku-5-5\"}"
       case "$line" in
@@ -5332,6 +5354,13 @@ while IFS= read -r line; do
             out "{\"type\":\"stream_event\",\"api_message_id\":\"ms$n\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}}"
             i=$((i+1))
           done ;;
+        *BG*)
+          bg="$(dirname "$me")/tasks/bt1.output"
+          mkdir -p "$(dirname "$bg")"; printf 'tick 1\n' > "$bg"
+          out '{"type":"assistant","message":{"id":"mb","content":[{"type":"tool_use","id":"toolu_bg","name":"Bash","input":{"command":"pnpm dev","run_in_background":true}}]}}'
+          out '{"type":"system","subtype":"task_started","task_id":"bt1","tool_use_id":"toolu_bg","description":"dev server","is_backgrounded":true,"task_type":"local_bash"}'
+          out '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_bg","type":"tool_result","content":"Command running in background with ID: bt1. Output is being written to: '"$bg"'. You will be notified when it completes.","is_error":false}]},"tool_use_result":{"backgroundTaskId":"bt1"}}'
+          say "started"; result success false ;;
         *DIE*) echo "fatal: simulated crash" >&2; exit 3 ;;
         *)
           text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
@@ -5381,13 +5410,14 @@ done
     /// card (stale ids send nothing, the composer is refused); allow-for-
     /// task and deny write the matching control responses; deltas are
     /// coalesced; interrupt ends the turn; the result idles the task and
-    /// records usage; stop kills it; the next message resumes the SAME
+    /// records usage; a background command is tailed and stopped by its
+    /// call's id; stop kills it; the next message resumes the SAME
     /// session; a crash is shown and leaves the task resumable; and the
     /// transcript survives on disk.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fake_claude_stream_drives_the_transcript_approvals_and_resume() {
         use crate::agent_signals::state::{AgentStateKind, AttentionKind};
-        use crate::agent_stream::transcript::{ToolStatus, TranscriptOp};
+        use crate::agent_stream::transcript::{BackgroundStatus, ToolStatus, TranscriptOp};
         let (orchestrator, signals, repositories, workspaces, tmp) =
             orchestrator_with_signals().await;
         let repo = repo_with_git(&repositories, &tmp, "repo").await;
@@ -5414,6 +5444,7 @@ done
             "-p --input-format stream-json --output-format stream-json",
             "--include-partial-messages --permission-prompt-tool stdio",
             "--disallowed-tools AskUserQuestion",
+            "--thinking-display summarized --forward-subagent-text",
             "--session-id ",
             "--settings ",
             "--permission-mode acceptEdits",
@@ -5487,6 +5518,35 @@ done
             })
             .collect();
         assert_eq!(tools, vec![ToolStatus::Done, ToolStatus::Denied]);
+
+        // A background command: its output file tailed while it runs, and
+        // stopped from Phasr by its tool call's id.
+        let bg = |want: BackgroundStatus, text: &'static str| {
+            let streams = orchestrator.streams().clone();
+            let id = id.clone();
+            move || {
+                streams.transcript(&id).iter().any(|i| {
+                    matches!(i, TranscriptItem::Tool { id, background_status: Some(s), output: Some(o), .. }
+                        if id == "toolu_bg" && *s == want && o.contains(text))
+                })
+            }
+        };
+        orchestrator.send_message(&id, "BG please", true).await.unwrap();
+        wait_for("its output tailed", bg(BackgroundStatus::Running, "tick 1")).await;
+        assert_eq!(state_of(&id), Some(AgentStateKind::Idle), "it runs on after the turn");
+        let err = orchestrator.stop_background_shell(&id, "toolu_nope").await.unwrap_err();
+        assert_eq!(err.to_string(), "that background command isn't running");
+        orchestrator.stop_background_shell(&id, "toolu_bg").await.unwrap();
+        wait_for("killed, final output read", bg(BackgroundStatus::Killed, "tick 2")).await;
+        let stop: serde_json::Value = read_side(&fake, "stdin")
+            .lines()
+            .find(|l| l.contains("stop_task"))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .unwrap();
+        assert_eq!(stop["request"], serde_json::json!({"subtype": "stop_task", "task_id": "bt1"}));
+        assert!(orchestrator.stop_background_shell(&id, "toolu_bg").await.is_err());
+        // Persisted in its final state.
+        assert!(bg(BackgroundStatus::Killed, "tick 2")());
 
         // A streaming turn, coalesced; then interrupted.
         let mut events = orchestrator.streams().subscribe();
