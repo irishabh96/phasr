@@ -282,9 +282,10 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   //  - `phasr://task-agent-state` for agent-state changes,
   //  - `phasr://run-command-state` for run commands,
   //  - `phasr://transcript` for a transcript-view task's items
-  //    (`get_transcript` / `set_agent_view` / `interrupt_task`, and
-  //    `send_message_to_task` when the task's `agentView` is "transcript";
-  //    `world.transcript` / `turnStarts` / `turnEnds` drive the agent).
+  //    (`get_transcript` / `set_agent_view` / `interrupt_task` /
+  //    `stop_background_shell`, and `send_message_to_task` when the task's
+  //    `agentView` is "transcript"; `world.transcript` / `subagent` /
+  //    `backgroundShell` / `turnStarts` / `turnEnds` drive the agent).
   //
   // Events fire a beat AFTER the command resolves, as over real IPC. The
   // store survives a reload (sessionStorage), like the backend outlives
@@ -797,6 +798,16 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         turnEnds(w);
         return null;
       }
+      case "stop_background_shell": {
+        // The CLI's `stop_task`: the command's item turns "killed".
+        const w = findWs(a?.taskId);
+        if (!w) return reject("not found");
+        const item = (db.transcripts[w.id] ?? []).find((x: any) => x.id === a?.toolUseId);
+        if (!item || item.backgroundStatus !== "running") return reject("that background command isn't running");
+        transcriptPut(w.id, { ...item, backgroundStatus: "killed" }, "update");
+        save();
+        return null;
+      }
       case "send_message_to_task": {
         const w = findWs(a?.taskId);
         // Terminal view keeps the fixture answer.
@@ -994,6 +1005,65 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     transcript(taskId: string, item: Record<string, unknown>, op?: "append" | "update") {
       if (!findWs(taskId)) throw new Error(`no task ${taskId}`);
       transcriptPut(taskId, { ts: nowIso(), ...item }, op);
+      save();
+    },
+    /**
+     * Transcript view: a subagent (an `Agent` call, id `id`) and the items it
+     * produced so far, nested under it by `parentId` — as `agent_stream`
+     * emits them. `steps` / `latest` follow its tool calls unless given.
+     * Call again with more `items` to stream its progress.
+     */
+    subagent(
+      taskId: string,
+      call: { id: string; description: string; type?: string; status?: string; output?: string; steps?: number; latest?: string },
+      items: Array<Record<string, unknown>> = [],
+    ) {
+      if (!findWs(taskId)) throw new Error(`no task ${taskId}`);
+      const tools = items.filter((i) => i.kind === "tool");
+      const last = tools[tools.length - 1] as { title?: string } | undefined;
+      const known = (db.transcripts[taskId] ?? []).find((x: any) => x.id === call.id);
+      transcriptPut(taskId, {
+        kind: "tool",
+        id: call.id,
+        ts: known?.ts ?? nowIso(),
+        tool: "Agent",
+        input: { description: call.description, subagent_type: call.type ?? "general-purpose", prompt: call.description },
+        title: `Running a subagent: ${call.description}`,
+        status: call.status ?? "running",
+        ...(call.output ? { output: call.output } : {}),
+        subagent: {
+          type: call.type ?? "general-purpose",
+          description: call.description,
+          steps: call.steps ?? tools.length,
+          ...((call.latest ?? last?.title) ? { latest: call.latest ?? last?.title } : {}),
+        },
+      });
+      for (const item of items) transcriptPut(taskId, { ts: nowIso(), ...item, parentId: call.id });
+      save();
+    },
+    /**
+     * Transcript view: a Bash call the agent ran with `run_in_background`
+     * (id `id`); `status` is the command's own ("running" until it ends).
+     */
+    backgroundShell(
+      taskId: string,
+      shell: { id: string; command: string; status?: string; output?: string; parentId?: string; startedAt?: string },
+    ) {
+      if (!findWs(taskId)) throw new Error(`no task ${taskId}`);
+      const known = (db.transcripts[taskId] ?? []).find((x: any) => x.id === shell.id);
+      transcriptPut(taskId, {
+        kind: "tool",
+        id: shell.id,
+        ts: shell.startedAt ?? known?.ts ?? nowIso(),
+        tool: "Bash",
+        input: { command: shell.command, run_in_background: true },
+        title: `Running ${shell.command}`,
+        status: "done",
+        background: true,
+        backgroundStatus: shell.status ?? "running",
+        ...(shell.output !== undefined ? { output: shell.output } : {}),
+        ...(shell.parentId ? { parentId: shell.parentId } : {}),
+      });
       save();
     },
     /** A turn starts (agent state `working`); views can't switch until it ends. */
@@ -1327,6 +1397,26 @@ export const world = {
       ([id, it, o]) => (window as any).__E2E__.world.transcript(id, it, o ?? undefined),
       [taskId, item, op ?? null] as const,
     ),
+  /**
+   * Transcript view: a subagent call and its items so far (nested under it
+   * by `parentId`). Repeat with more items to stream its progress.
+   */
+  subagent: (
+    page: Page,
+    taskId: string,
+    call: { id: string; description: string; type?: string; status?: string; output?: string; steps?: number; latest?: string },
+    items: Array<Record<string, unknown>> = [],
+  ) =>
+    page.evaluate(
+      ([id, c, its]) => (window as any).__E2E__.world.subagent(id, c, its),
+      [taskId, call, items] as const,
+    ),
+  /** Transcript view: a background Bash command (`status` = its own; "running" by default). */
+  backgroundShell: (
+    page: Page,
+    taskId: string,
+    shell: { id: string; command: string; status?: string; output?: string; parentId?: string; startedAt?: string },
+  ) => page.evaluate(([id, s]) => (window as any).__E2E__.world.backgroundShell(id, s), [taskId, shell] as const),
   /** A turn starts: agent state `working` (Stop shows, sends queue). */
   turnStarts: (page: Page, taskId: string) =>
     page.evaluate((id) => (window as any).__E2E__.world.turnStarts(id), taskId),

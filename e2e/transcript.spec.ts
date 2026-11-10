@@ -298,6 +298,127 @@ test.describe("Agent transcript view", () => {
     await expect(pill).toBeHidden();
   });
 
+  test("a subagent call groups its steps: live activity and a count, collapsed, expanding to its own transcript", async ({ page }) => {
+    const { errors } = await boot(page);
+    await world.turnStarts(page, TASK);
+    const step = (id: string, title: string, status = "running") => ({
+      kind: "tool",
+      id,
+      tool: title.startsWith("Reading") ? "Read" : "Bash",
+      input: {},
+      title,
+      status,
+    });
+    await world.subagent(page, TASK, { id: "agent-1", description: "Map the auth module" }, [step("s1", "Running ls src/auth", "done")]);
+    // A second subagent in parallel: siblings, not nested.
+    await world.subagent(page, TASK, { id: "agent-2", description: "Find the callers", type: "Explore" }, [step("s9", "Searching \"redirect(\"")]);
+
+    const calls = transcript(page).locator('[data-tool="Agent"]');
+    await expect(calls).toHaveCount(2);
+    const first = calls.nth(0);
+    await expect(first).toContainText("Subagent Map the auth module · general-purpose");
+    await expect(first.locator("[data-subagent-latest]")).toHaveText("Running ls src/auth…");
+    await expect(calls.nth(1)).toContainText("Find the callers · Explore");
+    // Collapsed: the steps aren't rows of the transcript.
+    await expect(transcript(page).locator('[data-item-id="s1"]')).toHaveCount(0);
+
+    // It works on: the line follows it, the count grows.
+    await world.subagent(page, TASK, { id: "agent-1", description: "Map the auth module" }, [
+      step("s1", "Running ls src/auth", "done"),
+      { kind: "thinking", id: "s2", text: "redirect.ts is the one.", durationMs: 1000 },
+      step("s3", "Reading src/auth/redirect.ts"),
+    ]);
+    await expect(first.locator("[data-subagent-latest]")).toHaveText("Reading src/auth/redirect.ts…");
+    const toggle = first.getByRole("button", { name: /2 steps/ });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    await toggle.click();
+    const group = first.getByRole("group", { name: "Subagent: Map the auth module" });
+    await expect(group.locator("[data-transcript-item]")).toHaveCount(3);
+    await expect(group.locator('[data-tool="Read"]')).toContainText("Reading src/auth/redirect.ts");
+    await expect(group.locator('[data-tool="Read"]').getByRole("img", { name: "running" })).toBeVisible();
+    // The other subagent stays collapsed.
+    await expect(calls.nth(1).getByRole("group")).toHaveCount(0);
+
+    // Done: no live line; the report is a toggle away; the group stays open.
+    await world.subagent(
+      page,
+      TASK,
+      { id: "agent-1", description: "Map the auth module", status: "done", output: "The redirect lives in `redirect.ts`." },
+      [step("s1", "Running ls src/auth", "done"), { kind: "thinking", id: "s2", text: "redirect.ts is the one.", durationMs: 1000 }, step("s3", "Reading src/auth/redirect.ts", "done")],
+    );
+    await expect(first.getByRole("img", { name: "done" }).first()).toBeVisible();
+    await expect(first.locator("[data-subagent-latest]")).toHaveCount(0);
+    await first.getByRole("button", { name: "report" }).click();
+    await expect(first.getByText("redirect.ts", { exact: true }).first()).toBeVisible();
+    await expect(group).toBeVisible();
+    expect(realErrors(errors)).toEqual([]);
+  });
+
+  test("background commands show in a strip above the composer; a chip scrolls to its item, × stops it", async ({ page }) => {
+    const base = Date.parse("2026-11-11T10:00:00.000Z");
+    const filler = (from: number, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        kind: "assistant",
+        id: `fill-${from + i}`,
+        ts: new Date(base + (from + i) * 1000).toISOString(),
+        text: `Working note ${from + i}`,
+        streaming: false,
+      }));
+    const { errors } = await boot(page, { transcripts: { [TASK]: filler(0, 40) } });
+    const startedAt = new Date(Date.now() - 65_000).toISOString();
+    await world.backgroundShell(page, TASK, { id: "bg-dev", command: "pnpm dev --port 1420", output: "VITE ready in 312 ms\n➜ Local: http://localhost:1420/", startedAt });
+    // The transcript goes on; the command's line scrolls out of view.
+    for (const item of filler(40, 40)) await world.transcript(page, TASK, item);
+
+    const strip = page.getByRole("group", { name: "Background commands" });
+    await expect(strip).toBeVisible();
+    const chip = strip.getByRole("button", { name: /Show background command pnpm dev --port 1420/ });
+    await expect(chip).toContainText("pnpm dev --port 1420");
+    await expect(chip).toContainText(/1m \d+s/);
+    // Just above the composer.
+    const stripBox = (await strip.boundingBox())!;
+    const composerBox = (await composer(page).boundingBox())!;
+    expect(stripBox.y + stripBox.height).toBeLessThanOrEqual(composerBox.y);
+    expect(composerBox.y - (stripBox.y + stripBox.height)).toBeLessThan(40);
+
+    const row = transcript(page).locator('[data-item-id="bg-dev"]');
+    await expect(row).toHaveAttribute("data-background-status", "running");
+    await expect(row).not.toBeInViewport();
+    await expect(row.getByText("VITE ready in 312 ms")).toHaveCount(0);
+    await chip.click();
+    await expect(row).toBeInViewport();
+    // …and stays there while the transcript goes on (unpinned).
+    await world.transcript(page, TASK, { kind: "assistant", id: "after-chip", text: "Still working.", streaming: false });
+    await expect(transcript(page).getByText("Still working.")).toHaveCount(1);
+    await expect(row).toBeInViewport();
+    await expect(row.getByText("VITE ready in 312 ms")).toBeVisible();
+    await expect(row).toContainText(/in background · 1m \d+s/);
+
+    // × stops it: the item says so, and the strip empties.
+    await clearCalls(page);
+    await strip.getByRole("button", { name: "Stop pnpm dev --port 1420" }).click();
+    await expect.poll(() => callsOf(page, "stop_background_shell")).toEqual([{ taskId: TASK, toolUseId: "bg-dev" }]);
+    await expect(row).toHaveAttribute("data-background-status", "killed");
+    await expect(row).toContainText("stopped");
+    await expect(strip).toHaveCount(0);
+    expect(realErrors(errors)).toEqual([]);
+  });
+
+  test("thinking without a summary is a plain line; with one it expands", async ({ page }) => {
+    await boot(page);
+    await world.transcript(page, TASK, { kind: "thinking", id: "th-empty", text: "", durationMs: 1000 });
+    const empty = transcript(page).locator('[data-item-id="th-empty"]');
+    await expect(empty).toHaveText(/Thought for 1s/);
+    await expect(empty.getByRole("button")).toHaveCount(0);
+    await expect(empty.locator("svg")).toHaveCount(0);
+
+    await world.transcript(page, TASK, { kind: "thinking", id: "th-sum", text: "The cookie refresh drops ?next=.", durationMs: 2000 });
+    const summarized = transcript(page).locator('[data-item-id="th-sum"]');
+    await summarized.getByRole("button", { name: /Thought for 2s/ }).click();
+    await expect(summarized).toContainText("The cookie refresh drops ?next=.");
+  });
+
   test("a Claude task without a view keeps its terminal, and offers the switch", async ({ page }) => {
     const f = makeFixtures() as ReturnType<typeof makeFixtures> & Record<string, unknown>;
     f.stateful = true;
