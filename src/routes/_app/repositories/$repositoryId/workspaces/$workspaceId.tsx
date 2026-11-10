@@ -403,6 +403,7 @@ function WorkspaceDetail() {
           <Composer
             taskId={workspaceId}
             agent={workspace.agent}
+            roots={[workspace.worktreePath, repos?.find((r) => r.id === repositoryId)?.localPath]}
             // `status` stays "running" while the agent is paused on a
             // permission dialog, where a sent message's Enter would pick
             // "Yes". Answer the card instead.

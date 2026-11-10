@@ -1,6 +1,9 @@
 import { ArrowUp } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { AttachIconButton, AttachmentChips } from "@/components/attachments/Attachments";
 import { AGENT_META } from "@/components/ui/AgentMark";
+import { withAttachmentBlock } from "@/lib/attachments";
+import { useAttachments } from "@/lib/hooks/useAttachments";
 import { tauri } from "@/lib/tauri";
 import type { Agent } from "@/lib/types";
 import { showToast } from "@/lib/toast";
@@ -33,13 +36,17 @@ export function isSendChord(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey"
  * from the space left over and an agent TUI reads its size once at startup,
  * so this box must never appear late or change the column's layout. The
  * slot keeps its height; a growing input lifts the surface upward over the
- * bottom of the terminal instead of pushing it.
+ * bottom of the terminal instead of pushing it, attachment chips included.
+ *
+ * Attachments (the paperclip, a pasted screenshot, or files dropped on the
+ * box) ride along as an "Attached files:" block under the message.
  */
 export function Composer({
   taskId,
   agent,
   disabled,
   awaitingAnswer = false,
+  roots,
 }: {
   taskId: string;
   agent: Agent | null;
@@ -51,10 +58,15 @@ export function Composer({
    * above must not resize) but only points at the request.
    */
   awaitingAnswer?: boolean;
+  /** The task's worktree and repository: attachments inside them are sent
+   *  as relative paths. */
+  roots?: readonly (string | null | undefined)[];
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const attachments = useAttachments({ dropRef: surfaceRef });
   const name = agent ? AGENT_META[agent].label : "the agent";
 
   // Auto-grow: measure the content, clamp to MAX_LINES. Layout effect so the
@@ -70,7 +82,7 @@ export function Composer({
   }, [text, awaitingAnswer]);
 
   const send = async (body: string) => {
-    const message = body.trim();
+    const message = withAttachmentBlock(body.trim(), attachments.items, roots);
     if (!message || sending) return;
     setSending(true);
     try {
@@ -79,6 +91,7 @@ export function Composer({
       // the agent has exited (so text never lands in a bare shell).
       await tauri.sendMessageToTask(taskId, message, true);
       setText("");
+      attachments.clear();
     } catch (err) {
       showToast(
         isAwaitingAnswerError(err)
@@ -122,7 +135,8 @@ export function Composer({
 
   return (
     <div className={slot}>
-      <div className={surface}>
+      <div ref={surfaceRef} className={surface}>
+        <AttachmentChips items={attachments.items} onRemove={attachments.remove} />
         <label htmlFor={`composer-${taskId}`} className="sr-only">
           Message {name}
         </label>
@@ -134,6 +148,7 @@ export function Composer({
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={attachments.onPaste}
           placeholder={`Reply to ${name}…`}
           aria-keyshortcuts="Meta+Enter"
           style={{ height: MIN_H, paddingTop: PAD_Y, paddingBottom: PAD_Y }}
@@ -152,6 +167,7 @@ export function Composer({
             </button>
           ))}
           <span className="flex-1" />
+          <AttachIconButton disabled={disabled} onClick={() => void attachments.pick()} />
           <span aria-hidden className="text-[11px] text-(--color-text-muted)">
             ⌘↵ send
           </span>
@@ -159,7 +175,7 @@ export function Composer({
             type="button"
             aria-label="Send"
             aria-keyshortcuts="Meta+Enter"
-            disabled={disabled || sending || !text.trim()}
+            disabled={disabled || sending || (!text.trim() && attachments.items.length === 0)}
             onClick={() => void send(text)}
             className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-accent-500) text-(--color-accent-onfill) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-accent-400) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
           >

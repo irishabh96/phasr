@@ -33,7 +33,7 @@ Screenshots of the current build, taken in the e2e harness, show it is still on 
 | D2 | The title bar shows an "Automations" link, but the feature is hidden. | **Keep it hidden** until Automations exists. Board is the only nav item. |
 | D3 | The workspace artboard shows a structured transcript; the app shows the agent's TUI. | **Keep the terminal** and polish around it. A transcript is a separate project. |
 | D4 | The design's terminal line says "xterm.js + WebGL"; the app uses ghostty-web. | **Keep ghostty-web.** Apply the intent (§6). |
-| D5 | New task's Run and Attach chips. | **Ship Run** (start a run command with the task). **Hide Attach** (`@file` context is still deferred). |
+| D5 | New task's Run and Attach chips. | **Ship Run** (start a run command with the task). **Ship Attach** (reversed from "hide"): the dashed Attach chip in New task and a paperclip in the composer pick files; a pasted screenshot is saved by `save_attachment`; dropped files become attachments. They reach the agent as an "Attached files:" path list under the prompt (relative inside the task's worktree or repo, absolute otherwise), so every agent CLI reads them the same way. |
 | D6 | Polish muted `#6E6E78` is 3.9:1 on bg, below AA for 12px text. | **Use `#6E6E78` exactly**, per the design owner. This is a known AA shortfall for small muted text, recorded here so it isn't "fixed" back by accident. |
 | D7 | Light theme: Polish only defines dark. | Apply the same structural rules to light; keep the A-SystemLight colours. |
 | D8 | Composer send key. | **⌘↵ sends**, Enter adds a newline (as drawn). |
@@ -125,7 +125,7 @@ The dialog is 640px wide, with a surface background, radius 12 and the floating 
   - `[📁 Worktree ▾]`
   - `[🛡 Ask for shell ▾]`
   - `[▶ dev ▾]`: a run command to start with the task, or none (D5).
-  - (`[Attach]` stays hidden, per D5.)
+  - `[📎 Attach]`: dashed, muted; opens the file picker. Attached files show as removable chips under the prompt (D5).
   - Each popover follows the popover motion in §5.
 - **Footer:**
   - Left: the branch that will be created (`phasr/fix-login-redirect`, mono, muted) and the "Show commands" text link, which expands the plan inline.
