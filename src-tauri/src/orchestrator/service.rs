@@ -4304,10 +4304,11 @@ sleep 30
             !resumed.contains("do the thing"),
             "prompt re-sent on resume: {resumed}"
         );
-        assert!(
-            resumed.contains("--resume 11111111-2222-4333-8444-555555555555"),
-            "{resumed}"
-        );
+        // `--resume <id>` itself is proven by the fake's own
+        // `resume=[<id>]` above: it only sets that from the argument. The
+        // shell's echo of the command line is no evidence either way — it
+        // is typed once the line editor is up, which redraws (and, with a
+        // highlighter, recolours) it rather than echoing it verbatim.
 
         orchestrator.quiesce_task(&task_id).await;
         assert!(signals.state(&task_id).is_none());

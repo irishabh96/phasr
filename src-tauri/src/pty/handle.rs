@@ -790,10 +790,23 @@ fn is_zombie(pid: libc::pid_t) -> bool {
         .unwrap_or(false)
 }
 
-/// Delay before the agent command is typed into the fresh shell. Only
-/// paces the echo — bytes that arrive before the shell finishes its rc
-/// files sit in the TTY buffer and the line editor picks them up.
+/// Minimum delay before the agent command is typed into the fresh shell.
 const COMMAND_DELAY: Duration = Duration::from_millis(300);
+
+/// The longest the command waits for the shell's line editor before it is
+/// typed blind (the old behaviour).
+///
+/// Typing into a shell that is still running its rc files is NOT safe:
+/// bytes that arrive early are echoed by the TTY at once (the command shows
+/// up above the prompt), and anything in the rc that resets the terminal
+/// with `TCSAFLUSH` — `stty`, a prompt theme, a plugin manager — discards
+/// them. The user then sees the command, zsh's `%` partial-line mark, and
+/// an empty prompt: the agent never started.
+const SHELL_READY_DEADLINE: Duration = Duration::from_secs(8);
+
+/// For a shell that never enables bracketed paste: output then this much
+/// silence counts as "the prompt is drawn".
+const SHELL_QUIET: Duration = Duration::from_millis(400);
 
 /// How long to wait for the agent's TUI to take over the terminal
 /// before typing the prompt blind (the pre-readiness behavior, kept as
@@ -909,7 +922,15 @@ fn run_initial_writes(
     if let Some(cmd_text) = initial_command {
         let trimmed = cmd_text.trim();
         if !trimmed.is_empty() {
-            std::thread::sleep(COMMAND_DELAY);
+            let started = Instant::now();
+            if wait_for_shell_prompt(&mut events, SHELL_READY_DEADLINE, SHELL_QUIET)
+                == ShellWait::Ended
+            {
+                return;
+            }
+            if let Some(rest) = COMMAND_DELAY.checked_sub(started.elapsed()) {
+                std::thread::sleep(rest);
+            }
             let _ = handle.write(format!("{trimmed}\n").as_bytes());
         }
     }
@@ -1171,6 +1192,64 @@ fn wait_for_tui(events: &mut broadcast::Receiver<PtyEvent>, deadline: Duration) 
             // scanning what still arrives; the deadline backstops us.
             Err(TryRecvError::Lagged(_)) => continue,
             Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(15)),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShellWait {
+    /// The line editor is reading (or the shell went quiet after output).
+    Ready,
+    /// Nothing conclusive before the deadline; type anyway.
+    TimedOut,
+    /// The PTY is gone.
+    Ended,
+}
+
+/// Bracketed paste being switched on: zsh, bash ≥ 5.1 and fish do it each
+/// time their line editor starts reading a command — the moment typed
+/// input is safe.
+const SHELL_READY_MARKER: &[u8] = b"\x1b[?2004h";
+
+/// Wait until the shell is at its prompt: bracketed paste enabled, or (for
+/// a shell that never enables it) output followed by `quiet` of silence.
+fn wait_for_shell_prompt(
+    events: &mut broadcast::Receiver<PtyEvent>,
+    deadline: Duration,
+    quiet: Duration,
+) -> ShellWait {
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let give_up_at = Instant::now() + deadline;
+    let mut tail: Vec<u8> = Vec::new();
+    let mut last_output: Option<Instant> = None;
+    loop {
+        let now = Instant::now();
+        if now >= give_up_at {
+            return ShellWait::TimedOut;
+        }
+        match events.try_recv() {
+            Ok(PtyEvent::Output { chunk, .. }) => {
+                last_output = Some(now);
+                // Keep the marker's length minus one byte of carry so a
+                // marker split across reads is still found.
+                tail.extend_from_slice(&chunk);
+                if tail.windows(SHELL_READY_MARKER.len()).any(|w| w == SHELL_READY_MARKER) {
+                    return ShellWait::Ready;
+                }
+                let keep = SHELL_READY_MARKER.len() - 1;
+                if tail.len() > keep {
+                    tail.drain(..tail.len() - keep);
+                }
+            }
+            Ok(PtyEvent::Exit { .. }) | Err(TryRecvError::Closed) => return ShellWait::Ended,
+            Err(TryRecvError::Lagged(_)) => continue,
+            Err(TryRecvError::Empty) => {
+                if last_output.is_some_and(|at| now.duration_since(at) >= quiet) {
+                    return ShellWait::Ready;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
         }
     }
 }
@@ -1585,6 +1664,41 @@ mod tests {
     fn scanner_accepts_cursor_hide_for_inline_tuis() {
         let mut scanner = TuiMarkerScanner::default();
         assert!(scanner.scan(b"\x1b[?25l"));
+    }
+
+    #[test]
+    fn shell_prompt_waits_for_bracketed_paste_even_split_across_reads() {
+        let (tx, mut rx) = broadcast::channel(16);
+        tx.send(output("Last login: today\r\n")).unwrap();
+        tx.send(output("prompt \x1b[?20")).unwrap();
+        tx.send(output("04h")).unwrap();
+        assert_eq!(
+            wait_for_shell_prompt(&mut rx, Duration::from_secs(2), Duration::from_secs(5)),
+            ShellWait::Ready
+        );
+    }
+
+    #[test]
+    fn shell_prompt_without_bracketed_paste_is_ready_after_quiet() {
+        let (tx, mut rx) = broadcast::channel(16);
+        tx.send(output("$ ")).unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            wait_for_shell_prompt(&mut rx, Duration::from_secs(5), Duration::from_millis(100)),
+            ShellWait::Ready
+        );
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        drop(tx);
+    }
+
+    #[test]
+    fn shell_prompt_silence_before_any_output_is_not_ready() {
+        // A slow rc file prints nothing for a while: that is not a prompt.
+        let (_tx, mut rx) = broadcast::channel::<PtyEvent>(16);
+        assert_eq!(
+            wait_for_shell_prompt(&mut rx, Duration::from_millis(300), Duration::from_millis(50)),
+            ShellWait::TimedOut
+        );
     }
 
     #[test]
