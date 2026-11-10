@@ -1,8 +1,13 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { TranscriptItem } from "@/lib/transcript/contract";
+import type { ToolItem, TranscriptItem } from "@/lib/transcript/contract";
 import { parseBlocks } from "./Markdown";
-import { TranscriptItemView } from "./TranscriptItem";
+import {
+  TranscriptChildrenContext,
+  TranscriptFocusContext,
+  TranscriptItemView,
+  type TranscriptFocus,
+} from "./TranscriptItem";
 
 const ts = new Date(2026, 10, 11, 10, 42, 3).toISOString();
 const show = (item: TranscriptItem) => render(<TranscriptItemView item={item} />).container;
@@ -42,6 +47,17 @@ describe("transcript items", () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("The cookie refresh drops the query.")).toBeInTheDocument();
+  });
+
+  it("shows thinking without a summary as a plain line, not a control", () => {
+    const { container } = render(<TranscriptItemView item={{ kind: "thinking", id: "th", ts, text: "", durationMs: 1200 }} />);
+    expect(screen.getByText("Thought for 1s")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(container.querySelector("[data-thinking-empty]")).not.toBeNull();
+    // Whitespace isn't a summary either.
+    render(<TranscriptItemView item={{ kind: "thinking", id: "th2", ts, text: "\n\n" }} />);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("marks a tool line running, done, failed or denied", () => {
@@ -106,6 +122,145 @@ describe("transcript items", () => {
     expect(screen.queryByText("PHA-1")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "output" }));
     expect(screen.getByText("PHA-1")).toBeInTheDocument();
+  });
+
+  describe("a subagent call", () => {
+    const agent = (extra: Partial<ToolItem> = {}): ToolItem => ({
+      kind: "tool",
+      id: "agent",
+      ts,
+      tool: "Agent",
+      input: { description: "List repo files", subagent_type: "general-purpose", prompt: "…" },
+      title: "Running a subagent: List repo files",
+      status: "running",
+      subagent: { type: "general-purpose", description: "List repo files", steps: 2, latest: "Reading src/a.ts" },
+      ...extra,
+    });
+    const nested: TranscriptItem[] = [
+      { kind: "tool", id: "n1", ts, tool: "Bash", input: { command: "ls" }, title: "Running ls", status: "done", output: "src", parentId: "agent" },
+      { kind: "thinking", id: "n2", ts, text: "Now the file.", parentId: "agent" },
+      { kind: "tool", id: "n3", ts, tool: "Read", input: {}, title: "Reading src/a.ts", status: "running", parentId: "agent" },
+    ];
+
+    it("shows what it was asked, its type, live activity and steps — collapsed", () => {
+      const { container } = render(<TranscriptItemView item={agent()} nested={nested} />);
+      const row = container.querySelector('[data-tool="Agent"]')!;
+      expect(row).toHaveAttribute("data-subagent", "general-purpose");
+      expect(row).toHaveTextContent("Subagent List repo files · general-purpose");
+      expect(screen.getByRole("img", { name: "running" })).toBeInTheDocument();
+      expect(container.querySelector("[data-subagent-latest]")).toHaveTextContent("Reading src/a.ts…");
+      const toggle = screen.getByRole("button", { name: /2 steps/ });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(container.querySelector("[data-subagent-transcript]")).toBeNull();
+      expect(screen.queryByText("Running ls")).toBeNull();
+    });
+
+    it("expands to its own transcript, indented, with the same renderers and no time column", () => {
+      const { container } = render(<TranscriptItemView item={agent()} nested={nested} />);
+      fireEvent.click(screen.getByRole("button", { name: /2 steps/ }));
+      const group = screen.getByRole("group", { name: "Subagent: List repo files" });
+      expect(group.querySelectorAll("[data-transcript-item]")).toHaveLength(3);
+      expect(group.querySelector('[data-tool="Bash"]')).toHaveTextContent("Running ls");
+      expect(group.querySelector("[data-output-tail]")).toHaveTextContent("src");
+      expect(group.querySelectorAll("time")).toHaveLength(0);
+      expect(container.querySelectorAll("time")).toHaveLength(1);
+      // Its thinking has a summary: expandable.
+      fireEvent.click(screen.getByRole("button", { name: /Thought/ }));
+      expect(screen.getByText("Now the file.")).toBeInTheDocument();
+    });
+
+    it("once done: no live line, the step count stays, its report is behind a toggle", () => {
+      render(
+        <TranscriptItemView
+          item={agent({ status: "done", output: "The repo has **three** files." })}
+          nested={nested}
+        />,
+      );
+      expect(screen.queryByText(/Reading src\/a\.ts…/)).toBeNull();
+      expect(screen.getByRole("button", { name: /2 steps/ })).toBeInTheDocument();
+      expect(screen.queryByText("three")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "report" }));
+      expect(screen.getByText("three").tagName).toBe("STRONG");
+    });
+
+    it("nests a subagent's own subagents through the children context", () => {
+      const inner: ToolItem = { ...agent({ id: "inner", parentId: "agent" }), subagent: { type: "Explore", description: "Dig", steps: 1 } };
+      const deep: TranscriptItem = { kind: "assistant", id: "deep", ts, text: "found it", streaming: false, parentId: "inner" };
+      const map = new Map<string, readonly TranscriptItem[]>([["inner", [deep]]]);
+      render(
+        <TranscriptChildrenContext.Provider value={(id) => map.get(id)}>
+          <TranscriptItemView item={agent()} nested={[inner]} />
+        </TranscriptChildrenContext.Provider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /2 steps/ }));
+      fireEvent.click(screen.getByRole("button", { name: /1 step$/ }));
+      expect(screen.getByRole("group", { name: "Subagent: Dig" })).toHaveTextContent("found it");
+    });
+  });
+
+  describe("a background command", () => {
+    const bg = (extra: Partial<ToolItem> = {}): ToolItem => ({
+      kind: "tool",
+      id: "bg",
+      ts,
+      tool: "Bash",
+      input: { command: "pnpm dev", run_in_background: true },
+      title: "Running pnpm dev",
+      status: "done",
+      background: true,
+      backgroundStatus: "running",
+      ...extra,
+    });
+
+    it("says it runs in the background, live, with its output collapsed", () => {
+      const { container } = render(<TranscriptItemView item={bg({ output: "ready on :1420\nGET /" })} />);
+      const row = container.querySelector('[data-tool="Bash"]')!;
+      expect(row).toHaveAttribute("data-background-status", "running");
+      expect(screen.getByRole("img", { name: "running in background" })).toBeInTheDocument();
+      expect(row).toHaveTextContent(/in background · \d+(s|m)/);
+      // The call's own ✓ isn't shown: the command is what's running.
+      expect(screen.queryByRole("img", { name: "done" })).toBeNull();
+      expect(screen.queryByText("ready on :1420")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "output · 2 lines" }));
+      expect(screen.getByText("ready on :1420")).toBeInTheDocument();
+    });
+
+    it("ends finished, stopped or failed", () => {
+      const { rerender } = render(<TranscriptItemView item={bg({ backgroundStatus: "done" })} />);
+      expect(screen.getByText("finished in background")).toBeInTheDocument();
+      expect(screen.getByRole("img", { name: "done" })).toBeInTheDocument();
+      rerender(<TranscriptItemView item={bg({ backgroundStatus: "killed" })} />);
+      expect(screen.getByText("stopped")).toBeInTheDocument();
+      rerender(<TranscriptItemView item={bg({ backgroundStatus: "failed" })} />);
+      expect(screen.getByRole("img", { name: "failed" })).toBeInTheDocument();
+    });
+
+    it("opens its output, and the subagent groups around it, when a chip asks", () => {
+      const inside: ToolItem = bg({ id: "bg-in", parentId: "agent", output: "watching…" });
+      const map = new Map<string, readonly TranscriptItem[]>([["agent", [inside]]]);
+      const parent: ToolItem = {
+        kind: "tool",
+        id: "agent",
+        ts,
+        tool: "Agent",
+        input: {},
+        title: "Running a subagent: Watch",
+        status: "running",
+        subagent: { type: "general-purpose", description: "Watch", steps: 1 },
+      };
+      const view = (focus: TranscriptFocus | null) => (
+        <TranscriptChildrenContext.Provider value={(id) => map.get(id)}>
+          <TranscriptFocusContext.Provider value={focus}>
+            <TranscriptItemView item={parent} nested={[inside]} />
+          </TranscriptFocusContext.Provider>
+        </TranscriptChildrenContext.Provider>
+      );
+      const { rerender } = render(view(null));
+      expect(screen.queryByText("watching…")).toBeNull();
+      rerender(view({ itemId: "bg-in", open: new Set(["agent"]), nonce: 1 }));
+      expect(screen.getByRole("group", { name: "Subagent: Watch" })).toBeInTheDocument();
+      expect(screen.getByText("watching…")).toBeInTheDocument();
+    });
   });
 
   it("renders the quiet result line and system lines", () => {

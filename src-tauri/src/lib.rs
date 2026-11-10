@@ -220,6 +220,7 @@ pub fn run() {
             commands::orchestrator::read_task_log,
             commands::orchestrator::resize_task,
             commands::orchestrator::interrupt_task,
+            commands::orchestrator::stop_background_shell,
             commands::orchestrator::get_transcript,
             commands::orchestrator::set_agent_view,
             commands::agent_signals::list_agent_states,

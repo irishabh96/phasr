@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { NotesPanel } from "@/components/NotesPanel";
 import { RunCommandTerminal } from "@/components/RunCommandTerminal";
+import { BackgroundStrip } from "@/components/transcript/BackgroundStrip";
 import { ChangesPane } from "@/components/session/ChangesPane";
 import { ReviewPane } from "@/components/review/ReviewPane";
 import { ReviewInspector } from "@/components/review/ReviewInspector";
@@ -398,6 +399,11 @@ function WorkspaceDetail() {
             </div>
           ) : null}
         </div>
+        {/* Transcript view: commands Claude left running, above the
+            approval card and composer. Renders nothing while none are. */}
+        {transcriptView && isAgent && pane === "tabs" && activeInner?.kind === "main" ? (
+          <BackgroundStrip taskId={workspaceId} />
+        ) : null}
         {onAgentPane && agentState?.state === "needs-you" && agentState.attention ? (
           <ApprovalCard
             agent={workspace.agent}

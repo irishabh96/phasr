@@ -1,5 +1,5 @@
 import { ChevronRight, Loader2, Paperclip } from "lucide-react";
-import { memo, useState, type ReactNode } from "react";
+import { createContext, memo, useContext, useEffect, useState, type ReactNode } from "react";
 import type { ToolItem, TranscriptItem } from "@/lib/transcript/contract";
 import {
   COMPACT_TOOLS,
@@ -11,6 +11,8 @@ import {
   splitTitle,
   type InlineDiffLine,
 } from "@/lib/transcript/format";
+import { formatElapsed } from "@/lib/transcript/tree";
+import { useNow } from "@/lib/hooks/useNow";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./Markdown";
 
@@ -21,17 +23,53 @@ export const WRITE_PREVIEW_LINES = 6;
 /** Lines of a command's output shown by default: its tail. */
 export const OUTPUT_TAIL_LINES = 12;
 
+const NONE: readonly TranscriptItem[] = [];
+
+/**
+ * A subagent call's own items, by the call's id. A stable getter (the
+ * transcript swaps what it reads), so a change deep in one subagent only
+ * re-renders the groups whose `nested` prop changed.
+ */
+export const TranscriptChildrenContext = createContext<(id: string) => readonly TranscriptItem[] | undefined>(
+  () => undefined,
+);
+
+/**
+ * A Background chip's "show me this": the item to reveal, the subagent
+ * groups to open on the way, and a nonce so a repeat click counts again.
+ */
+export interface TranscriptFocus {
+  itemId: string;
+  open: ReadonlySet<string>;
+  nonce: number;
+}
+export const TranscriptFocusContext = createContext<TranscriptFocus | null>(null);
+
+/** How deep in subagents a row sits (0 = the main conversation). */
+const DepthContext = createContext(0);
+
 /**
  * A-Workspace transcript row: the muted 56px time column, a 14px gap, then
  * the content. Blocks under a line (diffs, output) sit in the content
- * column, i.e. at the design's 70px indent.
+ * column, i.e. at the design's 70px indent. Inside a subagent group the
+ * time column goes: the group is already indented under its call.
  */
-function Row({ ts, kind, children, ...data }: { ts: string; kind: string; children: ReactNode } & Record<`data-${string}`, string | undefined>) {
+function Row({
+  ts,
+  kind,
+  itemId,
+  className,
+  children,
+  ...data
+}: { ts: string; kind: string; itemId: string; className?: string; children: ReactNode } & Record<`data-${string}`, string | undefined>) {
+  const depth = useContext(DepthContext);
   return (
-    <div className="flex gap-[14px]" data-transcript-item={kind} {...data}>
-      <time dateTime={ts} className="w-[56px] shrink-0 select-none tabular-nums text-(--color-text-faint)">
-        {formatClock(ts)}
-      </time>
+    <div className={cn("flex gap-[14px]", className)} data-transcript-item={kind} data-item-id={itemId} {...data}>
+      {depth === 0 ? (
+        <time dateTime={ts} className="w-[56px] shrink-0 select-none tabular-nums text-(--color-text-faint)">
+          {formatClock(ts)}
+        </time>
+      ) : null}
       <div className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">{children}</div>
     </div>
   );
@@ -76,7 +114,7 @@ function splitAttachments(text: string): { body: string; files: string[] } {
 function UserItem({ item }: { item: Extract<TranscriptItem, { kind: "user" }> }) {
   const { body, files } = splitAttachments(item.text);
   return (
-    <Row ts={item.ts} kind="user">
+    <Row ts={item.ts} kind="user" itemId={item.id}>
       <div className="my-[4px] flex flex-col gap-[4px] rounded-(--radius-control) bg-(--color-bg-surface) px-[12px] py-[6px]">
         {body ? <p className="m-0 whitespace-pre-wrap text-(--color-text-primary)">{body}</p> : null}
         {files.length > 0 ? (
@@ -96,7 +134,7 @@ function UserItem({ item }: { item: Extract<TranscriptItem, { kind: "user" }> })
 
 function AssistantItem({ item }: { item: Extract<TranscriptItem, { kind: "assistant" }> }) {
   return (
-    <Row ts={item.ts} kind="assistant" data-streaming={item.streaming ? "true" : undefined}>
+    <Row ts={item.ts} kind="assistant" itemId={item.id} data-streaming={item.streaming ? "true" : undefined}>
       <Markdown text={item.text} trailing={item.streaming ? <StreamingCaret /> : undefined} />
     </Row>
   );
@@ -104,8 +142,17 @@ function AssistantItem({ item }: { item: Extract<TranscriptItem, { kind: "assist
 
 function ThinkingItem({ item }: { item: Extract<TranscriptItem, { kind: "thinking" }> }) {
   const [open, setOpen] = useState(false);
+  // Nothing to show (the CLI sent no summary): a plain line, not a
+  // control that opens onto nothing.
+  if (!item.text.trim()) {
+    return (
+      <Row ts={item.ts} kind="thinking" itemId={item.id} data-thinking-empty="true">
+        <span className="text-(--color-text-muted)">{formatThought(item.durationMs)}</span>
+      </Row>
+    );
+  }
   return (
-    <Row ts={item.ts} kind="thinking">
+    <Row ts={item.ts} kind="thinking" itemId={item.id}>
       <Toggle onClick={() => setOpen((o) => !o)} expanded={open}>
         <span className="inline-flex items-center gap-[4px]">
           <ChevronRight className={cn("size-[11px] transition-transform duration-(--dur-1)", open && "rotate-90")} aria-hidden />
@@ -213,7 +260,195 @@ export function OutputTail({ output, truncated, tone = "muted" }: { output: stri
   );
 }
 
-function ToolItemView({ item }: { item: ToolItem }) {
+/**
+ * A Background chip asked to show this item: open it (and say so with a
+ * brief highlight). Returns whether it's the focused item right now.
+ */
+function useFocusedOpen(id: string, open: (yes: boolean) => void): boolean {
+  const focus = useContext(TranscriptFocusContext);
+  const [flash, setFlash] = useState(false);
+  useEffect(() => {
+    if (!focus) return;
+    if (focus.open.has(id)) open(true);
+    if (focus.itemId !== id) return;
+    open(true);
+    setFlash(true);
+    const t = window.setTimeout(() => setFlash(false), 1600);
+    return () => window.clearTimeout(t);
+    // Only a new request (nonce) re-opens: closing it again must stick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
+  return flash;
+}
+
+const FLASH = "rounded-(--radius-chip) bg-(--color-bg-hover) transition-colors duration-(--dur-2)";
+
+const BACKGROUND_WORD: Record<NonNullable<ToolItem["backgroundStatus"]>, string> = {
+  running: "in background",
+  done: "finished in background",
+  killed: "stopped",
+  failed: "failed in background",
+};
+
+/** A background command's own status: live while it runs. */
+function BackgroundMark({ status, startedAt }: { status: NonNullable<ToolItem["backgroundStatus"]>; startedAt: string }) {
+  const running = status === "running";
+  const now = useNow(running);
+  return (
+    <span data-background-mark={status} className="ml-[8px] inline-flex items-center gap-[4px]">
+      {running ? (
+        <Loader2 role="img" aria-label="running in background" className="size-[11px] animate-spin text-(--color-status-running)" />
+      ) : status === "done" ? (
+        <span role="img" aria-label="done" className="text-(--color-success)">
+          ✓
+        </span>
+      ) : status === "failed" ? (
+        <span role="img" aria-label="failed" className="text-(--color-danger)">
+          ✗
+        </span>
+      ) : null}
+      <span className={status === "killed" ? "text-(--color-warning)" : "text-(--color-text-muted)"}>
+        {BACKGROUND_WORD[status]}
+        {running ? <span className="tabular-nums"> · {formatElapsed(startedAt, now)}</span> : null}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Bash with `run_in_background`: the call returns at once, the command runs
+ * on. Its status is the command's; its output (tailed live, plus whatever
+ * the model reads) is collapsed under a toggle until asked for.
+ */
+function BackgroundToolItem({ item }: { item: ToolItem }) {
+  const { verb, object } = splitTitle(item.title || item.tool);
+  const [open, setOpen] = useState(false);
+  const flash = useFocusedOpen(item.id, setOpen);
+  const status = item.backgroundStatus ?? "running";
+  const lines = outputLines(item.output).length;
+  return (
+    <Row
+      ts={item.ts}
+      kind="tool"
+      itemId={item.id}
+      className={cn(flash && FLASH)}
+      data-tool={item.tool}
+      data-status={item.status}
+      data-background-status={status}
+    >
+      <div>
+        {verb}
+        {object ? <span className="text-(--color-text-primary)"> {object}</span> : null}
+        <BackgroundMark status={status} startedAt={item.ts} />
+        {lines > 0 ? (
+          <span className="ml-[8px]">
+            <Toggle onClick={() => setOpen((o) => !o)} expanded={open}>
+              {open ? "hide output" : `output · ${lines} line${lines === 1 ? "" : "s"}`}
+            </Toggle>
+          </span>
+        ) : null}
+      </div>
+      {open && item.output ? (
+        <OutputTail output={item.output} truncated={item.outputTruncated} tone={status === "failed" ? "danger" : "muted"} />
+      ) : null}
+    </Row>
+  );
+}
+
+/**
+ * A subagent call (Agent / Task): what it was asked, its type and status,
+ * a live line of what it's doing and how many steps it took. Expands to
+ * its own transcript, indented, drawn by the same renderers. Collapsed by
+ * default; parallel subagents are sibling calls.
+ */
+function SubagentToolItem({ item, nested }: { item: ToolItem; nested: readonly TranscriptItem[] }) {
+  const [open, setOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const flash = useFocusedOpen(item.id, setOpen);
+  const depth = useContext(DepthContext);
+  const children = useContext(TranscriptChildrenContext);
+  const info = item.subagent;
+  const description = info?.description || splitTitle(item.title || item.tool).object || item.title;
+  const ownCalls = nested.filter((c) => c.kind === "tool").length;
+  const steps = Math.max(info?.steps ?? 0, ownCalls);
+  const running = item.status === "running" || item.backgroundStatus === "running";
+  const latest = info?.latest?.trim();
+  const groupId = `subagent-${item.id}`;
+  return (
+    <Row
+      ts={item.ts}
+      kind="tool"
+      itemId={item.id}
+      className={cn(flash && FLASH)}
+      data-tool={item.tool}
+      data-status={item.status}
+      data-subagent={info?.type ?? "subagent"}
+    >
+      <div>
+        Subagent
+        <span className="text-(--color-text-primary)"> {description}</span>
+        {info?.type ? <span className="text-(--color-text-faint)"> · {info.type}</span> : null}
+        <StatusMark status={item.status} />
+        {item.output && !running ? (
+          <span className="ml-[8px]">
+            <Toggle onClick={() => setReportOpen((o) => !o)} expanded={reportOpen}>
+              {reportOpen ? "hide report" : "report"}
+            </Toggle>
+          </span>
+        ) : null}
+      </div>
+      {steps > 0 || nested.length > 0 || (running && latest) ? (
+        <div className="flex min-w-0 items-center gap-[8px] text-(--color-text-muted)">
+          {nested.length > 0 ? (
+            <Toggle onClick={() => setOpen((o) => !o)} expanded={open}>
+              <span className="inline-flex items-center gap-[4px]" data-subagent-steps={steps} aria-controls={groupId}>
+                <ChevronRight className={cn("size-[11px] transition-transform duration-(--dur-1)", open && "rotate-90")} aria-hidden />
+                {steps} step{steps === 1 ? "" : "s"}
+              </span>
+            </Toggle>
+          ) : steps > 0 ? (
+            <span data-subagent-steps={steps}>
+              {steps} step{steps === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {running && latest ? (
+            <span data-subagent-latest className="min-w-0 truncate">
+              {latest.endsWith("…") ? latest : `${latest}…`}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {reportOpen && item.output ? (
+        <div className="my-[4px] rounded-(--radius-control) bg-(--color-bg-input) px-[12px] py-[8px] text-(--color-text-secondary)">
+          <Markdown text={item.output} />
+        </div>
+      ) : null}
+      {open && nested.length > 0 ? (
+        <div
+          id={groupId}
+          role="group"
+          aria-label={`Subagent: ${description}`}
+          data-subagent-transcript
+          className="mt-[2px] flex flex-col gap-[3px] border-l-2 border-(--color-border-default) pl-[12px]"
+        >
+          <DepthContext.Provider value={depth + 1}>
+            {nested.map((child) => (
+              <TranscriptItemView key={child.id} item={child} nested={children(child.id)} />
+            ))}
+          </DepthContext.Provider>
+        </div>
+      ) : null}
+    </Row>
+  );
+}
+
+function ToolItemView({ item, nested }: { item: ToolItem; nested?: readonly TranscriptItem[] | undefined }) {
+  if (item.subagent || (nested && nested.length > 0)) return <SubagentToolItem item={item} nested={nested ?? NONE} />;
+  if (item.backgroundStatus) return <BackgroundToolItem item={item} />;
+  return <PlainToolItem item={item} />;
+}
+
+function PlainToolItem({ item }: { item: ToolItem }) {
   const { verb, object } = splitTitle(item.title || item.tool);
   const diff = diffFromToolInput(item.tool, item.input);
   const isBash = item.tool === "Bash";
@@ -221,7 +456,7 @@ function ToolItemView({ item }: { item: ToolItem }) {
   const [genericOpen, setGenericOpen] = useState(false);
   const failed = item.status === "error";
   return (
-    <Row ts={item.ts} kind="tool" data-tool={item.tool} data-status={item.status}>
+    <Row ts={item.ts} kind="tool" itemId={item.id} data-tool={item.tool} data-status={item.status}>
       <div>
         {verb}
         {object ? <span className="text-(--color-text-primary)"> {object}</span> : null}
@@ -255,7 +490,7 @@ function ToolItemView({ item }: { item: ToolItem }) {
 
 function ResultItem({ item }: { item: Extract<TranscriptItem, { kind: "result" }> }) {
   return (
-    <Row ts={item.ts} kind="result">
+    <Row ts={item.ts} kind="result" itemId={item.id}>
       <span className={item.isError ? "text-(--color-danger)" : "text-(--color-text-muted)"}>{formatResult(item)}</span>
     </Row>
   );
@@ -263,7 +498,7 @@ function ResultItem({ item }: { item: Extract<TranscriptItem, { kind: "result" }
 
 function SystemItem({ item }: { item: Extract<TranscriptItem, { kind: "system" }> }) {
   return (
-    <Row ts={item.ts} kind="system" data-level={item.level}>
+    <Row ts={item.ts} kind="system" itemId={item.id} data-level={item.level}>
       <span role={item.level === "error" ? "alert" : undefined} className={cn("whitespace-pre-wrap", item.level === "error" ? "text-(--color-danger)" : "text-(--color-text-muted)")}>
         {item.text}
       </span>
@@ -271,8 +506,17 @@ function SystemItem({ item }: { item: Extract<TranscriptItem, { kind: "system" }
   );
 }
 
-/** One transcript item. Memoised: items are replaced, never mutated. */
-export const TranscriptItemView = memo(function TranscriptItemView({ item }: { item: TranscriptItem }) {
+/**
+ * One transcript item. Memoised: items are replaced, never mutated. A
+ * subagent call gets its own items as `nested` (from `groupTranscript`).
+ */
+export const TranscriptItemView = memo(function TranscriptItemView({
+  item,
+  nested,
+}: {
+  item: TranscriptItem;
+  nested?: readonly TranscriptItem[] | undefined;
+}) {
   switch (item.kind) {
     case "user":
       return <UserItem item={item} />;
@@ -281,7 +525,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({ item }: { i
     case "thinking":
       return <ThinkingItem item={item} />;
     case "tool":
-      return <ToolItemView item={item} />;
+      return <ToolItemView item={item} nested={nested} />;
     case "result":
       return <ResultItem item={item} />;
     case "system":

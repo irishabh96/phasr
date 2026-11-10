@@ -52,7 +52,7 @@ Scope:
 - **Items:**
   - **User messages:** the text, plus attachments when present.
   - **Assistant text:** markdown rendered, streaming as it arrives.
-  - **Thinking:** a collapsed "Thought for 4s" line that expands.
+  - **Thinking:** a collapsed "Thought for 4s" line that expands to the summary. With no summary, it's a plain muted line, not a control.
   - **Tool calls:** one line per call, with a running spinner, ✓ or ✗:
     - `Reading src/auth/redirect.ts`;
     - `Editing src/auth/redirect.ts`, with an inline −/+ diff block from the tool input (Edit / MultiEdit / Write);
@@ -87,7 +87,21 @@ type TranscriptItem =
 
 // event "phasr://transcript"
 type TranscriptEvent = { taskId: string; op: "append" | "update"; item: TranscriptItem };
+
+// Added (transcript depth). All optional, so older persisted JSONL loads.
+//  every item:   parentId?: string     // the subagent call (Agent tool_use id) it belongs to
+//  kind "tool":  background?: boolean
+//                backgroundStatus?: "running" | "done" | "killed" | "failed"
+//                subagent?: { type: string; description: string; steps: number; latest?: string }
+//  kind "thinking": text is the summary (`--thinking-display summarized`), "" when none
 ```
+
+- **Subagents:** a subagent's items carry its `Agent` call's id as `parentId`. The call line shows the description, type and status, a live "latest activity" line and "N steps". It expands (collapsed by default) to the nested transcript, drawn by the same renderers.
+- **Background commands:** a `Bash` call with `run_in_background` is `done` as a call, while `backgroundStatus` follows the command. Its output is tailed from the CLI's output file while it runs, and the model's `Read`s of that file attach to the item instead of adding lines. A **Background** strip above the composer lists the running ones: one chip each, which scrolls to the item and expands its output, plus a × that sends the CLI's `stop_task`.
+
+| Command | Purpose |
+|---|---|
+| `stop_background_shell(taskId, toolUseId) -> ()` | Stops one background command of a transcript-view task, by its Bash item's id. Rejects with "that background command isn't running" once it has ended. |
 
 | Command | Purpose |
 |---|---|

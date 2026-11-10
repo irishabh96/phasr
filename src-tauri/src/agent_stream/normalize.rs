@@ -8,8 +8,19 @@
 //! types freely, and the transcript is for the conversation, not the wire.
 //!
 //! Memory stays bounded by what is OPEN — a streaming block, a running
-//! tool — never by the transcript's length: finished items are handed out
-//! and forgotten.
+//! tool, a background command, a subagent — never by the transcript's
+//! length: finished items are handed out and forgotten (bar the last few
+//! background commands, whose output can still be read).
+//!
+//! Subagents: every line a subagent produces carries the `parent_tool_use_id`
+//! of the `Agent` call that started it. Its items get that as `parent_id`
+//! and nest under the call, whose `subagent` info counts its steps.
+//!
+//! Background commands: a `Bash` call returns at once with a
+//! `backgroundTaskId`; `system/task_*` events carry the command's own
+//! lifecycle (keyed by the CLI's task id), and the model reads its output
+//! with `Read` on the task's output file. Those reads attach to the
+//! command's item rather than becoming lines of their own.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -17,12 +28,18 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
 
 use super::transcript::{
-    new_id, tool_title, truncate_tail, SystemLevel, ToolStatus, TranscriptItem, TranscriptOp,
-    MAX_TOOL_OUTPUT,
+    clip, new_id, tool_title, truncate_tail, BackgroundStatus, SubagentInfo, SystemLevel,
+    ToolStatus, TranscriptItem, TranscriptOp, MAX_TOOL_OUTPUT,
 };
 
 /// The CLI's marker for a turn the user interrupted.
 const INTERRUPTED_MARKER: &str = "[Request interrupted by user]";
+/// Finished background commands remembered so a later read of their
+/// output still lands on their item (the model often reads it in the turn
+/// the completion starts).
+const FINISHED_SHELLS_KEPT: usize = 16;
+/// Where a background Bash's tool_result says its output goes.
+const OUTPUT_FILE_MARKER: &str = "Output is being written to: ";
 
 /// Something the session must do after a line.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +65,12 @@ pub enum Output {
     /// so the CLI doesn't wait forever.
     UnsupportedControl { request_id: String },
     TurnEnded(TurnEnd),
+    /// A background command finished: read the tail of its output file
+    /// into its item (`Normalizer::background_output`).
+    BackgroundEnded {
+        id: String,
+        output_file: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +117,35 @@ struct OpenBlock {
     /// Its complete `assistant` line already arrived (text is final; a
     /// thinking block still waits for its stop to know its duration).
     completed: bool,
+    /// The subagent call it belongs to.
+    parent: Option<String>,
+}
+
+/// A backgrounded command, once its call returned.
+struct Shell {
+    /// Its item's current state (the tool line it shows on).
+    item: TranscriptItem,
+    /// The CLI's id for it (`task_*` events, `stop_task`).
+    task_id: String,
+    output_file: Option<String>,
+    /// Phasr asked the CLI to stop it: however the CLI then reports the
+    /// end (between turns it says "completed"), it was killed.
+    stop_requested: bool,
+}
+
+impl Shell {
+    fn status(&self) -> Option<BackgroundStatus> {
+        match &self.item {
+            TranscriptItem::Tool {
+                background_status, ..
+            } => *background_status,
+            _ => None,
+        }
+    }
+
+    fn running(&self) -> bool {
+        self.status() == Some(BackgroundStatus::Running)
+    }
 }
 
 /// Parse one stdout line. `None` for blank lines and anything that isn't a
@@ -137,6 +189,55 @@ fn result_text(content: Option<&Value>) -> String {
     }
 }
 
+/// A `Read` result as the file's own text: the tool numbers every line
+/// (`"     1\tdone"`), and says so in a reminder when the file is empty.
+fn read_tool_text(text: &str) -> String {
+    if text.trim_start().starts_with("<system-reminder>") {
+        return String::new();
+    }
+    text.lines()
+        .map(|line| {
+            let digits = line.trim_start();
+            match digits.find('\t') {
+                Some(at) if at > 0 && digits[..at].bytes().all(|b| b.is_ascii_digit()) => {
+                    &digits[at + 1..]
+                }
+                _ => line,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The output file a background Bash's tool_result names
+/// ("… Output is being written to: /tmp/…/tasks/b1.output. You will …").
+fn output_file_of(text: &str) -> Option<String> {
+    let rest = &text[text.find(OUTPUT_FILE_MARKER)? + OUTPUT_FILE_MARKER.len()..];
+    let end = rest.find(".output")? + ".output".len();
+    Some(rest[..end].to_string())
+}
+
+/// A subagent's report without the CLI's bookkeeping tag in front
+/// (`<tools-used-before-summary>Bash, Read</tools-used-before-summary>`).
+fn subagent_report(text: &str) -> String {
+    const CLOSE: &str = "</tools-used-before-summary>";
+    let text = text.trim();
+    match (text.starts_with("<tools-used-before-summary>"), text.find(CLOSE)) {
+        (true, Some(at)) => text[at + CLOSE.len()..].trim().to_string(),
+        _ => text.to_string(),
+    }
+}
+
+fn non_empty<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    s(v, key).map(str::trim).filter(|t| !t.is_empty())
+}
+
+/// A subagent call: `Agent` (2.1.322), `Task` in older CLIs. Only one that
+/// carries a prompt — newer CLIs also have task-list tools.
+fn is_subagent_call(tool: &str, input: &Value) -> bool {
+    tool == "Agent" || (tool == "Task" && input.get("prompt").is_some())
+}
+
 pub struct Normalizer {
     /// The task's cwd, for short paths in tool titles.
     cwd: String,
@@ -150,6 +251,23 @@ pub struct Normalizer {
     tools: HashMap<String, TranscriptItem>,
     /// tool_use ids the host denied (their results are `denied`).
     denied: HashSet<String>,
+    /// Background commands by tool_use id: the running ones, and the last
+    /// `FINISHED_SHELLS_KEPT` finished ones (`finished`, oldest first).
+    shells: HashMap<String, Shell>,
+    finished: VecDeque<String>,
+    /// The CLI's task ids (shells and subagents) → their tool_use ids.
+    tasks: HashMap<String, String>,
+    /// Calls reading a background command's output → (that command's
+    /// tool_use id, the reading tool).
+    reads: HashMap<String, (String, String)>,
+    /// Subagent calls whose subagent is still at work (`task_started`, no
+    /// `task_notification` yet).
+    working_agents: HashSet<String>,
+    /// Subagent calls that returned while their subagent works on (run in
+    /// the background): their item, still counting steps.
+    agents: HashMap<String, TranscriptItem>,
+    /// Tool calls seen so far per open subagent call.
+    nested_calls: HashMap<String, u32>,
     last_text: Option<String>,
     interrupted: bool,
     model: Option<String>,
@@ -164,10 +282,85 @@ impl Normalizer {
             unmatched: HashMap::new(),
             tools: HashMap::new(),
             denied: HashSet::new(),
+            shells: HashMap::new(),
+            finished: VecDeque::new(),
+            tasks: HashMap::new(),
+            reads: HashMap::new(),
+            working_agents: HashSet::new(),
+            agents: HashMap::new(),
+            nested_calls: HashMap::new(),
             last_text: None,
             interrupted: false,
             model: None,
         }
+    }
+
+    /// Whether any running background command has an output file to tail.
+    pub fn tails_background(&self) -> bool {
+        self.shells
+            .values()
+            .any(|s| s.running() && s.output_file.is_some())
+    }
+
+    /// Background commands still running, with the output file each
+    /// writes to (when the CLI named it): what the session tails.
+    pub fn background_files(&self) -> Vec<(String, String)> {
+        self.shells
+            .iter()
+            .filter(|(_, shell)| shell.running())
+            .filter_map(|(id, shell)| Some((id.clone(), shell.output_file.clone()?)))
+            .collect()
+    }
+
+    /// The command's output as read from its file (the tail, `truncated`
+    /// when the file is longer). An update when it changed; `live` = the
+    /// command still runs: a streaming update (coalesced, not persisted).
+    pub fn background_output(
+        &mut self,
+        id: &str,
+        text: &str,
+        truncated: bool,
+        live: bool,
+    ) -> Option<Output> {
+        let shell = self.shells.get_mut(id)?;
+        let (tail, cut) = truncate_tail(text, MAX_TOOL_OUTPUT);
+        let TranscriptItem::Tool {
+            output,
+            output_truncated,
+            ..
+        } = &mut shell.item
+        else {
+            return None;
+        };
+        if output.as_deref() == Some(tail.as_str()) {
+            return None;
+        }
+        *output = Some(tail);
+        *output_truncated = Some(cut || truncated);
+        Some(Output::Item {
+            op: TranscriptOp::Update,
+            item: shell.item.clone(),
+            delta: live,
+        })
+    }
+
+    /// The host is stopping the background command `id`: the CLI's task id
+    /// to send `stop_task` for. `None` when it isn't running (any more).
+    pub fn stop_background(&mut self, id: &str) -> Option<String> {
+        let shell = self.shells.get_mut(id).filter(|s| s.running())?;
+        shell.stop_requested = true;
+        Some(shell.task_id.clone())
+    }
+
+    /// A tool item still being updated, wherever it's kept.
+    fn item_mut(&mut self, id: &str) -> Option<&mut TranscriptItem> {
+        if self.tools.contains_key(id) {
+            return self.tools.get_mut(id);
+        }
+        if self.agents.contains_key(id) {
+            return self.agents.get_mut(id);
+        }
+        self.shells.get_mut(id).map(|s| &mut s.item)
     }
 
     /// The user's message, as sent to the CLI (which doesn't echo it).
@@ -178,6 +371,7 @@ impl Normalizer {
                 id: new_id(),
                 ts: ts(now),
                 text: text.to_string(),
+                parent_id: None,
             },
             delta: false,
         }
@@ -188,8 +382,9 @@ impl Normalizer {
         self.denied.insert(tool_use_id.to_string());
     }
 
-    /// The items still open (streaming text, running tools) as they read
-    /// now — what a transcript read must overlay on the persisted file.
+    /// The items still open (streaming text, running tools, background
+    /// commands, working subagents) as they read now — what a transcript
+    /// read must overlay on the persisted file.
     pub fn open_items(&self) -> Vec<TranscriptItem> {
         let mut out: Vec<TranscriptItem> = self
             .open
@@ -197,28 +392,40 @@ impl Normalizer {
             .map(|(id, block)| self.block_item(id, block, None))
             .collect();
         out.extend(self.tools.values().cloned());
+        out.extend(self.agents.values().cloned());
+        out.extend(self.shells.values().filter(|s| s.running()).map(|s| s.item.clone()));
         out
     }
 
-    /// The process is gone: close everything that was still open.
+    /// The process is gone: close everything that was still open. Its
+    /// background commands went with its process group.
     pub fn settle(&mut self, now: DateTime<Utc>) -> Vec<Output> {
         let mut out = self.close_blocks(now);
-        let mut tools: Vec<TranscriptItem> = self.tools.drain().map(|(_, t)| t).collect();
-        tools.sort_by(|a, b| a.id().cmp(b.id()));
-        out.extend(tools.into_iter().map(|t| update(t.settled())));
+        let mut items: Vec<TranscriptItem> = self.tools.drain().map(|(_, t)| t).collect();
+        items.extend(self.agents.drain().map(|(_, t)| t));
+        items.extend(
+            self.shells
+                .drain()
+                .filter(|(_, s)| s.running())
+                .map(|(_, s)| s.item),
+        );
+        items.sort_by(|a, b| a.id().cmp(b.id()));
+        out.extend(items.into_iter().map(|t| update(t.settled())));
+        self.finished.clear();
+        self.tasks.clear();
+        self.reads.clear();
+        self.working_agents.clear();
+        self.nested_calls.clear();
         out
     }
 
     pub fn feed(&mut self, event: &Value, now: DateTime<Utc>) -> Vec<Output> {
-        // Inside a subagent (Task): its stream and tool calls are the
-        // subagent's own conversation; phase 1 shows the Task call only.
-        if event.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
-            return Vec::new();
-        }
+        // Inside a subagent: the `Agent` call it belongs to.
+        let parent = s(event, "parent_tool_use_id").map(str::to_string);
         match s(event, "type") {
-            Some("stream_event") => self.stream_event(event, now),
-            Some("assistant") => self.assistant(event, now),
-            Some("user") => self.user(event, now),
+            Some("stream_event") => self.stream_event(event, parent, now),
+            Some("assistant") => self.assistant(event, parent, now),
+            Some("user") => self.user(event, parent.as_deref(), now),
             Some("result") => self.result(event, now),
             Some("system") => self.system(event, now),
             Some("control_request") => self.control_request(event),
@@ -241,17 +448,24 @@ impl Normalizer {
                 ts: block.ts.clone(),
                 text: block.text.clone(),
                 streaming: !block.completed,
+                parent_id: block.parent.clone(),
             },
             BlockKind::Thinking => TranscriptItem::Thinking {
                 id: id.to_string(),
                 ts: block.ts.clone(),
                 text: block.text.clone(),
                 duration_ms,
+                parent_id: block.parent.clone(),
             },
         }
     }
 
-    fn stream_event(&mut self, event: &Value, now: DateTime<Utc>) -> Vec<Output> {
+    fn stream_event(
+        &mut self,
+        event: &Value,
+        parent: Option<String>,
+        now: DateTime<Utc>,
+    ) -> Vec<Output> {
         let Some(inner) = event.get("event") else {
             return Vec::new();
         };
@@ -274,6 +488,7 @@ impl Normalizer {
                     ts: ts(now),
                     started: now,
                     completed: false,
+                    parent,
                 };
                 let item = self.block_item(&id, &open, None);
                 self.open.insert(id.clone(), open);
@@ -328,7 +543,8 @@ impl Normalizer {
         block.completed = true;
         let duration = (block.kind == BlockKind::Thinking)
             .then(|| (now - block.started).num_milliseconds().max(0) as u64);
-        if block.kind == BlockKind::Text && !block.text.trim().is_empty() {
+        // A subagent's words aren't the task's "last message".
+        if block.kind == BlockKind::Text && block.parent.is_none() && !block.text.trim().is_empty() {
             self.last_text = Some(block.text.clone());
         }
         Some(update(self.block_item(id, &block, duration)))
@@ -345,11 +561,13 @@ impl Normalizer {
             .collect()
     }
 
-    fn assistant(&mut self, event: &Value, now: DateTime<Utc>) -> Vec<Output> {
+    fn assistant(&mut self, event: &Value, parent: Option<String>, now: DateTime<Utc>) -> Vec<Output> {
         let message = event.get("message").unwrap_or(&Value::Null);
         let msg = s(message, "id").unwrap_or_default().to_string();
-        if let Some(model) = s(message, "model") {
-            self.model = Some(model.to_string());
+        if parent.is_none() {
+            if let Some(model) = s(message, "model") {
+                self.model = Some(model.to_string());
+            }
         }
         let Some(content) = message.get("content").and_then(Value::as_array) else {
             return Vec::new();
@@ -359,13 +577,13 @@ impl Normalizer {
             match s(block, "type") {
                 Some("text") => {
                     let text = s(block, "text").unwrap_or_default();
-                    out.extend(self.complete_block(&msg, BlockKind::Text, text, now));
+                    out.extend(self.complete_block(&msg, BlockKind::Text, text, parent.clone(), now));
                 }
                 Some("thinking") => {
                     let text = s(block, "thinking").unwrap_or_default();
-                    out.extend(self.complete_block(&msg, BlockKind::Thinking, text, now));
+                    out.extend(self.complete_block(&msg, BlockKind::Thinking, text, parent.clone(), now));
                 }
-                Some("tool_use") => out.extend(self.tool_use(block, now)),
+                Some("tool_use") => out.extend(self.tool_use(block, parent.clone(), now)),
                 _ => {}
             }
         }
@@ -380,6 +598,7 @@ impl Normalizer {
         msg: &str,
         kind: BlockKind,
         text: &str,
+        parent: Option<String>,
         now: DateTime<Utc>,
     ) -> Option<Output> {
         let streamed = self.unmatched.get_mut(msg).and_then(|queue| {
@@ -401,67 +620,162 @@ impl Normalizer {
                 BlockKind::Thinking => None,
             };
         }
+        // Subagents don't stream (2.1.322): their blocks arrive here whole.
         match kind {
             BlockKind::Text if !text.trim().is_empty() => {
-                self.last_text = Some(text.to_string());
-                Some(Output::Item {
-                    op: TranscriptOp::Append,
-                    item: TranscriptItem::Assistant {
-                        id: new_id(),
-                        ts: ts(now),
-                        text: text.to_string(),
-                        streaming: false,
-                    },
-                    delta: false,
-                })
-            }
-            BlockKind::Thinking if !text.trim().is_empty() => Some(Output::Item {
-                op: TranscriptOp::Append,
-                item: TranscriptItem::Thinking {
+                if parent.is_none() {
+                    self.last_text = Some(text.to_string());
+                }
+                Some(append(TranscriptItem::Assistant {
                     id: new_id(),
                     ts: ts(now),
                     text: text.to_string(),
-                    duration_ms: None,
-                },
-                delta: false,
-            }),
+                    streaming: false,
+                    parent_id: parent,
+                }))
+            }
+            BlockKind::Thinking if !text.trim().is_empty() => Some(append(TranscriptItem::Thinking {
+                id: new_id(),
+                ts: ts(now),
+                text: text.to_string(),
+                duration_ms: None,
+                parent_id: parent,
+            })),
             _ => None,
         }
     }
 
-    fn tool_use(&mut self, block: &Value, now: DateTime<Utc>) -> Vec<Output> {
+    fn tool_use(&mut self, block: &Value, parent: Option<String>, now: DateTime<Utc>) -> Vec<Output> {
         let (Some(id), Some(tool)) = (s(block, "id"), s(block, "name")) else {
             return Vec::new();
         };
-        if self.tools.contains_key(id) {
+        if self.tools.contains_key(id) || self.reads.contains_key(id) {
             return Vec::new();
         }
         let input = block.get("input").cloned().unwrap_or(Value::Null);
-        let item = TranscriptItem::Tool {
-            id: id.to_string(),
-            ts: ts(now),
+        let started = Output::ToolStarted {
             tool: tool.to_string(),
-            title: tool_title(tool, &input, &self.cwd),
             input: input.clone(),
-            status: ToolStatus::Running,
-            output: None,
-            output_truncated: None,
         };
+        // Reading a background command's output: it lands on that
+        // command's line, not on a line of its own.
+        if let Some(shell) = self.read_target(tool, &input) {
+            self.reads.insert(id.to_string(), (shell, tool.to_string()));
+            return vec![started];
+        }
+        let title = match self.stop_target(tool, &input) {
+            Some(command) => format!("Stopping {}", clip(&command, 80)),
+            None => tool_title(tool, &input, &self.cwd),
+        };
+        let mut item = TranscriptItem::tool(id, ts(now), tool, input.clone(), title.clone(), parent.clone());
+        if let TranscriptItem::Tool {
+            background,
+            subagent,
+            ..
+        } = &mut item
+        {
+            if tool == "Bash" && input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
+                *background = Some(true);
+            }
+            if is_subagent_call(tool, &input) {
+                *subagent = Some(SubagentInfo {
+                    agent_type: non_empty(&input, "subagent_type")
+                        .unwrap_or("general-purpose")
+                        .to_string(),
+                    description: non_empty(&input, "description").unwrap_or_default().to_string(),
+                    steps: 0,
+                    latest: None,
+                });
+            }
+        }
         self.tools.insert(id.to_string(), item.clone());
-        vec![
-            Output::Item {
-                op: TranscriptOp::Append,
-                item,
-                delta: false,
-            },
-            Output::ToolStarted {
-                tool: tool.to_string(),
-                input,
-            },
-        ]
+        let mut out = vec![append(item)];
+        // A subagent's step: its call counts it and shows it as the latest.
+        // (`task_progress` counts the same calls, often first: steps are
+        // the larger of the two counts, never their sum.)
+        if let Some(parent) = &parent {
+            let calls = self.nested_calls.entry(parent.clone()).or_default();
+            *calls += 1;
+            let calls = *calls;
+            out.extend(self.subagent_progress(parent, Some(calls), Some(title)));
+        }
+        out.push(started);
+        out
     }
 
-    fn user(&mut self, event: &Value, now: DateTime<Utc>) -> Vec<Output> {
+    /// `parent`'s subagent did something: at least `steps` steps so far,
+    /// and what it's doing now. A streaming update: only the call's final
+    /// state is persisted.
+    fn subagent_progress(
+        &mut self,
+        parent: &str,
+        steps: Option<u32>,
+        latest: Option<String>,
+    ) -> Option<Output> {
+        let item = self.item_mut(parent)?;
+        let TranscriptItem::Tool {
+            subagent: Some(info),
+            ..
+        } = &mut *item
+        else {
+            return None;
+        };
+        let before = info.clone();
+        if let Some(steps) = steps {
+            info.steps = info.steps.max(steps);
+        }
+        if let Some(latest) = latest {
+            info.latest = Some(latest);
+        }
+        if *info == before {
+            return None;
+        }
+        Some(Output::Item {
+            op: TranscriptOp::Update,
+            item: item.clone(),
+            delta: true,
+        })
+    }
+
+    /// The background command whose output a `Read` (of its output file)
+    /// or a `BashOutput` (older CLIs) reads.
+    fn read_target(&self, tool: &str, input: &Value) -> Option<String> {
+        match tool {
+            "Read" => {
+                let path = non_empty(input, "file_path")?;
+                self.shells
+                    .iter()
+                    .find(|(_, shell)| {
+                        shell.output_file.as_deref() == Some(path)
+                            || path.ends_with(&format!("/tasks/{}.output", shell.task_id))
+                    })
+                    .map(|(id, _)| id.clone())
+            }
+            "BashOutput" => {
+                let task = non_empty(input, "bash_id").or_else(|| non_empty(input, "shell_id"))?;
+                self.tasks.get(task).filter(|id| self.shells.contains_key(*id)).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// The command a `TaskStop` / `KillShell` call stops, when it's one of
+    /// ours.
+    fn stop_target(&self, tool: &str, input: &Value) -> Option<String> {
+        if !matches!(tool, "TaskStop" | "KillShell" | "KillBash") {
+            return None;
+        }
+        let task = non_empty(input, "task_id")
+            .or_else(|| non_empty(input, "shell_id"))
+            .or_else(|| non_empty(input, "bash_id"))?;
+        let shell = self.shells.get(self.tasks.get(task)?)?;
+        match &shell.item {
+            TranscriptItem::Tool { input, .. } => non_empty(input, "command").map(str::to_string),
+            _ => None,
+        }
+    }
+
+    fn user(&mut self, event: &Value, parent: Option<&str>, now: DateTime<Utc>) -> Vec<Output> {
         let message = event.get("message").unwrap_or(&Value::Null);
         let content = match message.get("content") {
             Some(Value::Array(parts)) => parts.clone(),
@@ -473,6 +787,7 @@ impl Normalizer {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let structured = event.get("tool_use_result").unwrap_or(&Value::Null);
         let mut out = Vec::new();
         for part in &content {
             match s(part, "type") {
@@ -480,23 +795,23 @@ impl Normalizer {
                     let Some(id) = s(part, "tool_use_id") else {
                         continue;
                     };
-                    let Some(TranscriptItem::Tool {
-                        id,
-                        ts,
-                        tool,
-                        input,
-                        title,
-                        ..
-                    }) = self.tools.remove(id)
-                    else {
-                        continue;
-                    };
-                    let rejected = meta.iter().filter(|m| s(m, "id") == Some(id.as_str())).any(|m| {
+                    let rejected = meta.iter().filter(|m| s(m, "id") == Some(id)).any(|m| {
                         m.get("permission_decision").and_then(|d| s(d, "decision")) == Some("reject")
                             || s(m, "non_execution_kind") == Some("user-rejected")
                     });
-                    let denied = self.denied.remove(&id) || rejected;
+                    let denied = self.denied.remove(id) || rejected;
                     let is_error = part.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    let text = result_text(part.get("content"));
+                    if let Some((shell, tool)) = self.reads.remove(id) {
+                        if !denied && !is_error {
+                            out.extend(self.background_output(&shell, &read_tool_text(&text), false, false));
+                        }
+                        out.push(Output::ToolFinished { tool });
+                        continue;
+                    }
+                    let Some(item) = self.tools.remove(id) else {
+                        continue;
+                    };
                     let status = if denied {
                         ToolStatus::Denied
                     } else if is_error {
@@ -504,20 +819,13 @@ impl Normalizer {
                     } else {
                         ToolStatus::Done
                     };
-                    let (output, truncated) =
-                        truncate_tail(&result_text(part.get("content")), MAX_TOOL_OUTPUT);
-                    out.push(update(TranscriptItem::Tool {
-                        id,
-                        ts,
-                        tool: tool.clone(),
-                        input,
-                        title,
-                        status,
-                        output: Some(output),
-                        output_truncated: Some(truncated),
-                    }));
-                    out.push(Output::ToolFinished { tool });
+                    let task = s(structured, "backgroundTaskId")
+                        .map(str::to_string)
+                        .or_else(|| self.task_of(id));
+                    out.extend(self.tool_finished(item, status, &text, structured, task));
                 }
+                // A subagent's prompt (the call's input already has it).
+                Some("text") if parent.is_some() => {}
                 Some("text")
                     if !self.interrupted
                         && s(part, "text").is_some_and(|t| t.contains(INTERRUPTED_MARKER)) =>
@@ -532,6 +840,216 @@ impl Normalizer {
                 _ => {}
             }
         }
+        out
+    }
+
+    /// The CLI task id a tool_use started, if `task_started` named one.
+    fn task_of(&self, tool_use_id: &str) -> Option<String> {
+        self.tasks
+            .iter()
+            .find(|(_, id)| id.as_str() == tool_use_id)
+            .map(|(task, _)| task.clone())
+    }
+
+    /// A tool call's result: its final state. A command that went to the
+    /// background (`task`) is `done` as a call but runs on: it shows no
+    /// output yet (the result is only "running in background…") and is
+    /// tracked until its task ends. A subagent call shows its report.
+    fn tool_finished(
+        &mut self,
+        mut item: TranscriptItem,
+        status: ToolStatus,
+        text: &str,
+        structured: &Value,
+        task: Option<String>,
+    ) -> Vec<Output> {
+        let (id, tool, backgrounded, running) = {
+            let TranscriptItem::Tool {
+                id,
+                tool,
+                status: item_status,
+                output,
+                output_truncated,
+                background,
+                background_status,
+                subagent,
+                ..
+            } = &mut item
+            else {
+                return Vec::new();
+            };
+            *item_status = status;
+            let backgrounded = task.filter(|_| status == ToolStatus::Done && tool == "Bash");
+            let mut shown = text.to_string();
+            if let Some(info) = subagent.as_mut() {
+                if let Some(steps) = structured.get("totalToolUseCount").and_then(Value::as_u64) {
+                    info.steps = info.steps.max(steps as u32);
+                }
+                // The report itself, not the hand-back frame around it.
+                let report = subagent_report(&result_text(structured.get("content")));
+                if !report.is_empty() {
+                    shown = report;
+                }
+            }
+            if backgrounded.is_some() {
+                *background = Some(true);
+                background_status.get_or_insert(BackgroundStatus::Running);
+                *output = None;
+                *output_truncated = None;
+            } else {
+                let (tail, cut) = truncate_tail(&shown, MAX_TOOL_OUTPUT);
+                *output = Some(tail);
+                *output_truncated = Some(cut);
+            }
+            let running = *background_status == Some(BackgroundStatus::Running);
+            (id.clone(), tool.clone(), backgrounded, running)
+        };
+        let mut out = vec![update(item.clone())];
+        if let Some(task_id) = backgrounded {
+            self.tasks.insert(task_id.clone(), id.clone());
+            self.shells.insert(
+                id.clone(),
+                Shell {
+                    item,
+                    task_id,
+                    output_file: output_file_of(text),
+                    stop_requested: false,
+                },
+            );
+            if !running {
+                self.remember_finished(&id);
+            }
+        } else if self.working_agents.contains(&id) {
+            // The call returned but its subagent works on (backgrounded).
+            self.agents.insert(id, item);
+        } else {
+            self.nested_calls.remove(&id);
+        }
+        out.push(Output::ToolFinished { tool });
+        out
+    }
+
+    /// Keep the last few finished commands; forget older ones.
+    fn remember_finished(&mut self, id: &str) {
+        self.finished.retain(|f| f != id);
+        self.finished.push_back(id.to_string());
+        while self.finished.len() > FINISHED_SHELLS_KEPT {
+            if let Some(old) = self.finished.pop_front() {
+                if let Some(shell) = self.shells.remove(&old) {
+                    self.tasks.remove(&shell.task_id);
+                }
+            }
+        }
+    }
+
+    /// `task_started`: a background command or a subagent began.
+    fn task_started(&mut self, event: &Value) -> Vec<Output> {
+        let (Some(task), Some(tool_use)) = (s(event, "task_id"), s(event, "tool_use_id")) else {
+            return Vec::new();
+        };
+        self.tasks.insert(task.to_string(), tool_use.to_string());
+        match s(event, "task_type") {
+            Some("local_agent") => {
+                self.working_agents.insert(tool_use.to_string());
+                Vec::new()
+            }
+            Some("local_bash") if event.get("is_backgrounded").and_then(Value::as_bool) == Some(true) => {
+                self.mark_backgrounded(tool_use)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A running Bash call is (now) a background command.
+    fn mark_backgrounded(&mut self, tool_use: &str) -> Vec<Output> {
+        let Some(item) = self.tools.get_mut(tool_use) else {
+            return Vec::new();
+        };
+        let TranscriptItem::Tool {
+            background,
+            background_status,
+            ..
+        } = &mut *item
+        else {
+            return Vec::new();
+        };
+        if background_status.is_some() {
+            return Vec::new();
+        }
+        *background = Some(true);
+        *background_status = Some(BackgroundStatus::Running);
+        vec![update(item.clone())]
+    }
+
+    /// A task ended (`task_updated` with a final status, or
+    /// `task_notification`; whichever comes first counts).
+    fn task_ended(&mut self, event: &Value, status: &str) -> Vec<Output> {
+        let tool_use = s(event, "tool_use_id")
+            .map(str::to_string)
+            .or_else(|| s(event, "task_id").and_then(|t| self.tasks.get(t).cloned()));
+        let Some(tool_use) = tool_use else {
+            return Vec::new();
+        };
+        let output_file = s(event, "output_file").map(str::to_string);
+        if self.working_agents.remove(&tool_use) {
+            self.nested_calls.remove(&tool_use);
+            let steps = event
+                .get("usage")
+                .and_then(|u| u.get("tool_uses"))
+                .and_then(Value::as_u64)
+                .map(|n| n as u32);
+            let mut out: Vec<Output> = self
+                .subagent_progress(&tool_use, steps, None)
+                .into_iter()
+                .collect();
+            // A backgrounded subagent's call is final only now.
+            if let Some(item) = self.agents.remove(&tool_use) {
+                out = vec![update(item)];
+            }
+            return out;
+        }
+        let end = |stop_requested: bool| {
+            if stop_requested || matches!(status, "killed" | "stopped") {
+                BackgroundStatus::Killed
+            } else if status == "failed" {
+                BackgroundStatus::Failed
+            } else {
+                BackgroundStatus::Done
+            }
+        };
+        let Some(shell) = self.shells.get_mut(&tool_use) else {
+            // Ended before its call even returned: the call's result then
+            // finds it already over.
+            if let Some(TranscriptItem::Tool {
+                background_status: status @ Some(BackgroundStatus::Running),
+                ..
+            }) = self.tools.get_mut(&tool_use)
+            {
+                *status = Some(end(false));
+            }
+            return Vec::new();
+        };
+        if output_file.is_some() && shell.output_file.is_none() {
+            shell.output_file = output_file;
+        }
+        if !shell.running() {
+            return Vec::new();
+        }
+        let end = end(shell.stop_requested);
+        if let TranscriptItem::Tool {
+            background_status, ..
+        } = &mut shell.item
+        {
+            *background_status = Some(end);
+        }
+        let out = vec![
+            update(shell.item.clone()),
+            Output::BackgroundEnded {
+                id: tool_use.clone(),
+                output_file: shell.output_file.clone(),
+            },
+        ];
+        self.remember_finished(&tool_use);
         out
     }
 
@@ -555,8 +1073,40 @@ impl Normalizer {
                     .unwrap_or_else(|| format!("Claude reported an error ({sub})"));
                 vec![append(TranscriptItem::system(SystemLevel::Error, text, ts(now)))]
             }
+            Some("task_started") => self.task_started(event),
+            Some("task_progress") => {
+                let Some(tool_use) = s(event, "tool_use_id") else {
+                    return Vec::new();
+                };
+                let steps = event
+                    .get("usage")
+                    .and_then(|u| u.get("tool_uses"))
+                    .and_then(Value::as_u64)
+                    .map(|n| n as u32);
+                // `summary` is the CLI's own one-line status, when it has
+                // one; its `description` repeats the raw tool input, which
+                // the nested call's title already says better.
+                let latest = non_empty(event, "summary").map(|t| clip(t, 120));
+                self.subagent_progress(tool_use, steps, latest).into_iter().collect()
+            }
+            Some("task_updated") => {
+                let patch = event.get("patch").unwrap_or(&Value::Null);
+                if patch.get("is_backgrounded").and_then(Value::as_bool) == Some(true) {
+                    if let Some(tool_use) = s(event, "task_id").and_then(|t| self.tasks.get(t)).cloned() {
+                        return self.mark_backgrounded(&tool_use);
+                    }
+                }
+                match s(patch, "status") {
+                    Some(status @ ("completed" | "failed" | "killed")) => self.task_ended(event, status),
+                    _ => Vec::new(),
+                }
+            }
+            Some("task_notification") => {
+                let status = s(event, "status").unwrap_or("completed");
+                self.task_ended(event, status)
+            }
             // status, thinking_tokens, permission_denied (its tool_result
-            // says the same), background task bookkeeping, hooks, …
+            // says the same), background_tasks_changed, hooks, …
             _ => Vec::new(),
         }
     }
@@ -616,6 +1166,7 @@ impl Normalizer {
             duration_ms: event.get("duration_ms").and_then(Value::as_u64).unwrap_or(0),
             cost_usd: usage.cost_usd,
             is_error,
+            parent_id: None,
         }));
         out.push(Output::TurnEnded(TurnEnd {
             usage,
@@ -624,6 +1175,8 @@ impl Normalizer {
         }));
         self.interrupted = false;
         self.denied.clear();
+        // A read's result always comes within its turn.
+        self.reads.clear();
         out
     }
 
@@ -689,6 +1242,8 @@ mod tests {
         deltas: usize,
         /// request_id → tool_use_id, to apply the host's denies.
         requests: HashMap<String, String>,
+        /// Background commands the host stopped (tool_use ids).
+        stopped: Vec<String>,
     }
 
     impl Replay {
@@ -700,6 +1255,7 @@ mod tests {
                 side: Vec::new(),
                 deltas: 0,
                 requests: HashMap::new(),
+                stopped: Vec::new(),
             }
         }
 
@@ -752,6 +1308,14 @@ mod tests {
                             let tool = r.requests[req].clone();
                             r.n.note_denied(&tool);
                         }
+                        // The host stopped a background command: Phasr
+                        // asks by the command's tool_use id.
+                        Some("control_request") if v["request"]["subtype"] == "stop_task" => {
+                            let task = v["request"]["task_id"].as_str().unwrap();
+                            let tool = r.n.tasks[task].clone();
+                            assert_eq!(r.n.stop_background(&tool).as_deref(), Some(task));
+                            r.stopped.push(tool);
+                        }
                         _ => {}
                     }
                     continue;
@@ -767,18 +1331,21 @@ mod tests {
             self.order.iter().map(|id| &self.items[id]).collect()
         }
 
-        fn kinds(&self) -> Vec<String> {
+        /// The main conversation's kinds (`None`), or one subagent's.
+        fn kinds_under(&self, parent: Option<&str>) -> Vec<String> {
             self.transcript()
-                .iter()
-                .map(|i| match i {
-                    TranscriptItem::User { .. } => "user".to_string(),
-                    TranscriptItem::Assistant { .. } => "assistant".into(),
-                    TranscriptItem::Thinking { .. } => "thinking".into(),
-                    TranscriptItem::Tool { tool, status, .. } => format!("tool:{tool}:{status:?}"),
-                    TranscriptItem::Result { is_error, .. } => format!("result:{is_error}"),
-                    TranscriptItem::System { level, text, .. } => format!("system:{level:?}:{text}"),
-                })
+                .into_iter()
+                .filter(|i| i.parent_id() == parent)
+                .map(kind)
                 .collect()
+        }
+
+        fn tool(&self, id: &str) -> &TranscriptItem {
+            &self.items[id]
+        }
+
+        fn kinds(&self) -> Vec<String> {
+            self.transcript().into_iter().map(kind).collect()
         }
 
         fn turn_ends(&self) -> Vec<&TurnEnd> {
@@ -789,6 +1356,17 @@ mod tests {
                     _ => None,
                 })
                 .collect()
+        }
+    }
+
+    fn kind(i: &TranscriptItem) -> String {
+        match i {
+            TranscriptItem::User { .. } => "user".to_string(),
+            TranscriptItem::Assistant { .. } => "assistant".into(),
+            TranscriptItem::Thinking { .. } => "thinking".into(),
+            TranscriptItem::Tool { tool, status, .. } => format!("tool:{tool}:{status:?}"),
+            TranscriptItem::Result { is_error, .. } => format!("result:{is_error}"),
+            TranscriptItem::System { level, text, .. } => format!("system:{level:?}:{text}"),
         }
     }
 
@@ -976,11 +1554,12 @@ mod tests {
         assert!(n.feed(&json!({"type": "system", "subtype": "status"}), now).is_empty());
         assert!(n.feed(&json!({"type": "stream_event"}), now).is_empty());
         assert!(n.feed(&json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "nope"}]}}), now).is_empty());
-        // A subagent's stream isn't the main conversation.
-        assert!(n
-            .feed(&json!({"type": "assistant", "parent_tool_use_id": "toolu_task",
-                          "message": {"id": "m", "content": [{"type": "text", "text": "sub"}]}}), now)
-            .is_empty());
+        // A subagent's words nest under its call, and aren't the task's
+        // last message.
+        let out = n.feed(&json!({"type": "assistant", "parent_tool_use_id": "toolu_task",
+                          "message": {"id": "m", "content": [{"type": "text", "text": "sub"}]}}), now);
+        assert!(matches!(&out[..], [Output::Item { item: TranscriptItem::Assistant { parent_id: Some(p), .. }, .. }] if p == "toolu_task"));
+        assert_eq!(n.last_text, None);
         // A control request Phasr doesn't implement gets an answer.
         assert_eq!(
             n.feed(&json!({"type": "control_request", "request_id": "c1", "request": {"subtype": "mcp_message"}}), now),
@@ -1033,5 +1612,195 @@ mod tests {
         assert!(settled.iter().any(|o| matches!(o, Output::Item { item: TranscriptItem::Assistant { streaming: false, .. }, .. })));
         assert!(settled.iter().any(|o| matches!(o, Output::Item { item: TranscriptItem::Tool { status: ToolStatus::Error, title, .. }, .. } if title == "Reading src/a.ts")));
         assert!(n.open_items().is_empty());
+    }
+
+    fn subagent(item: &TranscriptItem) -> &SubagentInfo {
+        match item {
+            TranscriptItem::Tool { subagent: Some(info), .. } => info,
+            other => panic!("not a subagent call: {other:?}"),
+        }
+    }
+
+    fn background(item: &TranscriptItem) -> (Option<bool>, Option<BackgroundStatus>, Option<&str>) {
+        match item {
+            TranscriptItem::Tool {
+                background,
+                background_status,
+                output,
+                ..
+            } => (*background, *background_status, output.as_deref()),
+            other => panic!("not a tool: {other:?}"),
+        }
+    }
+
+    /// `--thinking-display summarized`: the thinking block streams its
+    /// summary, so the item has text to expand.
+    #[test]
+    fn summarized_thinking_carries_its_text() {
+        let r = Replay::run(include_str!("fixtures/thinking_summarized.ndjson"));
+        assert_eq!(r.kinds(), vec!["user", "thinking", "assistant", "result:false"]);
+        match r.transcript()[1] {
+            TranscriptItem::Thinking { text, duration_ms, parent_id, .. } => {
+                assert!(text.starts_with("I'm checking whether 391 factors"), "{text}");
+                assert!(duration_ms.is_some());
+                assert_eq!(*parent_id, None);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(r.deltas > 0, "the summary streams in");
+    }
+
+    /// Haiku run with `--forward-subagent-text`: an `Agent` call whose
+    /// subagent ran a Bash (failed), thought, spoke, read a file and
+    /// reported; then a background `sleep 3; echo done` whose completion
+    /// started a turn of its own that read the output file.
+    #[test]
+    fn a_subagent_nests_under_its_call() {
+        let r = Replay::run(include_str!("fixtures/subagent_background.ndjson"));
+        const AGENT: &str = "toolu_01HpErkYVdkJbNwph4HJRQ9F";
+        assert_eq!(
+            r.kinds_under(None),
+            vec![
+                "user", "thinking", "tool:Agent:Done", "thinking", "tool:Bash:Done", "thinking",
+                "assistant", "result:false",
+                // The background command finished: Claude's own turn. Its
+                // read of the output file isn't a line of its own.
+                "assistant", "result:false",
+            ]
+        );
+        assert_eq!(
+            r.kinds_under(Some(AGENT)),
+            vec!["tool:Bash:Error", "thinking", "assistant", "tool:Read:Done", "assistant"]
+        );
+        let info = subagent(r.tool(AGENT));
+        assert_eq!(info.agent_type, "general-purpose");
+        assert_eq!(info.description, "List repo files and read src/a.ts");
+        assert_eq!(info.steps, 2);
+        assert_eq!(info.latest.as_deref(), Some("Reading src/a.ts"));
+        // The call shows the subagent's report, not the hand-back frame.
+        match r.tool(AGENT) {
+            TranscriptItem::Tool { output: Some(output), title, .. } => {
+                assert!(output.starts_with("The repo has three files"), "{output}");
+                assert_eq!(title, "Running a subagent: List repo files and read src/a.ts");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A subagent's words don't become the task's last message.
+        let ends = r.turn_ends();
+        assert!(ends[0].last_text.as_deref().is_some_and(|t| t.starts_with("The subagent finished.")));
+        // Progress counted live (streaming updates of the call).
+        assert!(r.deltas > 0);
+        assert!(r.n.open_items().is_empty());
+    }
+
+    #[test]
+    fn a_background_command_runs_on_and_its_reads_attach_to_it() {
+        let r = Replay::run(include_str!("fixtures/subagent_background.ndjson"));
+        const BASH: &str = "toolu_01CFvRZzseUnxeQN5BEqnyeA";
+        let (bg, status, output) = background(r.tool(BASH));
+        assert_eq!((bg, status), (Some(true), Some(BackgroundStatus::Done)));
+        // The model's Read of the output file, line numbers stripped.
+        assert_eq!(output, Some("done\n\n[exited with code 0]\n"));
+        assert!(!r.transcript().iter().any(|i| matches!(i, TranscriptItem::Tool { title, .. } if title.contains(".output"))));
+        let ended: Vec<&Output> = r.side.iter().filter(|o| matches!(o, Output::BackgroundEnded { .. })).collect();
+        assert_eq!(
+            ended,
+            vec![&Output::BackgroundEnded {
+                id: BASH.into(),
+                output_file: Some(
+                    "/tmp/claude/-work-repo/6a1d2e3f-9b5c-4d4e-8f20-3b4c5d6e7f80/tasks/bzxcwcb8c.output".into()
+                ),
+            }]
+        );
+    }
+
+    /// Two subagents in parallel (siblings, each with its own steps), a
+    /// background `sleep 60` the HOST stopped, and a `sleep 120` the model
+    /// stopped with `TaskStop`.
+    #[test]
+    fn parallel_subagents_and_stopped_commands() {
+        let r = Replay::run(include_str!("fixtures/parallel_subagents_stop.ndjson"));
+        const A: &str = "toolu_01PfzaedFRFjcL48UCbXwtho";
+        const B: &str = "toolu_019nvse23M5uRzRTUaJzVr2C";
+        let top = r.kinds_under(None);
+        assert_eq!(&top[..3], ["user", "tool:Agent:Done", "tool:Agent:Done"], "{top:#?}");
+        assert_eq!(r.kinds_under(Some(A)), vec!["thinking", "tool:Read:Error", "thinking", "tool:Read:Done", "assistant"]);
+        assert_eq!(r.kinds_under(Some(B)), vec!["tool:Read:Done", "assistant"]);
+        assert_eq!(subagent(r.tool(A)).steps, 2);
+        assert_eq!(subagent(r.tool(B)).steps, 1);
+        assert_eq!(subagent(r.tool(B)).description, "Read src/b.ts");
+        // A subagent's permission request names its own tool call.
+        assert!(r.side.iter().any(|o| matches!(o, Output::Permission(p)
+            if p.tool_use_id.as_deref() == Some("toolu_014hsUkagyjDYZ6vSiRs5ryf"))));
+
+        assert_eq!(r.stopped, vec!["toolu_01BXtpDU5byB4Q1QAxrqSKon".to_string()]);
+        assert_eq!(background(r.tool("toolu_01BXtpDU5byB4Q1QAxrqSKon")).1, Some(BackgroundStatus::Killed));
+        assert_eq!(background(r.tool("toolu_012H7Ngwomqdwgg4j9Mz6FAf")).1, Some(BackgroundStatus::Killed));
+        match r.tool("toolu_01BBgqsAgwkHXRBk9pE7MfCK") {
+            TranscriptItem::Tool { tool, title, .. } => {
+                assert_eq!((tool.as_str(), title.as_str()), ("TaskStop", "Stopping sleep 120"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(r.n.background_files().is_empty());
+    }
+
+    /// Stopped by the host between turns, the CLI reports the command
+    /// "completed" (and starts a turn about it): it still reads as killed.
+    #[test]
+    fn a_command_the_host_stopped_reads_killed_whatever_the_cli_says() {
+        let r = Replay::run(include_str!("fixtures/background_stop_between_turns.ndjson"));
+        assert_eq!(r.stopped, vec!["toolu_01V8VzRuLPx2EbDfkZdWb9bX".to_string()]);
+        assert_eq!(
+            r.kinds(),
+            vec!["user", "tool:Bash:Done", "assistant", "result:false", "assistant", "result:false"]
+        );
+        assert_eq!(background(r.tool("toolu_01V8VzRuLPx2EbDfkZdWb9bX")).1, Some(BackgroundStatus::Killed));
+    }
+
+    /// The session's side of a background command: it tails the output
+    /// file while it runs (streaming updates), can stop it, and the
+    /// process exiting kills what was still running.
+    #[test]
+    fn background_output_tailing_stopping_and_settling() {
+        let mut n = Normalizer::new("/w");
+        let now = Utc::now();
+        n.feed(&json!({"type": "assistant", "message": {"id": "m", "content": [
+            {"type": "tool_use", "id": "toolu_bg", "name": "Bash",
+             "input": {"command": "pnpm dev", "run_in_background": true}}]}}), now);
+        assert_eq!(n.stop_background("toolu_bg"), None, "not started yet");
+        let out = n.feed(&json!({"type": "system", "subtype": "task_started", "task_id": "b1",
+            "tool_use_id": "toolu_bg", "is_backgrounded": true, "task_type": "local_bash"}), now);
+        assert!(matches!(&out[..], [Output::Item { item: TranscriptItem::Tool { background_status: Some(BackgroundStatus::Running), .. }, .. }]));
+        n.feed(&json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_bg",
+            "content": "Command running in background with ID: b1. Output is being written to: /tmp/x/tasks/b1.output. You will be notified when it completes."}]},
+            "tool_use_result": {"backgroundTaskId": "b1"}}), now);
+        assert!(n.tails_background());
+        assert_eq!(n.background_files(), vec![("toolu_bg".to_string(), "/tmp/x/tasks/b1.output".to_string())]);
+        let live = n.background_output("toolu_bg", "ready on :1420\n", false, true);
+        assert!(matches!(live, Some(Output::Item { delta: true, item: TranscriptItem::Tool { output: Some(ref o), .. }, .. }) if o == "ready on :1420\n"));
+        assert_eq!(n.background_output("toolu_bg", "ready on :1420\n", false, true), None, "unchanged");
+        assert_eq!(n.open_items().len(), 1, "a running command is open");
+
+        assert_eq!(n.stop_background("toolu_bg").as_deref(), Some("b1"));
+        let settled = n.settle(now);
+        assert!(matches!(&settled[..], [Output::Item { item: TranscriptItem::Tool { background_status: Some(BackgroundStatus::Killed), .. }, .. }]));
+        assert_eq!(n.stop_background("toolu_bg"), None);
+        assert!(!n.tails_background());
+    }
+
+    #[test]
+    fn read_output_and_output_file_parsing() {
+        assert_eq!(read_tool_text("     1\tdone\n     2\t\n     3\t[exited with code 0]\n"), "done\n\n[exited with code 0]");
+        assert_eq!(read_tool_text("<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>"), "");
+        assert_eq!(read_tool_text("no numbers\there"), "no numbers\there");
+        assert_eq!(
+            output_file_of("Command running in background with ID: b. Output is being written to: /tmp/a b/tasks/b.output. You will be notified").as_deref(),
+            Some("/tmp/a b/tasks/b.output")
+        );
+        assert_eq!(output_file_of("something else"), None);
+        assert!(is_subagent_call("Agent", &json!({})));
+        assert!(is_subagent_call("Task", &json!({"prompt": "x"})));
+        assert!(!is_subagent_call("Task", &json!({"subject": "a todo"})));
     }
 }

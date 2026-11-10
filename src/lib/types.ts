@@ -100,48 +100,75 @@ export interface Workspace {
 /** `Workspace.agentView` / `set_agent_view`. */
 export type AgentView = "transcript" | "terminal";
 
+/** A background command's own lifecycle (Rust `BackgroundStatus`, lowercase). */
+export type BackgroundStatus = "running" | "done" | "killed" | "failed";
+
+/** What a subagent call is doing (Rust `SubagentInfo`). */
+export interface SubagentInfo {
+  /** `subagent_type`: "general-purpose", a custom agent's name. */
+  type: string;
+  description: string;
+  /** Its tool calls so far. */
+  steps: number;
+  /** Its latest activity ("Reading src/a.ts"). */
+  latest?: string;
+}
+
+/**
+ * Fields every transcript item may carry. `parentId` is the tool_use id of
+ * the subagent call (an `Agent` tool item) the item belongs to; absent in
+ * the main conversation and in transcripts persisted before subagents
+ * were shown.
+ */
+interface TranscriptItemBase {
+  id: string;
+  ts: string;
+  parentId?: string;
+}
+
 /**
  * One row of a transcript-view task's transcript (Rust
  * `agent_stream::TranscriptItem`). Raw CLI events never reach the UI.
  * `ts` is ISO-8601. Optional fields are omitted when absent.
  */
 export type TranscriptItem =
-  | { kind: "user"; id: string; ts: string; text: string }
-  | { kind: "assistant"; id: string; ts: string; text: string; streaming: boolean }
-  | {
+  | (TranscriptItemBase & { kind: "user"; text: string })
+  | (TranscriptItemBase & { kind: "assistant"; text: string; streaming: boolean })
+  | (TranscriptItemBase & {
       kind: "thinking";
-      id: string;
-      ts: string;
-      /** Empty with Claude 2.1.322: it streams thinking without text. */
+      /** The thinking's summary; empty when Claude sent none (nothing to expand). */
       text: string;
       /** Absent while the block is still open. */
       durationMs?: number;
-    }
-  | {
+    })
+  | (TranscriptItemBase & {
       kind: "tool";
       /** The tool_use id. */
-      id: string;
-      ts: string;
       tool: string;
       input: unknown;
       /** e.g. "Editing src/a.ts", "Running pnpm test". */
       title: string;
+      /** The CALL's status: a background command's is `done` once it's launched. */
       status: "running" | "done" | "error" | "denied";
-      /** The result's last ~64 KB. */
+      /** The result's last ~64 KB (a background command's: its output so far). */
       output?: string;
       outputTruncated?: boolean;
-    }
-  | {
+      /** A command that runs on after its call returned. */
+      background?: boolean;
+      /** That command's own status. */
+      backgroundStatus?: BackgroundStatus;
+      /** A subagent call (Agent / Task): its items carry this item's id as `parentId`. */
+      subagent?: SubagentInfo;
+    })
+  | (TranscriptItemBase & {
       kind: "result";
-      id: string;
-      ts: string;
       durationMs: number;
       /** This turn's cost; `null` when the CLI didn't price it. */
       costUsd: number | null;
       /** A failed turn (an interrupted one is NOT an error). */
       isError: boolean;
-    }
-  | { kind: "system"; id: string; ts: string; level: "info" | "error"; text: string };
+    })
+  | (TranscriptItemBase & { kind: "system"; level: "info" | "error"; text: string });
 
 /**
  * `phasr://transcript`. Always the FULL item: `append` adds it at the end,

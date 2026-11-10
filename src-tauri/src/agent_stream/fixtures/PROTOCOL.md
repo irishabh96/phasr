@@ -13,14 +13,37 @@ starting `#>` are what the host wrote on stdin at that point. Lines starting
 | `no_host_prompts_autodeny.ndjson` | The spec's command **without** `--permission-prompt-tool stdio`: every prompt was denied automatically. |
 | `resume.ndjson` | `--resume <id>` of the permissions session in a new process. |
 | `queued_messages.ndjson` | Two user messages written back to back, before the first turn ran. |
+| `thinking_summarized.ndjson` | Haiku, `--thinking-display summarized`: one thinking block that streams its summary. |
+| `subagent_background.ndjson` | Haiku, `--thinking-display summarized --forward-subagent-text`: an `Agent` subagent (a Bash that failed, thinking, text, a Read, its report), then `sleep 3; echo done` in the background, the turn its completion started, and that turn's `Read` of the output file. |
+| `parallel_subagents_stop.ndjson` | Two `Agent` calls in one message (parallel), one subagent's permission request, a background `sleep 60` the HOST stopped (`stop_task`), then a `sleep 120` the model stopped with `TaskStop`. |
+| `background_stop_between_turns.ndjson` | A background `sleep 60` the host stopped after the turn had ended. |
+
+Lines 2–5 were probed on 2026-11-11 (2.1.322) through a small host that
+allowed `ls`/`cat`/`sleep`/`echo`-style commands and denied the rest.
+Tool inputs stream as `input_json_delta` chunks that split paths
+mid-word; in these four fixtures each block's chunks were joined into one
+delta (at the first chunk's place) so the paths could be scrubbed.
 
 ## Command line
 
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose \
   --include-partial-messages --permission-prompt-tool stdio \
+  --disallowed-tools AskUserQuestion \
+  --thinking-display summarized --forward-subagent-text \
   --permission-mode <mode> (--session-id <uuid> | --resume <uuid>)
 ```
+
+- **`--thinking-display summarized|omitted|highlights`** is hidden from
+  `--help` (the Agent SDK passes it the same way). Without it, `-p` sends
+  the API's default, `omitted`: thinking streams with empty text. The
+  `showThinkingSummaries` setting (also via `--settings`) is only read by
+  the interactive TUI; probed with `-p`, thinking stayed empty.
+  `highlights` is only accepted from sessions Anthropic hosts.
+- **`--forward-subagent-text`** adds a subagent's own text and thinking
+  blocks to the stream (its tool calls come through either way).
+- Both flags are new enough that an older CLI exits with "unknown option";
+  the transcript then shows that stderr line in its exit message.
 
 - **`--permission-prompts host` is not enough.** It's the default, and on its
   own every prompt is denied: the CLI emits `system/permission_denied` and a
@@ -84,11 +107,15 @@ It arrives just before that block's `content_block_stop`. An interrupted
 block still gets its `assistant` line, with the partial text and
 `"aborted": true`.
 
-**Thinking text is empty.** With 2.1.322 and Opus 5.5 or Haiku 5.5, thinking
-blocks stream only `thinking_delta` with `""` plus a `signature_delta`, and
-the `assistant` thinking block has `"thinking": ""`. There's also
-`system/thinking_tokens` with an estimate. So a `thinking` item can show
-"Thought for Ns" but has no text.
+**Thinking text is empty unless asked for.** With 2.1.322 and Opus 5.5 or
+Haiku 5.5, thinking blocks stream only `thinking_delta` with `""` plus a
+`signature_delta`, and the `assistant` thinking block has `"thinking": ""`.
+There's also `system/thinking_tokens` with an estimate. With
+`--thinking-display summarized` the `thinking_delta`s carry a prose summary
+("I'm checking whether 391 factors: 17 times 23 is 391, …") and the
+`assistant` block has it whole. A thinking block can still come back
+empty (the model may not summarize a tiny one), so the UI treats empty
+text as "nothing to expand".
 
 Tool calls and results:
 
@@ -108,7 +135,62 @@ Tool calls and results:
   `sleep 30`) returns a tool_result at once. It's followed by
   `system/task_started`, later `system/task_notification` /
   `task_updated`, and then an **autonomous turn** (a new `init` … `result`)
-  with no user message.
+  with no user message. Details under *Background commands* below.
+
+## Subagents (`Agent`)
+
+The subagent tool is **`Agent`** in 2.1.322 (`init.tools` also lists a
+`Task`; older CLIs used `Task` for subagents). Input:
+`{description, subagent_type, prompt, run_in_background?}`.
+
+- `system/task_started` `{task_id, tool_use_id: <the Agent call>,
+  task_type: "local_agent", subagent_type, description, is_backgrounded,
+  spawn_depth}`.
+- Every line the subagent produces carries **`parent_tool_use_id`** = the
+  `Agent` call's id, plus `agent_id`, `subagent_type`, `task_description`:
+  a `user` text line with its prompt, then `assistant` lines (one block
+  each: `tool_use`, `text`, `thinking` with its summary) and `user`
+  tool_results. **No `stream_event`s**: subagents don't stream partials.
+- `system/task_progress` `{tool_use_id, description, usage: {tool_uses,
+  total_tokens, duration_ms}, last_tool_name, summary?}`, usually just
+  BEFORE the tool call it counts. `description` is the raw activity
+  ("Reading /abs/path/src/a.ts"); `summary` only with the
+  `agentProgressSummaries` option.
+- A subagent's permission request is the usual `can_use_tool` with the
+  NESTED call's `tool_use_id`, plus `agent_id`.
+- Its end: `task_updated` `{patch: {status: "completed"}}`,
+  `task_notification` `{status, summary: <its report>, usage}`, then the
+  `Agent` call's tool_result. Its `content` is a hand-back frame around
+  the report; `tool_use_result` has `{status, agentType, content: [<the
+  report>], totalToolUseCount, totalDurationMs, …}`.
+- Parallel subagents: several `Agent` tool_uses in one message, each with
+  its own `task_started`; their lines interleave, told apart by
+  `parent_tool_use_id`.
+
+## Background commands
+
+- The tool_result is `"Command running in background with ID: <task>.
+  Output is being written to: <tmp>/<cwd>/<session>/tasks/<task>.output.
+  …"`, with `tool_use_result.backgroundTaskId: <task>`.
+- `system/task_started` `{task_id, tool_use_id, task_type: "local_bash",
+  is_backgrounded: true}` (before the tool_result), and
+  `background_tasks_changed` with the running list.
+- **Output reads** are plain `Read` calls on that `.output` file (no
+  `BashOutput` tool in 2.1.322). The Read result numbers the lines; the
+  file ends with `[exited with code N]` once the command is done.
+- **The end**: `task_updated` `{patch: {status: completed | failed |
+  killed}}`, then `task_notification` `{tool_use_id, status: completed |
+  failed | stopped, output_file, summary: "Background command \"…\"
+  completed (exit code 0)"}`, `background_tasks_changed`, and an
+  autonomous turn about it.
+- **Kills**: the model has a **`TaskStop`** tool (`{task_id}`; a deferred
+  tool it loads with `ToolSearch` first). The host can send
+  `{"type":"control_request","request_id":…,"request":{"subtype":"stop_task","task_id":<task>}}`
+  (acked with an empty `control_response`). During a turn, either is
+  reported `killed` / `stopped`. **Between turns** a host `stop_task`
+  was reported `completed` "(exit code 0)", and it still started an
+  autonomous turn (about $0.0003 on Haiku), so Phasr remembers which
+  ones it stopped.
 
 The **permission request**:
 
@@ -167,8 +249,7 @@ Noise Phasr ignores:
 - `system/status`;
 - `system/thinking_tokens`;
 - `rate_limit_event`;
-- `system/background_tasks_changed`, `task_started`, `task_updated` and
-  `task_notification`;
+- `system/background_tasks_changed` (the `task_*` events carry the same);
 - `control_response` acks.
 
 ## Resume

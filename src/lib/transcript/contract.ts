@@ -18,6 +18,7 @@ export const transcriptApi = {
   getTranscript: tauri.getTranscript,
   setAgentView: tauri.setAgentView,
   interruptTask: tauri.interruptTask,
+  stopBackgroundShell: tauri.stopBackgroundShell,
 };
 
 /** `Workspace.agentView`: anything but "transcript" (null, missing) is the terminal. */

@@ -11,8 +11,9 @@ import type { TranscriptEvent, TranscriptItem } from "./contract";
  *  - an `append` for an id we already hold is an update (the snapshot
  *    already had it);
  *  - an update never moves an item backwards: a finished tool stays
- *    finished, a finished assistant message stops streaming for good, and
- *    a stale streaming delta can't shorten the text already shown.
+ *    finished, a background command that ended stays ended, a finished
+ *    assistant message stops streaming for good, and a stale streaming
+ *    delta can't shorten the text already shown.
  *
  * Returns `items` itself when nothing changed, so a no-op batch doesn't
  * re-render anything.
@@ -53,6 +54,9 @@ export function mergeItem(prev: TranscriptItem, next: TranscriptItem): Transcrip
   if (prev === next) return prev;
   if (prev.kind === "tool" && next.kind === "tool") {
     if (SETTLED.has(prev.status) && next.status === "running") return prev;
+    // A live output tail (a coalesced, unpersisted update) landing after
+    // the command's final state.
+    if (prev.backgroundStatus && prev.backgroundStatus !== "running" && next.backgroundStatus === "running") return prev;
   }
   if (prev.kind === "assistant" && next.kind === "assistant") {
     if (!prev.streaming && next.streaming) return prev;

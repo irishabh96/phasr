@@ -640,6 +640,14 @@ export const tauri = {
    * the CLI's own interrupt; a no-op between turns. Terminal: Ctrl-C).
    */
   interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
+  /**
+   * Stop one background command of a transcript-view task; `toolUseId` is
+   * its Bash tool item's id. The turn and session go on; the item's
+   * `backgroundStatus` turns "killed". Rejects with "that background
+   * command isn't running" once it has ended.
+   */
+  stopBackgroundShell: (taskId: string, toolUseId: string) =>
+    invoke<void>("stop_background_shell", { taskId, toolUseId }),
   /** A transcript-view task's transcript, oldest first. */
   getTranscript: (taskId: string) =>
     invoke<TranscriptItem[]>("get_transcript", { taskId }),
