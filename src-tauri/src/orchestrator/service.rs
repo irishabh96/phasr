@@ -2056,11 +2056,12 @@ impl TaskOrchestrator {
             .signals
             .as_ref()
             .and_then(|s| s.stream_settings_args(&workspace.id, &setup.policy()));
+        let rich = protocol::supports_rich_flags().await;
         let line = command
             .filter(|c| {
                 !crate::agent_signals::launch::command_embeds_prompt(c, workspace.prompt.as_deref())
             })
-            .and_then(|c| protocol::stream_command(c, &session, settings.as_deref()));
+            .and_then(|c| protocol::stream_command(c, &session, settings.as_deref(), rich));
         let Some(line) = line else {
             eprintln!(
                 "[stream] task {}: its command can't run headless; using the terminal",

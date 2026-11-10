@@ -51,15 +51,54 @@ impl SessionArg {
 /// through as lines tagged `parent_tool_use_id`, not just its tool calls.
 const STREAM_FLAGS: &str = "-p --input-format stream-json --output-format stream-json \
      --verbose --include-partial-messages --permission-prompt-tool stdio \
-     --disallowed-tools AskUserQuestion --thinking-display summarized --forward-subagent-text";
+     --disallowed-tools AskUserQuestion";
+
+/// Newer-CLI extras (thinking summaries, subagent text). An older `claude`
+/// exits on an unknown option, so they're only added when the installed
+/// CLI accepts them (`supports_rich_flags`).
+const RICH_FLAGS: &str = "--thinking-display summarized --forward-subagent-text";
+
+/// Whether the `claude` on the login PATH accepts `RICH_FLAGS`, probed once
+/// per run with `--version` (no API call; an unknown option fails before
+/// it). Unknown — no `claude`, a timeout — counts as unsupported: the
+/// transcript then runs without summaries rather than not at all.
+pub async fn supports_rich_flags() -> bool {
+    static RICH: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
+    *RICH
+        .get_or_init(|| async {
+            let path_env = crate::pty::login_path().await;
+            let Some(binary) = crate::launcher::which_in("claude", std::ffi::OsStr::new(&path_env)) else {
+                return false;
+            };
+            let mut args: Vec<&str> = RICH_FLAGS.split_whitespace().collect();
+            args.push("--version");
+            let env = [("PATH".to_string(), path_env.clone())];
+            matches!(
+                crate::util::proc::run_with_timeout(
+                    &binary.to_string_lossy(),
+                    &args,
+                    None,
+                    &env,
+                    std::time::Duration::from_secs(5),
+                )
+                .await,
+                Ok(output) if output.status.success()
+            )
+        })
+        .await
+}
 
 /// `command` (the task's resolved launch line, permission flags included)
 /// with the stream flags, the session and `extra` (e.g. `--settings`)
 /// added right after the `claude` binary word. `None` when the command
 /// doesn't visibly run `claude` (a wrapper or alias): such a task stays in
 /// the terminal.
-pub fn stream_command(command: &str, session: &SessionArg, extra: Option<&str>) -> Option<String> {
-    let mut args = vec![STREAM_FLAGS.to_string(), session.args()?];
+pub fn stream_command(command: &str, session: &SessionArg, extra: Option<&str>, rich: bool) -> Option<String> {
+    let mut args = vec![STREAM_FLAGS.to_string()];
+    if rich {
+        args.push(RICH_FLAGS.to_string());
+    }
+    args.push(session.args()?);
     if let Some(extra) = extra.filter(|e| !e.trim().is_empty()) {
         args.push(extra.to_string());
     }
@@ -160,6 +199,7 @@ mod tests {
             "claude --permission-mode acceptEdits",
             &SessionArg::New(SID.into()),
             Some("--settings '/A B/s.json'"),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -168,16 +208,19 @@ mod tests {
                 "claude {STREAM_FLAGS} --session-id {SID} --settings '/A B/s.json' --permission-mode acceptEdits"
             )
         );
-        let resumed = stream_command("'/opt/x/claude'", &SessionArg::Resume(SID.into()), None).unwrap();
+        // A CLI that accepts them also gets the summaries/subagent flags.
+        let rich = stream_command("claude", &SessionArg::New(SID.into()), None, true).unwrap();
+        assert_eq!(rich, format!("claude {STREAM_FLAGS} {RICH_FLAGS} --session-id {SID}"));
+        let resumed = stream_command("'/opt/x/claude'", &SessionArg::Resume(SID.into()), None, true).unwrap();
         assert!(resumed.starts_with("'/opt/x/claude' -p "), "{resumed}");
         assert!(resumed.ends_with(&format!("--resume {SID}")), "{resumed}");
-        assert!(stream_command("claude", &SessionArg::Continue, None)
+        assert!(stream_command("claude", &SessionArg::Continue, None, true)
             .unwrap()
             .ends_with("--continue"));
         // Not visibly claude: stays in the terminal.
-        assert_eq!(stream_command("my-wrapper", &SessionArg::Continue, None), None);
+        assert_eq!(stream_command("my-wrapper", &SessionArg::Continue, None, true), None);
         // A hostile id is never interpolated.
-        assert_eq!(stream_command("claude", &SessionArg::Resume("x; rm -rf ~".into()), None), None);
+        assert_eq!(stream_command("claude", &SessionArg::Resume("x; rm -rf ~".into()), None, true), None);
     }
 
     /// Byte-for-byte what the probe wrote and the CLI accepted.
