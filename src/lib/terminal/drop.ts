@@ -1,3 +1,4 @@
+import { attachmentTargetAt, focusedAttachmentTarget } from "@/lib/attachmentDropTarget";
 import { getPromptInsertTarget } from "@/lib/promptInsertTarget";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
@@ -16,10 +17,13 @@ export function shellQuote(path: string): string {
 /**
  * Where a dropped file's path goes, in priority order:
  *
+ *   0. an attachment target (New task dialog, composer) that is open as a
+ *      modal or under the point — the files become attachments, not text;
  *   1. the terminal it was dropped ON — typed through the surface, so the
  *      bytes follow whichever PTY that terminal is wired to (agent, shell
  *      tab, run command) with no per-kind branching here;
- *   2. a prompt textarea being edited — raw path at the caret;
+ *   2. an attachment target holding focus, then a prompt textarea being
+ *      edited — raw path at the caret;
  *   3. the terminal that currently has the keyboard;
  *   4. the active workspace's agent terminal.
  *
@@ -39,9 +43,21 @@ export function routeDroppedPaths(
   if (!paths.length) return;
   const quoted = paths.map(shellQuote).join(" ");
 
+  const attachTo = attachmentTargetAt(point);
+  if (attachTo) {
+    attachTo.add(paths);
+    return;
+  }
+
   const dropped = point ? terminalSurfaceAt(point.x, point.y) : null;
   if (dropped) {
     dropped.input(quoted);
+    return;
+  }
+
+  const focusedTarget = focusedAttachmentTarget();
+  if (focusedTarget) {
+    focusedTarget.add(paths);
     return;
   }
 

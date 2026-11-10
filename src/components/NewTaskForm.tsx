@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Folder, GitBranch, Play, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AttachChip, AttachmentChips } from "@/components/attachments/Attachments";
 import { AGENT_META, AgentMark } from "@/components/ui/AgentMark";
 import { BaseBranchField } from "@/components/ui/BaseBranchField";
 import { Button } from "@/components/ui/Button";
@@ -11,7 +12,9 @@ import { ConfirmDialog } from "@/components/ui/Dialog";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { Kbd } from "@/components/ui/Kbd";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/Menu";
+import { nameFromAttachments, withAttachmentBlock } from "@/lib/attachments";
 import { useAgentDetection, useAgents } from "@/lib/hooks/useAgents";
+import { useAttachments } from "@/lib/hooks/useAttachments";
 import { usePromptDropTarget } from "@/lib/hooks/usePromptDropTarget";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { useRepositoryConfig } from "@/lib/hooks/useRepositoryConfig";
@@ -86,6 +89,10 @@ export function NewTaskForm({
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const promptDrop = usePromptDropTarget(prompt, setPrompt);
+  // Files to hand the agent (Attach chip, pasted screenshots, drops). The
+  // dialog is modal, so any drop while it's open is an attachment.
+  const formRef = useRef<HTMLFormElement>(null);
+  const attachments = useAttachments({ dropRef: formRef, modal: variant === "dialog" });
   const [agent, setAgent] = useState<Agent | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [runIn, setRunIn] = useState<RunIn>("worktree");
@@ -142,8 +149,9 @@ export function NewTaskForm({
   });
   const agentCommand = (mode !== null ? preview.data : undefined) ?? activeAgent?.command ?? "";
 
-  const trimmedPrompt = prompt.trim();
-  const autoName = nameFromPrompt(prompt);
+  // The prompt as sent and saved: attachments ride along as a path list.
+  const trimmedPrompt = withAttachmentBlock(prompt.trim(), attachments.items, [repository?.localPath]);
+  const autoName = nameFromPrompt(prompt) || nameFromAttachments(attachments.items);
   const finalName = name.trim() || autoName;
   const trimmedBaseBranch = baseBranch.trim();
   const canSubmit = finalName.length > 0 && !!activeAgent && submitting === null;
@@ -164,6 +172,7 @@ export function NewTaskForm({
     void queryClient.invalidateQueries({ queryKey: workspaceKeys.byRepository(ws.repositoryId) });
     setName("");
     setPrompt("");
+    attachments.clear();
     onCreated?.(ws);
   };
 
@@ -250,6 +259,7 @@ export function NewTaskForm({
         void submit("start");
       }}
       onKeyDown={handleKeyDown}
+      ref={formRef}
       className="flex flex-col"
     >
       {/* Title over prompt, no boxes. The prompt is first in the DOM (focus
@@ -266,11 +276,13 @@ export function NewTaskForm({
           onChange={(e) => setPrompt(e.target.value)}
           onFocus={promptDrop.onFocus}
           onBlur={promptDrop.onBlur}
+          onPaste={attachments.onPaste}
           placeholder="What should the agent do?"
           rows={variant === "inline" ? 3 : 5}
           autoFocus={autoFocus}
           className="w-full resize-none rounded-none bg-transparent p-0 text-[13.5px] leading-[1.6] text-(--color-text-secondary) shadow-none placeholder:text-(--color-text-muted) focus:shadow-none"
         />
+        <AttachmentChips items={attachments.items} onRemove={attachments.remove} className="pt-[4px]" />
         <div className="order-first">
           <label htmlFor="new-task-name" className="sr-only">
             Task name
@@ -380,6 +392,7 @@ export function NewTaskForm({
             ]}
           />
         ) : null}
+        <AttachChip disabled={submitting !== null} onClick={() => void attachments.pick()} />
       </div>
 
       {showPlan ? (
