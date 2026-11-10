@@ -42,9 +42,16 @@ impl SessionArg {
 /// prompt tool is what routes them to us. `AskUserQuestion` is turned off:
 /// answering it needs the CLI's own picker, so the model asks in plain text
 /// instead and the user replies in the composer.
+///
+/// `--thinking-display summarized` (hidden from `--help`; the Agent SDK
+/// passes it the same way): without it, `-p` streams every thinking block
+/// with empty text (the API default, `omitted`), and the
+/// `showThinkingSummaries` setting doesn't apply outside the TUI.
+/// `--forward-subagent-text`: a subagent's own text and thinking come
+/// through as lines tagged `parent_tool_use_id`, not just its tool calls.
 const STREAM_FLAGS: &str = "-p --input-format stream-json --output-format stream-json \
      --verbose --include-partial-messages --permission-prompt-tool stdio \
-     --disallowed-tools AskUserQuestion";
+     --disallowed-tools AskUserQuestion --thinking-display summarized --forward-subagent-text";
 
 /// `command` (the task's resolved launch line, permission flags included)
 /// with the stream flags, the session and `extra` (e.g. `--settings`)
@@ -76,6 +83,16 @@ pub fn interrupt_request(request_id: &str) -> String {
         "type": "control_request",
         "request_id": request_id,
         "request": {"subtype": "interrupt"},
+    }))
+}
+
+/// Stop one of the CLI's tasks (a backgrounded command) by ITS task id,
+/// the one `task_started` reported, not the tool_use id.
+pub fn stop_task_request(request_id: &str, task_id: &str) -> String {
+    line(json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": {"subtype": "stop_task", "task_id": task_id},
     }))
 }
 
@@ -176,6 +193,12 @@ mod tests {
 
         let v: Value = serde_json::from_str(&interrupt_request("i-1")).unwrap();
         assert_eq!(v, json!({"type": "control_request", "request_id": "i-1", "request": {"subtype": "interrupt"}}));
+        let v: Value = serde_json::from_str(&stop_task_request("s-1", "bfj0yav8j")).unwrap();
+        assert_eq!(
+            v,
+            json!({"type": "control_request", "request_id": "s-1",
+                   "request": {"subtype": "stop_task", "task_id": "bfj0yav8j"}})
+        );
 
         let input = json!({"command": "touch a.txt"});
         let v: Value = serde_json::from_str(&allow_response("r-1", &input, &[])).unwrap();

@@ -54,6 +54,8 @@ const MAX_LINE: usize = 32 * 1024 * 1024;
 const STDERR_TAIL: usize = 12;
 /// Lines in flight from the stdout reader to the session loop.
 const LINE_QUEUE: usize = 256;
+/// How often a running background command's output file is re-read.
+const BACKGROUND_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 pub enum StreamError {
@@ -65,6 +67,8 @@ pub enum StreamError {
     NotRunning,
     #[error("couldn't reach Claude: {0}")]
     Write(String),
+    #[error("that background command isn't running")]
+    NoSuchShell,
     #[error(transparent)]
     Signals(#[from] AgentSignalError),
 }
@@ -538,9 +542,13 @@ impl StreamHandle {
         let mut deltas = Coalescer::default();
         let mut exited: Option<Option<i64>> = None;
         let mut drain_until: Option<Instant> = None;
+        let mut tail = tokio::time::interval(BACKGROUND_POLL);
+        tail.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let flush_at = deltas.deadline();
+            let tailing = exited.is_none() && self.session.lock().normalizer.tails_background();
             tokio::select! {
+                _ = tail.tick(), if tailing => self.poll_background(&mut deltas).await,
                 line = lines.recv() => match line {
                     Some(line) => {
                         self.last_event_ms.store(Utc::now().timestamp_millis(), Ordering::Relaxed);
@@ -680,8 +688,63 @@ impl StreamHandle {
                     }
                 }
                 Output::TurnEnded(end) => self.turn_ended(end).await,
+                Output::BackgroundEnded { id, output_file } => {
+                    // Its final output, whether or not the model reads it.
+                    let Some(path) = output_file else { continue };
+                    let Some((text, truncated)) = read_output_tail(path).await else {
+                        continue;
+                    };
+                    let update = self
+                        .session
+                        .lock()
+                        .normalizer
+                        .background_output(&id, &text, truncated, false);
+                    if let Some(Output::Item { op, item, .. }) = update {
+                        deltas.forget(item.id());
+                        self.flush(deltas);
+                        self.publish(op, item, true);
+                    }
+                }
             }
         }
+    }
+
+    /// Tail every running background command's output file into its item
+    /// (streaming updates: shown live, persisted once it ends).
+    async fn poll_background(&self, deltas: &mut Coalescer) {
+        let files = self.session.lock().normalizer.background_files();
+        for (id, path) in files {
+            let Some((text, truncated)) = read_output_tail(path).await else {
+                continue;
+            };
+            let update = self
+                .session
+                .lock()
+                .normalizer
+                .background_output(&id, &text, truncated, true);
+            if let Some(Output::Item { item, .. }) = update {
+                if deltas.push(item) {
+                    self.flush(deltas);
+                }
+            }
+        }
+    }
+
+    /// Stop the background command started by tool call `tool_use_id`
+    /// (the CLI's own `stop_task`; the session and its turn go on). The
+    /// CLI then reports it ended, and the item shows it was stopped.
+    pub async fn stop_background(&self, tool_use_id: &str) -> Result<(), StreamError> {
+        if self.has_exited() {
+            return Err(StreamError::NotRunning);
+        }
+        let task = self
+            .session
+            .lock()
+            .normalizer
+            .stop_background(tool_use_id)
+            .ok_or(StreamError::NoSuchShell)?;
+        let request_id = format!("phasr-stop-{}", transcript::new_id());
+        self.write_line(&protocol::stop_task_request(&request_id, &task)).await
     }
 
     async fn turn_ended(&self, end: TurnEnd) {
@@ -782,6 +845,36 @@ fn spawn_line_reader(stdout: tokio::process::ChildStdout) -> mpsc::Receiver<Vec<
         }
     });
     rx
+}
+
+/// The last `MAX_TOOL_OUTPUT` bytes of a background command's output file,
+/// and whether there was more. Only a file shaped like the CLI's own
+/// (`…/tasks/<task id>.output`) is read: the path comes off the CLI's
+/// stdout, and Phasr has no business reading anything else.
+async fn read_output_tail(path: String) -> Option<(String, bool)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let file = PathBuf::from(path);
+    let shaped = file.extension().is_some_and(|e| e == "output")
+        && file
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|d| d == "tasks");
+    if !shaped || !file.is_absolute() {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut f = std::fs::File::open(&file).ok()?;
+        let len = f.metadata().ok()?.len();
+        let max = transcript::MAX_TOOL_OUTPUT as u64;
+        let start = len.saturating_sub(max);
+        f.seek(SeekFrom::Start(start)).ok()?;
+        let mut bytes = Vec::with_capacity((len - start) as usize);
+        f.take(max).read_to_end(&mut bytes).ok()?;
+        Some((String::from_utf8_lossy(&bytes).into_owned(), start > 0))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// stderr into the task log, keeping its last lines for the exit message.
