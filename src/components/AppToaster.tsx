@@ -79,11 +79,14 @@ export function AppToaster() {
   }, []);
 
   return (
+    // Below the title bar, not over it: error and action toasts stay until
+    // dismissed, and on top of the bar they covered Board, search, the bell
+    // and settings — none of them clickable until you closed the toast.
     <ol
       role="region"
       aria-label="Notifications"
       tabIndex={-1}
-      className="pointer-events-none fixed right-4 top-4 z-(--z-toast) flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2"
+      className="pointer-events-none fixed right-4 top-[calc(var(--layout-header-height)+8px)] z-(--z-toast) flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2"
     >
       {items.map(({ toast, leaving }) => (
         <ToastCard key={toast.id} toast={toast} leaving={leaving} />
