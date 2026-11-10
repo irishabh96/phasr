@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { tauri } from "@/lib/tauri";
+import { useSubagentStore } from "@/lib/transcript/subagentStore";
 import type { TaskCard, Workspace } from "@/lib/types";
 
 /**
@@ -93,6 +94,7 @@ export function useDeleteWorkspace() {
       }),
     onSuccess: (_v, { id, repositoryId }) => {
       dropTaskCard(queryClient, id);
+      useSubagentStore.getState().forgetTask(id);
       // Optimistically drop the workspace from the repo's list so any
       // route that reads it (sidebar, home redirect) sees the new
       // truth immediately — invalidateQueries alone returns stale

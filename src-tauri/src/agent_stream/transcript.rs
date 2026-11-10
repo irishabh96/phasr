@@ -47,7 +47,7 @@ pub enum BackgroundStatus {
 
 /// What a subagent (an `Agent` / `Task` call) is doing, shown on its tool
 /// line. Its own items nest under it by `parentId`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentInfo {
     /// `subagent_type` ("general-purpose", a custom agent's name).
@@ -59,6 +59,14 @@ pub struct SubagentInfo {
     /// Its latest activity ("Reading src/a.ts").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest: Option<String>,
+    /// Tokens it has used so far (the CLI's `usage.total_tokens` on
+    /// `task_progress` / `task_notification`). The CLI reports no cost per
+    /// subagent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// When it finished (RFC 3339). It started at the call's `ts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 /// One row of the transcript. The wire shape is spec §4 exactly:
@@ -546,6 +554,8 @@ mod tests {
                 description: "List files".into(),
                 steps: 12,
                 latest: Some("Reading src/a.ts".into()),
+                tokens: Some(14_117),
+                finished_at: Some("2026-11-11T10:00:05.000Z".into()),
             });
         }
         let v = serde_json::to_value(&item).unwrap();
@@ -555,7 +565,8 @@ mod tests {
         assert_eq!(
             v["subagent"],
             json!({"type": "general-purpose", "description": "List files", "steps": 12,
-                   "latest": "Reading src/a.ts"})
+                   "latest": "Reading src/a.ts", "tokens": 14_117,
+                   "finishedAt": "2026-11-11T10:00:05.000Z"})
         );
         assert_eq!(serde_json::from_value::<TranscriptItem>(v).unwrap(), item);
     }

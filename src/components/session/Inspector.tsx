@@ -1,13 +1,17 @@
 import { ChevronsLeft, Play, Square } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { SyncButton } from "@/components/SyncButton";
 import { SlidePanel } from "@/components/shell/SlidePanel";
+import { SubagentPanel } from "@/components/transcript/SubagentPanel";
+import { showsTranscript } from "@/lib/transcript/contract";
+import { useSelectedSubagent, useSubagentStore } from "@/lib/transcript/subagentStore";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { DiffCount } from "@/components/ui/Chip";
 import { GlassTooltip } from "@/components/ui/GlassTooltip";
 import { isAgentPaneActive } from "@/lib/agentPane";
 import { formatElapsed } from "@/lib/board";
+import { formatTokens } from "@/lib/formatTokens";
 import { useGitBranchStatus, useGitStatus } from "@/lib/hooks/useGit";
 import { useNotes } from "@/lib/hooks/useNotes";
 import { useRespondToAttention, useTaskAgentState, useTaskUsage } from "@/lib/hooks/useAgentSignals";
@@ -73,6 +77,21 @@ export function Inspector({
   const { data: changes } = useGitStatus(hasWorktree ? workspace.id : null);
   const adds = changes?.reduce((n, f) => n + (f.adds ?? 0), 0) ?? 0;
   const removes = changes?.reduce((n, f) => n + (f.removes ?? 0), 0) ?? 0;
+  // Transcript view: a subagent opened from the Running strip or its row
+  // takes the column over (the panel stays; its contents swap).
+  const selected = useSelectedSubagent(workspace.id);
+  const subagent = selected && showsTranscript(workspace) ? selected : null;
+  // Opening one shows the column if it was collapsed (not on mount: a
+  // collapsed inspector stays so when you come back to the task).
+  const openSeq = useSubagentStore((s) => s.openSeq);
+  const seenSeq = useRef(openSeq);
+  useEffect(() => {
+    if (openSeq === seenSeq.current) return;
+    seenSeq.current = openSeq;
+    if (useSubagentStore.getState().selectedSubagent[workspace.id] && useUiStore.getState().rightPanelCollapsed) {
+      useUiStore.getState().setRightPanelCollapsed(false);
+    }
+  }, [openSeq, workspace.id]);
 
   // Collapse mechanics (spec §5, P1): the slot tweens its width, the panel
   // inside fades out as the rail fades in; see SlidePanel.
@@ -114,18 +133,16 @@ export function Inspector({
       panelClassName="flex flex-col overflow-y-auto"
       resize={{ min: RIGHT_PANEL_WIDTH_MIN, max: RIGHT_PANEL_WIDTH_MAX, onResize: setWidth }}
     >
-      <InspectorContent workspace={workspace} onReview={onReview} onOpenNotes={onOpenNotes} />
+      {subagent ? (
+        <SubagentPanel key={subagent} taskId={workspace.id} callId={subagent} />
+      ) : (
+        <InspectorContent workspace={workspace} onReview={onReview} onOpenNotes={onOpenNotes} />
+      )}
     </SlidePanel>
   );
 }
 
-export function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  // "48.2k" (A-Workspace) — one decimal until it stops adding information.
-  if (n < 100_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
-  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
-  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-}
+export { formatTokens };
 
 /**
  * Short model name for the Agent row: "claude-opus-4-5-20251101" →

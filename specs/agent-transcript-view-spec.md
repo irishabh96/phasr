@@ -92,12 +92,16 @@ type TranscriptEvent = { taskId: string; op: "append" | "update"; item: Transcri
 //  every item:   parentId?: string     // the subagent call (Agent tool_use id) it belongs to
 //  kind "tool":  background?: boolean
 //                backgroundStatus?: "running" | "done" | "killed" | "failed"
-//                subagent?: { type: string; description: string; steps: number; latest?: string }
+//                subagent?: { type: string; description: string; steps: number; latest?: string;
+//                             tokens?: number       // usage.total_tokens (no per-subagent cost from the CLI)
+//                             finishedAt?: string } // it started at the call's ts
 //  kind "thinking": text is the summary (`--thinking-display summarized`), "" when none
 ```
 
-- **Subagents:** a subagent's items carry its `Agent` call's id as `parentId`. The call line shows the description, type and status, a live "latest activity" line and "N steps". It expands (collapsed by default) to the nested transcript, drawn by the same renderers.
-- **Background commands:** a `Bash` call with `run_in_background` is `done` as a call, while `backgroundStatus` follows the command. Its output is tailed from the CLI's output file while it runs, and the model's `Read`s of that file attach to the item instead of adding lines. A **Background** strip above the composer lists the running ones: one chip each, which scrolls to the item and expands its output, plus a × that sends the CLI's `stop_task`.
+- **Subagents:** a subagent's items carry its `Agent` call's id as `parentId`. The call line shows the description, type and status, a live "latest activity" line and "N steps". Its "N steps" chevron expands it inline (collapsed by default) to the nested transcript, drawn by the same renderers; the row itself opens the **subagent panel**.
+- **Background commands:** a `Bash` call with `run_in_background` is `done` as a call, while `backgroundStatus` follows the command. Its output is tailed from the CLI's output file while it runs, and the model's `Read`s of that file attach to the item instead of adding lines. Its chip in the Running strip scrolls to the item and expands its output; its × sends the CLI's `stop_task`.
+- **Running strip:** above the composer, one chip per subagent at work (mark, description, live steps, spinner) and per background command (command, elapsed, ×). A finished chip shows ✓ / ✗ for ~4 s, then drops off unless pinned (📌 on hover or focus; per task, not persisted); a pinned one stays until unpinned or dismissed. More chips than fit go behind "+N". Fixed height; absent with no chips.
+- **Subagent panel:** a subagent chip or row sets `selectedSubagent[taskId]`; the inspector column (same SlidePanel, expanded if collapsed) then shows Back (Esc too), the description, type · status · elapsed · steps · tokens, the subagent's own items (nested subagents included, compact renderers, live with "Jump to latest"), its report once done, and "Show in transcript". The selection is per task, and clears when the call leaves the transcript or the task is deleted.
 
 | Command | Purpose |
 |---|---|

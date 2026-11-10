@@ -165,6 +165,14 @@ pub fn parse_line(line: &[u8]) -> Option<Value> {
         .filter(Value::is_object)
 }
 
+/// A `task_progress` / `task_notification`'s `usage`: the subagent's tool
+/// calls and tokens so far.
+fn usage_counts(event: &Value) -> (Option<u32>, Option<u64>) {
+    let usage = event.get("usage");
+    let count = |key: &str| usage.and_then(|u| u.get(key)).and_then(Value::as_u64);
+    (count("tool_uses").map(|n| n as u32), count("total_tokens"))
+}
+
 fn ts(now: DateTime<Utc>) -> String {
     now.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -415,6 +423,16 @@ impl Normalizer {
                 .map(|(_, s)| s.item),
         );
         items.sort_by(|a, b| a.id().cmp(b.id()));
+        // A subagent cut off by the process ending finished then.
+        for item in &mut items {
+            if let TranscriptItem::Tool {
+                subagent: Some(info),
+                ..
+            } = item
+            {
+                info.finished_at.get_or_insert_with(|| ts(now));
+            }
+        }
         out.extend(items.into_iter().map(|t| update(t.settled())));
         self.finished.clear();
         self.tasks.clear();
@@ -693,8 +711,7 @@ impl Normalizer {
                         .unwrap_or("general-purpose")
                         .to_string(),
                     description: non_empty(&input, "description").unwrap_or_default().to_string(),
-                    steps: 0,
-                    latest: None,
+                    ..SubagentInfo::default()
                 });
             }
         }
@@ -707,20 +724,21 @@ impl Normalizer {
             let calls = self.nested_calls.entry(parent.clone()).or_default();
             *calls += 1;
             let calls = *calls;
-            out.extend(self.subagent_progress(parent, Some(calls), Some(title)));
+            out.extend(self.subagent_progress(parent, Some(calls), Some(title), None));
         }
         out.push(started);
         out
     }
 
     /// `parent`'s subagent did something: at least `steps` steps so far,
-    /// and what it's doing now. A streaming update: only the call's final
-    /// state is persisted.
+    /// what it's doing now, and the tokens it has used. A streaming update:
+    /// only the call's final state is persisted.
     fn subagent_progress(
         &mut self,
         parent: &str,
         steps: Option<u32>,
         latest: Option<String>,
+        tokens: Option<u64>,
     ) -> Option<Output> {
         let item = self.item_mut(parent)?;
         let TranscriptItem::Tool {
@@ -736,6 +754,9 @@ impl Normalizer {
         }
         if let Some(latest) = latest {
             info.latest = Some(latest);
+        }
+        if let Some(tokens) = tokens {
+            info.tokens = Some(info.tokens.map_or(tokens, |t| t.max(tokens)));
         }
         if *info == before {
             return None;
@@ -832,7 +853,7 @@ impl Normalizer {
                     let task = s(structured, "backgroundTaskId")
                         .map(str::to_string)
                         .or_else(|| self.task_of(id));
-                    out.extend(self.tool_finished(item, status, &text, structured, task));
+                    out.extend(self.tool_finished(item, status, &text, structured, task, now));
                 }
                 // A subagent's prompt (the call's input already has it).
                 Some("text") if parent.is_some() => {}
@@ -872,7 +893,11 @@ impl Normalizer {
         text: &str,
         structured: &Value,
         task: Option<String>,
+        now: DateTime<Utc>,
     ) -> Vec<Output> {
+        // A backgrounded subagent's call returns while it works on: it
+        // finishes at its `task_notification` instead.
+        let agent_working = self.working_agents.contains(item.id());
         let (id, tool, backgrounded, running) = {
             let TranscriptItem::Tool {
                 id,
@@ -894,6 +919,12 @@ impl Normalizer {
             if let Some(info) = subagent.as_mut() {
                 if let Some(steps) = structured.get("totalToolUseCount").and_then(Value::as_u64) {
                     info.steps = info.steps.max(steps as u32);
+                }
+                if let Some(tokens) = structured.get("totalTokens").and_then(Value::as_u64) {
+                    info.tokens = Some(info.tokens.map_or(tokens, |t| t.max(tokens)));
+                }
+                if !agent_working {
+                    info.finished_at.get_or_insert_with(|| ts(now));
                 }
                 // The report itself, not the hand-back frame around it.
                 let report = subagent_report(&result_text(structured.get("content")));
@@ -993,7 +1024,7 @@ impl Normalizer {
 
     /// A task ended (`task_updated` with a final status, or
     /// `task_notification`; whichever comes first counts).
-    fn task_ended(&mut self, event: &Value, status: &str) -> Vec<Output> {
+    fn task_ended(&mut self, event: &Value, status: &str, now: DateTime<Utc>) -> Vec<Output> {
         let tool_use = s(event, "tool_use_id")
             .map(str::to_string)
             .or_else(|| s(event, "task_id").and_then(|t| self.tasks.get(t).cloned()));
@@ -1003,17 +1034,20 @@ impl Normalizer {
         let output_file = s(event, "output_file").map(str::to_string);
         if self.working_agents.remove(&tool_use) {
             self.nested_calls.remove(&tool_use);
-            let steps = event
-                .get("usage")
-                .and_then(|u| u.get("tool_uses"))
-                .and_then(Value::as_u64)
-                .map(|n| n as u32);
+            let (steps, tokens) = usage_counts(event);
             let mut out: Vec<Output> = self
-                .subagent_progress(&tool_use, steps, None)
+                .subagent_progress(&tool_use, steps, None, tokens)
                 .into_iter()
                 .collect();
             // A backgrounded subagent's call is final only now.
-            if let Some(item) = self.agents.remove(&tool_use) {
+            if let Some(mut item) = self.agents.remove(&tool_use) {
+                if let TranscriptItem::Tool {
+                    subagent: Some(info),
+                    ..
+                } = &mut item
+                {
+                    info.finished_at.get_or_insert_with(|| ts(now));
+                }
                 out = vec![update(item)];
             }
             return out;
@@ -1088,16 +1122,12 @@ impl Normalizer {
                 let Some(tool_use) = s(event, "tool_use_id") else {
                     return Vec::new();
                 };
-                let steps = event
-                    .get("usage")
-                    .and_then(|u| u.get("tool_uses"))
-                    .and_then(Value::as_u64)
-                    .map(|n| n as u32);
+                let (steps, tokens) = usage_counts(event);
                 // `summary` is the CLI's own one-line status, when it has
                 // one; its `description` repeats the raw tool input, which
                 // the nested call's title already says better.
                 let latest = non_empty(event, "summary").map(|t| clip(t, 120));
-                self.subagent_progress(tool_use, steps, latest).into_iter().collect()
+                self.subagent_progress(tool_use, steps, latest, tokens).into_iter().collect()
             }
             Some("task_updated") => {
                 let patch = event.get("patch").unwrap_or(&Value::Null);
@@ -1107,13 +1137,13 @@ impl Normalizer {
                     }
                 }
                 match s(patch, "status") {
-                    Some(status @ ("completed" | "failed" | "killed")) => self.task_ended(event, status),
+                    Some(status @ ("completed" | "failed" | "killed")) => self.task_ended(event, status, now),
                     _ => Vec::new(),
                 }
             }
             Some("task_notification") => {
                 let status = s(event, "status").unwrap_or("completed");
-                self.task_ended(event, status)
+                self.task_ended(event, status, now)
             }
             // status, thinking_tokens, permission_denied (its tool_result
             // says the same), background_tasks_changed, hooks, …
@@ -1709,6 +1739,9 @@ mod tests {
         assert_eq!(info.description, "List repo files and read src/a.ts");
         assert_eq!(info.steps, 2);
         assert_eq!(info.latest.as_deref(), Some("Reading src/a.ts"));
+        // Its usage, from `task_notification` / the call's result.
+        assert!(info.tokens.is_some_and(|t| t > 14_000), "{:?}", info.tokens);
+        assert!(info.finished_at.is_some());
         // The call shows the subagent's report, not the hand-back frame.
         match r.tool(AGENT) {
             TranscriptItem::Tool { output: Some(output), title, .. } => {
@@ -1761,6 +1794,9 @@ mod tests {
         assert_eq!(subagent(r.tool(A)).steps, 2);
         assert_eq!(subagent(r.tool(B)).steps, 1);
         assert_eq!(subagent(r.tool(B)).description, "Read src/b.ts");
+        assert_eq!(subagent(r.tool(B)).tokens, Some(14_117));
+        assert!(subagent(r.tool(A)).tokens.is_some_and(|t| t >= 14_355));
+        assert!(subagent(r.tool(A)).finished_at.is_some() && subagent(r.tool(B)).finished_at.is_some());
         // A subagent's permission request names its own tool call.
         assert!(r.side.iter().any(|o| matches!(o, Output::Permission(p)
             if p.tool_use_id.as_deref() == Some("toolu_014hsUkagyjDYZ6vSiRs5ryf"))));
@@ -1819,6 +1855,42 @@ mod tests {
         assert!(matches!(&settled[..], [Output::Item { item: TranscriptItem::Tool { background_status: Some(BackgroundStatus::Killed), .. }, .. }]));
         assert_eq!(n.stop_background("toolu_bg"), None);
         assert!(!n.tails_background());
+    }
+
+    /// A subagent's tokens follow `task_progress` live; it finishes when it
+    /// stops working, not when a backgrounded call returns.
+    #[test]
+    fn subagent_tokens_are_live_and_it_finishes_when_its_task_ends() {
+        let mut n = Normalizer::new("/w");
+        let start = Utc::now();
+        let info = |out: &[Output]| -> SubagentInfo {
+            out.iter()
+                .find_map(|o| match o {
+                    Output::Item { item: TranscriptItem::Tool { subagent: Some(i), .. }, .. } => Some(i.clone()),
+                    _ => None,
+                })
+                .expect("a subagent update")
+        };
+        n.feed(&json!({"type": "assistant", "message": {"id": "m", "content": [
+            {"type": "tool_use", "id": "toolu_ag", "name": "Agent",
+             "input": {"description": "Scan", "subagent_type": "Explore", "prompt": "p", "run_in_background": true}}]}}), start);
+        n.feed(&json!({"type": "system", "subtype": "task_started", "task_id": "a1",
+            "tool_use_id": "toolu_ag", "task_type": "local_agent", "is_backgrounded": true}), start);
+        let out = n.feed(&json!({"type": "system", "subtype": "task_progress", "task_id": "a1",
+            "tool_use_id": "toolu_ag", "usage": {"total_tokens": 1200, "tool_uses": 1, "duration_ms": 900}}), start);
+        let live = info(&out);
+        assert_eq!((live.tokens, live.steps, live.finished_at.as_deref()), (Some(1200), 1, None));
+        // The backgrounded call returns at once: still working.
+        let out = n.feed(&json!({"type": "user", "message": {"content": [{"type": "tool_result",
+            "tool_use_id": "toolu_ag", "content": "Async agent launched"}]}}), start);
+        assert_eq!(info(&out).finished_at, None);
+        let end = start + chrono::Duration::seconds(7);
+        let out = n.feed(&json!({"type": "system", "subtype": "task_notification", "task_id": "a1",
+            "tool_use_id": "toolu_ag", "status": "completed", "summary": "done",
+            "usage": {"total_tokens": 3400, "tool_uses": 3, "duration_ms": 7000}}), end);
+        let done = info(&out);
+        assert_eq!((done.tokens, done.steps), (Some(3400), 3));
+        assert_eq!(done.finished_at, Some(ts(end)));
     }
 
     #[test]

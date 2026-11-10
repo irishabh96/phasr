@@ -1022,17 +1022,21 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
      * Transcript view: a subagent (an `Agent` call, id `id`) and the items it
      * produced so far, nested under it by `parentId` — as `agent_stream`
      * emits them. `steps` / `latest` follow its tool calls unless given.
-     * Call again with more `items` to stream its progress.
+     * Once it's no longer running it has a `finishedAt` (now, unless
+     * given); `tokens` only when given. Call again with more `items` to
+     * stream its progress.
      */
     subagent(
       taskId: string,
-      call: { id: string; description: string; type?: string; status?: string; output?: string; steps?: number; latest?: string },
+      call: { id: string; description: string; type?: string; status?: string; output?: string; steps?: number; latest?: string; tokens?: number; finishedAt?: string },
       items: Array<Record<string, unknown>> = [],
     ) {
       if (!findWs(taskId)) throw new Error(`no task ${taskId}`);
       const tools = items.filter((i) => i.kind === "tool");
       const last = tools[tools.length - 1] as { title?: string } | undefined;
       const known = (db.transcripts[taskId] ?? []).find((x: any) => x.id === call.id);
+      const status = call.status ?? "running";
+      const finishedAt = status === "running" ? undefined : (call.finishedAt ?? known?.subagent?.finishedAt ?? nowIso());
       transcriptPut(taskId, {
         kind: "tool",
         id: call.id,
@@ -1040,13 +1044,15 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         tool: "Agent",
         input: { description: call.description, subagent_type: call.type ?? "general-purpose", prompt: call.description },
         title: `Running a subagent: ${call.description}`,
-        status: call.status ?? "running",
+        status,
         ...(call.output ? { output: call.output } : {}),
         subagent: {
           type: call.type ?? "general-purpose",
           description: call.description,
           steps: call.steps ?? tools.length,
           ...((call.latest ?? last?.title) ? { latest: call.latest ?? last?.title } : {}),
+          ...(call.tokens !== undefined ? { tokens: call.tokens } : {}),
+          ...(finishedAt ? { finishedAt } : {}),
         },
       });
       for (const item of items) transcriptPut(taskId, { ts: nowIso(), ...item, parentId: call.id });
@@ -1430,7 +1436,7 @@ export const world = {
   subagent: (
     page: Page,
     taskId: string,
-    call: { id: string; description: string; type?: string; status?: string; output?: string; steps?: number; latest?: string },
+    call: { id: string; description: string; type?: string; status?: string; output?: string; steps?: number; latest?: string; tokens?: number; finishedAt?: string },
     items: Array<Record<string, unknown>> = [],
   ) =>
     page.evaluate(

@@ -1,4 +1,3 @@
-import type { BackgroundStatus } from "@/lib/types";
 import type { ToolItem, TranscriptItem } from "./contract";
 
 /**
@@ -58,35 +57,57 @@ export function ancestorsOf(items: readonly TranscriptItem[], id: string): strin
   return chain;
 }
 
-export function isBackgroundRunning(item: TranscriptItem): item is ToolItem {
-  return item.kind === "tool" && item.background === true && item.backgroundStatus === "running";
+/**
+ * One subagent's own transcript, as its panel lays it out: the call's
+ * direct items in order, and every nested subagent's items by call id (the
+ * same `children` the main transcript nests with).
+ */
+export function subagentTree(items: readonly TranscriptItem[], callId: string): TranscriptTree {
+  const { children } = groupTranscript(items);
+  return { top: (children.get(callId) ?? []) as TranscriptItem[], children };
 }
 
-/** One chip of the Background strip. */
-export interface BackgroundShell {
-  /** The Bash tool item's id (its tool_use id). */
-  id: string;
-  command: string;
-  /** When the call started (the item's `ts`). */
-  startedAt: string;
-  status: BackgroundStatus;
+/**
+ * Everything under a subagent call, in transcript order: its own items and,
+ * recursively, those of the subagents it ran. Guards against a cycle.
+ */
+export function descendantsOf(items: readonly TranscriptItem[], callId: string): TranscriptItem[] {
+  const under = new Set<string>([callId]);
+  const out: TranscriptItem[] = [];
+  // Children follow their parent in the transcript, so one pass in order
+  // catches nested subagents whose call is itself a descendant.
+  let grew = true;
+  const taken = new Set<string>();
+  while (grew) {
+    grew = false;
+    for (const item of items) {
+      if (taken.has(item.id) || item.id === callId || !item.parentId || !under.has(item.parentId)) continue;
+      taken.add(item.id);
+      under.add(item.id);
+      grew = true;
+    }
+  }
+  for (const item of items) if (taken.has(item.id)) out.push(item);
+  return out;
 }
 
-function commandOf(item: ToolItem): string {
+/** A subagent call is at work: its call runs, or it runs on in the background. */
+export function isSubagentRunning(item: ToolItem): boolean {
+  return item.status === "running" || item.backgroundStatus === "running";
+}
+
+/** Its steps: the larger of the CLI's count and the calls seen nested under it. */
+export function subagentSteps(item: ToolItem, nested: readonly TranscriptItem[] | undefined): number {
+  const own = nested ? nested.filter((c) => c.kind === "tool").length : 0;
+  return Math.max(item.subagent?.steps ?? 0, own);
+}
+
+/** A background command's command line (its first line), else its title. */
+export function commandOf(item: ToolItem): string {
   const input = item.input as { command?: unknown } | null | undefined;
   const command = typeof input?.command === "string" ? input.command.trim() : "";
   if (command) return command.split("\n")[0]!;
   return item.title.replace(/^Running /, "");
-}
-
-/** Background commands still running, in the order they started. */
-export function runningBackgroundShells(items: readonly TranscriptItem[]): BackgroundShell[] {
-  const out: BackgroundShell[] = [];
-  for (const item of items) {
-    if (!isBackgroundRunning(item)) continue;
-    out.push({ id: item.id, command: commandOf(item), startedAt: item.ts, status: "running" });
-  }
-  return out;
 }
 
 /** "12s" / "4m 3s" / "1h 2m" since `startedAt`; empty for a bad timestamp. */
