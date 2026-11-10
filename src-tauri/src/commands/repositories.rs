@@ -256,6 +256,7 @@ pub async fn delete_repository(
     repo: State<'_, RepositoryRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     orchestrator: State<'_, TaskOrchestrator>,
+    board: State<'_, crate::orchestrator::TaskBoard>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RepositoryCmdError> {
@@ -309,6 +310,9 @@ pub async fn delete_repository(
     // 3. Soft-delete the parent + hard-delete children in one tx
     //    (handled inside RepositoryRepo::delete).
     repo.delete(&id).await?;
+    // Its tasks are gone: refresh the board and sidebar (they read task
+    // cards, which nothing else would invalidate here).
+    board.notify_changed(&id);
     sync_state.request_sync();
     Ok(())
 }
