@@ -48,6 +48,7 @@ import {
   terminalDiagnosticsEnabled,
 } from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
+import { disableTextAssistance } from "@/lib/terminal/textAssist";
 import {
   applyChangedOptions,
   applyChangedTheme,
@@ -434,6 +435,10 @@ export class GhosttySurface implements TerminalSurface {
     // on a still-detached element is safe — the caller re-parents
     // `element` into its mount and the first `fit()` sizes the grid.
     term.open(this.element);
+    // Both of the editable elements `open` just made: no Writing Tools /
+    // "Write with Siri", predictions or autocorrect over the terminal.
+    disableTextAssistance(this.element);
+    if (term.textarea) disableTextAssistance(term.textarea);
 
     for (const cb of this.dataCbs) term.onData(cb);
     for (const cb of this.resizeCbs) term.onResize(cb);
