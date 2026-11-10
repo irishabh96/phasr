@@ -13,7 +13,7 @@ use tauri::State;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::SessionState;
-use crate::agent_stream::TranscriptItem;
+use crate::agent_stream::{Suggestion, TranscriptItem};
 use crate::domain::{Agent, AgentView, PermissionMode, Workspace};
 use crate::notifications::NotificationService;
 use crate::orchestrator::{
@@ -381,6 +381,25 @@ pub async fn get_transcript(
         .assert_owner(&task_id, &current.user_id)
         .await?;
     Ok(orchestrator.transcript(&task_id).await)
+}
+
+/// Reply suggestions for a transcript-view task's last turn: the
+/// composer's chips. Cached per turn, or generated now (a one-shot Haiku
+/// call through the user's `claude`, single-flight per task); empty while
+/// a turn runs, before one ended, or when generation fails.
+/// `phasr://suggestions` carries them too. The frontend only calls this
+/// with "Suggest replies" on, so off means no call.
+#[tauri::command]
+pub async fn suggest_replies(
+    task_id: String,
+    orchestrator: State<'_, TaskOrchestrator>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<Suggestion>, OrchestratorError> {
+    let current = require_user(&session)?;
+    orchestrator
+        .assert_owner(&task_id, &current.user_id)
+        .await?;
+    Ok(orchestrator.suggest_replies(&task_id).await)
 }
 
 /// Show the task as a transcript or a terminal on this machine (local-only:

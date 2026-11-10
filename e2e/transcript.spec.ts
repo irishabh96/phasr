@@ -444,3 +444,119 @@ test.describe("Agent transcript view", () => {
     expect(await callsOf(page, "get_transcript")).toEqual([]);
   });
 });
+
+/**
+ * Reply suggestions: in transcript view the composer's chips are what the
+ * last turn suggests. The conversation's own (an offer's options) show at
+ * once; `suggest_replies` (Haiku, via the user's CLI) replaces them through
+ * `phasr://suggestions`. A chip fills the input; only ⌘↵ sends.
+ */
+test.describe("Reply suggestions", () => {
+  const OFFER =
+    "Fixed: the redirect keeps `?next=` across the cookie refresh.\n\nWant me to open a draft PR, or also handle the mobile deep-link case?";
+  const replies = (page: Page) => page.getByRole("group", { name: "Suggested replies" });
+
+  /** A user message, the agent's answer, and the turn's end (result `r1`). */
+  async function turn(page: Page, text: string) {
+    await composer(page).fill("Fix the login redirect");
+    await page.keyboard.press("Meta+Enter");
+    await expect(items(page, "user")).toContainText("Fix the login redirect");
+    await expect(replies(page).getByRole("button")).toHaveCount(0);
+    await world.transcript(page, TASK, { kind: "assistant", id: "a1", text, streaming: false });
+    await world.turnEnds(page, TASK, { id: "r1", durationMs: 4_000, costUsd: 0.01 });
+  }
+
+  test("a turn ending with an offer shows its options; a click fills the composer and doesn't send", async ({ page }) => {
+    await boot(page);
+    await turn(page, OFFER);
+    await expect(replies(page).getByRole("button")).toHaveText(["Open a draft PR", "Also handle the mobile deep-link case"]);
+    await expect.poll(() => callsOf(page, "suggest_replies")).toEqual([{ taskId: TASK }]);
+
+    await clearCalls(page);
+    await replies(page).getByRole("button", { name: "Also handle the mobile deep-link case" }).click();
+    await expect(composer(page)).toHaveValue("Also handle the mobile deep-link case");
+    await expect(composer(page)).toBeFocused();
+    // The input has text now: the chips are gone.
+    await expect(replies(page).getByRole("button")).toHaveCount(0);
+    expect(await callsOf(page, "send_message_to_task")).toEqual([]);
+
+    // Emptied: they come back, and Tab reaches the first one.
+    await composer(page).fill("");
+    await expect(replies(page).getByRole("button")).toHaveCount(2);
+    await composer(page).focus();
+    await page.keyboard.press("Tab");
+    await expect(replies(page).getByRole("button", { name: "Open a draft PR" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(composer(page)).toHaveValue("Open a draft PR");
+    expect(await callsOf(page, "send_message_to_task")).toEqual([]);
+
+    // ⌘↵ is what sends; the chips hide while the turn runs.
+    await page.keyboard.press("Meta+Enter");
+    await expect
+      .poll(() => callsOf(page, "send_message_to_task"))
+      .toEqual([{ taskId: TASK, text: "Open a draft PR", submit: true }]);
+    await expect(page.getByRole("button", { name: "Stop turn" })).toBeVisible();
+    await expect(replies(page).getByRole("button")).toHaveCount(0);
+  });
+
+  test("generated suggestions replace the conversation's own", async ({ page }) => {
+    await boot(page, { holdSuggestions: true });
+    await turn(page, OFFER);
+    await expect(replies(page).getByRole("button")).toHaveText(["Open a draft PR", "Also handle the mobile deep-link case"]);
+    const before = await replies(page).boundingBox();
+    await world.suggestionsReady(page, TASK, "r1", [
+      {
+        label: "Open a draft PR for the fix",
+        text: "Open a draft PR for the redirect fix, with the ?next= test in the description.",
+        source: "generated",
+      },
+      {
+        label: "Handle deep links on iOS too",
+        text: "Also handle the mobile deep-link case, starting with iOS universal links.",
+        source: "generated",
+      },
+    ]);
+    await expect(replies(page).getByRole("button")).toHaveText(["Open a draft PR for the fix", "Handle deep links on iOS too"]);
+    await expect(replies(page).locator("[data-suggestion-source=generated]")).toHaveCount(2);
+    // Same row, same place: nothing around it moved.
+    expect(await replies(page).boundingBox()).toEqual(before);
+    await replies(page).getByRole("button", { name: "Handle deep links on iOS too" }).click();
+    await expect(composer(page)).toHaveValue("Also handle the mobile deep-link case, starting with iOS universal links.");
+    expect(await callsOf(page, "send_message_to_task")).toHaveLength(1);
+  });
+
+  test("while they're being generated and the turn suggests nothing itself, a shimmer holds the place", async ({ page }) => {
+    await boot(page, { holdSuggestions: true });
+    await turn(page, "The redirect now keeps `?next=` across the cookie refresh.");
+    await expect(replies(page).locator("[data-suggestion-shimmer]")).toBeVisible();
+    await expect(replies(page).getByRole("button")).toHaveCount(0);
+    await world.suggestionsReady(page, TASK, "r1", [
+      { label: "Add a test for the refresh", text: "Add a regression test for ?next= surviving the cookie refresh.", source: "generated" },
+    ]);
+    await expect(replies(page).getByRole("button")).toHaveText(["Add a test for the refresh"]);
+    await expect(replies(page).locator("[data-suggestion-shimmer]")).toHaveCount(0);
+  });
+
+  test("with Suggest replies off, suggest_replies is never called", async ({ page }) => {
+    await boot(page);
+    await page.keyboard.press("Meta+,");
+    const sheet = page.getByRole("dialog", { name: "Settings" });
+    await sheet.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Agents & keys" }).click();
+    const toggle = sheet.getByRole("switch", { name: "Suggest replies" });
+    await expect(toggle).toBeChecked();
+    await expect(sheet).toContainText(
+      "After each turn, a quick Haiku call through your Claude login suggests what to say next (≈$0.001 per turn). Off: suggestions come only from the conversation itself.",
+    );
+    await toggle.click();
+    await expect(toggle).not.toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+
+    await turn(page, OFFER);
+    // The conversation's own suggestions still show.
+    await expect(replies(page).getByRole("button")).toHaveText(["Open a draft PR", "Also handle the mobile deep-link case"]);
+    await page.waitForTimeout(300);
+    expect(await callsOf(page, "suggest_replies")).toEqual([]);
+    await expect(replies(page).locator("[data-suggestion-shimmer]")).toHaveCount(0);
+  });
+});

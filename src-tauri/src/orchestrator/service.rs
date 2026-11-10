@@ -29,7 +29,9 @@ use tokio::sync::broadcast;
 
 use crate::agent_signals::{AgentSignals, AttentionResponse, LaunchTask};
 use crate::agent_stream::protocol::{self, SessionArg};
-use crate::agent_stream::{AgentStreams, StreamHandle, StreamSpec, SystemLevel, TranscriptItem};
+use crate::agent_stream::{
+    AgentStreams, StreamHandle, StreamSpec, Suggestion, SystemLevel, TranscriptItem,
+};
 use crate::domain::repository_config::validate_branch_name;
 use crate::domain::{
     Agent, AgentView, PermissionMode, Repository, Workspace, WorkspaceKind, WorkspaceStatus,
@@ -2254,6 +2256,18 @@ impl TaskOrchestrator {
         tokio::task::spawn_blocking(move || streams.transcript(&task_id))
             .await
             .unwrap_or_default()
+    }
+
+    /// Reply suggestions for a transcript-view task's last turn
+    /// (`suggest_replies`). The generation call runs with the same Claude
+    /// API key the task's stream gets, if the user set one.
+    pub async fn suggest_replies(&self, task_id: &str) -> Vec<Suggestion> {
+        let items = self.transcript(task_id).await;
+        let env = match &self.task_config {
+            Some(config) => config.api_env(Agent::Claude).await,
+            None => Vec::new(),
+        };
+        self.streams.suggest_replies(task_id, &items, env).await
     }
 
     /// Show `task_id` as a transcript or a terminal on this machine.

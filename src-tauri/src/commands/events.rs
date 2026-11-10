@@ -54,6 +54,10 @@ pub const ATTENTION_ACTIVATED_EVENT: &str = "phasr://attention-activated";
 /// FULL item, never a delta; streaming updates are coalesced to ≤ 30 Hz
 /// per task. Payload: `TranscriptEvent` (`{taskId, op, item}`).
 pub const TRANSCRIPT_EVENT: &str = "phasr://transcript";
+/// A transcript-view task's reply suggestions for its last turn are ready
+/// (generated, or the CLI's own). Payload: `SuggestionsEvent`
+/// (`{taskId, turnId, suggestions}`); `turnId` is the turn's `result` item.
+pub const SUGGESTIONS_EVENT: &str = "phasr://suggestions";
 
 /// Drain `rx` on the async runtime, handing each event to `forward`.
 /// A lagging receiver skips what it missed rather than stopping: every
@@ -162,6 +166,13 @@ pub fn spawn_agent_signal_bridge(signals: &AgentSignals, app: AppHandle) {
 pub fn spawn_transcript_bridge(streams: &AgentStreams, app: AppHandle) {
     spawn_forwarder(streams.subscribe(), move |event| {
         let _ = app.emit(TRANSCRIPT_EVENT, event);
+    });
+}
+
+/// Re-emit reply suggestions as they become ready. Call once.
+pub fn spawn_suggestions_bridge(streams: &AgentStreams, app: AppHandle) {
+    spawn_forwarder(streams.subscribe_suggestions(), move |event| {
+        let _ = app.emit(SUGGESTIONS_EVENT, event);
     });
 }
 

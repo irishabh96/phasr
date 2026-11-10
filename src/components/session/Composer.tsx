@@ -6,6 +6,7 @@ import { withAttachmentBlock } from "@/lib/attachments";
 import { useAttachments } from "@/lib/hooks/useAttachments";
 import { tauri } from "@/lib/tauri";
 import { enqueue, mustQueue, shouldFlush, useQueuedMessage } from "@/lib/transcript/sendQueue";
+import type { ReplySuggestions } from "@/lib/transcript/useReplySuggestions";
 import type { Agent, TaskAgentState } from "@/lib/types";
 import { showToast } from "@/lib/toast";
 import { humanizeError, isAwaitingAnswerError } from "@/lib/humanizeError";
@@ -19,6 +20,10 @@ const PAD_Y = 3;
 const MAX_LINES = 6;
 const MIN_H = LINE_PX + PAD_Y * 2;
 const MAX_H = LINE_PX * MAX_LINES + PAD_Y * 2;
+
+/** A-Workspace's chip: filled, raised, 26px, 12px text. */
+const CHIP =
+  "h-[26px] rounded-(--radius-control) bg-(--color-bg-elevated) px-[10px] text-[12px] text-(--color-text-secondary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)";
 
 /** ⌘↵ (Ctrl+↵ off macOS) sends; a bare Enter is a newline (spec D8). */
 export function isSendChord(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">): boolean {
@@ -49,6 +54,7 @@ export function Composer({
   awaitingAnswer = false,
   roots,
   turn,
+  suggestions,
 }: {
   taskId: string;
   agent: Agent | null;
@@ -71,6 +77,13 @@ export function Composer({
    * behaviour exactly.
    */
   turn?: { state: TaskAgentState["state"] | null; onStop: () => Promise<unknown> };
+  /**
+   * Transcript view's chips: replies the last turn suggests
+   * (`useReplySuggestions`) instead of the static "Continue" / "Run the
+   * tests". A chip only fills the input — ⌘↵ sends — so a stray click
+   * never reaches the agent. Hidden while typing and while a turn runs.
+   */
+  suggestions?: ReplySuggestions;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -78,10 +91,17 @@ export function Composer({
   const [queued, setQueued] = useQueuedMessage(taskId);
   const ref = useRef<HTMLTextAreaElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
+  /** A chip filled the input: put the caret after its text once it renders. */
+  const caretToEnd = useRef(false);
   const attachments = useAttachments({ dropRef: surfaceRef });
   const name = agent ? AGENT_META[agent].label : "the agent";
   const working = !!turn && mustQueue(turn.state);
   const turnState = turn ? turn.state : undefined;
+  // They clear once you type and come back when the input is empty again.
+  const showReplies = !!turn && !working && text === "";
+  const replies = showReplies ? (suggestions?.chips ?? []) : [];
+  const shimmer = showReplies && !!suggestions?.pending && replies.length === 0;
 
   // Auto-grow: measure the content, clamp to MAX_LINES. Layout effect so the
   // first paint after a keystroke already has the new height.
@@ -94,6 +114,20 @@ export function Composer({
     el.style.height = `${h}px`;
     el.style.overflowY = el.scrollHeight > MAX_H + 1 ? "auto" : "hidden";
   }, [text, awaitingAnswer]);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!caretToEnd.current || !el) return;
+    caretToEnd.current = false;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [text]);
+
+  /** A suggestion chip: into the input to edit or send, never sent by itself. */
+  const fill = (reply: string) => {
+    caretToEnd.current = true;
+    setText(reply);
+  };
 
   const sendFailed = (err: unknown) =>
     showToast(
@@ -166,6 +200,14 @@ export function Composer({
       e.preventDefault();
       void send(text);
     }
+    // Tab from the empty input goes to the first suggestion.
+    if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && replies.length) {
+      const first = chipsRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+      if (first) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
     // A bare Enter falls through: the textarea inserts the newline.
   };
 
@@ -234,19 +276,54 @@ export function Composer({
           style={{ height: MIN_H, paddingTop: PAD_Y, paddingBottom: PAD_Y }}
           className="block w-full resize-none overflow-hidden border-0 bg-transparent px-0 text-[13.5px] leading-[1.45] text-(--color-text-primary) shadow-none outline-none placeholder:text-(--color-text-muted) focus:shadow-none disabled:opacity-50"
         />
-        <div className="flex items-center gap-[6px]">
-          {["Continue", "Run the tests"].map((chip) => (
-            <button
-              key={chip}
-              type="button"
-              disabled={disabled || sending}
-              onClick={() => void send(chip)}
-              className="h-[26px] rounded-(--radius-control) bg-(--color-bg-elevated) px-[10px] text-[12px] text-(--color-text-secondary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+        {/* Fixed 26px row: chips coming, going or being replaced never move the input. */}
+        <div className="flex h-[26px] items-center gap-[6px]">
+          {turn ? (
+            <div
+              ref={chipsRef}
+              role="group"
+              aria-label="Suggested replies"
+              data-testid="reply-suggestions"
+              aria-busy={shimmer || undefined}
+              className="flex h-full min-w-0 flex-1 items-center gap-[6px] overflow-hidden"
             >
-              {chip}
-            </button>
-          ))}
-          <span className="flex-1" />
+              {replies.map((reply) => (
+                <button
+                  key={reply.label}
+                  type="button"
+                  title={reply.text}
+                  data-suggestion-source={reply.source}
+                  disabled={disabled || sending}
+                  onClick={() => fill(reply.text)}
+                  className={cn(CHIP, "min-w-0 max-w-[260px] shrink truncate")}
+                >
+                  {reply.label}
+                </button>
+              ))}
+              {shimmer ? (
+                <span
+                  aria-hidden
+                  data-suggestion-shimmer
+                  className="skeleton-bar h-[26px] w-[132px] shrink-0 rounded-(--radius-control) bg-(--color-bg-elevated) animate-[pulse-skeleton_1.4s_ease-in-out_infinite]"
+                />
+              ) : null}
+            </div>
+          ) : (
+            <>
+              {["Continue", "Run the tests"].map((chip) => (
+                <button
+                  key={chip}
+                  type="button"
+                  disabled={disabled || sending}
+                  onClick={() => void send(chip)}
+                  className={CHIP}
+                >
+                  {chip}
+                </button>
+              ))}
+              <span className="flex-1" />
+            </>
+          )}
           <AttachIconButton disabled={disabled} onClick={() => void attachments.pick()} />
           <span aria-hidden className="text-[11px] text-(--color-text-muted)">
             {working ? "⌘↵ queue" : "⌘↵ send"}

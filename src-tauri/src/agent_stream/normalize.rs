@@ -71,6 +71,11 @@ pub enum Output {
         id: String,
         output_file: Option<String>,
     },
+    /// The CLI's own guess at the user's next message
+    /// (`{"type":"prompt_suggestion","suggestion":"open a draft PR"}`),
+    /// sent a second or so after a turn's `result` when the command
+    /// passes `--prompt-suggestions` (PROTOCOL.md, "Prompt suggestions").
+    NativeSuggestion(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -435,6 +440,11 @@ impl Normalizer {
                         request_id: id.to_string(),
                     }]
                 })
+                .unwrap_or_default(),
+            Some("prompt_suggestion") => s(event, "suggestion")
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| vec![Output::NativeSuggestion(t.to_string())])
                 .unwrap_or_default(),
             // control_response (acks), rate_limit_event, anything new.
             _ => Vec::new(),
@@ -1538,6 +1548,28 @@ mod tests {
         );
         let texts: Vec<String> = assistant_texts(&r).into_iter().map(|(t, _)| t).collect();
         assert_eq!(texts, vec!["first", "second"]);
+    }
+
+    /// `--prompt-suggestions` (Haiku, two turns): the CLI's guess arrives
+    /// after the second turn's `result` (none after the first: it waits
+    /// for two assistant messages) and adds nothing to the transcript.
+    #[test]
+    fn a_native_prompt_suggestion_is_a_side_output() {
+        let r = Replay::run(include_str!("fixtures/prompt_suggestion.ndjson"));
+        assert_eq!(
+            r.kinds(),
+            vec!["user", "assistant", "result:false", "user", "assistant", "result:false"]
+        );
+        let natives: Vec<&Output> =
+            r.side.iter().filter(|o| matches!(o, Output::NativeSuggestion(_))).collect();
+        assert_eq!(natives, vec![&Output::NativeSuggestion("open a draft PR".into())]);
+        let after_last_turn = r.side.iter().rposition(|o| matches!(o, Output::TurnEnded(_))).unwrap();
+        assert!(matches!(r.side.last(), Some(Output::NativeSuggestion(_))));
+        assert!(r.side.len() > after_last_turn + 1);
+
+        let now = Utc::now();
+        let mut n = Normalizer::new("/w");
+        assert!(n.feed(&serde_json::json!({"type": "prompt_suggestion", "suggestion": "  "}), now).is_empty());
     }
 
     #[test]

@@ -17,6 +17,7 @@
 
 pub mod normalize;
 pub mod protocol;
+pub mod suggest;
 pub mod transcript;
 
 use std::collections::{HashMap, VecDeque};
@@ -39,6 +40,8 @@ use crate::agent_signals::{AgentSignalError, AgentSignals, AttentionResponse};
 use crate::domain::usage::{TaskUsage, UsageSource};
 
 use normalize::{Normalizer, Output, PermissionRequest, TurnEnd};
+pub use suggest::{Suggestion, SuggestionsEvent};
+use suggest::Suggester;
 pub use transcript::{SystemLevel, TranscriptEvent, TranscriptItem, TranscriptOp, TranscriptStore};
 
 const EVENT_CAPACITY: usize = 1024;
@@ -99,6 +102,8 @@ struct Shared {
     events: broadcast::Sender<TranscriptEvent>,
     store: TranscriptStore,
     log_dir: PathBuf,
+    /// Reply suggestions per task, for the turn that ended last.
+    suggester: Arc<Suggester>,
 }
 
 /// The app's stream processes, keyed by task id.
@@ -121,6 +126,7 @@ impl AgentStreams {
                 events,
                 store: TranscriptStore::new(log_dir.clone()),
                 log_dir,
+                suggester: Arc::new(Suggester::new()),
             }),
             running: Arc::new(Mutex::new(HashMap::new())),
             retiring: Arc::new(Mutex::new(Vec::new())),
@@ -129,6 +135,29 @@ impl AgentStreams {
 
     pub fn subscribe(&self) -> broadcast::Receiver<TranscriptEvent> {
         self.shared.events.subscribe()
+    }
+
+    /// `phasr://suggestions`: a turn's reply suggestions are ready.
+    pub fn subscribe_suggestions(&self) -> broadcast::Receiver<SuggestionsEvent> {
+        self.shared.suggester.subscribe()
+    }
+
+    /// Reply suggestions for the task's last turn (`items`: its transcript),
+    /// generated once per turn and cached. Empty while a turn runs or
+    /// before one ended. `env`: the Claude API key the user set, if any.
+    pub async fn suggest_replies(
+        &self,
+        task_id: &str,
+        items: &[TranscriptItem],
+        env: Vec<(String, String)>,
+    ) -> Vec<Suggestion> {
+        if self.get(task_id).is_some_and(|h| h.turn_running()) {
+            return Vec::new();
+        }
+        let Some(ctx) = suggest::turn_context(items) else {
+            return Vec::new();
+        };
+        self.shared.suggester.suggest(task_id, ctx, env).await
     }
 
     pub fn get(&self, task_id: &str) -> Option<Arc<StreamHandle>> {
@@ -389,6 +418,9 @@ impl StreamHandle {
         if self.has_exited() {
             return Err(StreamError::NotRunning);
         }
+        // The last turn's suggestions are moot; a generation still
+        // running is killed, not paid for.
+        self.shared.suggester.cancel(&self.task_id);
         let item = {
             let mut session = self.session.lock();
             session.pending_turns += 1;
@@ -633,6 +665,9 @@ impl StreamHandle {
                     // go out first, so the order on the wire is kept.
                     deltas.forget(item.id());
                     self.flush(deltas);
+                    if let TranscriptItem::Result { id, parent_id: None, .. } = &item {
+                        self.shared.suggester.turn_ended(&self.task_id, id);
+                    }
                     self.publish(op, item, true);
                 }
                 Output::Session(id) => {
@@ -641,6 +676,7 @@ impl StreamHandle {
                     }
                 }
                 Output::TurnStarted => {
+                    self.shared.suggester.cancel(&self.task_id);
                     self.session.lock().in_turn = true;
                     if let Some((signals, generation)) = self.signals() {
                         signals.stream_working(&self.task_id, generation, None);
@@ -688,6 +724,7 @@ impl StreamHandle {
                     }
                 }
                 Output::TurnEnded(end) => self.turn_ended(end).await,
+                Output::NativeSuggestion(text) => self.shared.suggester.native(&self.task_id, &text),
                 Output::BackgroundEnded { id, output_file } => {
                     // Its final output, whether or not the model reads it.
                     let Some(path) = output_file else { continue };

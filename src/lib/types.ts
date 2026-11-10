@@ -180,6 +180,28 @@ export interface TranscriptEvent {
   item: TranscriptItem;
 }
 
+/**
+ * A reply suggestion for a transcript-view task's last turn (Rust
+ * `agent_stream::Suggestion`): a composer chip. `label` is on the chip
+ * (≤ 40 chars); `text` goes into the composer when it's clicked.
+ * `native` = the CLI's own prediction, `generated` = Phasr's Haiku call.
+ */
+export interface Suggestion {
+  label: string;
+  text: string;
+  source: "native" | "generated";
+}
+
+/**
+ * `phasr://suggestions`: a task's suggestions for the turn whose `result`
+ * item is `turnId` are ready (or changed). Empty = nothing to suggest.
+ */
+export interface SuggestionsEvent {
+  taskId: string;
+  turnId: string;
+  suggestions: Suggestion[];
+}
+
 /** One built-in agent as returned by `list_agents`. */
 export interface AgentOption {
   agent: Agent;

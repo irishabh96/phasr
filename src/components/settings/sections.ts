@@ -71,6 +71,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     rows: [
       { id: "agents", label: "Agents", keywords: "claude codex copilot gemini opencode command version detect" },
       { id: "permission-mode", label: "Default permission mode", keywords: "ask shell edits skip approvals" },
+      { id: "suggest-replies", label: "Suggest replies", keywords: "suggestions chips composer haiku transcript next" },
       { id: "ANTHROPIC_API_KEY", label: "API keys", keywords: "anthropic openai gemini keychain token" },
     ],
   },

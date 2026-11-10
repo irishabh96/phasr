@@ -252,6 +252,50 @@ Noise Phasr ignores:
 - `system/background_tasks_changed` (the `task_*` events carry the same);
 - `control_response` acks.
 
+## Prompt suggestions (`--prompt-suggestions`)
+
+Probed 2026-11-11 on 2.1.322 (`prompt_suggestion.ndjson`: Haiku, two turns).
+
+- With `--prompt-suggestions` (stream-json only), the CLI may write one
+  line about a second after a turn's `result`:
+  `{"type":"prompt_suggestion","suggestion":"open a draft PR","uuid":…,"session_id":…}`.
+  It's **one** guess at the user's next prompt, 2–12 words in the user's
+  own style.
+- It's a forked request on the **session's own model** (its prompt cache,
+  `querySource: "prompt_suggestion"`). On an Opus task that's an Opus call
+  reading the whole cached conversation every turn.
+- It's often absent:
+  - always on the first turn (it needs two assistant messages);
+  - when the cache is cold;
+  - in plan mode;
+  - when the model judges the next step "not obvious";
+  - after a run of unused suggestions (it backs off).
+  The probe's first identical two-turn run produced none.
+- The `set_prompt_suggestions_paused` control request (`{"subtype":
+  "set_prompt_suggestions_paused","paused":true}`) is acked with an empty
+  success, but on 2.1.322 a paused turn still got its suggestion.
+- **Phasr doesn't pass the flag.** The "Suggest replies" setting must stop
+  every call when off, and a stream started with the flag can't be
+  switched off without a restart. Phasr normalizes the line anyway
+  (`Output::NativeSuggestion`), so a user whose Claude command adds the
+  flag gets it as the first chip.
+- What Phasr runs instead, once per ended turn, only while the setting is
+  on (`agent_stream::suggest`):
+
+  ```
+  claude -p --model haiku --output-format json --tools "" \
+    --no-session-persistence --setting-sources "" --safe-mode \
+    --strict-mcp-config --system-prompt <ask for a JSON array>   # prompt on stdin
+  ```
+
+  - It runs from an empty scratch cwd.
+  - `--safe-mode` keeps auth but skips CLAUDE.md, skills, installed
+    plugins, hooks and MCP servers.
+  - Measured on 2.1.322: about $0.0003 per call, about 2 s of API time
+    and 3.5 s wall.
+  - `--version` can't be used to detect these flags: it exits 0 whatever
+    unknown option comes with it. So Phasr reads `--help`.
+
 ## Resume
 
 `claude -p … --resume <uuid>` in a new process continues the conversation
