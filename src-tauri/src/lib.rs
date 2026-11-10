@@ -29,6 +29,8 @@ mod store;
 mod sync;
 mod util;
 mod vt;
+#[cfg(target_os = "macos")]
+mod writing_tools;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -68,6 +70,27 @@ pub fn run() {
             commands::notifications::NotificationRouteRegistry::default(),
         ))
         .setup(|app| {
+            // The main window is declared in tauri.conf.json with
+            // `"create": false` and built here, first, from that same
+            // config, so its webview can be given a configuration before it
+            // exists (Writing Tools off on macOS; see writing_tools.rs).
+            let main_window = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .ok_or("tauri.conf.json declares no window")?;
+            let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &main_window)?;
+            #[cfg(target_os = "macos")]
+            let builder = match objc2::MainThreadMarker::new() {
+                Some(mtm) => {
+                    builder.with_webview_configuration(writing_tools::webview_configuration(mtm))
+                }
+                None => builder,
+            };
+            builder.build()?;
+
             auth_deeplink::configure_auth_deeplink(app)?;
 
             #[cfg(target_os = "macos")]
