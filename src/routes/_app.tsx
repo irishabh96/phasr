@@ -107,11 +107,14 @@ function AppShell() {
         return;
       }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarHide)) {
+        // Like ⌘I: the panel is under the dialog / sheet, out of sight.
+        if (isOverlayOpen()) return;
         e.preventDefault();
         toggleSidebarHidden();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarPin)) {
+        if (isOverlayOpen()) return;
         e.preventDefault();
         toggleSidebarPin();
         return;
