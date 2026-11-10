@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ToolItem, TranscriptItem } from "@/lib/transcript/contract";
 import { parseBlocks } from "./Markdown";
 import {
+  TranscriptActionsContext,
   TranscriptChildrenContext,
   TranscriptFocusContext,
   TranscriptItemView,
@@ -196,6 +197,55 @@ describe("transcript items", () => {
       fireEvent.click(screen.getByRole("button", { name: /1 step$/ }));
       expect(screen.getByRole("group", { name: "Subagent: Dig" })).toHaveTextContent("found it");
     });
+
+    describe("in a transcript with a subagent panel", () => {
+      const withPanel = (openSubagent: (id: string) => void, selectedSubagent: string | null = null) =>
+        render(
+          <TranscriptActionsContext.Provider value={{ openSubagent, selectedSubagent }}>
+            <TranscriptItemView item={agent({ status: "done", output: "All **done**." })} nested={nested} />
+          </TranscriptActionsContext.Provider>,
+        );
+
+      it("its title and its row open the panel; the steps chevron expands it inline", () => {
+        const open = vi.fn();
+        const { container } = withPanel(open);
+        fireEvent.click(screen.getByRole("button", { name: /Subagent List repo files/ }));
+        expect(open).toHaveBeenLastCalledWith("agent");
+        expect(container.querySelector("[data-subagent-transcript]")).toBeNull();
+        // Anywhere else on the row: the panel too.
+        open.mockClear();
+        fireEvent.click(container.querySelector('[data-tool="Agent"]')!);
+        expect(open).toHaveBeenCalledWith("agent");
+        // The chevron: inline, not the panel.
+        open.mockClear();
+        fireEvent.click(screen.getByRole("button", { name: /2 steps/ }));
+        expect(open).not.toHaveBeenCalled();
+        const group = screen.getByRole("group", { name: "Subagent: List repo files" });
+        // Clicks inside the expanded group or the report are theirs.
+        fireEvent.click(group.querySelector('[data-tool="Bash"]')!);
+        fireEvent.click(screen.getByRole("button", { name: "report" }));
+        fireEvent.click(screen.getByText("done"));
+        expect(open).not.toHaveBeenCalled();
+      });
+
+      it("reads as selected while the panel shows it", () => {
+        const { container } = withPanel(vi.fn(), "agent");
+        expect(container.querySelector('[data-tool="Agent"]')).toHaveAttribute("data-selected", "true");
+        expect(screen.getByRole("button", { name: /Subagent List repo files/ })).toHaveAttribute("aria-current", "true");
+      });
+
+      it("a reveal without expand highlights the row but leaves it collapsed", () => {
+        const { container } = render(
+          <TranscriptActionsContext.Provider value={{ openSubagent: vi.fn() }}>
+            <TranscriptFocusContext.Provider value={{ itemId: "agent", open: new Set(), nonce: 3, expand: false }}>
+              <TranscriptItemView item={agent()} nested={nested} />
+            </TranscriptFocusContext.Provider>
+          </TranscriptActionsContext.Provider>,
+        );
+        expect(container.querySelector('[data-tool="Agent"]')!.className).toMatch(/bg-\(--color-bg-hover\)/);
+        expect(container.querySelector("[data-subagent-transcript]")).toBeNull();
+      });
+    });
   });
 
   describe("a background command", () => {
@@ -257,7 +307,7 @@ describe("transcript items", () => {
       );
       const { rerender } = render(view(null));
       expect(screen.queryByText("watching…")).toBeNull();
-      rerender(view({ itemId: "bg-in", open: new Set(["agent"]), nonce: 1 }));
+      rerender(view({ itemId: "bg-in", open: new Set(["agent"]), nonce: 1, expand: true }));
       expect(screen.getByRole("group", { name: "Subagent: Watch" })).toBeInTheDocument();
       expect(screen.getByText("watching…")).toBeInTheDocument();
     });

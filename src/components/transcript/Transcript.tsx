@@ -3,13 +3,16 @@ import { ArrowDown, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PanelState } from "@/components/ui/PanelState";
 import { useTranscriptFocus } from "@/lib/transcript/focus";
+import { useSelectedSubagent, useSubagentStore } from "@/lib/transcript/subagentStore";
 import { ancestorsOf, groupTranscript } from "@/lib/transcript/tree";
 import { useTranscript } from "@/lib/transcript/useTranscript";
 import { cn } from "@/lib/utils";
 import {
+  TranscriptActionsContext,
   TranscriptChildrenContext,
   TranscriptFocusContext,
   TranscriptItemView,
+  type TranscriptActions,
   type TranscriptFocus,
 } from "./TranscriptItem";
 
@@ -52,6 +55,13 @@ export function Transcript({ taskId, visible }: { taskId: string; visible: boole
   const pinnedRef = useRef(true);
   const [pinned, setPinned] = useState(true);
   const [focus, setFocus] = useState<TranscriptFocus | null>(null);
+  // A subagent row opens its panel in the inspector column.
+  const selectedSubagent = useSelectedSubagent(taskId);
+  const selectSubagent = useSubagentStore((s) => s.selectSubagent);
+  const actions = useMemo<TranscriptActions>(
+    () => ({ openSubagent: (id) => selectSubagent(taskId, id), selectedSubagent }),
+    [selectSubagent, taskId, selectedSubagent],
+  );
   const virtual = items.length > VIRTUALIZE_ABOVE;
   const hasContent = items.length > 0;
 
@@ -121,7 +131,7 @@ export function Transcript({ taskId, visible }: { taskId: string; visible: boole
     requestAnimationFrame(toBottom);
   };
 
-  // A Background chip asked for an item: open the subagent groups around
+  // A Running chip (or the subagent panel) asked for an item: open the subagent groups around
   // it, bring its row into view (unpinned, so new items don't pull the
   // view away), and let the item expand itself.
   const request = useTranscriptFocus((s) => s.request);
@@ -132,7 +142,7 @@ export function Transcript({ taskId, visible }: { taskId: string; visible: boole
     const list = allRef.current;
     if (!list.some((i) => i.id === request.itemId)) return;
     const ancestors = ancestorsOf(list, request.itemId);
-    setFocus({ itemId: request.itemId, open: new Set(ancestors), nonce: request.nonce });
+    setFocus({ itemId: request.itemId, open: new Set(ancestors), nonce: request.nonce, expand: request.expand });
     const topId = ancestors[0] ?? request.itemId;
     if (virtual) {
       const index = items.findIndex((i) => i.id === topId);
@@ -212,7 +222,9 @@ export function Transcript({ taskId, visible }: { taskId: string; visible: boole
   }
   body = (
     <TranscriptChildrenContext.Provider value={childrenOf}>
-      <TranscriptFocusContext.Provider value={focus}>{body}</TranscriptFocusContext.Provider>
+      <TranscriptActionsContext.Provider value={actions}>
+        <TranscriptFocusContext.Provider value={focus}>{body}</TranscriptFocusContext.Provider>
+      </TranscriptActionsContext.Provider>
     </TranscriptChildrenContext.Provider>
   );
 

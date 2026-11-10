@@ -26,6 +26,18 @@ const items = (page: Page, kind?: string) =>
   transcript(page).locator(kind ? `[data-transcript-item="${kind}"]` : "[data-transcript-item]");
 const composer = (page: Page) => page.getByLabel("Message Claude");
 const callsOf = async (page: Page, cmd: string) => (await calls(page)).filter((c) => c.cmd === cmd).map((c) => c.args);
+const runningStrip = (page: Page) => page.getByRole("group", { name: "Running", exact: true });
+const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
+const subagentPanel = (page: Page) => inspector(page).getByTestId("subagent-panel");
+/** A tool call a subagent made (nested under it by the harness). */
+const subStep = (id: string, title: string, status = "running") => ({
+  kind: "tool",
+  id,
+  tool: title.startsWith("Reading") ? "Read" : "Bash",
+  input: {},
+  title,
+  status,
+});
 
 async function boot(page: Page, extra: Record<string, unknown> = {}) {
   const res = await bootApp(page, transcriptFixtures(extra) as never);
@@ -371,7 +383,7 @@ test.describe("Agent transcript view", () => {
     // The transcript goes on; the command's line scrolls out of view.
     for (const item of filler(40, 40)) await world.transcript(page, TASK, item);
 
-    const strip = page.getByRole("group", { name: "Running", exact: true });
+    const strip = runningStrip(page);
     await expect(strip).toBeVisible();
     const chip = strip.getByRole("button", { name: /Show background command pnpm dev --port 1420/ });
     await expect(chip).toContainText("pnpm dev --port 1420");
@@ -404,6 +416,153 @@ test.describe("Agent transcript view", () => {
     await expect(row).toContainText("stopped");
     await expect(strip.locator('[data-running-chip="bg-dev"]')).toHaveAttribute("data-status", "stopped");
     await expect(strip).toHaveCount(0, { timeout: 8_000 });
+    expect(realErrors(errors)).toEqual([]);
+  });
+
+  test("running subagents are chips; a chip opens the subagent panel in the inspector column, live, and switches; Back returns", async ({ page }) => {
+    const { errors } = await boot(page);
+    await world.turnStarts(page, TASK);
+    await world.subagent(page, TASK, { id: "agent-1", description: "Map the auth module" }, [
+      subStep("s1", "Running ls src/auth", "done"),
+      subStep("s2", "Reading src/auth/redirect.ts"),
+    ]);
+    await world.subagent(page, TASK, { id: "agent-2", description: "Find the callers", type: "Explore" }, [subStep("s9", 'Searching "redirect("')]);
+
+    // Two subagents at work: two chips, each with its live step count.
+    const strip = runningStrip(page);
+    await expect(strip.locator('[data-chip-kind="subagent"]')).toHaveCount(2);
+    const chip1 = strip.getByRole("button", { name: /Open subagent Map the auth module/ });
+    const chip2 = strip.getByRole("button", { name: /Open subagent Find the callers/ });
+    await expect(chip1).toContainText("2 steps");
+    await expect(chip2).toContainText("1 step");
+    await expect(chip1.getByRole("img")).toHaveCount(1); // the agent mark; the spinner is decorative
+
+    // The inspector starts collapsed: opening a subagent shows the column.
+    await page.getByRole("button", { name: "Collapse inspector" }).click();
+    await expect(inspector(page)).toHaveAttribute("data-state", "closed");
+    await chip1.click();
+    await expect(inspector(page)).toHaveAttribute("data-state", "open");
+    const panel = subagentPanel(page);
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Map the auth module" })).toBeVisible();
+    await expect(panel.locator("[data-subagent-meta]")).toContainText(/general-purpose\s*·\s*running\s*·\s*\d+s\s*·\s*2 steps/);
+    await expect(panel.getByRole("button").first()).toHaveAccessibleName("Back");
+    await expect(panel.locator('[data-tool="Bash"]')).toContainText("Running ls src/auth");
+    await expect(panel.locator('[data-tool="Read"]')).toContainText("Reading src/auth/redirect.ts");
+    await expect(panel.locator("time")).toHaveCount(0);
+    // The task's own inspector content is swapped out (same column).
+    await expect(inspector(page).getByRole("region", { name: "Changes" })).toHaveCount(0);
+
+    // A new nested step appears live.
+    await world.subagent(page, TASK, { id: "agent-1", description: "Map the auth module" }, [
+      subStep("s1", "Running ls src/auth", "done"),
+      subStep("s2", "Reading src/auth/redirect.ts", "done"),
+      subStep("s3", "Running pnpm test src/auth"),
+    ]);
+    await expect(panel.locator('[data-item-id="s3"]')).toContainText("Running pnpm test src/auth");
+    await expect(panel.locator("[data-subagent-meta]")).toContainText("3 steps");
+    await expect(chip1).toContainText("3 steps");
+
+    // The other chip switches the panel.
+    await chip2.click();
+    await expect(panel.getByRole("heading", { name: "Find the callers" })).toBeVisible();
+    await expect(panel.locator("[data-subagent-meta]")).toContainText("Explore");
+    await expect(panel.locator('[data-item-id="s9"]')).toBeVisible();
+    await expect(panel.locator('[data-item-id="s1"]')).toHaveCount(0);
+
+    // Back returns to the inspector; so does Esc.
+    await panel.getByRole("button", { name: "Back" }).click();
+    await expect(subagentPanel(page)).toHaveCount(0);
+    await expect(inspector(page).getByRole("region", { name: "Changes" })).toBeVisible();
+    await chip1.click();
+    await expect(subagentPanel(page)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(subagentPanel(page)).toHaveCount(0);
+    expect(realErrors(errors)).toEqual([]);
+  });
+
+  test("a finished subagent's chip drops off after a moment unless pinned; a pinned one stays until dismissed", async ({ page }) => {
+    const { errors } = await boot(page);
+    await world.turnStarts(page, TASK);
+    await world.subagent(page, TASK, { id: "agent-1", description: "Map the auth module" }, [subStep("s1", "Running ls", "done")]);
+    await world.subagent(page, TASK, { id: "agent-2", description: "Find the callers" }, [subStep("s9", "Searching")]);
+    const strip = runningStrip(page);
+    const chip2 = strip.locator('[data-running-chip="agent-2"]');
+    // The pin shows on hover (and focus).
+    const pin = chip2.getByRole("button", { name: "Pin Find the callers" });
+    await expect(pin).toHaveCSS("opacity", "0");
+    await chip2.hover();
+    await expect(pin).toHaveCSS("opacity", "1");
+    await pin.click();
+    await expect(chip2.getByRole("button", { name: "Unpin Find the callers" })).toHaveAttribute("aria-pressed", "true");
+
+    await world.subagent(page, TASK, { id: "agent-1", description: "Map the auth module", status: "done", output: "Done." }, [subStep("s1", "Running ls", "done")]);
+    await world.subagent(page, TASK, { id: "agent-2", description: "Find the callers", status: "done", output: "Found 3." }, [subStep("s9", "Searching", "done")]);
+    const chip1 = strip.locator('[data-running-chip="agent-1"]');
+    // Both show their end state…
+    await expect(chip1).toHaveAttribute("data-status", "done");
+    await expect(chip1).toContainText("✓");
+    await expect(chip2).toHaveAttribute("data-status", "done");
+    // …then the unpinned one drops off; the pinned one stays.
+    await expect(chip1).toHaveCount(0, { timeout: 8_000 });
+    await expect(chip2).toBeVisible();
+    await expect(chip2).toHaveAttribute("data-pinned", "true");
+    await chip2.getByRole("button", { name: "Dismiss Find the callers" }).click();
+    await expect(strip).toHaveCount(0);
+    expect(realErrors(errors)).toEqual([]);
+  });
+
+  test("a subagent's row opens its panel and its chevron expands inline; “Show in transcript” scrolls the main view to it", async ({ page }) => {
+    const base = Date.parse("2026-11-11T10:00:00.000Z");
+    const filler = (from: number, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        kind: "assistant",
+        id: `fill-${from + i}`,
+        ts: new Date(base + (from + i) * 1000).toISOString(),
+        text: `Working note ${from + i}`,
+        streaming: false,
+      }));
+    const { errors } = await boot(page, { transcripts: { [TASK]: filler(0, 30) } });
+    await world.subagent(
+      page,
+      TASK,
+      { id: "agent-1", description: "Map the auth module", status: "done", output: "The redirect lives in `redirect.ts`.", tokens: 14_117 },
+      [subStep("s1", "Running ls src/auth", "done"), subStep("s2", "Reading src/auth/redirect.ts", "done")],
+    );
+    const row = transcript(page).locator('[data-item-id="agent-1"]');
+    await expect(row).toBeVisible();
+
+    // The row's title opens the panel; it doesn't expand inline.
+    await row.getByRole("button", { name: /Subagent Map the auth module/ }).click();
+    const panel = subagentPanel(page);
+    await expect(panel.getByRole("heading", { name: "Map the auth module" })).toBeVisible();
+    await expect(row.locator("[data-subagent-transcript]")).toHaveCount(0);
+    await expect(row).toHaveAttribute("data-selected", "true");
+    // Done: how long it ran, its steps and tokens (no cost per subagent).
+    await expect(panel.locator("[data-subagent-meta]")).toContainText(/general-purpose\s*·\s*done\s*·\s*\d+(\.\d)?s\s*·\s*2 steps\s*·\s*14.1k tokens/);
+    // Done: its report, collapsible.
+    const report = panel.getByRole("region", { name: "Report" });
+    await expect(report).toContainText("The redirect lives in redirect.ts.");
+    await report.getByRole("button", { name: "Report" }).click();
+    await expect(report.locator("[data-subagent-final-report]")).toHaveCount(0);
+
+    // The chevron still expands it inline, and leaves the panel be.
+    await panel.getByRole("button", { name: "Back" }).click();
+    await row.getByRole("button", { name: /2 steps/ }).click();
+    await expect(row.getByRole("group", { name: "Subagent: Map the auth module" })).toBeVisible();
+    await expect(subagentPanel(page)).toHaveCount(0);
+    // Its row's empty space opens it too.
+    const rowBox = (await row.boundingBox())!;
+    await row.click({ position: { x: rowBox.width - 8, y: 6 } });
+    await expect(subagentPanel(page)).toBeVisible();
+
+    // The transcript goes on; the row scrolls out of view.
+    for (const item of filler(30, 40)) await world.transcript(page, TASK, item);
+    await expect(row).not.toBeInViewport();
+    await panel.getByRole("button", { name: /Show in transcript/ }).click();
+    await expect(row).toBeInViewport();
+    await expect(row).toHaveAttribute("data-flash", "true");
+    await expect(row).not.toHaveAttribute("data-flash", "true", { timeout: 4_000 });
     expect(realErrors(errors)).toEqual([]);
   });
 

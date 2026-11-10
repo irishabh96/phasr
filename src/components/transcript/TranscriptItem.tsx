@@ -1,5 +1,13 @@
 import { ChevronRight, Loader2, Paperclip } from "lucide-react";
-import { createContext, memo, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import type { ToolItem, TranscriptItem } from "@/lib/transcript/contract";
 import {
   COMPACT_TOOLS,
@@ -11,7 +19,7 @@ import {
   splitTitle,
   type InlineDiffLine,
 } from "@/lib/transcript/format";
-import { formatElapsed } from "@/lib/transcript/tree";
+import { formatElapsed, isSubagentRunning, subagentSteps } from "@/lib/transcript/tree";
 import { useNow } from "@/lib/hooks/useNow";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./Markdown";
@@ -42,11 +50,34 @@ export interface TranscriptFocus {
   itemId: string;
   open: ReadonlySet<string>;
   nonce: number;
+  /** Open the item itself too (its output, its group), not just reveal it. */
+  expand: boolean;
 }
 export const TranscriptFocusContext = createContext<TranscriptFocus | null>(null);
 
+/**
+ * What a transcript lets its rows do beyond themselves. With
+ * `openSubagent`, a subagent row (its title, the row) opens the subagent
+ * panel and only its "N steps" chevron expands it inline; without, the
+ * row only expands inline.
+ */
+export interface TranscriptActions {
+  openSubagent?: (callId: string) => void;
+  /** The subagent the panel shows: its row reads as selected. */
+  selectedSubagent?: string | null;
+}
+export const TranscriptActionsContext = createContext<TranscriptActions>({});
+
 /** How deep in subagents a row sits (0 = the main conversation). */
 const DepthContext = createContext(0);
+
+/**
+ * The compact variant for a narrow column (the subagent panel, ~280px):
+ * rows drop the time column, as they do inside a subagent group.
+ */
+export function CompactTranscript({ children }: { children: ReactNode }) {
+  return <DepthContext.Provider value={1}>{children}</DepthContext.Provider>;
+}
 
 /**
  * A-Workspace transcript row: the muted 56px time column, a 14px gap, then
@@ -60,11 +91,25 @@ function Row({
   itemId,
   className,
   children,
+  onClick,
   ...data
-}: { ts: string; kind: string; itemId: string; className?: string; children: ReactNode } & Record<`data-${string}`, string | undefined>) {
+}: {
+  ts: string;
+  kind: string;
+  itemId: string;
+  className?: string | undefined;
+  children: ReactNode;
+  onClick?: ((e: ReactMouseEvent<HTMLDivElement>) => void) | undefined;
+} & Record<`data-${string}`, string | undefined>) {
   const depth = useContext(DepthContext);
   return (
-    <div className={cn("flex gap-[14px]", className)} data-transcript-item={kind} data-item-id={itemId} {...data}>
+    <div
+      className={cn("flex gap-[14px]", className)}
+      data-transcript-item={kind}
+      data-item-id={itemId}
+      onClick={onClick}
+      {...data}
+    >
       {depth === 0 ? (
         <time dateTime={ts} className="w-[56px] shrink-0 select-none tabular-nums text-(--color-text-faint)">
           {formatClock(ts)}
@@ -271,7 +316,7 @@ function useFocusedOpen(id: string, open: (yes: boolean) => void): boolean {
     if (!focus) return;
     if (focus.open.has(id)) open(true);
     if (focus.itemId !== id) return;
-    open(true);
+    if (focus.expand) open(true);
     setFlash(true);
     const t = window.setTimeout(() => setFlash(false), 1600);
     return () => window.clearTimeout(t);
@@ -332,6 +377,7 @@ function BackgroundToolItem({ item }: { item: ToolItem }) {
       kind="tool"
       itemId={item.id}
       className={cn(flash && FLASH)}
+      data-flash={flash ? "true" : undefined}
       data-tool={item.tool}
       data-status={item.status}
       data-background-status={status}
@@ -355,11 +401,16 @@ function BackgroundToolItem({ item }: { item: ToolItem }) {
   );
 }
 
+/** Clicks on these, inside a subagent row, are theirs: they don't open the panel. */
+const OWN_CLICKS = "button, a, input, textarea, [data-subagent-transcript], [data-subagent-report]";
+
 /**
  * A subagent call (Agent / Task): what it was asked, its type and status,
- * a live line of what it's doing and how many steps it took. Expands to
- * its own transcript, indented, drawn by the same renderers. Collapsed by
- * default; parallel subagents are sibling calls.
+ * a live line of what it's doing and how many steps it took. Its title
+ * (or anywhere on the row) opens the subagent panel when the transcript
+ * offers one; the "N steps" chevron expands its own transcript inline,
+ * indented, drawn by the same renderers. Collapsed by default; parallel
+ * subagents are sibling calls.
  */
 function SubagentToolItem({ item, nested }: { item: ToolItem; nested: readonly TranscriptItem[] }) {
   const [open, setOpen] = useState(false);
@@ -367,28 +418,65 @@ function SubagentToolItem({ item, nested }: { item: ToolItem; nested: readonly T
   const flash = useFocusedOpen(item.id, setOpen);
   const depth = useContext(DepthContext);
   const children = useContext(TranscriptChildrenContext);
+  const { openSubagent, selectedSubagent } = useContext(TranscriptActionsContext);
   const info = item.subagent;
   const description = info?.description || splitTitle(item.title || item.tool).object || item.title;
-  const ownCalls = nested.filter((c) => c.kind === "tool").length;
-  const steps = Math.max(info?.steps ?? 0, ownCalls);
-  const running = item.status === "running" || item.backgroundStatus === "running";
+  const steps = subagentSteps(item, nested);
+  const running = isSubagentRunning(item);
   const latest = info?.latest?.trim();
   const groupId = `subagent-${item.id}`;
+  const selected = !!openSubagent && selectedSubagent === item.id;
+  const title = (
+    <>
+      Subagent
+      <span className="text-(--color-text-primary)"> {description}</span>
+      {info?.type ? <span className="text-(--color-text-faint)"> · {info.type}</span> : null}
+      <StatusMark status={item.status} />
+    </>
+  );
+  // The row itself (its latest line, the space around) opens the panel
+  // too; its own controls, a nested group and a text selection don't.
+  const onRowClick = openSubagent
+    ? (e: ReactMouseEvent<HTMLDivElement>) => {
+        const hit = (e.target as Element).closest?.(OWN_CLICKS);
+        if (hit && e.currentTarget.contains(hit)) return;
+        if (window.getSelection()?.toString()) return;
+        e.stopPropagation();
+        openSubagent(item.id);
+      }
+    : undefined;
   return (
     <Row
       ts={item.ts}
       kind="tool"
       itemId={item.id}
-      className={cn(flash && FLASH)}
+      className={cn(
+        openSubagent && "cursor-pointer",
+        selected && "rounded-(--radius-chip) bg-(--color-bg-surface)",
+        flash && FLASH,
+      )}
+      onClick={onRowClick}
       data-tool={item.tool}
       data-status={item.status}
       data-subagent={info?.type ?? "subagent"}
+      data-selected={selected ? "true" : undefined}
+      data-flash={flash ? "true" : undefined}
     >
       <div>
-        Subagent
-        <span className="text-(--color-text-primary)"> {description}</span>
-        {info?.type ? <span className="text-(--color-text-faint)"> · {info.type}</span> : null}
-        <StatusMark status={item.status} />
+        {openSubagent ? (
+          <button
+            type="button"
+            onClick={() => openSubagent(item.id)}
+            aria-current={selected || undefined}
+            title="Open in the inspector"
+            data-subagent-open
+            className="rounded-(--radius-chip) text-left transition-colors duration-(--dur-1) ease-(--ease-out) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+          >
+            {title}
+          </button>
+        ) : (
+          title
+        )}
         {item.output && !running ? (
           <span className="ml-[8px]">
             <Toggle onClick={() => setReportOpen((o) => !o)} expanded={reportOpen}>
@@ -419,7 +507,7 @@ function SubagentToolItem({ item, nested }: { item: ToolItem; nested: readonly T
         </div>
       ) : null}
       {reportOpen && item.output ? (
-        <div className="my-[4px] rounded-(--radius-control) bg-(--color-bg-input) px-[12px] py-[8px] text-(--color-text-secondary)">
+        <div data-subagent-report className="my-[4px] rounded-(--radius-control) bg-(--color-bg-input) px-[12px] py-[8px] text-(--color-text-secondary)">
           <Markdown text={item.output} />
         </div>
       ) : null}
