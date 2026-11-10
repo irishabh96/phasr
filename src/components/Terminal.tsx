@@ -75,6 +75,10 @@ interface CachedMain {
   /** Read at click time by the link layer — kept fresh across remounts
    *  (the surface and its link closures outlive component instances). */
   linkContext: { cwd: string | null; editorId: string | null };
+  /** Built to replay a finished task's log, not attached to a PTY. A task
+   *  that starts again (Retry on a failed card) must drop this view and
+   *  attach to its new agent. */
+  logOnly: boolean;
 }
 
 const mainSurfaceCache = new TerminalSurfaceCache<CachedMain>("agent");
@@ -92,7 +96,6 @@ export function Terminal({
   onExit,
 }: TerminalProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const initialStatusRef = useRef(status);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
   // The cursor and selection wash come from the accent, so an accent change
@@ -110,12 +113,33 @@ export function Terminal({
   // the PTY without recreating the whole terminal.
   const retryStartRef = useRef<(() => void) | null>(null);
   const restartRef = useRef<(() => void) | null>(null);
+  // Bumped to rebuild the surface when a log-only view's task starts again.
+  const [generation, setGeneration] = useState(0);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  // A failed task's session shows its log. If the task is started again
+  // (Retry / Start now) while that view is cached, throw the log view away
+  // and attach to the new agent — otherwise the session keeps showing the
+  // old log until the app restarts.
+  useEffect(() => {
+    if (FINISHED_STATUSES.includes(status)) return;
+    if (!mainSurfaceCache.get(workspaceId)?.logOnly) return;
+    // The mount effect re-runs (after its cleanup detached the old surface)
+    // and disposes the stale log view there.
+    setGeneration((g) => g + 1);
+  }, [status, workspaceId]);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
     let entry = mainSurfaceCache.get(workspaceId);
+    if (entry?.logOnly && !FINISHED_STATUSES.includes(statusRef.current)) {
+      // Started again while away: the cached log view is stale.
+      mainSurfaceCache.dispose(workspaceId);
+      entry = undefined;
+    }
     const isFresh = !entry;
 
     if (!entry) {
@@ -146,6 +170,7 @@ export function Terminal({
         setStatus: null,
         exitStatus: null,
         linkContext: { cwd: null, editorId: null },
+        logOnly: FINISHED_STATUSES.includes(statusRef.current),
       };
       const created = entry;
       surface.installLinks(
@@ -275,7 +300,7 @@ export function Terminal({
     };
 
     if (isFresh) {
-      if (FINISHED_STATUSES.includes(initialStatusRef.current)) {
+      if (entry.logOnly) {
         // Finished workspace — replay its log. Retry re-reads the log.
         retryStartRef.current = () => void loadLog(true);
         restartRef.current = () => void loadLog(true);
@@ -346,7 +371,7 @@ export function Terminal({
       parkSurface(entry!.surface);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workspaceId, generation]);
 
   useEffect(() => {
     const entry = mainSurfaceCache.get(workspaceId);
