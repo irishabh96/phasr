@@ -1,8 +1,7 @@
 import { ShieldAlert } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
-import { Kbd } from "@/components/ui/Kbd";
 import { formatElapsed } from "@/lib/board";
 import { useNow } from "@/lib/hooks/useNow";
 import { approvalKeyAllowed, isOverlayOpen } from "@/lib/keyboardGuards";
@@ -13,8 +12,18 @@ import { cn } from "@/lib/utils";
 type ApprovalAttention = Attention;
 type ApprovalResponse = AttentionResponse;
 
-/** A-Polish 28px buttons in explicit px (1rem is 13px in this app). */
-const btn28 = "h-[28px] px-[10px]";
+/** Compact 26px buttons (the card sits above the composer; keep it short). */
+const btn26 = "h-[26px] px-[10px] text-[12px]";
+
+/** Short verbs for the one-line header; the command follows inline. */
+const KIND_SHORT: Record<string, string> = {
+  shell: "wants to run",
+  edit: "wants to edit",
+  tool: "wants to use",
+  question: "has a question",
+  input: "is waiting for input",
+  trust: "asks to trust this folder",
+};
 
 const KIND_TITLE: Record<string, string> = {
   shell: "wants to run a shell command",
@@ -57,6 +66,9 @@ export function ApprovalCard({
   onChangeDefault: () => void;
 }) {
   const now = useNow(true);
+  // A long command stays on one line until clicked.
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => setExpanded(false), [attention.id]);
   const name = agent ? AGENT_META[agent].label : "The agent";
   const isTrust = (attention.kind as string) === "trust";
 
@@ -84,79 +96,92 @@ export function ApprovalCard({
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [attention.canRespond, attention.id, onRespond, busy]);
 
-  // A-States card under the Polish rules: a warm surface step with a soft
-  // amber ring instead of a border, no header divider, the command on an
-  // inset block (no border), buttons secondary/ghost except Allow.
+  // Compact, full-width (A-States under the Polish rules): two rows — what
+  // the agent wants (with the command inline), then the answers. Warm surface
+  // step with a soft amber ring instead of a border.
+  const where = worktree ? shortPath(worktree) : null;
   return (
     <section
       role="alertdialog"
       aria-label={`${name} ${KIND_TITLE[attention.kind] ?? "needs you"}`}
-      className="mx-[24px] mt-[12px] flex max-w-[640px] flex-col rounded-(--radius-card) bg-[color-mix(in_oklab,var(--color-warning)_6%,var(--color-bg-surface))] shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-warning)_32%,transparent)]"
+      className="mx-[24px] mt-[10px] flex flex-col gap-[8px] rounded-(--radius-card) bg-[color-mix(in_oklab,var(--color-warning)_6%,var(--color-bg-surface))] px-[12px] py-[8px] shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-warning)_32%,transparent)]"
     >
-      <header className="flex items-center gap-[10px] px-[14px] pt-[10px] text-[13px]">
-        <ShieldAlert className="size-[14px] shrink-0 text-(--color-warning)" aria-hidden />
-        <span className="min-w-0 truncate font-medium text-(--color-warning)">
-          {name} {KIND_TITLE[attention.kind] ?? "needs you"}
+      <header className="flex min-w-0 items-center gap-[8px] text-[12.5px]">
+        <ShieldAlert className="size-[13px] shrink-0 text-(--color-warning)" aria-hidden />
+        <span className="shrink-0 font-medium text-(--color-warning)">
+          {name} {attention.detail ? (KIND_SHORT[attention.kind] ?? "needs you") : (KIND_TITLE[attention.kind] ?? "needs you")}
         </span>
-        <span className="flex-1" />
+        {attention.detail ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            title={expanded ? "Collapse" : attention.detail}
+            className={cn(
+              "min-w-0 flex-1 rounded-(--radius-control) bg-(--color-bg-input) px-[8px] py-[3px] text-left font-mono text-[12px] text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)",
+              expanded ? "whitespace-pre-wrap break-all" : "truncate",
+            )}
+          >
+            {attention.detail}
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-(--color-text-secondary)">{attention.title}</span>
+        )}
         <span className="shrink-0 text-[11px] tabular-nums text-(--color-text-muted)">
-          waiting {formatElapsed(attention.since, now)}
+          {formatElapsed(attention.since, now)}
         </span>
       </header>
-      <div className="flex flex-col gap-[8px] px-[14px] pb-[12px] pt-[10px]">
-        {attention.detail ? (
-          <code className="block overflow-x-auto whitespace-pre rounded-(--radius-control) bg-(--color-bg-input) px-[10px] py-[8px] font-mono text-[12px] text-(--color-text-primary)">
-            {attention.detail}
-          </code>
-        ) : (
-          <p className="m-0 text-[12.5px] text-(--color-text-secondary)">{attention.title}</p>
-        )}
-        {worktree || attention.source === "heuristic" ? (
-          <div className="flex flex-wrap gap-x-[14px] gap-y-[4px] text-[11px] text-(--color-text-muted)">
-            {worktree ? (
-              <span>
-                in <span className="font-mono text-(--color-text-secondary)">{worktree.replace(/^\/Users\/[^/]+/, "~")}</span>
-              </span>
-            ) : null}
-            {attention.source === "heuristic" ? (
-              <span>
-                Detected from the terminal output · <Kbd tone="bare">answers press the agent&apos;s own keys</Kbd>
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-        <div className="flex flex-wrap items-center gap-[8px] pt-[4px]">
-          {attention.canRespond ? (
-            <>
-              <Button variant="primary" size="sm" className={cn(btn28, "px-[12px]")} disabled={busy} shortcut="⌘Y" onClick={() => onRespond("allow-once")}>
-                {isTrust ? "Trust folder" : "Allow once"}
-              </Button>
-              {allowForTask && !isTrust ? (
-                <Button variant="secondary" size="sm" className={btn28} disabled={busy} onClick={() => onRespond("allow-task")}>
-                  Allow for this task
-                </Button>
-              ) : null}
-              <Button variant="danger" size="sm" className={btn28} disabled={busy} shortcut="⌘⌫" onClick={() => onRespond("deny")}>
-                {isTrust ? "Exit agent" : "Deny"}
-              </Button>
-            </>
-          ) : (
-            <Button variant="secondary" size="sm" className={btn28} onClick={onOpenTerminal}>
-              Answer in the terminal
+      <div className="flex min-w-0 items-center gap-[6px]">
+        {attention.canRespond ? (
+          <>
+            <Button variant="primary" size="sm" className={btn26} disabled={busy} shortcut="⌘Y" onClick={() => onRespond("allow-once")}>
+              {isTrust ? "Trust folder" : "Allow once"}
             </Button>
-          )}
-          <span className="flex-1" />
-          {isTrust ? null : (
-            <button
-              type="button"
-              onClick={onChangeDefault}
-              className="rounded-(--radius-chip) text-[11px] text-(--color-text-muted) transition-colors duration-(--dur-1) ease-(--ease-out) hover:text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
-            >
-              Change default…
-            </button>
-          )}
-        </div>
+            {allowForTask && !isTrust ? (
+              <Button variant="secondary" size="sm" className={btn26} disabled={busy} onClick={() => onRespond("allow-task")}>
+                Allow for this task
+              </Button>
+            ) : null}
+            <Button variant="danger" size="sm" className={btn26} disabled={busy} shortcut="⌘⌫" onClick={() => onRespond("deny")}>
+              {isTrust ? "Exit agent" : "Deny"}
+            </Button>
+          </>
+        ) : (
+          <Button variant="secondary" size="sm" className={btn26} onClick={onOpenTerminal}>
+            Answer in the terminal
+          </Button>
+        )}
+        <span className="min-w-0 flex-1" />
+        {where || attention.source === "heuristic" ? (
+          <span
+            className="min-w-0 truncate text-[11px] text-(--color-text-muted)"
+            title={attention.source === "heuristic" ? "Detected from the terminal output; answers press the agent's own keys" : worktree ?? undefined}
+          >
+            {where ? (
+              <>
+                in <span className="font-mono">{where}</span>
+              </>
+            ) : null}
+            {attention.source === "heuristic" ? (where ? " · from terminal" : "from terminal") : null}
+          </span>
+        ) : null}
+        {isTrust ? null : (
+          <button
+            type="button"
+            onClick={onChangeDefault}
+            className="shrink-0 rounded-(--radius-chip) text-[11px] text-(--color-text-muted) transition-colors duration-(--dur-1) ease-(--ease-out) hover:text-(--color-text-secondary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+          >
+            Change default…
+          </button>
+        )}
       </div>
     </section>
   );
+}
+
+/** `~/.phasr/worktrees/9ffee547…` — home folded, a long id shortened. */
+function shortPath(path: string): string {
+  return path
+    .replace(/^\/Users\/[^/]+/, "~")
+    .replace(/([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i, "$1…");
 }
