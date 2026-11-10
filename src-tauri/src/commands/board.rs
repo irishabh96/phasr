@@ -248,8 +248,12 @@ pub async fn set_task_queued(
     Ok(updated)
 }
 
-/// "Start now" for a draft or queued task, whatever it waits on. A task
-/// that already started is returned as is (never started twice).
+/// "Start now" for a draft or queued task, whatever it waits on. Returns
+/// as soon as the task is claimed: its worktree setup and agent spawn run
+/// in the background (`TaskOrchestrator::start_now`), so the returned row
+/// is usually still `pending` — the board shows it Running, its terminal
+/// says it is being set up, and a setup that fails marks it `failed`. A
+/// task that already started (or is being set up) is returned as is.
 #[tauri::command]
 pub async fn start_queued_task(
     id: String,
@@ -260,10 +264,16 @@ pub async fn start_queued_task(
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<StartedTask, OrchestratorError> {
     let current = require_user(&session)?;
-    let started = orchestrator
-        .launch(&id, Some(&current.user_id), rows, cols)
+    let start = orchestrator
+        .start_now(&id, Some(&current.user_id), rows, cols)
         .await?;
     sync_state.request_sync();
+    let started = start.started.clone();
+    tauri::async_runtime::spawn(super::orchestrator::finish_start(
+        start,
+        None,
+        sync_state.inner().clone(),
+    ));
     Ok(started)
 }
 
