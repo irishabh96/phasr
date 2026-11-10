@@ -565,6 +565,53 @@ impl TaskSignalState {
         attention.keys.allow_task = found.keys.allow_task.clone();
     }
 
+    // ── stream (transcript view) ────────────────────────────────────────
+    // A headless Claude reports its turns, tools and permission requests
+    // exactly, so these transitions are direct: no hook ordering to
+    // reconcile, no screen to read.
+
+    /// A turn is running (`activity`: what it's doing now). A raised
+    /// permission card stays up: only its answer or cancel moves on.
+    pub fn on_stream_working(&mut self, activity: Option<String>, now: DateTime<Utc>) {
+        if self.kind != AgentStateKind::NeedsYou {
+            self.set_kind(AgentStateKind::Working, now);
+        }
+        match activity {
+            Some(line) => self.last_activity = Some(line),
+            None if self.last_activity.is_none() => self.last_activity = Some("Thinking".into()),
+            None => {}
+        }
+    }
+
+    /// The CLI asked the host for permission: the card, exactly as asked.
+    pub fn raise_stream_attention(&mut self, attention: Attention, now: DateTime<Utc>) {
+        self.raise(attention, None, now);
+    }
+
+    /// The CLI withdrew the request (the turn was interrupted).
+    pub fn on_stream_attention_cleared(&mut self, attention_id: &str, now: DateTime<Utc>) {
+        if self.attention.as_ref().is_some_and(|a| a.id == attention_id) {
+            self.set_kind(AgentStateKind::Working, now);
+        }
+    }
+
+    /// A turn's `result`. `idle` = no queued message starts another turn.
+    pub fn on_stream_turn_end(
+        &mut self,
+        idle: bool,
+        last_text: Option<String>,
+        now: DateTime<Utc>,
+    ) {
+        if idle {
+            self.set_kind(AgentStateKind::Idle, now);
+            self.last_activity = None;
+        }
+        self.last_turn_ended_at = Some(now);
+        if let Some(text) = last_text {
+            self.last_message = Some((text, now));
+        }
+    }
+
     pub fn on_exit(&mut self, now: DateTime<Utc>) {
         self.pending_tool = None;
         self.hooks_seen = false;
@@ -1336,5 +1383,41 @@ mod tests {
         assert!(v["lastTurnEndedAt"].is_null());
         let r: AttentionResponse = serde_json::from_str(r#""allow-task""#).unwrap();
         assert_eq!(r, AttentionResponse::AllowTask);
+    }
+
+    /// Stream-driven: working on a turn, a card that only its own answer or
+    /// cancel takes down, idle on the result unless another turn is queued.
+    #[test]
+    fn stream_transitions() {
+        let now = Utc::now();
+        let mut s = state(Agent::Claude);
+        s.on_stream_turn_end(true, None, now);
+        assert_eq!((s.kind, s.last_activity.as_deref()), (AgentStateKind::Idle, None));
+
+        s.on_stream_working(None, now);
+        assert_eq!((s.kind, s.last_activity.as_deref()), (AgentStateKind::Working, Some("Thinking")));
+        s.on_stream_working(Some("Running pnpm test".into()), now);
+        assert_eq!(s.last_activity.as_deref(), Some("Running pnpm test"));
+
+        let card = tool_attention(Agent::Claude, "Bash", &json!({"command": "pnpm test"}), "/work", now);
+        let id = card.id.clone();
+        s.raise_stream_attention(card, now);
+        assert_eq!(s.kind, AgentStateKind::NeedsYou);
+        // Another tool starting (a parallel call) doesn't take the card down.
+        s.on_stream_working(Some("Reading a.ts".into()), now);
+        assert_eq!(s.kind, AgentStateKind::NeedsYou);
+        s.on_stream_attention_cleared("some-other-card", now);
+        assert_eq!(s.kind, AgentStateKind::NeedsYou);
+        s.on_stream_attention_cleared(&id, now);
+        assert_eq!((s.kind, s.attention.is_none()), (AgentStateKind::Working, true));
+
+        // A queued message keeps it working past this turn's end.
+        s.on_stream_turn_end(false, Some("first".into()), now);
+        assert_eq!(s.kind, AgentStateKind::Working);
+        assert_eq!(s.last_turn_ended_at, Some(now));
+        assert_eq!(s.last_message.as_ref().map(|m| m.0.as_str()), Some("first"));
+        s.on_stream_turn_end(true, Some("second".into()), now);
+        assert_eq!(s.kind, AgentStateKind::Idle);
+        assert_eq!(s.last_message.as_ref().map(|m| m.0.as_str()), Some("second"));
     }
 }
