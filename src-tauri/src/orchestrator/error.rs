@@ -4,6 +4,7 @@
 use thiserror::Error;
 
 use crate::agent_signals::AgentSignalError;
+use crate::agent_stream::StreamError;
 use crate::auth::AuthError;
 use crate::git::GitError;
 use crate::pty::handle::PtyError;
@@ -21,6 +22,8 @@ pub enum OrchestratorError {
     Auth(#[from] AuthError),
     #[error(transparent)]
     Signals(#[from] AgentSignalError),
+    #[error(transparent)]
+    Stream(#[from] StreamError),
 
     #[error("repository has no local path on this machine; pick or clone one first")]
     RepositoryHasNoLocalPath,
@@ -65,6 +68,22 @@ pub enum OrchestratorError {
     /// A base branch git would parse as an option (or that can't be one).
     #[error("{0}")]
     InvalidBaseBranch(String),
+    /// `open_task_terminal` on a task shown as a transcript: its agent runs
+    /// headless, with no terminal to open. The frontend matches this string.
+    #[error("this task is in the transcript view; switch it to the terminal view first")]
+    TranscriptView,
+    /// `set_agent_view` while Claude is mid-turn (or waiting on an
+    /// approval): switching restarts it and would cut the turn off. The
+    /// frontend matches this string (and shows it as a toast).
+    #[error("Claude is in the middle of a turn; stop it or wait for it to finish, then switch views")]
+    TurnRunning,
+    /// `set_agent_view(…, "transcript")` for a task that can't have one.
+    #[error("only Claude tasks in their own worktree have a transcript view")]
+    NoTranscriptView,
+    /// `send_message_to_task(…, submit: false)` in the transcript view: there
+    /// is no half-typed input to stage text in.
+    #[error("in the transcript view a message is always sent whole; send it with submit")]
+    MessageNotSubmitted,
 }
 
 impl serde::Serialize for OrchestratorError {

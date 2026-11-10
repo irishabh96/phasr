@@ -840,7 +840,7 @@ const PASTE_END: &str = "\x1b[201~";
 /// Whole paste markers are removed first (to a fixpoint) purely so that a
 /// marker in the text vanishes instead of leaving a `[201~` stub; the
 /// control strip is what makes it safe.
-fn sanitize_message(text: &str) -> String {
+pub(crate) fn sanitize_message(text: &str) -> String {
     let mut text = text.replace("\r\n", "\n").replace('\r', "\n");
     loop {
         let next = text.replace(PASTE_END, "").replace(PASTE_START, "");

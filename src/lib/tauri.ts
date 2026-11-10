@@ -5,6 +5,7 @@ import type {
   AgentDetection,
   AgentFileEdit,
   AgentSummary,
+  AgentView,
   ApiKeyName,
   ApiKeyStatus,
   CleanupAfterMerge,
@@ -57,6 +58,7 @@ import type {
   TaskAgentState,
   TaskCard,
   TaskUsage,
+  TranscriptItem,
   UnconfirmedSetting,
   UserSettings,
   Workspace,
@@ -633,7 +635,22 @@ export const tauri = {
   readTaskLog: (taskId: string) => invoke<string>("read_task_log", { taskId }),
   resizeTask: (taskId: string, rows: number, cols: number) =>
     invoke<void>("resize_task", { taskId, rows, cols }),
+  /**
+   * Interrupt the current turn without ending the session (transcript view:
+   * the CLI's own interrupt; a no-op between turns. Terminal: Ctrl-C).
+   */
   interruptTask: (taskId: string) => invoke<void>("interrupt_task", { taskId }),
+  /** A transcript-view task's transcript, oldest first. */
+  getTranscript: (taskId: string) =>
+    invoke<TranscriptItem[]>("get_transcript", { taskId }),
+  /**
+   * Show the task as a transcript or a terminal on this machine; a running
+   * agent restarts in the other mode on the same Claude session. Rejects
+   * with "Claude is in the middle of a turn; stop it or wait for it to
+   * finish, then switch views" while a turn runs.
+   */
+  setAgentView: (taskId: string, view: AgentView) =>
+    invoke<Workspace>("set_agent_view", { taskId, view }),
   listTaskActivity: () => invoke<TaskActivity[]>("list_task_activity"),
 
   // ── agent signals (M6) ───────────────────────────────────────────────

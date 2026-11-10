@@ -50,6 +50,13 @@ export const NOTIFICATION_CREATED_EVENT = "phasr://notification-created";
 export const ATTENTION_ACTIVATED_EVENT = "phasr://attention-activated";
 
 /**
+ * A transcript-view task's transcript changed. Payload: `TranscriptEvent`
+ * (`{ taskId, op: "append" | "update", item }`), always the FULL item;
+ * streaming text updates are coalesced to ≤ 30 Hz per task.
+ */
+export const TRANSCRIPT_EVENT = "phasr://transcript";
+
+/**
  * Files changed in a watched worktree (debounced; `.git`, `node_modules`,
  * `target`, `dist` filtered). Emitted by `src-tauri/src/fswatch.rs` while a
  * workspace is watched (`watch_workspace`). Payload:

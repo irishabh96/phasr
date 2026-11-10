@@ -1,4 +1,5 @@
 mod agent_signals;
+mod agent_stream;
 mod auth;
 mod auth_deeplink;
 mod checks;
@@ -219,6 +220,8 @@ pub fn run() {
             commands::orchestrator::read_task_log,
             commands::orchestrator::resize_task,
             commands::orchestrator::interrupt_task,
+            commands::orchestrator::get_transcript,
+            commands::orchestrator::set_agent_view,
             commands::agent_signals::list_agent_states,
             commands::agent_signals::respond_to_attention,
             commands::agent_signals::notify_attention,
@@ -314,6 +317,13 @@ pub fn run() {
                 if let Some(runtime) = app_handle.try_state::<Arc<TaskRuntime>>() {
                     runtime.terminate_all_blocking(std::time::Duration::from_millis(500));
                 }
+                // Headless Claude processes (transcript view) run in their
+                // own process groups, outside any PTY.
+                if let Some(orchestrator) = app_handle.try_state::<TaskOrchestrator>() {
+                    orchestrator
+                        .streams()
+                        .terminate_all_blocking(std::time::Duration::from_millis(500));
+                }
                 // Checks run in their own process groups, outside any PTY.
                 if let Some(checks) = app_handle.try_state::<checks::CheckService>() {
                     checks.terminate_all_blocking(std::time::Duration::from_millis(500));
@@ -406,6 +416,7 @@ async fn initialize_database_state(
         .with_trust(app_meta.clone()),
     );
     commands::events::spawn_status_bridge(Arc::new(orchestrator.clone()), handle.clone());
+    commands::events::spawn_transcript_bridge(orchestrator.streams(), handle.clone());
     let attention_notifications = commands::events::start_attention_notifications(
         handle,
         orchestrator.clone(),
