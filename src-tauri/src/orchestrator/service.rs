@@ -5459,13 +5459,19 @@ done
             "-p --input-format stream-json --output-format stream-json",
             "--include-partial-messages --permission-prompt-tool stdio",
             "--disallowed-tools AskUserQuestion",
-            "--thinking-display summarized --forward-subagent-text",
             "--session-id ",
             "--settings ",
             "--permission-mode acceptEdits",
         ] {
             assert!(args.contains(flag), "{flag} missing from {args}");
         }
+        // The rich flags follow the (cached) probe of the real `claude` on
+        // PATH, which may be missing or slow on this machine.
+        assert_eq!(
+            args.contains("--thinking-display summarized --forward-subagent-text"),
+            protocol::supports_rich_flags().await,
+            "{args}"
+        );
         let sid = workspaces.get_agent_session_id(&id).await.unwrap().unwrap();
         assert!(args.contains(&format!("--session-id {sid}")), "{args}");
         assert_eq!(
