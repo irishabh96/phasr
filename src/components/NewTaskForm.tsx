@@ -35,7 +35,6 @@ import {
 import { reportP0Error } from "@/lib/sentry";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { tauri } from "@/lib/tauri";
-import { showToast } from "@/lib/toast";
 import type { Agent, AgentDetection, PermissionMode, RunIn, Workspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -208,20 +207,11 @@ export function NewTaskForm({
         ...(mode !== null ? { permissionMode: mode } : {}),
         ...(!notify ? { notifyOnAttention: false } : {}),
         ...(runIn === "in-place" ? { runIn } : {}),
+        // Started by the backend once the agent is up: `start_task` returns
+        // before the worktree exists. A failure there is an inbox entry
+        // (+ toast), never a failed start.
+        ...(pickedRun ? { runCommandId: pickedRun.id } : {}),
       });
-      // The task is up; its run command is a side order. A failure there
-      // is a toast, never a failed start (the task already exists).
-      if (pickedRun) {
-        try {
-          await tauri.startRunCommandForTask(pickedRun.id, started.workspace.id);
-        } catch (err) {
-          showToast({
-            intent: "error",
-            title: `Couldn't start ${pickedRun.name}`,
-            message: humanizeError(err),
-          });
-        }
-      }
       afterCreate(started.workspace);
     } catch (err) {
       reportP0Error(kind === "draft" ? "Save task draft failed" : "Start task failed", err, {

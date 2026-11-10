@@ -247,6 +247,15 @@ export function Terminal({
           entry!.setStatus?.({ state: "not-started" });
           return;
         }
+        if (message.includes("already finished")) {
+          // Finished since this terminal mounted — typically a setup that
+          // failed while we polled above. Its log says why (the backend
+          // writes the reason there); show it like any finished task.
+          retryStartRef.current = () => void loadLog(true);
+          restartRef.current = () => void loadLog(true);
+          void loadLog();
+          return;
+        }
         entry!.setStatus?.({ state: "failed", error: message });
       }
     };

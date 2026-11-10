@@ -136,6 +136,28 @@ pub struct StartedTask {
     pub workspace: Workspace,
 }
 
+/// What `start_task` hands back: the row as it is when the call returns,
+/// and the setup + agent spawn it left running in the background (`None`
+/// when there's nothing to wait for: an in-place start, which is already
+/// running, or a duplicate that returned another start's row).
+pub struct TaskStart {
+    pub started: StartedTask,
+    pub launch: Option<tokio::task::JoinHandle<Result<StartedTask, OrchestratorError>>>,
+}
+
+impl TaskStart {
+    /// The task once its background launch has finished: running, or the
+    /// error that marked it `failed`. Without a launch, the row as returned.
+    pub async fn launched(self) -> Result<StartedTask, OrchestratorError> {
+        match self.launch {
+            Some(handle) => handle.await.unwrap_or_else(|err| {
+                Err(git::GitError::CommandFailed(format!("task setup stopped: {err}")).into())
+            }),
+            None => Ok(self.started),
+        }
+    }
+}
+
 pub struct TaskTerminalSubscription {
     pub task_id: String,
     pub started_at: DateTime<Utc>,
@@ -167,12 +189,13 @@ pub struct TaskOrchestrator {
     task_config: Option<TaskConfig>,
     /// Tasks `launch` / `start_task` are setting up right now (fetch,
     /// worktree, copy, after-create hook — up to minutes) before their
-    /// agent spawns. Such a row is `pending` with a branch; without this
-    /// set it looked like a draft, and "Start now" + opening its terminal
-    /// spawned the agent while the hook still ran, then the launch's own
-    /// spawn failed and marked the live agent exited. In memory on
-    /// purpose: no new `WorkspaceStatus` (older clients can't parse one),
-    /// and an app quit mid-setup leaves nothing stale behind.
+    /// agent spawns. Such a row is `pending`, with no branch until its
+    /// worktree is cut; without this set it looked like a draft, and "Start
+    /// now" + opening its terminal spawned the agent while the hook still
+    /// ran, then the launch's own spawn failed and marked the live agent
+    /// exited. In memory on purpose: no new `WorkspaceStatus` (older
+    /// clients can't parse one), and an app quit mid-setup leaves nothing
+    /// stale behind.
     starting: Arc<parking_lot::Mutex<HashSet<String>>>,
     /// Per-task lock around "is a PTY live? → spawn one", so concurrent
     /// opens of one task attach to a single agent instead of racing two
@@ -552,21 +575,34 @@ impl TaskOrchestrator {
     /// diffs against; `start_point` is where it forks — `origin/<base>`
     /// after a fresh fetch, else `base` itself. Caller holds the repo lock
     /// (`git worktree add` races on the shared `.git`).
-    fn cut_worktree(
+    ///
+    /// On the blocking pool: on a large repository `git worktree add` is a
+    /// full checkout (~35s on servo), and run on a Tokio worker it stalled
+    /// every other IPC call sharing that worker.
+    async fn cut_worktree(
         repository_path: &Path,
         workspace: &mut Workspace,
         base: &str,
         start_point: &str,
         setup: &TaskSetup,
     ) -> Result<PathBuf, OrchestratorError> {
-        let branch = setup.branch_for(
-            repository_path,
-            &workspace.name,
-            &workspace.id,
-            workspace.agent,
-        );
         let worktree_path = setup.worktree_base().join(&workspace.id);
-        git::create_worktree(repository_path, &worktree_path, &branch, start_point)?;
+        let (setup, repo, name, id, agent, worktree, start_point) = (
+            setup.clone(),
+            repository_path.to_path_buf(),
+            workspace.name.clone(),
+            workspace.id.clone(),
+            workspace.agent,
+            worktree_path.clone(),
+            start_point.to_string(),
+        );
+        let branch = blocking_git(move || {
+            // `unique_branch_name` shells out too.
+            let branch = setup.branch_for(&repo, &name, &id, agent);
+            git::create_worktree(&repo, &worktree, &branch, &start_point)?;
+            Ok(branch)
+        })
+        .await?;
         workspace.branch = Some(branch);
         workspace.worktree_path = Some(worktree_path.to_string_lossy().into_owned());
         workspace.base_branch = Some(base.to_string());
@@ -624,98 +660,87 @@ impl TaskOrchestrator {
         log.flush(&self.runtime.log_dir, task_id);
     }
 
-    /// Create a task row, build its worktree, spawn the PTY, and
-    /// transition `pending → running`. Returns the row id once the
-    /// runtime has accepted the spawn.
+    /// Create a task row and return it at once; its setup (fetch, worktree,
+    /// copy, after-create hook) and the agent spawn run in the background
+    /// (`TaskStart::launch`), exactly as `launch` does for a draft.
     ///
-    /// The same two halves as `create_row` + `launch`, fused so the
-    /// duplicate check, the worktree and the insert are one step under the
-    /// repo lock — and so a failed worktree never leaves a row behind.
+    /// On a large repository that setup takes tens of seconds (a full
+    /// checkout) to minutes (the hook); done inside the IPC call it left the
+    /// New task dialog on "Starting…" with no feedback. Now the row exists
+    /// immediately, claimed as starting: the board shows it Running with
+    /// "Setting up the worktree…", and its terminal says it is being set up
+    /// until the agent spawns. A setup that fails marks the row `failed`
+    /// with the reason in its log (`fail_start`) — a failed start is a
+    /// visible, closable task, not a vanished one.
+    ///
+    /// What can be known up front stays a synchronous error: the
+    /// repository, the base branch name.
     pub async fn start_task(
         &self,
         request: StartTaskRequest,
-    ) -> Result<StartedTask, OrchestratorError> {
+    ) -> Result<TaskStart, OrchestratorError> {
         let (repository, repository_path) = self
             .task_repository(&request.repository_id, request.user_id.as_deref())
             .await?;
 
         if request.run_in == RunIn::InPlace {
-            return self
+            let started = self
                 .start_in_place(request, &repository, repository_path)
-                .await;
+                .await?;
+            return Ok(TaskStart {
+                started,
+                launch: None,
+            });
         }
 
         let setup = self.setup_for(&request.repository_id).await;
         let base = setup.base_branch(request.base_branch.as_deref(), &repository.default_branch);
         validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
-        let mut log = SetupLog::default();
-        let start_point = self
-            .start_point(&repository_path, &base, &setup, &mut log)
-            .await;
 
-        // Serialize git ops against the shared `.git` for this repo.
-        // `git worktree add` writes to `.git/worktrees/` and `.git/refs/`
-        // and races spectacularly with other adds on the same repo.
-        //
-        // The lock is taken *before* the duplicate check (not just around
-        // `git worktree add`) so the whole check → worktree-add → row-insert
-        // is atomic per repo. That's what makes start_task idempotent (task
-        // #12, the durable server-side twin of the D1 client re-entrancy
-        // guard): a rapid duplicate / replayed IPC / second window blocks
-        // here, then finds the row this call inserted and returns it —
-        // instead of minting a SECOND task_id/branch/worktree/agent.
+        // The lock is taken *before* the duplicate check so check → claim →
+        // row-insert is atomic per repo. That's what makes start_task
+        // idempotent (task #12, the durable server-side twin of the D1
+        // client re-entrancy guard): a rapid duplicate / replayed IPC /
+        // second window blocks here, then finds the row this call inserted
+        // and returns it — instead of minting a SECOND task_id/branch/
+        // worktree/agent.
         let lock = self.repo_locks.for_repository(&request.repository_id);
         let guard = lock.lock().await;
 
-        // Idempotency guard: return the existing ACTIVE (pending/running)
-        // task for this `(repository_id, name)` rather than creating a
-        // duplicate. Bounded to *active, launched* tasks so a deliberate
-        // re-run after the first has stopped/completed/been deleted still
-        // starts fresh, and a same-named draft doesn't swallow the start.
-        // Owner-scoped when we have a user_id (production); the unscoped
-        // variant covers the sessionless test path.
-        let existing = match request.user_id.as_deref() {
-            Some(user_id) => {
-                self.workspaces
-                    .find_active_by_name_for_user(&request.repository_id, &request.name, user_id)
-                    .await?
-            }
-            None => {
-                self.workspaces
-                    .find_active_by_name(&request.repository_id, &request.name)
-                    .await?
-            }
-        };
-        if let Some(existing) = existing {
-            return Ok(StartedTask {
-                task_id: existing.id.clone(),
-                workspace: existing,
+        if let Some(existing) = self
+            .find_active_start(&request.repository_id, &request.name, request.user_id.as_deref())
+            .await?
+        {
+            return Ok(TaskStart {
+                started: StartedTask {
+                    task_id: existing.id.clone(),
+                    workspace: existing,
+                },
+                launch: None,
             });
         }
 
-        let mut workspace = Self::new_task_row(TaskRow {
+        let workspace = Self::new_task_row(TaskRow {
             repository_id: request.repository_id.clone(),
             agent: request.agent,
             command: request.command,
             name: request.name,
             prompt: request.prompt,
-            base_branch: None,
+            // Resolved now (the repository's rule or default), so the
+            // background launch cuts from what was asked for.
+            base_branch: Some(base),
             permission_mode: request.permission_mode,
             notify_on_attention: request.notify_on_attention,
             queued: false,
             depends_on: None,
         });
-        // Claimed before the row exists: from the insert until the agent
-        // spawns (the hook can take minutes) the row is `pending` with a
-        // branch, and must not be startable a second time.
-        let starting = self.begin_starting(&workspace.id, &workspace.repository_id);
-        let worktree = Self::cut_worktree(
-            &repository_path,
-            &mut workspace,
-            &base,
-            &start_point,
-            &setup,
-        )?;
+        // Claimed before the row exists and held until the agent spawns or
+        // the start fails: the row is `pending` without a branch until its
+        // worktree is cut, and unclaimed it would read as a Draft ("Start
+        // now") and `open_terminal` would say it hasn't started.
+        let starting = self
+            .begin_starting(&workspace.id, &workspace.repository_id)
+            .ok_or(OrchestratorError::Starting)?;
 
         // Stamp the owner so cloud sync picks the row up. Without a
         // user_id the workspace stays local-only forever.
@@ -725,19 +750,120 @@ impl TaskOrchestrator {
         }
         self.trust_mode_here(&workspace.id, workspace.permission_mode)
             .await;
-
-        // Release the per-repo lock before the PTY spawn + status update:
-        // those touch only this task's own row/process, not the shared
-        // `.git`, so there's no reason to hold up other repo tasks for them.
         drop(guard);
 
-        self.prepare_worktree(&workspace.id, &repository_path, &worktree, &setup, log)
+        // The board and sidebar pick the row up now, not when it runs.
+        self.broadcast_status(TaskStatusEvent {
+            task_id: workspace.id.clone(),
+            repository_id: workspace.repository_id.clone(),
+            status: workspace.status,
+            exit_code: None,
+        });
+
+        let this = self.clone();
+        let task_id = workspace.id.clone();
+        let (user_id, rows, cols) = (request.user_id, request.rows, request.cols);
+        let launch = tokio::spawn(async move {
+            let launched = this
+                .launch_claimed(&task_id, user_id.as_deref(), rows, cols, &starting)
+                .await;
+            if let Err(err) = &launched {
+                eprintln!("[launch] task {task_id} failed to start: {err}");
+                // Still claimed: the row never reads as a Draft in between.
+                this.fail_start(&task_id, err).await;
+            }
+            drop(starting);
+            launched
+        });
+        Ok(TaskStart {
+            started: StartedTask {
+                task_id: workspace.id.clone(),
+                workspace,
+            },
+            launch: Some(launch),
+        })
+    }
+
+    /// The ACTIVE start of `(repository_id, name)`, if any: a launched
+    /// pending/running row, or one still being set up (no branch yet, so
+    /// the store can't tell it from a draft — `starting` can). Bounded to
+    /// active, launched tasks so a deliberate re-run after the first has
+    /// stopped/completed/been deleted still starts fresh, and a same-named
+    /// draft doesn't swallow the start. Owner-scoped when there's a user
+    /// (production); unscoped only on the sessionless test path.
+    async fn find_active_start(
+        &self,
+        repository_id: &str,
+        name: &str,
+        user_id: Option<&str>,
+    ) -> Result<Option<Workspace>, OrchestratorError> {
+        let launched = match user_id {
+            Some(user_id) => {
+                self.workspaces
+                    .find_active_by_name_for_user(repository_id, name, user_id)
+                    .await?
+            }
+            None => self.workspaces.find_active_by_name(repository_id, name).await?,
+        };
+        if launched.is_some() {
+            return Ok(launched);
+        }
+        let ids: Vec<String> = self.starting.lock().iter().cloned().collect();
+        for id in ids {
+            let row = match self.get_task(&id, user_id).await {
+                Ok(row) => row,
+                Err(OrchestratorError::Store(crate::store::StoreError::NotFound)) => continue,
+                Err(err) => return Err(err),
+            };
+            if row.repository_id == repository_id
+                && row.name == name
+                && row.workspace_kind == WorkspaceKind::Agent
+                && row.status == WorkspaceStatus::Pending
+            {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A background start (`start_task`) failed — fetch, worktree, spawn:
+    /// the row becomes `failed` with the reason in its log (the session's
+    /// log view shows it), and the status event raises the "task failed"
+    /// notification. A row that moved on meanwhile — closed, archived,
+    /// deleted, or running after all — is left alone.
+    async fn fail_start(&self, task_id: &str, err: &OrchestratorError) {
+        let Ok(current) = self.workspaces.get(task_id).await else {
+            return;
+        };
+        if current.status != WorkspaceStatus::Pending
+            || current.outcome.is_some()
+            || self.runtime.get(task_id).is_some()
+        {
+            return;
+        }
+        let mut log = SetupLog::default();
+        log.push(format!("phasr: couldn't start this task: {err}"));
+        log.flush(&self.runtime.log_dir, task_id);
+        let updated = self
+            .workspaces
+            .update(
+                task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Failed),
+                    finished_at: Some(Some(Utc::now())),
+                    ..Default::default()
+                },
+            )
             .await;
-        let started = self
-            .go_running(&workspace.id, request.rows, request.cols)
-            .await;
-        drop(starting);
-        started
+        match updated {
+            Ok(updated) => self.broadcast_status(TaskStatusEvent {
+                task_id: task_id.to_string(),
+                repository_id: updated.repository_id,
+                status: WorkspaceStatus::Failed,
+                exit_code: None,
+            }),
+            Err(err) => eprintln!("failed to mark task {task_id} failed: {err}"),
+        }
     }
 
     fn new_task_row(row: TaskRow) -> Workspace {
@@ -878,7 +1004,9 @@ impl TaskOrchestrator {
     }
 
     /// Start a saved (draft or queued) task: cut its worktree from its base,
-    /// then spawn exactly as `start_task` does.
+    /// then spawn exactly as `start_task` does — but inline: the queue
+    /// scheduler needs the outcome (its retry/backoff runs on errors), and
+    /// a failure leaves the task a draft / queued rather than `failed`.
     ///
     /// Idempotent under the repo lock: the row is re-read inside it, and a
     /// task that has already launched (its branch exists) is returned as
@@ -891,18 +1019,40 @@ impl TaskOrchestrator {
         rows: Option<u16>,
         cols: Option<u16>,
     ) -> Result<StartedTask, OrchestratorError> {
-        let mut workspace = self.get_task(task_id, user_id).await?;
+        let workspace = self.get_task(task_id, user_id).await?;
         // The whole launch — fetch, worktree, hook, spawn — is one claim:
-        // a second "Start now" (or a queue pass) while it runs returns the
-        // row instead of starting the task again.
+        // a second "Start now" (or a queue pass, or a `start_task` still
+        // setting it up) while it runs returns the row instead of starting
+        // the task again.
         let Some(starting) = self.begin_starting(task_id, &workspace.repository_id) else {
             return Ok(StartedTask {
                 task_id: workspace.id.clone(),
                 workspace,
             });
         };
+        let started = self
+            .launch_claimed(task_id, user_id, rows, cols, &starting)
+            .await;
+        drop(starting);
+        started
+    }
+
+    /// `launch`'s work, for a task the caller has claimed (`begin_starting`;
+    /// `_claim` is the proof, and the caller decides when it ends): fetch,
+    /// cut + record the worktree under the repo lock, copy + hook, spawn.
+    /// Shared by `launch` (inline) and `start_task` (in the background).
+    async fn launch_claimed(
+        &self,
+        task_id: &str,
+        user_id: Option<&str>,
+        rows: Option<u16>,
+        cols: Option<u16>,
+        _claim: &StartingGuard,
+    ) -> Result<StartedTask, OrchestratorError> {
+        let mut workspace = self.get_task(task_id, user_id).await?;
         if is_failed_before_launch(&workspace) {
-            // The queue gave up on it (`QueueScheduler`): "Start now" retries.
+            // The queue gave up on it (`QueueScheduler`), or its background
+            // start failed before the worktree: "Start now" retries.
             workspace = self
                 .workspaces
                 .update(
@@ -917,9 +1067,7 @@ impl TaskOrchestrator {
                 .await?;
         }
         if !workspace.is_unlaunched() {
-            let started = self.finish_interrupted_start(workspace, rows, cols).await;
-            drop(starting);
-            return started;
+            return self.finish_interrupted_start(workspace, rows, cols).await;
         }
         let (repository, repository_path) = self
             .task_repository(&workspace.repository_id, user_id)
@@ -929,10 +1077,15 @@ impl TaskOrchestrator {
         let base = setup.base_branch(workspace.base_branch.as_deref(), &repository.default_branch);
         validate_branch_name(&base).map_err(OrchestratorError::InvalidBaseBranch)?;
         let mut log = SetupLog::default();
+        // Outside the repo lock: a slow network must not hold up every
+        // other task in the repository.
         let start_point = self
             .start_point(&repository_path, &base, &setup, &mut log)
             .await;
 
+        // Serialize git ops against the shared `.git` for this repo: `git
+        // worktree add` writes `.git/worktrees/` and `.git/refs/` and races
+        // spectacularly with other adds on the same repo.
         let lock = self.repo_locks.for_repository(&workspace.repository_id);
         let guard = lock.lock().await;
         let mut workspace = self.workspaces.get(task_id).await?;
@@ -945,13 +1098,22 @@ impl TaskOrchestrator {
         if workspace.agent.is_none() {
             return Err(OrchestratorError::AlreadyLaunched);
         }
-        let worktree = Self::cut_worktree(
+        let worktree = match Self::cut_worktree(
             &repository_path,
             &mut workspace,
             &base,
             &start_point,
             &setup,
-        )?;
+        )
+        .await
+        {
+            Ok(worktree) => worktree,
+            Err(err) => {
+                // The fetch's notes belong next to the failure in the log.
+                log.flush(&self.runtime.log_dir, task_id);
+                return Err(err);
+            }
+        };
         self.workspaces
             .update(
                 task_id,
@@ -964,13 +1126,13 @@ impl TaskOrchestrator {
                 },
             )
             .await?;
+        // The PTY spawn + status update touch only this task's own row and
+        // process, not the shared `.git`.
         drop(guard);
 
         self.prepare_worktree(task_id, &repository_path, &worktree, &setup, log)
             .await;
-        let started = self.go_running(task_id, rows, cols).await;
-        drop(starting);
-        started
+        self.go_running(task_id, rows, cols).await
     }
 
     /// The queue couldn't start `task_id` after repeated attempts: take it
@@ -1051,7 +1213,12 @@ impl TaskOrchestrator {
         let current = self.workspaces.get(task_id).await?;
         // Already running (nothing should get here any more, but if it
         // does): leave the live agent, its row and its signals alone.
-        if self.runtime.get(task_id).is_some() {
+        // Or closed / archived while its setup ran (minutes, with a hook):
+        // the user is done with it, so no agent appears in it afterwards.
+        if self.runtime.get(task_id).is_some()
+            || current.status != WorkspaceStatus::Pending
+            || current.outcome.is_some()
+        {
             return Ok(StartedTask {
                 task_id: task_id.to_string(),
                 workspace: current,
@@ -1645,7 +1812,9 @@ impl TaskOrchestrator {
         // mutation for this repo (F6) — same lock start_task uses.
         let lock = self.repo_locks.for_repository(&workspace.repository_id);
         let _guard = lock.lock().await;
-        git::create_worktree(&repo_path, &worktree_path, branch, &base_ref)?;
+        // A full checkout: off the async runtime (see `cut_worktree`).
+        let (branch, path) = (branch.to_string(), worktree_path.clone());
+        blocking_git(move || git::create_worktree(&repo_path, &path, &branch, &base_ref)).await?;
         Ok(worktree_path)
     }
 
@@ -1731,6 +1900,32 @@ impl TaskOrchestrator {
             }
         });
     }
+}
+
+#[cfg(test)]
+impl TaskOrchestrator {
+    /// `start_task`, then wait for its background launch: the task as it
+    /// is once running (or the error that failed it).
+    pub async fn start_task_and_wait(
+        &self,
+        request: StartTaskRequest,
+    ) -> Result<StartedTask, OrchestratorError> {
+        self.start_task(request).await?.launched().await
+    }
+}
+
+/// Run a synchronous git operation on the blocking pool (see
+/// `cut_worktree`). A `JoinError` only happens if it panicked; it surfaces
+/// as a git failure rather than taking the caller down with it.
+async fn blocking_git<T, F>(f: F) -> Result<T, OrchestratorError>
+where
+    F: FnOnce() -> Result<T, git::GitError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| git::GitError::CommandFailed(format!("git task failed: {e}")))?
+        .map_err(OrchestratorError::from)
 }
 
 /// A queued task the scheduler gave up on before it ever launched (see
@@ -1900,7 +2095,7 @@ mod tests {
         let mut status_rx = orchestrator.subscribe_status();
 
         let started = orchestrator
-            .start_task(StartTaskRequest {
+            .start_task_and_wait(StartTaskRequest {
                 repository_id: repo.id.clone(),
                 user_id: None,
                 agent: Agent::Claude,
@@ -1930,12 +2125,18 @@ mod tests {
         let worktree_path = started.workspace.worktree_path.as_ref().unwrap();
         assert!(Path::new(worktree_path).join("README.md").exists());
 
-        // First event = Running (from start_task).
+        // Pending as soon as the row exists, then Running once the
+        // background setup spawned the agent.
         let first = tokio::time::timeout(Duration::from_secs(2), status_rx.recv())
             .await
             .expect("status event")
             .expect("recv ok");
-        assert_eq!(first.status, WorkspaceStatus::Running);
+        assert_eq!(first.status, WorkspaceStatus::Pending);
+        let second = tokio::time::timeout(Duration::from_secs(2), status_rx.recv())
+            .await
+            .expect("status event")
+            .expect("recv ok");
+        assert_eq!(second.status, WorkspaceStatus::Running);
 
         // Wait for the PTY's `exit; ` to fire — flip should be
         // Completed (code 0).
@@ -2026,7 +2227,7 @@ mod tests {
         ));
 
         let started = orchestrator
-            .start_task(sleep_request(&repo.id, "Add login page"))
+            .start_task_and_wait(sleep_request(&repo.id, "Add login page"))
             .await
             .unwrap();
         let ws = &started.workspace;
@@ -2098,8 +2299,8 @@ mod tests {
         // and returns it — no second worktree/branch/agent.
         let other = orchestrator.clone();
         let (first_res, second_res) = tokio::join!(
-            orchestrator.start_task(request.clone()),
-            other.start_task(request.clone()),
+            orchestrator.start_task_and_wait(request.clone()),
+            other.start_task_and_wait(request.clone()),
         );
         let first = first_res.expect("first start_task should succeed");
         let second = second_res.expect("second start_task should succeed");
@@ -2122,7 +2323,7 @@ mod tests {
         // A duplicate arriving AFTER the first, back-to-back, is caught by
         // the same active-task guard.
         let third = orchestrator
-            .start_task(request.clone())
+            .start_task_and_wait(request.clone())
             .await
             .expect("back-to-back duplicate should succeed");
         assert_eq!(third.task_id, first.task_id);
@@ -2161,7 +2362,7 @@ mod tests {
             .await
             .unwrap();
         let started = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
         assert_ne!(
@@ -2190,11 +2391,11 @@ mod tests {
         let repo_path = Path::new(repo.local_path.as_deref().unwrap());
 
         let a = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
         let b = orchestrator
-            .start_task(sleep_request(&repo.id, "fix-bug"))
+            .start_task_and_wait(sleep_request(&repo.id, "fix-bug"))
             .await
             .unwrap();
 
@@ -2218,11 +2419,11 @@ mod tests {
         let repo2 = repo_with_git(&repositories, &tmp, "repo2").await;
 
         let a = orchestrator
-            .start_task(sleep_request(&repo1.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo1.id, "add-feature"))
             .await
             .unwrap();
         let b = orchestrator
-            .start_task(sleep_request(&repo2.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo2.id, "add-feature"))
             .await
             .unwrap();
 
@@ -2255,7 +2456,7 @@ mod tests {
         for _ in 0..8 {
             let o = orchestrator.clone();
             let req = sleep_request(&repo.id, "add-feature");
-            handles.push(tokio::spawn(async move { o.start_task(req).await }));
+            handles.push(tokio::spawn(async move { o.start_task_and_wait(req).await }));
         }
         let mut started = Vec::new();
         for h in handles {
@@ -2309,7 +2510,7 @@ mod tests {
             workspaces.insert(&dead).await.unwrap();
 
             let started = orchestrator
-                .start_task(sleep_request(&repo.id, &name))
+                .start_task_and_wait(sleep_request(&repo.id, &name))
                 .await
                 .unwrap_or_else(|e| {
                     panic!(
@@ -2355,7 +2556,7 @@ mod tests {
         workspaces.delete(&ghost.id).await.unwrap();
 
         let started = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
         assert_ne!(
@@ -2387,7 +2588,7 @@ mod tests {
         workspaces.insert(&pending).await.unwrap();
 
         let started = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
         assert_eq!(
@@ -2423,7 +2624,7 @@ mod tests {
         workspaces.insert(&local).await.unwrap();
 
         let agent = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
         assert_ne!(
@@ -2439,7 +2640,7 @@ mod tests {
 
         // A second agent start with the same name dedups to the AGENT task.
         let agent2 = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
         assert_eq!(agent2.task_id, agent.task_id);
@@ -2463,15 +2664,15 @@ mod tests {
         let repo = repo_with_git(&repositories, &tmp, "repo").await;
 
         let lower = orchestrator
-            .start_task(sleep_request(&repo.id, "fix"))
+            .start_task_and_wait(sleep_request(&repo.id, "fix"))
             .await
             .unwrap();
         let upper = orchestrator
-            .start_task(sleep_request(&repo.id, "Fix"))
+            .start_task_and_wait(sleep_request(&repo.id, "Fix"))
             .await
             .unwrap();
         let trailing = orchestrator
-            .start_task(sleep_request(&repo.id, "fix "))
+            .start_task_and_wait(sleep_request(&repo.id, "fix "))
             .await
             .unwrap();
 
@@ -2498,11 +2699,11 @@ mod tests {
         let repo = repo_with_git(&repositories, &tmp, "repo").await;
 
         let empty1 = orchestrator
-            .start_task(sleep_request(&repo.id, ""))
+            .start_task_and_wait(sleep_request(&repo.id, ""))
             .await
             .expect("an empty name must not crash");
         let empty2 = orchestrator
-            .start_task(sleep_request(&repo.id, ""))
+            .start_task_and_wait(sleep_request(&repo.id, ""))
             .await
             .unwrap();
         assert_eq!(
@@ -2519,7 +2720,7 @@ mod tests {
             .starts_with("phasr/"));
 
         let space = orchestrator
-            .start_task(sleep_request(&repo.id, " "))
+            .start_task_and_wait(sleep_request(&repo.id, " "))
             .await
             .unwrap();
         assert_ne!(
@@ -2543,7 +2744,7 @@ mod tests {
         let repo_path = Path::new(repo.local_path.as_deref().unwrap());
 
         let first = orchestrator
-            .start_task(sleep_request(&repo.id, "add-feature"))
+            .start_task_and_wait(sleep_request(&repo.id, "add-feature"))
             .await
             .unwrap();
 
@@ -2554,7 +2755,7 @@ mod tests {
         variant.agent = Agent::Codex;
         variant.base_branch = Some("some-other-base".into());
         variant.prompt = Some("a totally different prompt".into());
-        let second = orchestrator.start_task(variant).await.unwrap();
+        let second = orchestrator.start_task_and_wait(variant).await.unwrap();
 
         assert_eq!(
             second.task_id, first.task_id,
@@ -2598,7 +2799,7 @@ mod tests {
         repositories.insert_for_user(&repo, "user-x").await.unwrap();
 
         let started = orchestrator
-            .start_task(StartTaskRequest {
+            .start_task_and_wait(StartTaskRequest {
                 repository_id: repo.id.clone(),
                 user_id: Some("user-x".into()),
                 agent: Agent::Claude,
@@ -2638,7 +2839,7 @@ mod tests {
         let repo = Repository::new("no-path".into(), None, None);
         repositories.insert(&repo).await.unwrap();
         let err = orchestrator
-            .start_task(StartTaskRequest {
+            .start_task_and_wait(StartTaskRequest {
                 repository_id: repo.id,
                 user_id: None,
                 agent: Agent::Claude,
@@ -2687,7 +2888,7 @@ mod tests {
         let mut status_rx = orchestrator.subscribe_status();
 
         let started = orchestrator
-            .start_task(StartTaskRequest {
+            .start_task_and_wait(StartTaskRequest {
                 repository_id: repo.id.clone(),
                 user_id: None,
                 agent: Agent::Claude,
@@ -2707,11 +2908,13 @@ mod tests {
             .expect("start_task should succeed");
         let task_id = started.workspace.id.clone();
 
-        let first = tokio::time::timeout(Duration::from_secs(2), status_rx.recv())
-            .await
-            .expect("status event")
-            .expect("recv ok");
-        assert_eq!(first.status, WorkspaceStatus::Running);
+        for expected in [WorkspaceStatus::Pending, WorkspaceStatus::Running] {
+            let event = tokio::time::timeout(Duration::from_secs(2), status_rx.recv())
+                .await
+                .expect("status event")
+                .expect("recv ok");
+            assert_eq!(event.status, expected);
+        }
 
         orchestrator.quiesce_task(&task_id).await;
 
@@ -2888,7 +3091,7 @@ mod tests {
 
         let mut request = sleep_request(&repo.id, "intrusion");
         request.user_id = Some("user-b".into());
-        let err = orchestrator.start_task(request).await.unwrap_err();
+        let err = orchestrator.start_task_and_wait(request).await.unwrap_err();
         assert!(matches!(
             err,
             OrchestratorError::Store(crate::store::StoreError::NotFound)
@@ -2906,7 +3109,7 @@ mod tests {
         let mut request = sleep_request(&repo.id, "with-mode");
         request.permission_mode = Some(PermissionMode::AskEdits);
         request.notify_on_attention = false;
-        let started = orchestrator.start_task(request).await.unwrap();
+        let started = orchestrator.start_task_and_wait(request).await.unwrap();
         assert_eq!(
             started.workspace.permission_mode,
             Some(PermissionMode::AskEdits)
@@ -2951,7 +3154,7 @@ mod tests {
         let local = local_workspace(&pool, &repo).await;
 
         let started = orchestrator
-            .start_task(in_place_request(&repo.id))
+            .start_task_and_wait(in_place_request(&repo.id))
             .await
             .unwrap();
         assert_eq!(started.task_id, local.id, "reuses the local row");
@@ -2985,12 +3188,12 @@ mod tests {
         let local = local_workspace(&pool, &repo).await;
 
         orchestrator
-            .start_task(in_place_request(&repo.id))
+            .start_task_and_wait(in_place_request(&repo.id))
             .await
             .unwrap();
         let mut second = in_place_request(&repo.id);
         second.agent = Agent::Codex;
-        let err = orchestrator.start_task(second).await.unwrap_err();
+        let err = orchestrator.start_task_and_wait(second).await.unwrap_err();
         assert!(
             matches!(err, OrchestratorError::InPlaceTaskRunning),
             "{err:?}"
@@ -3006,7 +3209,7 @@ mod tests {
 
         // Worktree tasks in the same repository are unaffected.
         let worktree = orchestrator
-            .start_task(sleep_request(&repo.id, "parallel"))
+            .start_task_and_wait(sleep_request(&repo.id, "parallel"))
             .await
             .unwrap();
         assert_eq!(worktree.workspace.workspace_kind, WorkspaceKind::Agent);
@@ -3031,7 +3234,7 @@ mod tests {
         let mut status_rx = orchestrator.subscribe_status();
 
         let started = orchestrator
-            .start_task(in_place_request(&repo.id))
+            .start_task_and_wait(in_place_request(&repo.id))
             .await
             .unwrap();
         let agent_handle = orchestrator.runtime.get(&local.id).unwrap();
@@ -3075,7 +3278,7 @@ mod tests {
             .await
             .unwrap();
         let started = orchestrator
-            .start_task(in_place_request(&repo.id))
+            .start_task_and_wait(in_place_request(&repo.id))
             .await
             .unwrap();
         assert_eq!(started.task_id, local.id);
@@ -3086,7 +3289,7 @@ mod tests {
         // A repository with no local row yet gets one.
         let other = repo_with_git(&repositories, &tmp, "other").await;
         let started = orchestrator
-            .start_task(in_place_request(&other.id))
+            .start_task_and_wait(in_place_request(&other.id))
             .await
             .unwrap();
         assert_eq!(started.workspace.workspace_kind, WorkspaceKind::Local);
@@ -3105,7 +3308,7 @@ mod tests {
         let evil = "--upload-pack=touch /tmp/phasr-pwned";
         let mut request = sleep_request(&repo.id, "evil");
         request.base_branch = Some(evil.into());
-        let err = orchestrator.start_task(request).await.unwrap_err();
+        let err = orchestrator.start_task_and_wait(request).await.unwrap_err();
         assert!(
             matches!(err, OrchestratorError::InvalidBaseBranch(_)),
             "{err}"
@@ -3164,7 +3367,7 @@ mod tests {
         // foreground, `send_message` refuses ("agent not running").
         request.command =
             r#"sh -c 'printf "rea%s\n" dy; IFS= read -r line; echo "got[$line]"'"#.into();
-        let started = orchestrator.start_task(request).await.unwrap();
+        let started = orchestrator.start_task_and_wait(request).await.unwrap();
         let handle = orchestrator.runtime.get(&started.task_id).unwrap();
         let (replay, mut rx) = handle.subscribe_with_replay();
         let mut output = String::new();
@@ -3318,7 +3521,7 @@ sleep 30
         let mut request = sleep_request(&repo.id, "fake claude");
         request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
         request.prompt = Some("do the thing".into());
-        let started = orchestrator.start_task(request).await.unwrap();
+        let started = orchestrator.start_task_and_wait(request).await.unwrap();
         let task_id = started.task_id.clone();
         // The stored command stays clean: hook extras are spawn-time only.
         assert!(!started.workspace.command.contains("--settings"));
@@ -3478,7 +3681,7 @@ exit 1
         let mut request = sleep_request(&repo.id, "trust me");
         request.command = format!("'{}' --permission-mode acceptEdits", fake.display());
         request.prompt = Some("do the thing".into());
-        let started = orchestrator.start_task(request).await.unwrap();
+        let started = orchestrator.start_task_and_wait(request).await.unwrap();
         let task_id = started.task_id.clone();
         let handle = orchestrator.runtime.get(&task_id).unwrap();
         let (replay, rx) = handle.subscribe_with_replay();
@@ -3783,7 +3986,7 @@ exit 1
         let (orchestrator, repositories, _pool, tmp) = fresh_orchestrator().await;
         let repo = repo_with_git(&repositories, &tmp, "repo").await;
         let started = orchestrator
-            .start_task(sleep_request(&repo.id, "stop-reopen"))
+            .start_task_and_wait(sleep_request(&repo.id, "stop-reopen"))
             .await
             .unwrap();
         let old = orchestrator.runtime.get(&started.task_id).unwrap();
@@ -3927,5 +4130,214 @@ exit 1
             orchestrator.launch_command(&synced).await.unwrap().command,
             None
         );
+    }
+
+    // ---- start_task returns before its setup -----------------------------
+
+    /// A repository whose after-create hook waits for the returned gate
+    /// file: the task's setup is "slow" for exactly as long as the test
+    /// wants. Uses the signals fixture so lanes see the starting claim.
+    async fn slow_setup_fixture() -> (
+        TaskOrchestrator,
+        AgentSignals,
+        WorkspaceRepo,
+        Repository,
+        PathBuf,
+        tempfile::TempDir,
+    ) {
+        let (orchestrator, signals, repositories, workspaces, tmp) =
+            orchestrator_with_signals().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let gate = tmp.path().join("GO");
+        let configs = crate::store::RepositoryConfigRepo::new(workspaces.pool().clone());
+        let mut cfg = configs.get(&repo.id).await.unwrap();
+        cfg.pre_task_hook = Some(format!(
+            "while [ ! -f '{}' ]; do sleep 0.05; done; echo setup-done",
+            gate.display()
+        ));
+        configs.upsert(&cfg, None).await.unwrap();
+        let orchestrator = orchestrator.with_task_config(TaskConfig::new(
+            configs,
+            crate::store::SettingsRepo::new(workspaces.pool().clone()),
+            None,
+        ));
+        (orchestrator, signals, workspaces, repo, gate, tmp)
+    }
+
+    /// The servo report: `start_task` must return while the setup (here a
+    /// hook that waits on a gate) is still running, with the row already
+    /// a started task — claimed as starting, Running on the board, and a
+    /// terminal that says it's being set up — then reach running.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_task_returns_while_setup_runs_then_reaches_running() {
+        use crate::domain::board::{derive_lane, Lane};
+        let (orchestrator, signals, workspaces, repo, gate, _tmp) = slow_setup_fixture().await;
+        let mut status = orchestrator.subscribe_status();
+
+        let start = tokio::time::timeout(
+            Duration::from_secs(10),
+            orchestrator.start_task(sleep_request(&repo.id, "slow setup")),
+        )
+        .await
+        .expect("start_task waited for the setup")
+        .unwrap();
+        let task_id = start.started.task_id.clone();
+        assert_eq!(start.started.workspace.status, WorkspaceStatus::Pending);
+        assert!(start.launch.is_some());
+        assert!(orchestrator.is_starting(&task_id), "claimed before returning");
+        let first = status.try_recv().expect("announced at once");
+        assert_eq!(
+            (first.task_id.as_str(), first.status),
+            (task_id.as_str(), WorkspaceStatus::Pending)
+        );
+
+        // Whatever point the setup has reached (worktree cut or not), the
+        // row is a started task, never a Draft.
+        let row = workspaces.get(&task_id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Pending);
+        let phase = signals
+            .states()
+            .into_iter()
+            .find(|s| s.task_id == task_id)
+            .map(|s| s.state.into());
+        assert_eq!(derive_lane(&row, phase, None), Some(Lane::Running));
+        assert!(matches!(
+            orchestrator.open_terminal(&task_id, 24, 80).await,
+            Err(OrchestratorError::Starting)
+        ));
+        assert!(orchestrator.runtime.get(&task_id).is_none());
+
+        std::fs::write(&gate, "").unwrap();
+        let started = start.launched().await.unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert!(started.workspace.branch.is_some());
+        assert_eq!(started.workspace.base_branch.as_deref(), Some("main"));
+        assert!(!orchestrator.is_starting(&task_id));
+        assert!(orchestrator.runtime.get(&task_id).is_some());
+        let log = orchestrator.read_task_log(&task_id).await.unwrap();
+        assert!(log.contains("setup-done"), "{log}");
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// A second start of the same task while the first is still being set
+    /// up (no branch yet, so the store alone can't tell it from a draft)
+    /// returns that row and starts nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_duplicate_start_during_setup_returns_the_same_row() {
+        let (orchestrator, _signals, _workspaces, repo, gate, _tmp) = slow_setup_fixture().await;
+        let repo_path = PathBuf::from(repo.local_path.clone().unwrap());
+
+        let first = orchestrator
+            .start_task(sleep_request(&repo.id, "twice"))
+            .await
+            .unwrap();
+        let second = orchestrator
+            .start_task(sleep_request(&repo.id, "twice"))
+            .await
+            .unwrap();
+        assert_eq!(second.started.task_id, first.started.task_id);
+        assert!(second.launch.is_none(), "the duplicate began no setup");
+
+        std::fs::write(&gate, "").unwrap();
+        let started = first.launched().await.unwrap();
+        assert_eq!(started.workspace.status, WorkspaceStatus::Running);
+        assert_eq!(count_worktrees(&repo_path), 2, "main + one task");
+        assert_eq!(count_phasr_branches(&repo_path), 1);
+        cleanup(&orchestrator, &[&started]).await;
+    }
+
+    /// The setup fails in the background (the worktree can't be created:
+    /// its base directory is a file): the row it already returned becomes
+    /// `failed`, with the reason in its log and a status event (→ "task
+    /// failed"), and stops being "starting". No worktree or branch is left
+    /// behind.
+    #[tokio::test]
+    async fn a_failed_background_setup_marks_the_task_failed_with_the_reason() {
+        let (orchestrator, repositories, pool, tmp) = fresh_orchestrator().await;
+        let repo = repo_with_git(&repositories, &tmp, "repo").await;
+        let repo_path = PathBuf::from(repo.local_path.clone().unwrap());
+        let blocker = tmp.path().join("not-a-directory");
+        std::fs::write(&blocker, "").unwrap();
+        let configs = crate::store::RepositoryConfigRepo::new(pool.clone());
+        let mut cfg = configs.get(&repo.id).await.unwrap();
+        cfg.worktree_base_path = Some(blocker.join("worktrees").to_string_lossy().into_owned());
+        configs.upsert(&cfg, None).await.unwrap();
+        let orchestrator = orchestrator.with_task_config(TaskConfig::new(
+            configs,
+            crate::store::SettingsRepo::new(pool.clone()),
+            None,
+        ));
+        let mut status = orchestrator.subscribe_status();
+
+        let start = orchestrator
+            .start_task(sleep_request(&repo.id, "no room"))
+            .await
+            .unwrap();
+        let task_id = start.started.task_id.clone();
+        assert_eq!(start.started.workspace.status, WorkspaceStatus::Pending);
+        let err = start.launched().await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::Git(_)), "{err}");
+
+        let row = orchestrator.workspaces.get(&task_id).await.unwrap();
+        assert_eq!(row.status, WorkspaceStatus::Failed);
+        assert!(row.finished_at.is_some());
+        assert!(row.branch.is_none() && row.worktree_path.is_none());
+        assert!(!orchestrator.is_starting(&task_id));
+        let log = orchestrator.read_task_log(&task_id).await.unwrap();
+        assert!(log.contains("couldn't start this task"), "{log}");
+        assert!(log.contains(&err.to_string()), "the reason: {log}");
+        let statuses: Vec<WorkspaceStatus> = std::iter::from_fn(|| status.try_recv().ok())
+            .filter(|e| e.task_id == task_id)
+            .map(|e| e.status)
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![WorkspaceStatus::Pending, WorkspaceStatus::Failed]
+        );
+        assert_eq!(count_worktrees(&repo_path), 1);
+        assert_eq!(count_phasr_branches(&repo_path), 0);
+        // Its terminal shows the log, not a fresh agent.
+        assert!(matches!(
+            orchestrator.open_terminal(&task_id, 24, 80).await,
+            Err(OrchestratorError::AlreadyFinished(_))
+        ));
+    }
+
+    /// Closed (here: archived) while its setup still ran: the setup ends
+    /// without an agent appearing in the task, and without marking it
+    /// failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_put_away_during_setup_never_gets_an_agent() {
+        let (orchestrator, _signals, workspaces, repo, gate, _tmp) = slow_setup_fixture().await;
+        let start = orchestrator
+            .start_task(sleep_request(&repo.id, "put away"))
+            .await
+            .unwrap();
+        let task_id = start.started.task_id.clone();
+        // In the hook: the worktree is cut and recorded, nothing else
+        // writes the row until the gate opens.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while workspaces.get(&task_id).await.unwrap().branch.is_none() {
+            assert!(std::time::Instant::now() < deadline, "setup never cut the branch");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        workspaces
+            .update(
+                &task_id,
+                WorkspaceUpdate {
+                    status: Some(WorkspaceStatus::Archived),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        std::fs::write(&gate, "").unwrap();
+        let ended = start.launched().await.unwrap();
+        assert_eq!(ended.workspace.status, WorkspaceStatus::Archived);
+        assert!(orchestrator.runtime.get(&task_id).is_none());
+        assert!(!orchestrator.is_starting(&task_id));
+        if let Some(path) = ended.workspace.worktree_path.as_deref() {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }

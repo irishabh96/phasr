@@ -23,5 +23,6 @@ pub use launch::RunIn;
 pub use repo_locks::RepoLockRegistry;
 pub use setup::{TaskConfig, TaskSetup};
 pub use service::{
-    StartTaskRequest, StartedTask, TaskOrchestrator, TaskRow, TaskRowPatch, TaskStatusEvent,
+    StartTaskRequest, StartedTask, TaskOrchestrator, TaskRow, TaskRowPatch, TaskStart,
+    TaskStatusEvent,
 };

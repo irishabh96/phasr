@@ -115,6 +115,13 @@ interface StartTaskInput {
   notifyOnAttention?: boolean;
   /** Omitted → "worktree". "in-place" runs in the repo's local workspace. */
   runIn?: RunIn;
+  /**
+   * New task's Run chip: a run command the backend starts in the task's
+   * worktree once its agent is up (setup finishes after `start_task`
+   * returns). One that can't start becomes an inbox entry, never a failed
+   * task.
+   */
+  runCommandId?: string;
 }
 
 export interface CreateTaskDraftInput {
@@ -591,6 +598,12 @@ export const tauri = {
     invoke<void>("resize_run_command", { id, rows, cols, workspaceId: workspaceId ?? null }),
 
   // ── orchestrator (task lifecycle + terminal) ─────────────────────────
+  /**
+   * Resolves once the task row exists; its worktree setup and agent spawn
+   * continue in the backend, so `workspace.status` is usually still
+   * `pending` (the board shows it Running, "Setting up the worktree…").
+   * A setup that fails later marks the task `failed` (status event).
+   */
   startTask: (input: StartTaskInput) =>
     invoke<StartedTask>("start_task", { input }).then((started) => {
       // First successful agent launch is the moment to ask for OS-notification

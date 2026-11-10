@@ -405,7 +405,7 @@ mod tests {
         let f = fixture().await;
         let a = f
             .orchestrator
-            .start_task(StartTaskRequest {
+            .start_task_and_wait(StartTaskRequest {
                 repository_id: f.repo.id.clone(),
                 user_id: None,
                 agent: Agent::Gemini,
