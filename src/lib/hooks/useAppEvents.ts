@@ -2,6 +2,7 @@ import { useAgentSignalEvents } from "@/lib/hooks/useAgentSignals";
 import { useInboxEvents } from "@/lib/hooks/useInbox";
 import { useCheckEvents } from "@/lib/hooks/useReview";
 import { useTaskCardEvents } from "@/lib/hooks/useTaskCards";
+import { useTranscriptEvents } from "@/lib/transcript/useTranscript";
 
 /**
  * Every app-wide Tauri event subscription, mounted ONCE in the app shell.
@@ -15,4 +16,6 @@ export function useAppEvents() {
   useCheckEvents();
   // Inbox cache + delivery fan-out (`useOnInboxCreated`).
   useInboxEvents();
+  // Live transcript items for every cached transcript (agent transcript view).
+  useTranscriptEvents();
 }

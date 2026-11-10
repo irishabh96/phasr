@@ -37,6 +37,7 @@ import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { showToast } from "@/lib/toast";
+import { showsTranscript, transcriptApi } from "@/lib/transcript/contract";
 import type { Workspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -281,8 +282,12 @@ function WorkspaceDetail() {
   // inner panel). The pane and the strips under it (approval card, the
   // composer's slot) take the terminal's own black so nothing reads as a
   // seam; other panes keep the bg tone.
+  // In transcript view the agent pane is the app's own surface (bg), not a
+  // terminal.
+  const transcriptView = showsTranscript(workspace);
   const terminalFront =
-    (pane === "tabs" && (activeInner?.kind === "main" || activeInner?.kind === "terminal")) ||
+    (pane === "tabs" &&
+      ((activeInner?.kind === "main" && !transcriptView) || activeInner?.kind === "terminal")) ||
     (pane === "run" && !!activeRunTab);
 
   return (
@@ -425,6 +430,10 @@ function WorkspaceDetail() {
             // permission dialog, where a sent message's Enter would pick
             // "Yes". Answer the card instead.
             awaitingAnswer={agentState?.state === "needs-you"}
+            // Transcript view: Stop interrupts the turn, sends queue meanwhile.
+            {...(transcriptView
+              ? { turn: { state: agentState?.state ?? null, onStop: () => transcriptApi.interruptTask(workspaceId) } }
+              : {})}
           />
         ) : null}
       </div>

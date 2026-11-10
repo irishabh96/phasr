@@ -280,7 +280,11 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   //    per repository (the board's `on_status`, and `notify_changed` after
   //    update / archive / delete / approve / discard / merge),
   //  - `phasr://task-agent-state` for agent-state changes,
-  //  - `phasr://run-command-state` for run commands.
+  //  - `phasr://run-command-state` for run commands,
+  //  - `phasr://transcript` for a transcript-view task's items
+  //    (`get_transcript` / `set_agent_view` / `interrupt_task`, and
+  //    `send_message_to_task` when the task's `agentView` is "transcript";
+  //    `world.transcript` / `turnStarts` / `turnEnds` drive the agent).
   //
   // Events fire a beat AFTER the command resolves, as over real IPC. The
   // store survives a reload (sessionStorage), like the backend outlives
@@ -316,6 +320,10 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         notes: clone(f.notes),
         settings: { defaultPermissionMode: "ask-shell", ...clone(f.userSettings) },
         remoteMerged: {} as Record<string, true>,
+        // Agent transcript view: per task, the persisted items
+        // (`fixtures.transcripts` seeds them) and whether a turn runs.
+        transcripts: clone(fx.transcripts ?? {}) as Record<string, any[]>,
+        turns: {} as Record<string, true>,
       };
       for (const c of seededCards) {
         const i = db.workspaces.findIndex((w: any) => w.id === c.workspace.id);
@@ -333,6 +341,8 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
       }
       for (const [id, m] of Object.entries(fx.taskMeta ?? {})) db.meta[id] = { ...(db.meta[id] ?? {}), ...(m as object) };
     }
+    db.transcripts ??= {};
+    db.turns ??= {};
     // The store answers these now; a spec can still inject a failure with
     // setResponse.
     delete overrides.list_task_cards;
@@ -397,6 +407,30 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     db.agentStates[w.id] = next;
     later(() => fire("phasr://task-agent-state", next));
     cardsChanged(w.repositoryId, w.id);
+  };
+
+  /**
+   * Agent transcript view (specs/agent-transcript-view-spec.md §4): store
+   * the item (replace by id, else append) and emit `phasr://transcript`
+   * the way `agent_stream`'s event bridge does.
+   */
+  const transcriptPut = (taskId: string, item: any, op?: "append" | "update") => {
+    const list = (db.transcripts[taskId] ??= []);
+    const i = list.findIndex((x: any) => x.id === item.id);
+    if (i === -1) list.push(item);
+    else list[i] = item;
+    const payload = { taskId, op: op ?? (i === -1 ? "append" : "update"), item };
+    later(() => fire("phasr://transcript", payload));
+  };
+  let tsSeq = 0;
+  const transcriptId = (kind: string) => `${kind}-${++db.seq}-${++tsSeq}`;
+  const turnStarts = (w: any) => {
+    db.turns[w.id] = true;
+    setAgentState(w, { state: "working", attention: null });
+  };
+  const turnEnds = (w: any) => {
+    delete db.turns[w.id];
+    setAgentState(w, { state: "idle", attention: null, lastTurnEndedAt: nowIso() });
   };
 
   const findWs = (id: string) => db.workspaces.find((w: any) => w.id === id) ?? null;
@@ -742,6 +776,38 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
         return null;
       }
 
+      // ── agent transcript view ──
+      case "get_transcript":
+        return db.transcripts[a?.taskId] ?? [];
+      case "set_agent_view": {
+        const w = findWs(a?.taskId);
+        if (!w) return reject("not found");
+        if (a?.view !== "transcript" && a?.view !== "terminal") return reject(`unknown view: ${a?.view}`);
+        if (db.turns[w.id]) return reject("can't switch views while a turn is running; stop it first");
+        w.agentView = a.view;
+        touch(w);
+        cardsChanged(w.repositoryId, w.id);
+        return w;
+      }
+      case "interrupt_task": {
+        const w = findWs(a?.taskId);
+        if (!w) return reject("not found");
+        if (!db.turns[w.id]) return null;
+        transcriptPut(w.id, { kind: "system", id: transcriptId("system"), ts: nowIso(), level: "info", text: "Interrupted" });
+        turnEnds(w);
+        return null;
+      }
+      case "send_message_to_task": {
+        const w = findWs(a?.taskId);
+        // Terminal view keeps the fixture answer.
+        if (!w || w.agentView !== "transcript") return NOT_HANDLED;
+        if (w.status !== "running") return reject("agent not running");
+        if (db.agentStates[w.id]?.state === "needs-you") return reject("the agent is waiting for your answer");
+        transcriptPut(w.id, { kind: "user", id: transcriptId("user"), ts: nowIso(), text: a?.text ?? "" });
+        turnStarts(w);
+        return null;
+      }
+
       // ── close-out ──
       case "approve_and_create_pr": {
         const w = findWs(a?.workspaceId);
@@ -922,6 +988,27 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
     },
     prMergedOnRemote(taskId: string) {
       db.remoteMerged[taskId] = true;
+      save();
+    },
+    /** Transcript view: the agent streams an item (new id → append, else update). */
+    transcript(taskId: string, item: Record<string, unknown>, op?: "append" | "update") {
+      if (!findWs(taskId)) throw new Error(`no task ${taskId}`);
+      transcriptPut(taskId, { ts: nowIso(), ...item }, op);
+      save();
+    },
+    /** A turn starts (agent state `working`); views can't switch until it ends. */
+    turnStarts(taskId: string) {
+      const w = findWs(taskId);
+      if (!w) throw new Error(`no task ${taskId}`);
+      turnStarts(w);
+      save();
+    },
+    /** The turn ends (agent state `idle`), optionally with its result line. */
+    turnEnds(taskId: string, result: Record<string, unknown> | null = null) {
+      const w = findWs(taskId);
+      if (!w) throw new Error(`no task ${taskId}`);
+      if (result) transcriptPut(taskId, { kind: "result", id: transcriptId("result"), ts: nowIso(), durationMs: 0, costUsd: null, isError: false, ...result });
+      turnEnds(w);
       save();
     },
   };
@@ -1230,6 +1317,22 @@ export const world = {
   /** The task's PR was merged on GitHub; the next `refresh_pr_states` sees it. */
   prMergedOnRemote: (page: Page, taskId: string) =>
     page.evaluate((id) => (window as any).__E2E__.world.prMergedOnRemote(id), taskId),
+  /**
+   * Transcript view: the agent's stream produces `item` (a §4
+   * `TranscriptItem`; `ts` defaults to now). A new id appends, a known id
+   * updates — or force `op`. Emits `phasr://transcript`.
+   */
+  transcript: (page: Page, taskId: string, item: Record<string, unknown>, op?: "append" | "update") =>
+    page.evaluate(
+      ([id, it, o]) => (window as any).__E2E__.world.transcript(id, it, o ?? undefined),
+      [taskId, item, op ?? null] as const,
+    ),
+  /** A turn starts: agent state `working` (Stop shows, sends queue). */
+  turnStarts: (page: Page, taskId: string) =>
+    page.evaluate((id) => (window as any).__E2E__.world.turnStarts(id), taskId),
+  /** The turn ends (`idle`), optionally appending its result line. */
+  turnEnds: (page: Page, taskId: string, result: Record<string, unknown> | null = null) =>
+    page.evaluate(([id, r]) => (window as any).__E2E__.world.turnEnds(id, r), [taskId, result] as const),
 };
 
 /** Wait until an invoke with the given command name has been recorded. */

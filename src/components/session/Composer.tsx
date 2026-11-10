@@ -1,11 +1,12 @@
-import { ArrowUp } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ArrowUp, Square, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AttachIconButton, AttachmentChips } from "@/components/attachments/Attachments";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { withAttachmentBlock } from "@/lib/attachments";
 import { useAttachments } from "@/lib/hooks/useAttachments";
 import { tauri } from "@/lib/tauri";
-import type { Agent } from "@/lib/types";
+import { enqueue, mustQueue, shouldFlush, useQueuedMessage } from "@/lib/transcript/sendQueue";
+import type { Agent, TaskAgentState } from "@/lib/types";
 import { showToast } from "@/lib/toast";
 import { humanizeError, isAwaitingAnswerError } from "@/lib/humanizeError";
 import { cn } from "@/lib/utils";
@@ -47,6 +48,7 @@ export function Composer({
   disabled,
   awaitingAnswer = false,
   roots,
+  turn,
 }: {
   taskId: string;
   agent: Agent | null;
@@ -61,13 +63,25 @@ export function Composer({
   /** The task's worktree and repository: attachments inside them are sent
    *  as relative paths. */
   roots?: readonly (string | null | undefined)[];
+  /**
+   * Transcript view (spec §3): the composer is the only input, so it owns
+   * the turn. While the agent works the send button is Stop (`onStop`
+   * interrupts the turn) and a message sent meanwhile waits as "Queued"
+   * until the turn ends. Absent in terminal view, which keeps today's
+   * behaviour exactly.
+   */
+  turn?: { state: TaskAgentState["state"] | null; onStop: () => Promise<unknown> };
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [queued, setQueued] = useQueuedMessage(taskId);
   const ref = useRef<HTMLTextAreaElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const attachments = useAttachments({ dropRef: surfaceRef });
   const name = agent ? AGENT_META[agent].label : "the agent";
+  const working = !!turn && mustQueue(turn.state);
+  const turnState = turn ? turn.state : undefined;
 
   // Auto-grow: measure the content, clamp to MAX_LINES. Layout effect so the
   // first paint after a keystroke already has the new height.
@@ -81,9 +95,26 @@ export function Composer({
     el.style.overflowY = el.scrollHeight > MAX_H + 1 ? "auto" : "hidden";
   }, [text, awaitingAnswer]);
 
+  const sendFailed = (err: unknown) =>
+    showToast(
+      isAwaitingAnswerError(err)
+        ? { intent: "info", title: `${name} is waiting for your answer`, message: "Answer the request above, then send your message." }
+        : String(err).includes("agent not running")
+          ? { intent: "warning", title: `${name} isn't running`, message: "Open the agent tab to resume it." }
+          : { intent: "error", title: `Couldn't send to ${name}`, message: humanizeError(err) },
+    );
+
   const send = async (body: string) => {
     const message = withAttachmentBlock(body.trim(), attachments.items, roots);
     if (!message || sending) return;
+    if (working) {
+      // Transcript view mid-turn: hold it until the turn ends.
+      setQueued(enqueue(queued, message));
+      setText("");
+      attachments.clear();
+      ref.current?.focus();
+      return;
+    }
     setSending(true);
     try {
       // The backend frames it as one bracketed paste with control bytes
@@ -93,16 +124,39 @@ export function Composer({
       setText("");
       attachments.clear();
     } catch (err) {
-      showToast(
-        isAwaitingAnswerError(err)
-          ? { intent: "info", title: `${name} is waiting for your answer`, message: "Answer the request above, then send your message." }
-          : String(err).includes("agent not running")
-            ? { intent: "warning", title: `${name} isn't running`, message: "Open the agent tab to resume it." }
-            : { intent: "error", title: `Couldn't send to ${name}`, message: humanizeError(err) },
-      );
+      sendFailed(err);
     } finally {
       setSending(false);
       ref.current?.focus();
+    }
+  };
+
+  // The turn ended: the queued message goes. If it's refused, it comes
+  // back into the input (when that's empty) rather than being lost.
+  useEffect(() => {
+    if (turnState === undefined || !shouldFlush(queued, turnState, sending)) return;
+    const message = queued!;
+    setQueued(null);
+    setSending(true);
+    tauri
+      .sendMessageToTask(taskId, message, true)
+      .catch((err) => {
+        sendFailed(err);
+        setText((t) => (t.trim() ? t : message));
+      })
+      .finally(() => setSending(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sendFailed is a fresh closure each render
+  }, [queued, turnState, sending, taskId, setQueued]);
+
+  const stop = async () => {
+    if (!turn || stopping) return;
+    setStopping(true);
+    try {
+      await turn.onStop();
+    } catch (err) {
+      showToast({ intent: "error", title: `Couldn't stop ${name}`, message: humanizeError(err) });
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -115,11 +169,16 @@ export function Composer({
     // A bare Enter falls through: the textarea inserts the newline.
   };
 
-  // The slot: fixed height in the column. The surface is anchored to its
-  // bottom, so growth spills upward without moving anything else.
-  const slot = "relative h-[114px] shrink-0";
-  const surface =
-    "absolute inset-x-[24px] bottom-[16px] z-10 flex min-h-[86px] flex-col gap-[10px] rounded-[10px] bg-(--color-bg-surface) px-[14px] py-[12px] shadow-(--shadow-composer)";
+  // Terminal view — the slot: fixed height in the column. The surface is
+  // anchored to its bottom, so growth spills upward without moving anything
+  // else. Transcript view has no TUI to protect, so the composer takes the
+  // room it needs (same 114px at rest) and the transcript above shrinks
+  // instead of being covered.
+  const slot = turn ? "shrink-0 px-[24px] pb-[16px] pt-[12px]" : "relative h-[114px] shrink-0";
+  const surface = cn(
+    "flex min-h-[86px] flex-col gap-[10px] rounded-[10px] bg-(--color-bg-surface) px-[14px] py-[12px] shadow-(--shadow-composer)",
+    !turn && "absolute inset-x-[24px] bottom-[16px] z-10",
+  );
 
   if (awaitingAnswer) {
     return (
@@ -136,6 +195,27 @@ export function Composer({
   return (
     <div className={slot}>
       <div ref={surfaceRef} className={surface}>
+        {queued ? (
+          <div role="status" aria-label="Queued message" className="flex min-w-0 items-center gap-[8px] text-[12px]">
+            <span className="shrink-0 rounded-(--radius-chip) bg-(--color-bg-elevated) px-[6px] text-[11px] font-medium leading-[18px] text-(--color-text-secondary)">
+              Queued
+            </span>
+            <span className="min-w-0 flex-1 truncate text-(--color-text-muted)">{queued.replace(/\s+/g, " ")}</span>
+            <button
+              type="button"
+              aria-label="Cancel queued message"
+              title="Cancel (puts it back in the box)"
+              onClick={() => {
+                setQueued(null);
+                setText((t) => (t.trim() ? t : queued));
+                ref.current?.focus();
+              }}
+              className="grid size-[18px] shrink-0 place-items-center rounded-(--radius-chip) text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+            >
+              <X className="size-[12px]" aria-hidden />
+            </button>
+          </div>
+        ) : null}
         <AttachmentChips items={attachments.items} onRemove={attachments.remove} />
         <label htmlFor={`composer-${taskId}`} className="sr-only">
           Message {name}
@@ -169,18 +249,31 @@ export function Composer({
           <span className="flex-1" />
           <AttachIconButton disabled={disabled} onClick={() => void attachments.pick()} />
           <span aria-hidden className="text-[11px] text-(--color-text-muted)">
-            ⌘↵ send
+            {working ? "⌘↵ queue" : "⌘↵ send"}
           </span>
-          <button
-            type="button"
-            aria-label="Send"
-            aria-keyshortcuts="Meta+Enter"
-            disabled={disabled || sending || (!text.trim() && attachments.items.length === 0)}
-            onClick={() => void send(text)}
-            className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-accent-500) text-(--color-accent-onfill) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-accent-400) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
-          >
-            <ArrowUp className="size-[13px]" strokeWidth={2.5} aria-hidden />
-          </button>
+          {working ? (
+            <button
+              type="button"
+              aria-label="Stop turn"
+              title={`Stop this turn (${name} keeps the session)`}
+              disabled={stopping}
+              onClick={() => void stop()}
+              className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-bg-elevated) text-(--color-text-primary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+            >
+              <Square className="size-[10px] fill-current" aria-hidden />
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label="Send"
+              aria-keyshortcuts="Meta+Enter"
+              disabled={disabled || sending || (!text.trim() && attachments.items.length === 0)}
+              onClick={() => void send(text)}
+              className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-accent-500) text-(--color-accent-onfill) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-accent-400) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+            >
+              <ArrowUp className="size-[13px]" strokeWidth={2.5} aria-hidden />
+            </button>
+          )}
         </div>
       </div>
     </div>
