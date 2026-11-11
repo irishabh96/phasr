@@ -39,7 +39,12 @@ const models = (installed: boolean) => [
   },
 ];
 
-async function boot(page: Page, installed: boolean) {
+const POLISHERS = [
+  { id: "claude", label: "Claude Haiku", available: true },
+  { id: "codex", label: "Codex gpt-6-luna", available: false },
+];
+
+async function boot(page: Page, installed: boolean, polishers: unknown[] = []) {
   const f = makeFixtures() as ReturnType<typeof makeFixtures> & Record<string, unknown>;
   f.overrides = {
     ...((f.overrides as Record<string, unknown>) ?? {}),
@@ -48,6 +53,7 @@ async function boot(page: Page, installed: boolean) {
     start_dictation: null,
     cancel_dictation: null,
     download_voice_model: null,
+    list_dictation_polishers: polishers,
   };
   const res = await bootApp(page, f as never);
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
@@ -79,7 +85,7 @@ test("Composer: dictate, see the meter, ↵ inserts the text at the caret", asyn
   await expect(page.getByRole("button", { name: "Dictate", exact: true })).toHaveCount(0);
   await page.keyboard.press("Meta+Shift+D");
   await waitForCall(page, "start_dictation");
-  expect((await calls(page)).find((c) => c.cmd === "start_dictation")?.args).toEqual({ modelId: "base-en" });
+  expect((await calls(page)).find((c) => c.cmd === "start_dictation")?.args).toEqual({ modelId: "base-en", language: null });
 
   const bar = page.getByRole("group", { name: "Dictation" });
   await expect(bar).toHaveAttribute("data-dictation", "recording");
@@ -213,4 +219,58 @@ test("New task: the Dictate chip records into the prompt; Esc cancels without cl
   await modal.getByRole("button", { name: "Finish dictation" }).click();
   await expect(page.locator("#new-task-prompt")).toHaveValue("Add dark mode to the settings page.");
   await expect(modal.getByRole("button", { name: "Dictate" })).toBeVisible();
+});
+
+test("Live text appears in the box while you talk; a fast model cleans it up after", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await boot(page, true, POLISHERS);
+  const box = page.getByPlaceholder(/^Reply to /);
+  await box.fill("Context:");
+  await box.press("End");
+  await setResponse(page, "stop_dictation", "um add a test for the mark down parser");
+  await setResponse(page, "polish_dictation", "Add a test for the Markdown parser.");
+  await page.keyboard.press("Meta+Shift+D");
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveAttribute("data-dictation", "recording");
+
+  await emit(page, "phasr://voice-partial", { text: "um add a" });
+  await expect(box).toHaveValue("Context: um add a");
+  await emit(page, "phasr://voice-partial", { text: "um add a test for the mark" });
+  await expect(box).toHaveValue("Context: um add a test for the mark");
+  // The box is being written by the dictation: typing doesn't fight it.
+  await expect(box).toHaveAttribute("readonly", "");
+  if (SHOTS) await box.locator("xpath=../..").screenshot({ path: `${SHOTS}/dictation-live.png` });
+
+  await page.keyboard.press("Enter");
+  await waitForCall(page, "polish_dictation");
+  expect((await calls(page)).find((c) => c.cmd === "polish_dictation")?.args).toEqual({
+    text: "um add a test for the mark down parser",
+    polisher: "claude",
+  });
+  await expect(box).toHaveValue("Context: Add a test for the Markdown parser.");
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveCount(0);
+  await expect(box).not.toHaveAttribute("readonly", "");
+});
+
+test("Esc while recording puts the box back; Settings › Voice turns cleanup off", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await boot(page, true, POLISHERS);
+  const box = page.getByPlaceholder(/^Reply to /);
+  await box.fill("Keep me");
+  await box.press("End");
+  await page.keyboard.press("Meta+Shift+D");
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveAttribute("data-dictation", "recording");
+  await emit(page, "phasr://voice-partial", { text: "something I didn't mean" });
+  await expect(box).toHaveValue("Keep me something I didn't mean");
+  await page.keyboard.press("Escape");
+  await expect(box).toHaveValue("Keep me");
+
+  await page.goto(page.url().replace(/(\?.*)?$/, "?settings=voice"));
+  const sheet = page.getByRole("dialog", { name: "Settings" });
+  const seg = sheet.getByRole("radiogroup", { name: "Clean up with" });
+  await expect(seg.getByRole("radio", { name: "Claude Haiku" })).toHaveAttribute("aria-checked", "true");
+  await expect(seg.getByRole("radio", { name: "Codex gpt-6-luna" })).toBeDisabled();
+  if (SHOTS) await sheet.screenshot({ path: `${SHOTS}/settings-voice-cleanup.png` });
+  await seg.getByRole("radio", { name: "Off" }).click();
+  await expect(seg.getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => localStorage.getItem("phasr.voice.polish"))).toBe("off");
 });

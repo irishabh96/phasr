@@ -182,6 +182,8 @@ pub fn run() {
             commands::voice::stop_dictation,
             commands::voice::cancel_dictation,
             commands::voice::open_microphone_settings,
+            commands::voice::list_dictation_polishers,
+            commands::voice::polish_dictation,
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,

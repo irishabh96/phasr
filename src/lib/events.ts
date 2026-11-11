@@ -67,6 +67,9 @@ export const SUGGESTIONS_EVENT = "phasr://suggestions";
 /** The microphone level while dictating, every 50ms. Payload: `{ level }` (0–1). */
 export const VOICE_LEVEL_EVENT = "phasr://voice-level";
 
+/** The live transcript while dictating: the whole text so far (~every 0.8s). Payload: `{ text }`. */
+export const VOICE_PARTIAL_EVENT = "phasr://voice-partial";
+
 /** A Whisper model download moved on. Payload: `VoiceModelProgress`. */
 export const VOICE_MODEL_EVENT = "phasr://voice-model";
 

@@ -968,6 +968,15 @@ export interface VoiceModelProgress {
   error: string | null;
 }
 
+/** A CLI that can clean up a dictation (`list_dictation_polishers`). */
+export type Polisher = "claude" | "codex";
+export interface PolisherInfo {
+  id: Polisher;
+  /** "Claude Haiku", "Codex gpt-6-luna". */
+  label: string;
+  available: boolean;
+}
+
 export type MicAccess = "authorized" | "not-determined" | "denied" | "restricted" | "unsupported";
 
 /** One worktree of a repository (`list_repository_worktrees`; main checkout excluded). */

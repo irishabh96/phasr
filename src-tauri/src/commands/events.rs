@@ -65,6 +65,9 @@ pub const VOICE_LEVEL_EVENT: &str = "phasr://voice-level";
 /// A Whisper model download progressed, finished, failed or was
 /// cancelled. Payload: `ModelProgress`.
 pub const VOICE_MODEL_EVENT: &str = "phasr://voice-model";
+/// The live transcript while dictating (the whole text so far, ~every
+/// 0.8s). Payload: `VoicePartialPayload` (`{text}`).
+pub const VOICE_PARTIAL_EVENT: &str = "phasr://voice-partial";
 
 /// Drain `rx` on the async runtime, handing each event to `forward`.
 /// A lagging receiver skips what it missed rather than stopping: every
@@ -196,6 +199,11 @@ struct VoiceLevelPayload {
     level: f32,
 }
 
+#[derive(Clone, Serialize)]
+struct VoicePartialPayload {
+    text: String,
+}
+
 /// Re-emit dictation levels and model-download progress. Call once.
 pub fn spawn_voice_bridge(voice: &VoiceService, app: AppHandle) {
     spawn_forwarder(voice.subscribe(), move |event| match event {
@@ -204,6 +212,9 @@ pub fn spawn_voice_bridge(voice: &VoiceService, app: AppHandle) {
         }
         VoiceEvent::Model(progress) => {
             let _ = app.emit(VOICE_MODEL_EVENT, progress);
+        }
+        VoiceEvent::Partial(text) => {
+            let _ = app.emit(VOICE_PARTIAL_EVENT, VoicePartialPayload { text });
         }
     });
 }

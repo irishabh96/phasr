@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VoiceModel } from "@/lib/types";
-import { activeVoiceModel, formatBytes } from "./prefs";
+import { activePolisher, activeVoiceModel, formatBytes } from "./prefs";
 import { applyModelProgress } from "./useVoiceModels";
 
 const model = (id: string, over: Partial<VoiceModel> = {}): VoiceModel => ({
@@ -53,4 +53,22 @@ it("formats sizes", () => {
   expect(formatBytes(147_964_211)).toBe("148 MB");
   expect(formatBytes(574_041_195)).toBe("574 MB");
   expect(formatBytes(1_624_555_275)).toBe("1.6 GB");
+});
+
+describe("activePolisher", () => {
+  const both = [
+    { id: "claude" as const, label: "Claude Haiku", available: true },
+    { id: "codex" as const, label: "Codex gpt-6-luna", available: true },
+  ];
+  it("auto prefers Claude, falls back to Codex, else none", () => {
+    expect(activePolisher("auto", both)?.id).toBe("claude");
+    expect(activePolisher("auto", [{ ...both[0]!, available: false }, both[1]!])?.id).toBe("codex");
+    expect(activePolisher("auto", both.map((p) => ({ ...p, available: false })))).toBeNull();
+  });
+  it("honours an explicit choice only when it's installed, and off", () => {
+    expect(activePolisher("codex", both)?.id).toBe("codex");
+    expect(activePolisher("codex", [both[0]!, { ...both[1]!, available: false }])).toBeNull();
+    expect(activePolisher("off", both)).toBeNull();
+    expect(activePolisher("auto", undefined)).toBeNull();
+  });
 });

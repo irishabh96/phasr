@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
+use crate::voice::polish::{Polisher, PolisherInfo};
 use crate::voice::{MicAccess, VoiceError, VoiceModel, VoiceService};
 
 use super::require_user;
@@ -82,21 +83,44 @@ pub async fn microphone_access(voice: Voice<'_>, session: Session<'_>) -> Result
     Ok(voice.mic_access())
 }
 
+/// Live text arrives as `phasr://voice-partial` while it runs.
 #[tauri::command]
-pub async fn start_dictation(model_id: String, voice: Voice<'_>, session: Session<'_>) -> Result<(), VoiceCmdError> {
-    require_user(&session)?;
-    Ok(voice.start(&model_id).await?)
-}
-
-/// Close the microphone and return the text ("" when nothing was said).
-#[tauri::command]
-pub async fn stop_dictation(
+pub async fn start_dictation(
+    model_id: String,
     language: Option<String>,
     voice: Voice<'_>,
     session: Session<'_>,
+) -> Result<(), VoiceCmdError> {
+    require_user(&session)?;
+    Ok(voice.start(&model_id, language).await?)
+}
+
+/// Close the microphone and return the final text ("" when nothing was said).
+#[tauri::command]
+pub async fn stop_dictation(voice: Voice<'_>, session: Session<'_>) -> Result<String, VoiceCmdError> {
+    require_user(&session)?;
+    Ok(voice.stop().await?)
+}
+
+/// The CLIs that can clean up a dictation, and whether each is installed.
+#[tauri::command]
+pub async fn list_dictation_polishers(session: Session<'_>) -> Result<Vec<PolisherInfo>, VoiceCmdError> {
+    require_user(&session)?;
+    Ok(crate::voice::polish::polishers().await)
+}
+
+/// Clean up `text` with a fast model through the user's Claude or Codex
+/// CLI. An error means: keep the raw text.
+#[tauri::command]
+pub async fn polish_dictation(
+    text: String,
+    polisher: Polisher,
+    session: Session<'_>,
 ) -> Result<String, VoiceCmdError> {
     require_user(&session)?;
-    Ok(voice.stop(language).await?)
+    crate::voice::polish::polish(polisher, &text)
+        .await
+        .map_err(|e| VoiceCmdError::Voice(VoiceError::Failed(e)))
 }
 
 #[tauri::command]

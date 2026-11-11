@@ -1,16 +1,20 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { VOICE_LEVEL_EVENT } from "@/lib/events";
+import { VOICE_LEVEL_EVENT, VOICE_PARTIAL_EVENT } from "@/lib/events";
 import { humanizeError } from "@/lib/humanizeError";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { tauri } from "@/lib/tauri";
 import { showToast } from "@/lib/toast";
-import type { VoiceModel } from "@/lib/types";
+import type { PolisherInfo, VoiceModel } from "@/lib/types";
 import { insertDictation } from "./insert";
-import { activeVoiceModel, useVoicePrefs } from "./prefs";
-import { useVoiceModels } from "./useVoiceModels";
+import { activePolisher, activeVoiceModel, useVoicePrefs } from "./prefs";
+import { useDictationPolishers, useVoiceModels } from "./useVoiceModels";
 
-export type DictationPhase = "idle" | "starting" | "recording" | "transcribing";
+/**
+ * starting → recording (live text appears in the box) → transcribing (the
+ * last words) → polishing (a fast model cleans it up, when on) → idle.
+ */
+export type DictationPhase = "idle" | "starting" | "recording" | "transcribing" | "polishing";
 
 /** Readings kept for the waveform (50ms each: the last 12 seconds — wider than any box). */
 export const LEVEL_HISTORY = 240;
@@ -22,8 +26,10 @@ let ownerSeq = 0;
 
 export interface Dictation {
   phase: DictationPhase;
-  /** recording or transcribing: the box shows the dictation bar. */
+  /** Not idle: the box shows the dictation bar, and is read-only (the live text is being written into it). */
   active: boolean;
+  /** Cleans up the transcript after (null = off or none installed). */
+  polisher: PolisherInfo | null;
   levels: number[];
   startedAt: number | null;
   /** Downloaded model in use; null = none yet (the mic opens setup). */
@@ -40,9 +46,12 @@ export interface Dictation {
 
 /**
  * Dictation into a textarea: the mic records, Whisper transcribes on this
- * Mac, and the text lands where the caret was (`insertDictation`).
+ * Mac, and the text appears live where the caret was (`insertDictation`),
+ * replaced by the final text when you stop and then — when a polisher is
+ * on — by a fast model's cleanup of it (Esc during cleanup keeps the
+ * transcript as heard).
  *
- * While recording, Esc cancels and ↵ stops (captured before the box or a
+ * While recording, Esc cancels (the box goes back to what it was) and ↵ stops (captured before the box or a
  * dialog sees them). One dictation at a time across the app: starting one
  * here ends any other.
  */
@@ -66,6 +75,8 @@ export function useDictation({
   const { data: models } = useVoiceModels();
   const prefs = useVoicePrefs();
   const model = activeVoiceModel(models, prefs.modelId);
+  const { data: polishers } = useDictationPolishers();
+  const polisher = activePolisher(prefs.polish, polishers);
 
   // Latest values for async callbacks.
   const phaseRef = useRef(phase);
@@ -77,17 +88,17 @@ export function useDictation({
   /** Bumped by cancel / takeover: an older start or stop result is dropped. */
   const generation = useRef(0);
   const selection = useRef<[number, number]>([0, 0]);
+  /** The box's text when dictation started: live text is shown on top of it, and cancel restores it. */
+  const base = useRef("");
   const pendingCaret = useRef<number | null>(null);
 
-  const insert = useCallback(
-    (text: string) => {
-      const [s, e] = selection.current;
-      const next = insertDictation(valueRef.current, s, e, text);
-      pendingCaret.current = next.caret;
-      setValueRef.current(next.value);
-    },
-    [],
-  );
+  /** Show `text` as the dictation (on top of `base`). */
+  const show = useCallback((text: string) => {
+    const [s, e] = selection.current;
+    const next = insertDictation(base.current, s, e, text);
+    pendingCaret.current = next.caret;
+    setValueRef.current(next.value);
+  }, []);
 
   // Put the caret after the inserted text once it renders.
   useLayoutEffect(() => {
@@ -124,11 +135,13 @@ export function useDictation({
     const el = textareaRef.current;
     const len = valueRef.current.length;
     selection.current = el ? [el.selectionStart ?? len, el.selectionEnd ?? len] : [len, len];
+    base.current = valueRef.current;
     window.dispatchEvent(new CustomEvent(OWNER_EVENT, { detail: owner.current }));
     const gen = ++generation.current;
     setPhase("starting");
     setLevels([]);
-    tauri.startDictation(model.id).then(
+    const language = model.languages === "multilingual" ? prefs.language : null;
+    tauri.startDictation(model.id, language).then(
       () => {
         if (gen !== generation.current) {
           // Cancelled while the mic was opening.
@@ -144,36 +157,68 @@ export function useDictation({
         fail(err);
       },
     );
-  }, [disabled, model, textareaRef, fail]);
+  }, [disabled, model, prefs.language, textareaRef, fail]);
 
   const stop = useCallback(() => {
     if (phaseRef.current !== "recording") return;
     const gen = generation.current;
     setPhase("transcribing");
-    const language = model?.languages === "multilingual" ? prefs.language : null;
-    tauri.stopDictation(language).then(
-      (text) => {
+    const done = () => {
+      setPhase("idle");
+      setStartedAt(null);
+    };
+    tauri.stopDictation().then(
+      (raw) => {
         if (gen !== generation.current) return;
-        setPhase("idle");
-        setStartedAt(null);
-        if (text.trim()) insert(text);
-        else showToast({ intent: "info", title: "Didn't catch anything", message: "Nothing was heard — check your microphone and try again." });
+        if (!raw.trim()) {
+          setValueRef.current(base.current);
+          done();
+          showToast({ intent: "info", title: "Didn't catch anything", message: "Nothing was heard — check your microphone and try again." });
+          return;
+        }
+        show(raw);
+        if (!polisher) {
+          done();
+          return;
+        }
+        setPhase("polishing");
+        tauri.polishDictation(raw, polisher.id).then(
+          (clean) => {
+            if (gen !== generation.current) return;
+            if (clean.trim()) show(clean);
+            done();
+          },
+          (err) => {
+            if (gen !== generation.current) return;
+            done();
+            showToast({
+              intent: "info",
+              title: "Kept the transcript as heard",
+              message: `${polisher.label} couldn't clean it up: ${humanizeError(err)}`,
+            });
+          },
+        );
       },
       (err) => {
         if (gen !== generation.current) return;
-        setPhase("idle");
-        setStartedAt(null);
+        setValueRef.current(base.current);
+        done();
         fail(err);
       },
     );
-  }, [model, prefs.language, insert, fail]);
+  }, [polisher, show, fail]);
 
+  /**
+   * Esc / ✕. While recording: stop and put the box back as it was. While
+   * cleaning up: skip the cleanup and keep the transcript as heard.
+   */
   const cancel = useCallback(() => {
     const was = phaseRef.current;
     if (was === "idle") return;
     generation.current++;
     setPhase("idle");
     setStartedAt(null);
+    if (was !== "polishing") setValueRef.current(base.current);
     if (was === "recording" || was === "starting") void tauri.cancelDictation();
     textareaRef.current?.focus();
   }, [textareaRef]);
@@ -197,6 +242,7 @@ export function useDictation({
   useEffect(() => {
     const onOwner = (e: Event) => {
       if ((e as CustomEvent<number>).detail === owner.current || phaseRef.current === "idle") return;
+      if (phaseRef.current !== "polishing") setValueRef.current(base.current);
       generation.current++;
       setPhase("idle");
       setStartedAt(null);
@@ -229,13 +275,22 @@ export function useDictation({
       if (cancelled) fn();
       else unlisten = fn;
     });
+    let unlistenPartial: (() => void) | null = null;
+    const gen = generation.current;
+    void listen<{ text: string }>(VOICE_PARTIAL_EVENT, ({ payload }) => {
+      if (gen === generation.current && phaseRef.current === "recording") show(payload.text);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenPartial = fn;
+    });
     const limit = window.setTimeout(stop, MAX_DICTATION_MS);
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenPartial?.();
       window.clearTimeout(limit);
     };
-  }, [phase, stop]);
+  }, [phase, stop, show]);
 
   // Esc cancels and ↵ (with or without ⌘) stops — before the textarea
   // (newline / send) or an enclosing dialog (close) can act on them.
@@ -259,7 +314,8 @@ export function useDictation({
 
   return {
     phase,
-    active: phase === "recording" || phase === "transcribing" || phase === "starting",
+    active: phase !== "idle",
+    polisher,
     levels,
     startedAt,
     model,

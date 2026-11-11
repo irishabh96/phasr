@@ -268,6 +268,7 @@ export function NewTaskForm({
           id="new-task-prompt"
           ref={promptDrop.ref}
           value={prompt}
+          readOnly={dictation.active}
           onChange={(e) => setPrompt(e.target.value)}
           onFocus={promptDrop.onFocus}
           onBlur={promptDrop.onBlur}

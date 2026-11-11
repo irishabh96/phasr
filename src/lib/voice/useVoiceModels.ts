@@ -9,7 +9,13 @@ import type { VoiceModel, VoiceModelProgress } from "@/lib/types";
 
 export const voiceKeys = {
   models: ["voice", "models"] as const,
+  polishers: ["voice", "polishers"] as const,
 };
+
+/** Which of Claude / Codex can clean up a transcript (detected once a session). */
+export function useDictationPolishers() {
+  return useQuery({ queryKey: voiceKeys.polishers, queryFn: tauri.listDictationPolishers, staleTime: 10 * 60_000 });
+}
 
 export function useVoiceModels() {
   return useQuery({ queryKey: voiceKeys.models, queryFn: tauri.listVoiceModels, staleTime: 60_000 });

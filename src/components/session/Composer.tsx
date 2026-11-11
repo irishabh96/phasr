@@ -282,6 +282,8 @@ export function Composer({
           rows={1}
           value={text}
           disabled={disabled}
+          // The live transcript is being written here while dictating.
+          readOnly={dictation.active}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={attachments.onPaste}

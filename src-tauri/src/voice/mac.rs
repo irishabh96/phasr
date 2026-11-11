@@ -224,6 +224,10 @@ impl Engine {
         Ok(ctx)
     }
 
+    pub fn is_loaded(&self, model_id: &str) -> bool {
+        self.loaded.lock().as_ref().is_some_and(|(id, _)| id == model_id)
+    }
+
     pub fn unload(&self, model_id: &str) {
         let mut slot = self.loaded.lock();
         if slot.as_ref().is_some_and(|(id, _)| id == model_id) {

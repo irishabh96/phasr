@@ -17,6 +17,7 @@ pub mod catalog;
 #[cfg(target_os = "macos")]
 mod mac;
 pub mod models;
+pub mod polish;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -66,6 +67,8 @@ pub struct ModelProgress {
 pub enum VoiceEvent {
     /// The microphone's level, 0–1, every 50ms while dictating.
     Level(f32),
+    /// The whole live transcript so far, about every 0.8s while dictating.
+    Partial(String),
     Model(ModelProgress),
 }
 
@@ -114,6 +117,10 @@ struct Dictation {
     recorder: mac::Recorder,
     model: &'static ModelSpec,
     meter: tokio::task::JoinHandle<()>,
+    live_task: tokio::task::JoinHandle<()>,
+    live: Arc<Mutex<Live>>,
+    decode: Arc<tokio::sync::Mutex<()>>,
+    lang: String,
 }
 
 pub struct VoiceService {
@@ -254,7 +261,11 @@ impl VoiceService {
     /// Open the microphone for `model_id` (which must be downloaded). Asks
     /// for microphone access the first time. A dictation already running
     /// (say its composer went away mid-sentence) is discarded.
-    pub async fn start(self: &Arc<Self>, model_id: &str) -> Result<(), VoiceError> {
+    ///
+    /// While it runs, the live transcript arrives as `VoiceEvent::Partial`.
+    /// `language` (ISO code, or "auto") applies to multilingual models;
+    /// English models ignore it.
+    pub async fn start(self: &Arc<Self>, model_id: &str, language: Option<String>) -> Result<(), VoiceError> {
         let model = Self::spec(model_id)?;
         if !self.store.is_installed(model) {
             return Err(VoiceError::NotInstalled);
@@ -270,8 +281,7 @@ impl VoiceService {
         }
         let mut slot = self.dictation.lock().await;
         if let Some(old) = slot.take() {
-            old.meter.abort();
-            drop(old.recorder);
+            old.abort();
         }
         let recorder = tokio::task::spawn_blocking(mac::Recorder::start)
             .await
@@ -296,7 +306,8 @@ impl VoiceService {
             }
         });
 
-        // Load the model while you talk, so stopping goes straight to text.
+        // Load the model while you talk, so the live text starts quickly
+        // and stopping goes straight to the final text.
         let engine = self.engine.clone();
         let path = self.store.path(model);
         tokio::task::spawn_blocking(move || {
@@ -305,32 +316,57 @@ impl VoiceService {
             }
         });
 
-        *slot = Some(Dictation { recorder, model, meter });
-        Ok(())
-    }
-
-    /// Close the microphone and transcribe. `language` (ISO code, or
-    /// "auto") applies to multilingual models; English models ignore it.
-    /// Empty when nothing was said.
-    pub async fn stop(&self, language: Option<String>) -> Result<String, VoiceError> {
-        let Dictation { recorder, model, meter } =
-            self.dictation.lock().await.take().ok_or(VoiceError::NotDictating)?;
-        meter.abort();
-        let failed = recorder.device_failed();
-        let engine = self.engine.clone();
-        let path = self.store.path(model);
         let lang = match model.languages {
             Languages::English => "en".to_string(),
             Languages::Multilingual => language.filter(|l| !l.trim().is_empty()).unwrap_or_else(|| "auto".into()),
         };
+        let live = Arc::new(Mutex::new(Live::default()));
+        let decode = Arc::new(tokio::sync::Mutex::new(()));
+        let live_task = tokio::spawn(live_loop(LiveCtx {
+            samples: recorder.samples(),
+            rate: recorder.rate(),
+            engine: self.engine.clone(),
+            model,
+            path: self.store.path(model),
+            lang: lang.clone(),
+            live: live.clone(),
+            decode: decode.clone(),
+            events: self.events.clone(),
+        }));
+
+        *slot = Some(Dictation { recorder, model, meter, live_task, live, decode, lang });
+        Ok(())
+    }
+
+    /// Close the microphone and return the final text: what the live loop
+    /// already committed plus the rest. Empty when nothing was said.
+    pub async fn stop(&self) -> Result<String, VoiceError> {
+        let Dictation { recorder, model, meter, live_task, live, decode, lang } =
+            self.dictation.lock().await.take().ok_or(VoiceError::NotDictating)?;
+        meter.abort();
+        live_task.abort();
+        // A decode already running finishes first (it may commit).
+        let _turn = decode.lock().await;
+        let failed = recorder.device_failed();
+        let engine = self.engine.clone();
+        let path = self.store.path(model);
+        let (committed_text, committed_at) = {
+            let l = live.lock();
+            (l.committed_text.clone(), l.committed_at)
+        };
         tokio::task::spawn_blocking(move || -> Result<String, String> {
             let rate = recorder.rate();
             let raw = recorder.finish();
-            if !audio::has_speech(&raw, rate) {
-                return if failed { Err("the microphone stopped working".into()) } else { Ok(String::new()) };
+            let tail = &raw[committed_at.min(raw.len())..];
+            if !audio::has_speech(tail, rate) {
+                if committed_text.is_empty() && failed {
+                    return Err("the microphone stopped working".into());
+                }
+                return Ok(committed_text);
             }
-            let samples = audio::pad_to_one_second(audio::to_whisper_rate(&raw, rate));
-            engine.transcribe(model.id, &path, &samples, &lang)
+            let samples = audio::pad_to_one_second(audio::to_whisper_rate(tail, rate));
+            let text = engine.transcribe(model.id, &path, &samples, &lang)?;
+            Ok(audio::join_text(&committed_text, &text))
         })
         .await
         .map_err(|e| VoiceError::Failed(e.to_string()))?
@@ -339,20 +375,107 @@ impl VoiceService {
 
     pub async fn cancel(&self) {
         if let Some(d) = self.dictation.lock().await.take() {
-            d.meter.abort();
-            drop(d.recorder);
+            d.abort();
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Dictation {
+    fn abort(self) {
+        self.meter.abort();
+        self.live_task.abort();
+        drop(self.recorder);
+    }
+}
+
+/// The live transcript so far: text for audio before `committed_at` (a
+/// sample index at the device rate) is settled; the rest is re-read on
+/// every pass.
+#[derive(Default)]
+struct Live {
+    committed_text: String,
+    committed_at: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct LiveCtx {
+    samples: Arc<Mutex<Vec<f32>>>,
+    rate: u32,
+    engine: Arc<mac::Engine>,
+    model: &'static ModelSpec,
+    path: PathBuf,
+    lang: String,
+    live: Arc<Mutex<Live>>,
+    decode: Arc<tokio::sync::Mutex<()>>,
+    events: broadcast::Sender<VoiceEvent>,
+}
+
+/// How often the live text is refreshed while you talk.
+const LIVE_EVERY: std::time::Duration = std::time::Duration::from_millis(800);
+/// Past this much unsettled audio, the oldest part is settled at a pause
+/// (keeps each pass well under a second, and inside Whisper's 30s window).
+const LIVE_WINDOW_SECS: usize = 20;
+
+/// Re-transcribe the unsettled audio every `LIVE_EVERY` and publish the
+/// whole text so far. Passes never overlap (`decode`), and each waits for
+/// new audio and for the model to be loaded.
+#[cfg(target_os = "macos")]
+async fn live_loop(ctx: LiveCtx) {
+    let rate = ctx.rate as usize;
+    let mut decoded_len = 0usize;
+    loop {
+        tokio::time::sleep(LIVE_EVERY).await;
+        if !ctx.engine.is_loaded(ctx.model.id) {
+            continue;
+        }
+        let committed_at = ctx.live.lock().committed_at;
+        let window: Vec<f32> = {
+            let s = ctx.samples.lock();
+            s[committed_at.min(s.len())..].to_vec()
+        };
+        if window.len() < rate / 2 || window.len() < decoded_len + rate * 3 / 10 {
+            continue;
+        }
+        decoded_len = window.len();
+        if !audio::has_speech(&window, ctx.rate) {
+            continue;
+        }
+        let _turn = ctx.decode.lock().await;
+        let settle = window.len() > rate * LIVE_WINDOW_SECS;
+        let cut = if settle { audio::quietest_cut(&window, ctx.rate, 4.0) } else { window.len() };
+        let piece = window[..cut].to_vec();
+        let (engine, path, lang, id, src_rate) =
+            (ctx.engine.clone(), ctx.path.clone(), ctx.lang.clone(), ctx.model.id, ctx.rate);
+        let text = tokio::task::spawn_blocking(move || {
+            let samples = audio::pad_to_one_second(audio::to_whisper_rate(&piece, src_rate));
+            engine.transcribe(id, &path, &samples, &lang)
+        })
+        .await;
+        let Ok(Ok(text)) = text else { continue };
+        let shown = {
+            let mut l = ctx.live.lock();
+            if settle {
+                l.committed_text = audio::join_text(&l.committed_text, &text);
+                l.committed_at += cut;
+                decoded_len = 0;
+                l.committed_text.clone()
+            } else {
+                audio::join_text(&l.committed_text, &text)
+            }
+        };
+        let _ = ctx.events.send(VoiceEvent::Partial(shown));
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 impl VoiceService {
-    pub async fn start(self: &Arc<Self>, model_id: &str) -> Result<(), VoiceError> {
+    pub async fn start(self: &Arc<Self>, model_id: &str, _language: Option<String>) -> Result<(), VoiceError> {
         Self::spec(model_id)?;
         Err(VoiceError::Unsupported)
     }
 
-    pub async fn stop(&self, _language: Option<String>) -> Result<String, VoiceError> {
+    pub async fn stop(&self) -> Result<String, VoiceError> {
         Err(VoiceError::Unsupported)
     }
 
@@ -415,5 +538,30 @@ mod e2e {
         let text = engine.transcribe(spec.id, &store.path(spec), &samples, "en").unwrap();
         eprintln!("TRANSCRIPT ({:?}, {} Hz): {text}", t.elapsed(), rate);
         assert!(!text.is_empty());
+
+        // The live loop settles long dictations at a pause: the two halves
+        // read the same as the whole.
+        let cut = audio::quietest_cut(&raw[..raw.len() * 2 / 3], rate, 3.0);
+        let a = engine.transcribe(spec.id, &store.path(spec), &audio::pad_to_one_second(audio::to_whisper_rate(&raw[..cut], rate)), "en").unwrap();
+        let b = engine.transcribe(spec.id, &store.path(spec), &audio::pad_to_one_second(audio::to_whisper_rate(&raw[cut..], rate)), "en").unwrap();
+        eprintln!("CHUNKED at {:.2}s: {}", cut as f32 / rate as f32, audio::join_text(&a, &b));
+    }
+
+    /// The real cleanup calls through the user's CLIs.
+    /// `PHASR_VOICE_POLISH=1 cargo test voice::e2e::polish -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn polish_with_both_clis() {
+        if std::env::var("PHASR_VOICE_POLISH").is_err() {
+            return;
+        }
+        let raw = "um so can you like add a unit test for the mark down table parser and uh then run p n p m test";
+        eprintln!("POLISHERS {:?}", polish::polishers().await);
+        for p in [polish::Polisher::Claude, polish::Polisher::Codex] {
+            let t = std::time::Instant::now();
+            let out = polish::polish(p, raw).await;
+            eprintln!("{p:?} ({:?}): {out:?}", t.elapsed());
+            assert!(out.is_ok());
+        }
     }
 }

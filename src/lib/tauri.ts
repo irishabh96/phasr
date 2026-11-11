@@ -2,6 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
   MicAccess,
+  Polisher,
+  PolisherInfo,
   VoiceModel,
   Agent,
   AgentDetection,
@@ -398,10 +400,14 @@ export const tauri = {
   cancelVoiceModelDownload: (modelId: string) => invoke<void>("cancel_voice_model_download", { modelId }),
   deleteVoiceModel: (modelId: string) => invoke<void>("delete_voice_model", { modelId }),
   microphoneAccess: () => invoke<MicAccess>("microphone_access"),
-  /** Opens the microphone (asking for access the first time). */
-  startDictation: (modelId: string) => invoke<void>("start_dictation", { modelId }),
-  /** Closes it and returns the text; "" when nothing was said. */
-  stopDictation: (language: string | null) => invoke<string>("stop_dictation", { language }),
+  /** Opens the microphone (asking for access the first time); live text arrives as `phasr://voice-partial`. */
+  startDictation: (modelId: string, language: string | null) =>
+    invoke<void>("start_dictation", { modelId, language }),
+  /** Closes it and returns the final text; "" when nothing was said. */
+  stopDictation: () => invoke<string>("stop_dictation"),
+  listDictationPolishers: () => invoke<PolisherInfo[]>("list_dictation_polishers"),
+  /** Cleans up a dictation through the user's Claude / Codex CLI; rejects = keep the raw text. */
+  polishDictation: (text: string, polisher: Polisher) => invoke<string>("polish_dictation", { text, polisher }),
   cancelDictation: () => invoke<void>("cancel_dictation"),
   openMicrophoneSettings: () => invoke<void>("open_microphone_settings"),
 

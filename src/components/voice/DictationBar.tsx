@@ -29,10 +29,12 @@ export function DictationBar({ dictation, className }: { dictation: Dictation; c
       data-dictation={phase}
       className={cn("flex h-[26px] min-w-0 flex-1 items-center gap-[10px]", className)}
     >
-      {phase === "transcribing" ? (
+      {phase === "transcribing" || phase === "polishing" ? (
         <span role="status" className="flex min-w-0 flex-1 items-center gap-[8px] text-[12.5px] text-(--color-text-secondary)">
           <Loader2 aria-hidden className="size-[13px] shrink-0 animate-spin text-(--color-text-muted)" />
-          Transcribing…
+          <span className="truncate">
+            {phase === "polishing" ? `Cleaning up with ${dictation.polisher?.label ?? "a fast model"}…` : "Transcribing…"}
+          </span>
         </span>
       ) : phase === "starting" ? (
         <span role="status" className="flex min-w-0 flex-1 items-center gap-[8px] text-[12.5px] text-(--color-text-muted)">
@@ -57,9 +59,9 @@ export function DictationBar({ dictation, className }: { dictation: Dictation; c
       )}
       <button
         type="button"
-        aria-label="Cancel dictation"
+        aria-label={phase === "polishing" ? "Skip cleanup" : "Cancel dictation"}
         aria-keyshortcuts="Escape"
-        title="Cancel (Esc)"
+        title={phase === "polishing" ? "Keep the transcript as heard (Esc)" : "Cancel (Esc)"}
         onClick={cancel}
         className={cn(ROUND, "text-(--color-text-muted) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)")}
       >

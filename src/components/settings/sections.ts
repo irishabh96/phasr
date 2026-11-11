@@ -82,6 +82,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     scope: "app",
     rows: [
       { id: "voice-model", label: "Speech model", keywords: "whisper dictation dictate speech to text transcribe download microphone" },
+      { id: "voice-cleanup", label: "Clean up the transcript", keywords: "polish fix haiku codex claude punctuation filler" },
       { id: "voice-language", label: "Spoken language", keywords: "whisper multilingual" },
       { id: "microphone", label: "Microphone access", keywords: "permission privacy" },
     ],

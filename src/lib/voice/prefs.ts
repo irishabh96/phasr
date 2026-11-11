@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { VoiceModel } from "@/lib/types";
+import type { Polisher, PolisherInfo, VoiceModel } from "@/lib/types";
 
 /**
  * Settings › Voice: which downloaded model dictation uses, and the spoken
@@ -9,6 +9,7 @@ import type { VoiceModel } from "@/lib/types";
  */
 const MODEL_KEY = "phasr.voice.model";
 const LANGUAGE_KEY = "phasr.voice.language";
+const POLISH_KEY = "phasr.voice.polish";
 const PREF_EVENT = "phasr:voice-prefs-changed";
 
 export interface VoicePrefs {
@@ -16,7 +17,14 @@ export interface VoicePrefs {
   modelId: string | null;
   /** ISO code, or "auto". Multilingual models only. */
   language: string;
+  /**
+   * Clean up the transcript afterwards with a fast model: "auto" = Claude
+   * Haiku if installed, else Codex's fast model, else off.
+   */
+  polish: PolishPref;
 }
+
+export type PolishPref = "auto" | "off" | Polisher;
 
 let cached: VoicePrefs | null = null;
 
@@ -24,13 +32,16 @@ function read(): VoicePrefs {
   if (cached) return cached;
   let modelId: string | null = null;
   let language = "auto";
+  let polish: PolishPref = "auto";
   try {
     modelId = localStorage.getItem(MODEL_KEY);
     language = localStorage.getItem(LANGUAGE_KEY) || "auto";
+    const p = localStorage.getItem(POLISH_KEY);
+    if (p === "off" || p === "claude" || p === "codex") polish = p;
   } catch {
     /* ignore */
   }
-  cached = { modelId, language };
+  cached = { modelId, language, polish };
   return cached;
 }
 
@@ -47,6 +58,7 @@ function write(key: string, value: string | null) {
 
 export const setVoiceModel = (id: string | null) => write(MODEL_KEY, id);
 export const setVoiceLanguage = (lang: string) => write(LANGUAGE_KEY, lang);
+export const setVoicePolish = (p: PolishPref) => write(POLISH_KEY, p);
 
 function subscribe(listener: () => void) {
   const onStorage = () => {
@@ -61,7 +73,7 @@ function subscribe(listener: () => void) {
   };
 }
 
-const SERVER: VoicePrefs = { modelId: null, language: "auto" };
+const SERVER: VoicePrefs = { modelId: null, language: "auto", polish: "auto" };
 
 export function useVoicePrefs(): VoicePrefs {
   return useSyncExternalStore(subscribe, read, () => SERVER);
@@ -97,4 +109,12 @@ export function formatBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
   return `${Math.max(1, Math.round(n / 1e3))} KB`;
+}
+
+/** The CLI that cleans up the transcript, or null for none. */
+export function activePolisher(pref: PolishPref, available: readonly PolisherInfo[] | undefined): PolisherInfo | null {
+  if (pref === "off" || !available) return null;
+  const ok = available.filter((p) => p.available);
+  if (pref === "auto") return ok.find((p) => p.id === "claude") ?? ok[0] ?? null;
+  return ok.find((p) => p.id === pref) ?? null;
 }

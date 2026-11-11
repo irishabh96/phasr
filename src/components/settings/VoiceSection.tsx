@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
 import { GlassSelect } from "@/components/ui/GlassSelect";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { SettingsCard, SettingsRow } from "@/components/ui/SettingsRow";
 import { DownloadProgress } from "@/components/voice/DictationButton";
 import { SHORTCUTS } from "@/lib/shortcuts";
@@ -10,14 +11,22 @@ import { tauri } from "@/lib/tauri";
 import type { MicAccess, VoiceModel } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
+  activePolisher,
   activeVoiceModel,
   formatBytes,
   setVoiceLanguage,
   setVoiceModel,
+  setVoicePolish,
+  type PolishPref,
   useVoicePrefs,
   VOICE_LANGUAGES,
 } from "@/lib/voice/prefs";
-import { useDeleteVoiceModel, useDownloadVoiceModel, useVoiceModels } from "@/lib/voice/useVoiceModels";
+import {
+  useDeleteVoiceModel,
+  useDictationPolishers,
+  useDownloadVoiceModel,
+  useVoiceModels,
+} from "@/lib/voice/useVoiceModels";
 
 const MIC_LABEL: Record<MicAccess, string> = {
   authorized: "Allowed",
@@ -39,6 +48,8 @@ export function VoiceSection() {
   const download = useDownloadVoiceModel();
   const remove = useDeleteVoiceModel();
   const [deleting, setDeleting] = useState<VoiceModel | null>(null);
+  const { data: polishers } = useDictationPolishers();
+  const polisher = activePolisher(prefs.polish, polishers);
   const mic = useQuery({ queryKey: ["voice", "mic"], queryFn: tauri.microphoneAccess, refetchOnWindowFocus: true });
 
   return (
@@ -100,6 +111,29 @@ export function VoiceSection() {
       </SettingsCard>
 
       <SettingsCard>
+        <SettingsRow
+          id="settings-row-voice-cleanup"
+          label="Clean up the transcript"
+          help={
+            polisher
+              ? `After you stop, ${polisher.label} fixes misheard terms, punctuation and filler words through your own login (a few seconds; Esc keeps it as heard).`
+              : "Off: the text goes in exactly as Whisper heard it."
+          }
+        >
+          <SegmentedControl<PolishPref>
+            label="Clean up with"
+            value={polisher?.id ?? "off"}
+            onChange={setVoicePolish}
+            options={[
+              { value: "off", label: "Off" },
+              ...(polishers ?? []).map((p) => ({
+                value: p.id as PolishPref,
+                label: p.label,
+                disabled: !p.available,
+              })),
+            ]}
+          />
+        </SettingsRow>
         {active?.languages === "multilingual" ? (
           <SettingsRow
             id="settings-row-voice-language"

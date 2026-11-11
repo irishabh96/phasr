@@ -8,7 +8,7 @@ const openDialog = vi.fn();
 const showToast = vi.fn();
 
 // Voice input reads the downloaded-model list; none here.
-vi.mock("@/lib/voice/useVoiceModels", () => ({ useVoiceModels: () => ({ data: [] }) }));
+vi.mock("@/lib/voice/useVoiceModels", () => ({ useVoiceModels: () => ({ data: [] }), useDictationPolishers: () => ({ data: [] }) }));
 vi.mock("@/lib/tauri", () => ({
   tauri: {
     sendMessageToTask: (...args: unknown[]) => sendMessageToTask(...args),

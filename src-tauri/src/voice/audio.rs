@@ -92,6 +92,33 @@ pub fn pad_to_one_second(mut samples: Vec<f32>) -> Vec<f32> {
     samples
 }
 
+/// Two transcript pieces as one line.
+pub fn join_text(a: &str, b: &str) -> String {
+    match (a.trim(), b.trim()) {
+        ("", b) => b.to_string(),
+        (a, "") => a.to_string(),
+        (a, b) => format!("{a} {b}"),
+    }
+}
+
+/// Where to split `samples` so no word is cut: the start of the quietest
+/// 50ms window in the last `search_secs` (but not the final half second).
+pub fn quietest_cut(samples: &[f32], rate: u32, search_secs: f32) -> usize {
+    let w = (rate as usize * METER_MS as usize / 1000).max(1);
+    let end = samples.len().saturating_sub(rate as usize / 2);
+    let start = end.saturating_sub((search_secs * rate as f32) as usize);
+    let mut best = (f32::MAX, end);
+    let mut i = start;
+    while i + w <= end {
+        let r = rms(&samples[i..i + w]);
+        if r < best.0 {
+            best = (r, i);
+        }
+        i += w;
+    }
+    best.1.max(1)
+}
+
 /// Join Whisper's segments into one line: drop the ones that are only a
 /// sound annotation (`[BLANK_AUDIO]`, `(keyboard clicking)`, `[Music]`),
 /// trim, and collapse whitespace.
@@ -171,6 +198,23 @@ mod tests {
     fn short_clips_are_padded() {
         assert_eq!(pad_to_one_second(vec![0.1; 100]).len(), 17_600);
         assert_eq!(pad_to_one_second(vec![0.1; 40_000]).len(), 40_000);
+    }
+
+    #[test]
+    fn cuts_at_the_pause() {
+        // 10s at 1 kHz: loud, except a pause at 7.0–7.2s.
+        let rate = 1000;
+        let mut s = vec![0.3f32; 10_000];
+        for x in &mut s[7_000..7_200] {
+            *x = 0.0;
+        }
+        let cut = quietest_cut(&s, rate, 4.0);
+        assert!((7_000..7_200).contains(&cut), "{cut}");
+        // Never inside the last half second.
+        assert!(quietest_cut(&vec![0.3; 10_000], rate, 4.0) <= 9_500);
+        assert_eq!(join_text(" a ", ""), "a");
+        assert_eq!(join_text("", "b"), "b");
+        assert_eq!(join_text("a.", " b"), "a. b");
     }
 
     #[test]
