@@ -30,7 +30,11 @@ describe("Composer in transcript view", () => {
     const onStop = vi.fn().mockResolvedValue(undefined);
     render(<Composer taskId="t1" agent="claude" turn={turn("working", onStop)} />);
     expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
-    expect(screen.getByText("⌘↵ queue")).toBeInTheDocument();
+    // Empty box: the mic beside Stop; typed text: Queue beside Stop.
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeInTheDocument();
+    type("later");
+    expect(screen.getByRole("button", { name: "Queue message" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop turn" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Stop turn" }));
     await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1));
   });
@@ -103,7 +107,9 @@ describe("Composer in transcript view", () => {
       sendChord();
     });
     expect(sendMessageToTask).toHaveBeenCalledWith("t1", "Go", true);
-    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    // Sent and cleared: the slot is the mic again, not Stop.
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop turn" })).toBeNull();
   });
 
   it("still hides behind an approval, as in terminal view", () => {

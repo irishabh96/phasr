@@ -43,10 +43,16 @@ describe("Composer while the agent waits on a permission dialog", () => {
 });
 
 describe("Composer send key (D8: ⌘↵ sends, Enter is a newline)", () => {
-  it("shows the A-Workspace placeholder and send hint", () => {
+  it("shows the placeholder; the send slot is the mic until there's text", () => {
     render(<Composer taskId="t1" agent="claude" />);
     expect(screen.getByPlaceholderText("Reply to Claude…")).toBeInTheDocument();
-    expect(screen.getByText("⌘↵ send")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "hi" } });
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dictate" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "  " } });
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeInTheDocument();
   });
 
   it("a bare Enter does not send", () => {

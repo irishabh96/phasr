@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { AttachIconButton, AttachmentChips } from "@/components/attachments/Attachments";
 import { AGENT_META } from "@/components/ui/AgentMark";
 import { DictationBar } from "@/components/voice/DictationBar";
-import { DictationButton } from "@/components/voice/DictationButton";
+import { DictationButton, MicSlotButton } from "@/components/voice/DictationButton";
 import { withAttachmentBlock } from "@/lib/attachments";
 import { useAttachments } from "@/lib/hooks/useAttachments";
 import { tauri } from "@/lib/tauri";
@@ -28,6 +28,10 @@ const MAX_H = LINE_PX * MAX_LINES + PAD_Y * 2;
 const CHIP =
   "h-[26px] rounded-(--radius-control) bg-(--color-bg-elevated) px-[10px] text-[12px] text-(--color-text-secondary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)";
 
+/** The send / mic / stop buttons: 26px, filled. */
+const SLOT =
+  "ml-[4px] grid size-[26px] shrink-0 place-items-center rounded-(--radius-control) transition-colors duration-(--dur-1) ease-(--ease-out) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)";
+
 /** ⌘↵ (Ctrl+↵ off macOS) sends; a bare Enter is a newline (spec D8). */
 export function isSendChord(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">): boolean {
   return e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
@@ -50,9 +54,9 @@ export function isSendChord(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey"
  * Attachments (the paperclip, a pasted screenshot, or files dropped on the
  * box) ride along as an "Attached files:" block under the message.
  *
- * The mic (or ⌘⇧D) dictates: while you talk the controls row becomes the
- * dictation bar (same height), and the text lands at the caret to edit
- * before sending.
+ * The send button is a mic while the box is empty (or ⌘⇧D): while you
+ * talk the controls row becomes the dictation bar (same height), and the
+ * text lands at the caret, turning the mic into Send.
  */
 export function Composer({
   taskId,
@@ -105,6 +109,7 @@ export function Composer({
   const dictation = useDictation({ textareaRef: ref, value: text, setValue: setText, disabled });
   const name = agent ? AGENT_META[agent].label : "the agent";
   const working = !!turn && mustQueue(turn.state);
+  const hasContent = text.trim() !== "" || attachments.items.length > 0;
   const turnState = turn ? turn.state : undefined;
   // They clear once you type and come back when the input is empty again.
   const showReplies = !!turn && !working && text === "";
@@ -338,11 +343,27 @@ export function Composer({
                   <span className="flex-1" />
                 </>
               )}
-              <DictationButton dictation={dictation} disabled={disabled} />
               <AttachIconButton disabled={disabled} onClick={() => void attachments.pick()} />
-              <span aria-hidden className="text-[11px] text-(--color-text-muted)">
-                {working ? "⌘↵ queue" : "⌘↵ send"}
-              </span>
+              {/* One primary slot: the mic while the box is empty, Send
+                  (Queue mid-turn) once there's something to send. ⌘↵ sends
+                  either way. Mid-turn, Stop stays beside it. */}
+              {hasContent ? (
+                <button
+                  type="button"
+                  aria-label={working ? "Queue message" : "Send"}
+                  title={working ? "Queue for when the turn ends (⌘↵)" : "Send (⌘↵)"}
+                  aria-keyshortcuts="Meta+Enter"
+                  disabled={disabled || sending}
+                  onClick={() => void send(text)}
+                  className={cn(SLOT, "bg-(--color-accent-500) text-(--color-accent-onfill) hover:bg-(--color-accent-400)")}
+                >
+                  <ArrowUp className="size-[13px]" strokeWidth={2.5} aria-hidden />
+                </button>
+              ) : (
+                <DictationButton dictation={dictation}>
+                  <MicSlotButton disabled={disabled} onClick={dictation.start} className={SLOT} />
+                </DictationButton>
+              )}
               {working ? (
                 <button
                   type="button"
@@ -350,22 +371,11 @@ export function Composer({
                   title={`Stop this turn (${name} keeps the session)`}
                   disabled={stopping}
                   onClick={() => void stop()}
-                  className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-bg-elevated) text-(--color-text-primary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+                  className={cn(SLOT, "bg-(--color-bg-elevated) text-(--color-text-primary) hover:bg-(--color-bg-hover)")}
                 >
                   <Square className="size-[10px] fill-current" aria-hidden />
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  aria-label="Send"
-                  aria-keyshortcuts="Meta+Enter"
-                  disabled={disabled || sending || (!text.trim() && attachments.items.length === 0)}
-                  onClick={() => void send(text)}
-                  className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-accent-500) text-(--color-accent-onfill) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-accent-400) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
-                >
-                  <ArrowUp className="size-[13px]" strokeWidth={2.5} aria-hidden />
-                </button>
-              )}
+              ) : null}
             </>
           )}
         </div>

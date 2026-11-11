@@ -62,11 +62,12 @@ describe("Composer attachments", () => {
   it("a removed chip is not sent; attachments alone can be sent", async () => {
     sendMessageToTask.mockResolvedValue(undefined);
     render(<Composer taskId="t1" agent="claude" />);
-    const send = screen.getByRole("button", { name: "Send" });
-    expect(send).toBeDisabled();
+    // Nothing to send yet: the slot is the mic.
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
     await attachViaPaperclip(["/a/one.txt", "/a/two.txt"]);
     fireEvent.click(await screen.findByRole("button", { name: "Remove one.txt" }));
     expect(screen.queryByRole("button", { name: "one.txt" })).toBeNull();
+    const send = screen.getByRole("button", { name: "Send" });
     expect(send).toBeEnabled();
     fireEvent.click(send);
     await waitFor(() => expect(sendMessageToTask).toHaveBeenCalledWith("t1", "Attached files:\n- /a/two.txt", true));

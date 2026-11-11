@@ -589,8 +589,8 @@ test.describe("Agent transcript view", () => {
     expect(await callsOf(page, "get_transcript")).toEqual([]);
     const tabs = page.getByRole("tablist", { name: "Workspace tabs" });
     await expect(tabs.getByLabel("Agent view")).toHaveCount(1);
-    // The composer is today's: Send, no Stop, no queue.
-    await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+    // The composer is today's: the mic (Send once there's text), no Stop, no queue.
+    await expect(page.getByRole("button", { name: "Dictate" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Stop turn" })).toHaveCount(0);
   });
 

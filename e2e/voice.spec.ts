@@ -74,7 +74,10 @@ test("Composer: dictate, see the meter, ↵ inserts the text at the caret", asyn
 
   await setResponse(page, "stop_dictation", "run the tests");
   await clearCalls(page);
-  await page.getByRole("button", { name: "Dictate", exact: true }).click();
+  // With text in the box the slot is Send; ⌘⇧D still dictates at the caret.
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Dictate", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Meta+Shift+D");
   await waitForCall(page, "start_dictation");
   expect((await calls(page)).find((c) => c.cmd === "start_dictation")?.args).toEqual({ modelId: "base-en" });
 
@@ -90,10 +93,36 @@ test("Composer: dictate, see the meter, ↵ inserts the text at the caret", asyn
   await page.keyboard.press("Enter");
   await waitForCall(page, "stop_dictation");
   await expect(box).toHaveValue("Please run the tests now");
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
   await expect(bar).toHaveCount(0);
   // Inserted, not sent: the message waits for ⌘↵.
   expect((await calls(page)).some((c) => c.cmd === "send_message_to_task")).toBe(false);
   expect(errors.filter((e) => /Uncaught|PAGEERROR/.test(e))).toEqual([]);
+});
+
+test("Composer: an empty box's send slot is the mic; typing turns it into Send", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await boot(page, true);
+  const box = page.getByPlaceholder(/^Reply to /);
+  const mic = page.getByRole("button", { name: "Dictate", exact: true });
+  await expect(mic).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send" })).toHaveCount(0);
+  await expect(page.getByText("⌘↵ send")).toHaveCount(0);
+  if (SHOTS) await box.locator("xpath=../..").screenshot({ path: `${SHOTS}/composer-empty.png` });
+  await box.fill("hello");
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(mic).toHaveCount(0);
+  if (SHOTS) await box.locator("xpath=../..").screenshot({ path: `${SHOTS}/composer-typed.png` });
+  await box.fill("");
+  await expect(mic).toBeVisible();
+
+  // Clicking the mic records; finishing fills the box and the slot becomes Send.
+  await setResponse(page, "stop_dictation", "Ship it.");
+  await mic.click();
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveAttribute("data-dictation", "recording");
+  await page.getByRole("button", { name: "Finish dictation" }).click();
+  await expect(box).toHaveValue("Ship it.");
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
 });
 
 test("Composer: Esc cancels and nothing is inserted; ⌘⇧D toggles", async ({ page }) => {

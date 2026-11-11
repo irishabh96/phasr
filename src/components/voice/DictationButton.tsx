@@ -214,6 +214,27 @@ export function DownloadProgress({ model, compact = false }: { model: VoiceModel
   );
 }
 
+/** The composer's primary slot while the box is empty: a filled mic where Send goes. */
+export const MicSlotButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement>>(
+  ({ className, type = "button", ...rest }, ref) => (
+    <button
+      ref={ref}
+      type={type}
+      aria-label="Dictate"
+      title={`Dictate (${DICTATE})`}
+      aria-keyshortcuts="Meta+Shift+D"
+      className={cn(
+        className,
+        "bg-(--color-bg-elevated) text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+      )}
+      {...rest}
+    >
+      <Mic aria-hidden className="size-[14px]" strokeWidth={2} />
+    </button>
+  ),
+);
+MicSlotButton.displayName = "MicSlotButton";
+
 /** New task's chip version of the mic: the dashed "adds a value" look of Attach. */
 export const DictateChip = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement>>(
   ({ className, type = "button", ...rest }, ref) => (
