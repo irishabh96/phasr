@@ -91,7 +91,10 @@
   "packageManager": "pnpm@8.13.1+sha1.90f9b2bb3ed58632bcb7b13c3902d6873ee9501c",
   "pnpm": {
     "overrides": {
-      "@radix-ui/react-dismissable-layer": "1.1.19"
+      "@radix-ui/react-dismissable-layer": "1.1.19",
+      "seroval": "^1.8.1",
+      "seroval-plugins": "^1.8.0",
+      "js-cookie": "^3.0.8"
     },
     "patchedDependencies": {
       "ghostty-web@0.4.0": "patches/ghostty-web@0.4.0.patch"
