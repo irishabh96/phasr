@@ -8,6 +8,7 @@ export const SETTINGS_SECTION_IDS = [
   "appearance",
   "terminal",
   "agents",
+  "voice",
   "run-commands",
   "keyboard",
   "notifications",
@@ -73,6 +74,16 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
       { id: "permission-mode", label: "Default permission mode", keywords: "ask shell edits skip approvals" },
       { id: "suggest-replies", label: "Suggest replies", keywords: "suggestions chips composer haiku transcript next" },
       { id: "ANTHROPIC_API_KEY", label: "API keys", keywords: "anthropic openai gemini keychain token" },
+    ],
+  },
+  {
+    id: "voice",
+    label: "Voice",
+    scope: "app",
+    rows: [
+      { id: "voice-model", label: "Speech model", keywords: "whisper dictation dictate speech to text transcribe download microphone" },
+      { id: "voice-language", label: "Spoken language", keywords: "whisper multilingual" },
+      { id: "microphone", label: "Microphone access", keywords: "permission privacy" },
     ],
   },
   {

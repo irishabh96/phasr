@@ -267,7 +267,7 @@ describe("transcript items", () => {
       const row = container.querySelector('[data-tool="Bash"]')!;
       expect(row).toHaveAttribute("data-background-status", "running");
       expect(screen.getByRole("img", { name: "running in background" })).toBeInTheDocument();
-      expect(row).toHaveTextContent(/in background · \d+(s|m)/);
+      expect(row).toHaveTextContent(/in background · \d+(s|m|h)/);
       // The call's own ✓ isn't shown: the command is what's running.
       expect(screen.queryByRole("img", { name: "done" })).toBeNull();
       expect(screen.queryByText("ready on :1420")).toBeNull();

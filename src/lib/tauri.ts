@@ -1,6 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
+  MicAccess,
+  VoiceModel,
   Agent,
   AgentDetection,
   AgentFileEdit,
@@ -388,6 +390,20 @@ export const tauri = {
   setApiKey: (name: ApiKeyName, value: string) =>
     invoke<ApiKeyStatus>("set_api_key", { name, value }),
   deleteApiKey: (name: ApiKeyName) => invoke<void>("delete_api_key", { name }),
+
+  // ── voice input (Whisper on this Mac) ────────────────────────────────
+  listVoiceModels: () => invoke<VoiceModel[]>("list_voice_models"),
+  /** Returns once started; progress arrives as `phasr://voice-model`. */
+  downloadVoiceModel: (modelId: string) => invoke<void>("download_voice_model", { modelId }),
+  cancelVoiceModelDownload: (modelId: string) => invoke<void>("cancel_voice_model_download", { modelId }),
+  deleteVoiceModel: (modelId: string) => invoke<void>("delete_voice_model", { modelId }),
+  microphoneAccess: () => invoke<MicAccess>("microphone_access"),
+  /** Opens the microphone (asking for access the first time). */
+  startDictation: (modelId: string) => invoke<void>("start_dictation", { modelId }),
+  /** Closes it and returns the text; "" when nothing was said. */
+  stopDictation: (language: string | null) => invoke<string>("stop_dictation", { language }),
+  cancelDictation: () => invoke<void>("cancel_dictation"),
+  openMicrophoneSettings: () => invoke<void>("open_microphone_settings"),
 
   // ── git ──────────────────────────────────────────────────────────────
   gitStatus: (workspaceId: string) =>

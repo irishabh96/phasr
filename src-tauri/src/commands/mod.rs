@@ -18,6 +18,7 @@ pub mod review;
 pub mod run_commands;
 pub mod session_terminal;
 pub mod settings;
+pub mod voice;
 pub mod workspaces;
 
 use crate::auth::{AuthError, Session, SessionState};

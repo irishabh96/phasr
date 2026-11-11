@@ -2,6 +2,8 @@ import { ArrowUp, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AttachIconButton, AttachmentChips } from "@/components/attachments/Attachments";
 import { AGENT_META } from "@/components/ui/AgentMark";
+import { DictationBar } from "@/components/voice/DictationBar";
+import { DictationButton } from "@/components/voice/DictationButton";
 import { withAttachmentBlock } from "@/lib/attachments";
 import { useAttachments } from "@/lib/hooks/useAttachments";
 import { tauri } from "@/lib/tauri";
@@ -11,6 +13,7 @@ import type { Agent, TaskAgentState } from "@/lib/types";
 import { showToast } from "@/lib/toast";
 import { humanizeError, isAwaitingAnswerError } from "@/lib/humanizeError";
 import { cn } from "@/lib/utils";
+import { useDictation } from "@/lib/voice/useDictation";
 
 /** One line of the 13.5px / 1.45 input. */
 const LINE_PX = 19.5;
@@ -46,6 +49,10 @@ export function isSendChord(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey"
  *
  * Attachments (the paperclip, a pasted screenshot, or files dropped on the
  * box) ride along as an "Attached files:" block under the message.
+ *
+ * The mic (or ⌘⇧D) dictates: while you talk the controls row becomes the
+ * dictation bar (same height), and the text lands at the caret to edit
+ * before sending.
  */
 export function Composer({
   taskId,
@@ -95,6 +102,7 @@ export function Composer({
   /** A chip filled the input: put the caret after its text once it renders. */
   const caretToEnd = useRef(false);
   const attachments = useAttachments({ dropRef: surfaceRef });
+  const dictation = useDictation({ textareaRef: ref, value: text, setValue: setText, disabled });
   const name = agent ? AGENT_META[agent].label : "the agent";
   const working = !!turn && mustQueue(turn.state);
   const turnState = turn ? turn.state : undefined;
@@ -196,6 +204,7 @@ export function Composer({
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    if (dictation.onKeyDown(e.nativeEvent)) return;
     if (isSendChord(e)) {
       e.preventDefault();
       void send(text);
@@ -276,80 +285,88 @@ export function Composer({
           style={{ height: MIN_H, paddingTop: PAD_Y, paddingBottom: PAD_Y }}
           className="block w-full resize-none overflow-hidden border-0 bg-transparent px-0 text-[13.5px] leading-[1.45] text-(--color-text-primary) shadow-none outline-none placeholder:text-(--color-text-muted) focus:shadow-none disabled:opacity-50"
         />
-        {/* Fixed 26px row: chips coming, going or being replaced never move the input. */}
+        {/* Fixed 26px row: chips coming, going or being replaced never move the input.
+            While dictating, the dictation bar takes the whole row. */}
         <div className="flex h-[26px] items-center gap-[6px]">
-          {turn ? (
-            <div
-              ref={chipsRef}
-              role="group"
-              aria-label="Suggested replies"
-              data-testid="reply-suggestions"
-              aria-busy={shimmer || undefined}
-              className="flex h-full min-w-0 flex-1 items-center gap-[6px] overflow-hidden"
-            >
-              {replies.map((reply) => (
-                <button
-                  key={reply.label}
-                  type="button"
-                  title={reply.text}
-                  data-suggestion-source={reply.source}
-                  disabled={disabled || sending}
-                  onClick={() => fill(reply.text)}
-                  className={cn(CHIP, "min-w-0 max-w-[260px] shrink truncate")}
-                >
-                  {reply.label}
-                </button>
-              ))}
-              {shimmer ? (
-                <span
-                  aria-hidden
-                  data-suggestion-shimmer
-                  className="skeleton-bar h-[26px] w-[132px] shrink-0 rounded-(--radius-control) bg-(--color-bg-elevated) animate-[pulse-skeleton_1.4s_ease-in-out_infinite]"
-                />
-              ) : null}
-            </div>
+          {dictation.active ? (
+            <DictationBar dictation={dictation} />
           ) : (
             <>
-              {["Continue", "Run the tests"].map((chip) => (
-                <button
-                  key={chip}
-                  type="button"
-                  disabled={disabled || sending}
-                  onClick={() => void send(chip)}
-                  className={CHIP}
+              {turn ? (
+                <div
+                  ref={chipsRef}
+                  role="group"
+                  aria-label="Suggested replies"
+                  data-testid="reply-suggestions"
+                  aria-busy={shimmer || undefined}
+                  className="flex h-full min-w-0 flex-1 items-center gap-[6px] overflow-hidden"
                 >
-                  {chip}
+                  {replies.map((reply) => (
+                    <button
+                      key={reply.label}
+                      type="button"
+                      title={reply.text}
+                      data-suggestion-source={reply.source}
+                      disabled={disabled || sending}
+                      onClick={() => fill(reply.text)}
+                      className={cn(CHIP, "min-w-0 max-w-[260px] shrink truncate")}
+                    >
+                      {reply.label}
+                    </button>
+                  ))}
+                  {shimmer ? (
+                    <span
+                      aria-hidden
+                      data-suggestion-shimmer
+                      className="skeleton-bar h-[26px] w-[132px] shrink-0 rounded-(--radius-control) bg-(--color-bg-elevated) animate-[pulse-skeleton_1.4s_ease-in-out_infinite]"
+                    />
+                  ) : null}
+                </div>
+              ) : (
+                <>
+                  {["Continue", "Run the tests"].map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      disabled={disabled || sending}
+                      onClick={() => void send(chip)}
+                      className={CHIP}
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                  <span className="flex-1" />
+                </>
+              )}
+              <DictationButton dictation={dictation} disabled={disabled} />
+              <AttachIconButton disabled={disabled} onClick={() => void attachments.pick()} />
+              <span aria-hidden className="text-[11px] text-(--color-text-muted)">
+                {working ? "⌘↵ queue" : "⌘↵ send"}
+              </span>
+              {working ? (
+                <button
+                  type="button"
+                  aria-label="Stop turn"
+                  title={`Stop this turn (${name} keeps the session)`}
+                  disabled={stopping}
+                  onClick={() => void stop()}
+                  className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-bg-elevated) text-(--color-text-primary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+                >
+                  <Square className="size-[10px] fill-current" aria-hidden />
                 </button>
-              ))}
-              <span className="flex-1" />
+              ) : (
+                <button
+                  type="button"
+                  aria-label="Send"
+                  aria-keyshortcuts="Meta+Enter"
+                  disabled={disabled || sending || (!text.trim() && attachments.items.length === 0)}
+                  onClick={() => void send(text)}
+                  className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-accent-500) text-(--color-accent-onfill) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-accent-400) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+                >
+                  <ArrowUp className="size-[13px]" strokeWidth={2.5} aria-hidden />
+                </button>
+              )}
             </>
-          )}
-          <AttachIconButton disabled={disabled} onClick={() => void attachments.pick()} />
-          <span aria-hidden className="text-[11px] text-(--color-text-muted)">
-            {working ? "⌘↵ queue" : "⌘↵ send"}
-          </span>
-          {working ? (
-            <button
-              type="button"
-              aria-label="Stop turn"
-              title={`Stop this turn (${name} keeps the session)`}
-              disabled={stopping}
-              onClick={() => void stop()}
-              className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-bg-elevated) text-(--color-text-primary) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-bg-hover) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
-            >
-              <Square className="size-[10px] fill-current" aria-hidden />
-            </button>
-          ) : (
-            <button
-              type="button"
-              aria-label="Send"
-              aria-keyshortcuts="Meta+Enter"
-              disabled={disabled || sending || (!text.trim() && attachments.items.length === 0)}
-              onClick={() => void send(text)}
-              className="ml-[4px] grid size-[26px] place-items-center rounded-(--radius-control) bg-(--color-accent-500) text-(--color-accent-onfill) transition-colors duration-(--dur-1) ease-(--ease-out) hover:bg-(--color-accent-400) disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
-            >
-              <ArrowUp className="size-[13px]" strokeWidth={2.5} aria-hidden />
-            </button>
           )}
         </div>
       </div>

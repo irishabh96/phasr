@@ -4,6 +4,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Folder, GitBranch, Play, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AttachChip, AttachmentChips } from "@/components/attachments/Attachments";
+import { DictationBar } from "@/components/voice/DictationBar";
+import { DictateChip, DictationButton } from "@/components/voice/DictationButton";
+import { useDictation } from "@/lib/voice/useDictation";
 import { AGENT_META, AgentMark } from "@/components/ui/AgentMark";
 import { BaseBranchField } from "@/components/ui/BaseBranchField";
 import { Button } from "@/components/ui/Button";
@@ -92,6 +95,7 @@ export function NewTaskForm({
   // dialog is modal, so any drop while it's open is an attachment.
   const formRef = useRef<HTMLFormElement>(null);
   const attachments = useAttachments({ dropRef: formRef, modal: variant === "dialog" });
+  const dictation = useDictation({ textareaRef: promptDrop.ref, value: prompt, setValue: setPrompt });
   const [agent, setAgent] = useState<Agent | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [runIn, setRunIn] = useState<RunIn>("worktree");
@@ -230,6 +234,7 @@ export function NewTaskForm({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
     const native = e.nativeEvent as KeyboardEvent;
+    if (dictation.onKeyDown(native)) return;
     if (matchShortcut(native, SHORTCUTS.saveDraft)) {
       e.preventDefault();
       void submit("draft");
@@ -289,101 +294,110 @@ export function NewTaskForm({
         </div>
       </div>
 
-      {/* One row of property chips. */}
-      <div className={cn("flex flex-wrap items-center gap-[6px] pb-[16px] pt-[14px]", pad)}>
-        <AgentChip
-          agents={allAgents}
-          value={activeAgentValue}
-          detectionFor={detectionFor}
-          onChange={(a) => {
-            setAgent(a);
-            setMode(null);
-          }}
-        />
-        <BaseBranchChip
-          repoPath={repository?.localPath ?? null}
-          defaultBranch={repository?.defaultBranch}
-          value={baseBranch}
-          onChange={setBaseBranch}
-          inPlace={runIn === "in-place"}
-          disabled={!repository || submitting !== null}
-        />
-        <ChipMenu<RunIn>
-          label="Runs in"
-          icon={<Folder />}
-          value={runIn}
-          onChange={setRunIn}
-          options={[
-            { value: "worktree", label: RUN_IN_LABEL.worktree, hint: RUN_IN_HINT.worktree },
-            {
-              value: "in-place",
-              label: RUN_IN_LABEL["in-place"],
-              hint: localBusy
-                ? "In your checkout. Replaces the shell open in the local workspace."
-                : RUN_IN_HINT["in-place"],
-              disabled: !localWs,
-            },
-          ]}
-        />
-        <ChipMenu<PermissionMode>
-          label="Permissions"
-          icon={<ShieldCheck />}
-          value={effectiveMode}
-          onChange={setMode}
-          warn={effectiveMode === "skip-all"}
-          width={300}
-          options={supportedModes.map((m) => ({
-            value: m,
-            label: PERMISSION_LABEL[m],
-            hint: PERMISSION_HINT[m],
-            warn: m === "skip-all",
-          }))}
-          footer={
-            <>
-            <DropdownMenu.Separator className="mx-[4px] my-[4px] h-px bg-(--color-border-default)" />
-            <DropdownMenu.CheckboxItem
-              checked={notify}
-              onCheckedChange={setNotify}
-              // Keep the popover open: it's a setting, not a pick.
-              onSelect={(e) => e.preventDefault()}
-              className={cn(ROW, "h-[32px] gap-[10px]")}
-            >
-              <span className="min-w-0 flex-1 truncate text-(--color-text-primary)">Notify me when it needs you</span>
-              <SwitchMark checked={notify} />
-            </DropdownMenu.CheckboxItem>
-            </>
-          }
-        />
-        {runCommands && runCommands.length > 0 ? (
-          <ChipMenu<string>
-            label="Run command"
-            icon={
-              <Play
-                className={pickedRun ? "fill-(--color-success) text-(--color-success)" : "fill-current"}
-              />
-            }
-            value={pickedRun?.id ?? NO_RUN}
-            valueLabel={pickedRun ? pickedRun.name : "None"}
-            chipText={pickedRun ? pickedRun.name : "Run"}
-            onChange={(v) => setRunCommandId(v === NO_RUN ? null : v)}
-            width={280}
+      {/* One row of property chips; the dictation bar while you talk. */}
+      {dictation.active ? (
+        <div className={cn("flex items-center pb-[16px] pt-[14px]", pad)}>
+          <DictationBar dictation={dictation} />
+        </div>
+      ) : (
+        <div className={cn("flex flex-wrap items-center gap-[6px] pb-[16px] pt-[14px]", pad)}>
+          <AgentChip
+            agents={allAgents}
+            value={activeAgentValue}
+            detectionFor={detectionFor}
+            onChange={(a) => {
+              setAgent(a);
+              setMode(null);
+            }}
+          />
+          <BaseBranchChip
+            repoPath={repository?.localPath ?? null}
+            defaultBranch={repository?.defaultBranch}
+            value={baseBranch}
+            onChange={setBaseBranch}
+            inPlace={runIn === "in-place"}
+            disabled={!repository || submitting !== null}
+          />
+          <ChipMenu<RunIn>
+            label="Runs in"
+            icon={<Folder />}
+            value={runIn}
+            onChange={setRunIn}
             options={[
-              { value: NO_RUN, label: "None", hint: "Start only the agent." },
-              ...runCommands.map((rc) => {
-                const trusted = isTrusted(rc.id);
-                return {
-                  value: rc.id,
-                  label: rc.name,
-                  hint: trusted ? rc.command : "Allow on this Mac first",
-                  mono: trusted,
-                  disabled: !trusted,
-                };
-              }),
+              { value: "worktree", label: RUN_IN_LABEL.worktree, hint: RUN_IN_HINT.worktree },
+              {
+                value: "in-place",
+                label: RUN_IN_LABEL["in-place"],
+                hint: localBusy
+                  ? "In your checkout. Replaces the shell open in the local workspace."
+                  : RUN_IN_HINT["in-place"],
+                disabled: !localWs,
+              },
             ]}
           />
-        ) : null}
-        <AttachChip disabled={submitting !== null} onClick={() => void attachments.pick()} />
-      </div>
+          <ChipMenu<PermissionMode>
+            label="Permissions"
+            icon={<ShieldCheck />}
+            value={effectiveMode}
+            onChange={setMode}
+            warn={effectiveMode === "skip-all"}
+            width={300}
+            options={supportedModes.map((m) => ({
+              value: m,
+              label: PERMISSION_LABEL[m],
+              hint: PERMISSION_HINT[m],
+              warn: m === "skip-all",
+            }))}
+            footer={
+              <>
+              <DropdownMenu.Separator className="mx-[4px] my-[4px] h-px bg-(--color-border-default)" />
+              <DropdownMenu.CheckboxItem
+                checked={notify}
+                onCheckedChange={setNotify}
+                // Keep the popover open: it's a setting, not a pick.
+                onSelect={(e) => e.preventDefault()}
+                className={cn(ROW, "h-[32px] gap-[10px]")}
+              >
+                <span className="min-w-0 flex-1 truncate text-(--color-text-primary)">Notify me when it needs you</span>
+                <SwitchMark checked={notify} />
+              </DropdownMenu.CheckboxItem>
+              </>
+            }
+          />
+          {runCommands && runCommands.length > 0 ? (
+            <ChipMenu<string>
+              label="Run command"
+              icon={
+                <Play
+                  className={pickedRun ? "fill-(--color-success) text-(--color-success)" : "fill-current"}
+                />
+              }
+              value={pickedRun?.id ?? NO_RUN}
+              valueLabel={pickedRun ? pickedRun.name : "None"}
+              chipText={pickedRun ? pickedRun.name : "Run"}
+              onChange={(v) => setRunCommandId(v === NO_RUN ? null : v)}
+              width={280}
+              options={[
+                { value: NO_RUN, label: "None", hint: "Start only the agent." },
+                ...runCommands.map((rc) => {
+                  const trusted = isTrusted(rc.id);
+                  return {
+                    value: rc.id,
+                    label: rc.name,
+                    hint: trusted ? rc.command : "Allow on this Mac first",
+                    mono: trusted,
+                    disabled: !trusted,
+                  };
+                }),
+              ]}
+            />
+          ) : null}
+          <AttachChip disabled={submitting !== null} onClick={() => void attachments.pick()} />
+          <DictationButton dictation={dictation} settingsLink={variant !== "dialog"}>
+            <DictateChip disabled={submitting !== null} onClick={dictation.start} />
+          </DictationButton>
+        </div>
+      )}
 
       {showPlan ? (
         <div className={cn("pb-[12px]", pad)}>

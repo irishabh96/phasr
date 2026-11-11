@@ -194,6 +194,18 @@ export const SHORTCUTS = {
     label: "Repository notes",
   },
 
+  // Voice input: start dictating into the focused composer / New task
+  // prompt; again to stop and insert the text. ⌘ only: Ctrl+Shift+D is a
+  // TUI binding in places.
+  dictate: {
+    key: "d",
+    meta: true,
+    metaOnly: true,
+    shift: true,
+    display: ["⌘", "⇧", "D"],
+    label: "Dictate",
+  },
+
   // Diff viewer
   toggleDiffMode: {
     key: "\\",

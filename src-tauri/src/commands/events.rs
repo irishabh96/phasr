@@ -19,6 +19,7 @@ use crate::run_commands::RunCommandRuntime;
 use crate::orchestrator::board::BoardEvent;
 use crate::orchestrator::{TaskBoard, TaskOrchestrator, TaskStatusEvent};
 use crate::sync::CloudSyncState;
+use crate::voice::{VoiceEvent, VoiceService};
 
 /// Task lifecycle transitions (pending → running → completed/failed/…).
 pub const TASK_STATUS_EVENT: &str = "phasr://task-status";
@@ -58,6 +59,12 @@ pub const TRANSCRIPT_EVENT: &str = "phasr://transcript";
 /// (generated, or the CLI's own). Payload: `SuggestionsEvent`
 /// (`{taskId, turnId, suggestions}`); `turnId` is the turn's `result` item.
 pub const SUGGESTIONS_EVENT: &str = "phasr://suggestions";
+/// The microphone level while dictating, every 50ms. Payload:
+/// `VoiceLevelPayload` (`{level}`, 0–1).
+pub const VOICE_LEVEL_EVENT: &str = "phasr://voice-level";
+/// A Whisper model download progressed, finished, failed or was
+/// cancelled. Payload: `ModelProgress`.
+pub const VOICE_MODEL_EVENT: &str = "phasr://voice-model";
 
 /// Drain `rx` on the async runtime, handing each event to `forward`.
 /// A lagging receiver skips what it missed rather than stopping: every
@@ -182,6 +189,23 @@ pub struct CheckOutputPayload {
     pub check_run_id: String,
     pub workspace_id: String,
     pub chunk: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceLevelPayload {
+    level: f32,
+}
+
+/// Re-emit dictation levels and model-download progress. Call once.
+pub fn spawn_voice_bridge(voice: &VoiceService, app: AppHandle) {
+    spawn_forwarder(voice.subscribe(), move |event| match event {
+        VoiceEvent::Level(level) => {
+            let _ = app.emit(VOICE_LEVEL_EVENT, VoiceLevelPayload { level });
+        }
+        VoiceEvent::Model(progress) => {
+            let _ = app.emit(VOICE_MODEL_EVENT, progress);
+        }
+    });
 }
 
 /// Re-emit check runs + their (already throttled) output. Call once.

@@ -64,6 +64,12 @@ export const TRANSCRIPT_EVENT = "phasr://transcript";
  */
 export const SUGGESTIONS_EVENT = "phasr://suggestions";
 
+/** The microphone level while dictating, every 50ms. Payload: `{ level }` (0–1). */
+export const VOICE_LEVEL_EVENT = "phasr://voice-level";
+
+/** A Whisper model download moved on. Payload: `VoiceModelProgress`. */
+export const VOICE_MODEL_EVENT = "phasr://voice-model";
+
 /**
  * Files changed in a watched worktree (debounced; `.git`, `node_modules`,
  * `target`, `dist` filtered). Emitted by `src-tauri/src/fswatch.rs` while a

@@ -39,6 +39,8 @@ You can attach images and files, and **Show commands** lists exactly what Phasr 
   - Suggested replies follow from what Claude just said.
   - **Stop turn** interrupts Claude without ending the task.
 - **Terminal view (every agent).** A full terminal (ghostty-web). Open extra shell tabs with ⌘T.
+- **Voice input.** Click the mic in the reply box or the New task prompt (or press ⌘⇧D) and talk. Whisper turns it into text on your Mac, so your voice never leaves it, and the text lands where your cursor was for you to edit before sending.
+  - The speech model isn't bundled. The first click offers a one-time download (148 MB); **Settings → Voice** has a more accurate English model and a multilingual one.
 - **Approvals.** When an agent asks to run a command or edit a file, a card appears in that task: **Allow once** (⌘Y), **Allow for this task**, or **Deny** (⌘⌫).
   - Phasr also sends a short macOS notification with **Allow** and **Deny** buttons, so you can answer without switching to the app.
   - The bell icon keeps an inbox of approvals, finished tasks, failures and check results.
@@ -125,6 +127,7 @@ The transcript view, subagents and suggested replies are Claude-only.
 | ⌘I | Show or hide the side panel |
 | ⌘B | Collapse the task list |
 | ⌘⇧N | Repository notes |
+| ⌘⇧D | Dictate (↵ inserts, Esc cancels) |
 | ⌘1–⌘9 | Run a pinned command |
 | ⌘+ / ⌘− / ⌘0 | Terminal font size |
 | ⌘, | Settings |
@@ -162,6 +165,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, code layout and PR fl
 - **Terminals:** ghostty-web (libghostty-vt in WebAssembly), each backed by a PTY in Rust
 - **Agent transcript:** Claude Code's `stream-json` protocol
 - **Editor and diagrams:** CodeMirror 6 and Mermaid, loaded only when used
+- **Voice input:** whisper.cpp (Metal) through `whisper-rs`, the microphone through `cpal`
 - **Local data:** SQLite via `sqlx`
 - **Auth and sync:** Clerk and Supabase
 

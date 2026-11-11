@@ -14,6 +14,7 @@ import {
   TerminalSection,
 } from "./AppSections";
 import { RunCommandsSettings } from "./RepoSections";
+import { VoiceSection } from "./VoiceSection";
 import { BranchRulesSettings, WorktreesSettings } from "./RepoRules";
 import { SETTINGS_SECTIONS, searchSettings, sectionMeta, type SettingsSectionId } from "./sections";
 import { useSettingsRoute } from "./useSettingsRoute";
@@ -149,6 +150,7 @@ export function SettingsSheet() {
               {section === "appearance" && <AppearanceSection />}
               {section === "terminal" && <TerminalSection />}
               {section === "agents" && <AgentsSection />}
+              {section === "voice" && <VoiceSection />}
               {section === "run-commands" && <RunCommandsSettings repositoryId={repositoryId} />}
               {section === "keyboard" && <KeyboardSection />}
               {section === "notifications" && <NotificationsSection />}

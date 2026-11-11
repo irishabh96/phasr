@@ -623,6 +623,7 @@ const KEYBOARD_GROUPS: { title: string; ids: (keyof typeof SHORTCUTS)[] }[] = [
       "stopAgent",
       "approveAgent",
       "denyAgent",
+      "dictate",
       "toggleRightPanel",
       "toggleSidebarPin",
       "toggleSidebarHide",

@@ -945,6 +945,31 @@ export interface ApiKeyStatus {
   hint: string | null;
 }
 
+/** A Whisper model for voice input (`list_voice_models`), in Settings order. */
+export interface VoiceModel {
+  id: string;
+  /** "Fast" / "Accurate" / "Multilingual". */
+  label: string;
+  /** "Whisper base · English". */
+  detail: string;
+  sizeBytes: number;
+  languages: "english" | "multilingual";
+  installed: boolean;
+  /** Bytes so far while a download runs, else null. */
+  downloading: number | null;
+}
+
+/** `phasr://voice-model`: a model download moved on. */
+export interface VoiceModelProgress {
+  modelId: string;
+  phase: "downloading" | "done" | "failed" | "cancelled";
+  downloaded: number;
+  total: number;
+  error: string | null;
+}
+
+export type MicAccess = "authorized" | "not-determined" | "denied" | "restricted" | "unsupported";
+
 /** One worktree of a repository (`list_repository_worktrees`; main checkout excluded). */
 export interface RepositoryWorktree {
   path: string;

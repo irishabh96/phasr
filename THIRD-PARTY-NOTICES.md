@@ -139,6 +139,23 @@ lodash-es, khroma and others (MIT), `rw` (BSD-3-Clause),
 <https://github.com/kieler/elkjs>). Each package's licence text ships in its
 `node_modules/<name>/LICENSE`.
 
+## whisper.cpp, Whisper and cpal (voice input)
+
+Dictation (`src-tauri/src/voice/`) transcribes on the Mac with whisper.cpp
+and ggml, compiled into the app through the `whisper-rs` bindings. MIT
+License, Copyright (c) 2023-2024 The ggml authors; the full text ships at
+`licenses/whisper.cpp-MIT.txt`. <https://github.com/ggml-org/whisper.cpp>.
+`whisper-rs` and `whisper-rs-sys` are released under the Unlicense.
+
+The speech models are not bundled. Settings › Voice downloads OpenAI's
+Whisper weights in whisper.cpp's ggml format from
+<https://huggingface.co/ggerganov/whisper.cpp> when you ask for them (MIT
+License, Copyright (c) 2022 OpenAI).
+
+The microphone is read through cpal (Apache-2.0,
+<https://github.com/RustAudio/cpal>) and permission is asked through
+`objc2-av-foundation` (Zlib OR Apache-2.0 OR MIT, used under MIT).
+
 ## CodeMirror and Lezer (editor)
 
 The Files-tab editor uses CodeMirror 6 (`@codemirror/*`) and the Lezer

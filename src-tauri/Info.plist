@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Voice input (src/voice). Without this key macOS terminates the app
+       the first time it opens the microphone. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Phasr listens only while you dictate, and transcribes on this Mac.</string>
+</dict>
+</plist>

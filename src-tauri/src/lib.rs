@@ -30,6 +30,7 @@ mod store;
 mod sync;
 mod util;
 mod vt;
+mod voice;
 #[cfg(target_os = "macos")]
 mod writing_tools;
 
@@ -150,6 +151,11 @@ pub fn run() {
             let db_path = default_db_path(&app_data_dir);
             let log_dir = app_data_dir.join("logs");
 
+            // Voice input: downloaded Whisper models live beside the DB.
+            let voice = voice::VoiceService::new(app_data_dir.join("models").join("whisper"));
+            commands::events::spawn_voice_bridge(&voice, app.handle().clone());
+            app.manage(voice);
+
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
             app.manage(task_runtime.clone());
 
@@ -167,6 +173,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::voice::list_voice_models,
+            commands::voice::download_voice_model,
+            commands::voice::cancel_voice_model_download,
+            commands::voice::delete_voice_model,
+            commands::voice::microphone_access,
+            commands::voice::start_dictation,
+            commands::voice::stop_dictation,
+            commands::voice::cancel_dictation,
+            commands::voice::open_microphone_settings,
             auth::set_session,
             auth::clear_session,
             auth::current_user_id,
