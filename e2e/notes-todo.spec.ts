@@ -125,7 +125,9 @@ test("arrow keys and / work inside the composer", async ({ page }) => {
   await field.type("foo.ts");
   await expect(field).toHaveValue("src/lib/foo.ts");
 
-  await field.press("Home");
+  // ⌘← (start of line, the app's macOS text keys): Home doesn't move the
+  // caret in a macOS text field, and WebKit — the shipping engine — agrees.
+  await field.press("Meta+ArrowLeft");
   await field.type("X");
   await expect(field).toHaveValue("Xsrc/lib/foo.ts");
 });

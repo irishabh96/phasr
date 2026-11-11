@@ -547,6 +547,67 @@ mod e2e {
         eprintln!("CHUNKED at {:.2}s: {}", cut as f32 / rate as f32, audio::join_text(&a, &b));
     }
 
+    /// Stress: a ~70s dictation (the clip seven times, with pauses) fed to
+    /// the live loop's settle-at-a-pause logic in 0.8s steps of audio,
+    /// timing every pass on the real model. Each pass must stay well under
+    /// a second and the final text must hold every repetition.
+    #[tokio::test]
+    #[ignore]
+    async fn live_long_dictation() {
+        let (Ok(dir), Ok(wav)) = (std::env::var("PHASR_VOICE_E2E"), std::env::var("PHASR_VOICE_WAV")) else {
+            return;
+        };
+        let store = ModelStore::new(dir.into());
+        let spec = catalog::find("base-en").unwrap();
+        let (clip, rate) = read_wav(&wav);
+        let mut audio_all = Vec::new();
+        for _ in 0..7 {
+            audio_all.extend_from_slice(&clip);
+            audio_all.extend(std::iter::repeat(0.0f32).take(rate as usize * 6 / 10));
+        }
+        let engine = mac::Engine::default();
+        engine.load(spec.id, &store.path(spec)).unwrap();
+        let path = store.path(spec);
+        let r = rate as usize;
+        let step = r * 8 / 10;
+        let mut live = Live::default();
+        let (mut worst, mut passes) = (std::time::Duration::ZERO, 0);
+        let mut have = 0;
+        while have < audio_all.len() {
+            have = (have + step).min(audio_all.len());
+            let window = &audio_all[live.committed_at..have];
+            if window.len() < r / 2 || !audio::has_speech(window, rate) {
+                continue;
+            }
+            let settle = window.len() > r * LIVE_WINDOW_SECS;
+            let cut = if settle { audio::quietest_cut(window, rate, 4.0) } else { window.len() };
+            let t = std::time::Instant::now();
+            let text = engine
+                .transcribe(spec.id, &path, &audio::pad_to_one_second(audio::to_whisper_rate(&window[..cut], rate)), "en")
+                .unwrap();
+            worst = worst.max(t.elapsed());
+            passes += 1;
+            if settle {
+                live.committed_text = audio::join_text(&live.committed_text, &text);
+                live.committed_at += cut;
+            }
+        }
+        let tail = &audio_all[live.committed_at..];
+        let t = std::time::Instant::now();
+        let last = engine
+            .transcribe(spec.id, &path, &audio::pad_to_one_second(audio::to_whisper_rate(tail, rate)), "en")
+            .unwrap();
+        let stop_latency = t.elapsed();
+        let full = audio::join_text(&live.committed_text, &last);
+        let reps = full.to_lowercase().matches("markdown table parser").count();
+        eprintln!(
+            "LIVE {:.0}s audio: {passes} passes, worst pass {:?}, stop {:?}, {reps}/7 repetitions\n{full}",
+            audio_all.len() as f32 / rate as f32, worst, stop_latency
+        );
+        assert!(worst < std::time::Duration::from_millis(1500), "{worst:?}");
+        assert!(reps >= 6, "{reps}");
+    }
+
     /// The real cleanup calls through the user's CLIs.
     /// `PHASR_VOICE_POLISH=1 cargo test voice::e2e::polish -- --ignored --nocapture`
     #[tokio::test]

@@ -1240,6 +1240,17 @@ function installMock(cfg: ReturnType<typeof makeFixtures>) {
   };
 
   (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+  // In the app, the notification plugin's own `window.Notification` starts
+  // at "default", so `isPermissionGranted()` asks the backend (answered
+  // below). A test browser's real one can say "denied" (newer headless
+  // Chromium does), which the plugin trusts before ever asking.
+  Object.defineProperty(window, "Notification", {
+    configurable: true,
+    value: class {
+      static permission = "default";
+      static requestPermission = () => Promise.resolve("granted");
+    },
+  });
   (window as any).__E2E__ = {
     calls,
     names: () => calls.map((c) => c.cmd),
@@ -1344,6 +1355,12 @@ export async function bootApp(page: Page, fixtures = makeFixtures()) {
   page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
   await page.addInitScript(installMock, fixtures);
   await page.goto("/");
+  // Let the app's startup routing settle (its lazy route modules load and
+  // the router replaces the URL). A spec that navigates again right away
+  // would otherwise race it: WebKit cancels a pending page load when the
+  // old page's router updates history ("interrupted by another
+  // navigation").
+  await page.waitForLoadState("networkidle").catch(() => {});
   return { errors };
 }
 

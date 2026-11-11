@@ -457,14 +457,17 @@ mod tests {
                 break true;
             }
             // A brand-new folder gets claude's first-run trust dialog
-            // ("Quick safety check … 1. Yes, I trust this folder").
-            // TUIs paint with cursor jumps between words, so match a
-            // single word. Answer it the way the user would in phasr's
-            // visible terminal — this is exactly the moment the writer
-            // thread must NOT have already spent its prompt + Enter on.
-            if !trust_accepted && combined.contains("safety") {
+            // ("Quick safety check … ❯ No, exit / Yes, I trust this
+            // folder"). Since 2.1.x "No, exit" is focused, so trusting is
+            // Down then Enter (what the approval card sends; see
+            // `heuristics::trust_keys`). TUIs paint with cursor jumps
+            // between words, so match a single word. This is exactly the
+            // moment the writer thread must NOT have already spent its
+            // prompt + Enter on.
+            if !trust_accepted && combined.contains("safety") && combined.contains("trust") {
                 trust_accepted = true;
-                let _ = handle.write(b"\r");
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = handle.write(b"\x1b[B\r");
             }
             if std::time::Instant::now() > deadline {
                 break false;
@@ -488,7 +491,7 @@ mod tests {
         assert!(
             submitted,
             "prompt was never submitted; full output at {dump:?}; last output: {:?}",
-            &combined[combined.len().saturating_sub(2000)..]
+            combined.chars().rev().take(2000).collect::<Vec<_>>().into_iter().rev().collect::<String>()
         );
     }
 
