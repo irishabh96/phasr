@@ -5,15 +5,17 @@ import { ConfirmDialog } from "@/components/ui/Dialog";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { SettingsCard, SettingsRow } from "@/components/ui/SettingsRow";
+import { Switch } from "@/components/ui/Switch";
 import { DownloadProgress } from "@/components/voice/DictationButton";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { tauri } from "@/lib/tauri";
-import type { MicAccess, VoiceModel } from "@/lib/types";
+import type { GlobeKeyAction, MicAccess, VoiceModel } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   activePolisher,
   activeVoiceModel,
   formatBytes,
+  setVoiceFnHold,
   setVoiceLanguage,
   setVoiceModel,
   setVoicePolish,
@@ -36,6 +38,13 @@ const MIC_LABEL: Record<MicAccess, string> = {
   unsupported: "Voice input needs macOS",
 };
 
+/** What macOS also does when you let go of fn (Keyboard › "Press 🌐 key to"). */
+const GLOBE_CLASH: Partial<Record<GlobeKeyAction, string>> = {
+  emoji: "opens the emoji picker",
+  "input-source": "switches the input source",
+  dictation: "starts its own dictation",
+};
+
 /**
  * Settings › Voice. Whisper models are downloaded here (or from the mic's
  * first click), kept in this Mac's app data and never synced; the radio
@@ -51,6 +60,8 @@ export function VoiceSection() {
   const { data: polishers } = useDictationPolishers();
   const polisher = activePolisher(prefs.polish, polishers);
   const mic = useQuery({ queryKey: ["voice", "mic"], queryFn: tauri.microphoneAccess, refetchOnWindowFocus: true });
+  const globe = useQuery({ queryKey: ["voice", "globe"], queryFn: tauri.globeKeyAction, refetchOnWindowFocus: true });
+  const clash = prefs.fnHold && globe.data ? GLOBE_CLASH[globe.data] : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -167,6 +178,24 @@ export function VoiceSection() {
         >
           <span className="font-mono text-[12px] text-(--color-text-secondary)">
             {SHORTCUTS.dictate.display.join("")}
+          </span>
+        </SettingsRow>
+        <SettingsRow
+          id="settings-row-voice-fn"
+          label="Hold fn to talk"
+          help={
+            clash
+              ? `Let go to insert the text. macOS also ${clash} when you let go of fn — set Keyboard › "Press 🌐 key to" to Do Nothing.`
+              : "Hold fn (🌐) while Phasr is in front and talk into the box you're in; let go to insert the text."
+          }
+        >
+          <span className="flex items-center gap-2">
+            {clash ? (
+              <Button size="sm" onClick={() => void tauri.openKeyboardSettings()}>
+                Open Keyboard Settings
+              </Button>
+            ) : null}
+            <Switch checked={prefs.fnHold} onChange={setVoiceFnHold} label="Hold fn to talk" />
           </span>
         </SettingsRow>
       </SettingsCard>

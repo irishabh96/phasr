@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { maybeRequestNotificationPermission } from "./notificationPermission";
 import type {
+  GlobeKeyAction,
   MicAccess,
   Polisher,
   PolisherInfo,
@@ -410,6 +411,8 @@ export const tauri = {
   polishDictation: (text: string, polisher: Polisher) => invoke<string>("polish_dictation", { text, polisher }),
   cancelDictation: () => invoke<void>("cancel_dictation"),
   openMicrophoneSettings: () => invoke<void>("open_microphone_settings"),
+  globeKeyAction: () => invoke<GlobeKeyAction>("globe_key_action"),
+  openKeyboardSettings: () => invoke<void>("open_keyboard_settings"),
 
   // ── git ──────────────────────────────────────────────────────────────
   gitStatus: (workspaceId: string) =>

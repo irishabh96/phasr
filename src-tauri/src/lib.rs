@@ -155,6 +155,9 @@ pub fn run() {
             let voice = voice::VoiceService::new(app_data_dir.join("models").join("whisper"));
             commands::events::spawn_voice_bridge(&voice, app.handle().clone());
             app.manage(voice);
+            // Hold fn to dictate.
+            #[cfg(target_os = "macos")]
+            voice::fn_key::install(app.handle().clone());
 
             let task_runtime = Arc::new(TaskRuntime::new(log_dir));
             app.manage(task_runtime.clone());
@@ -182,6 +185,8 @@ pub fn run() {
             commands::voice::stop_dictation,
             commands::voice::cancel_dictation,
             commands::voice::open_microphone_settings,
+            commands::voice::globe_key_action,
+            commands::voice::open_keyboard_settings,
             commands::voice::list_dictation_polishers,
             commands::voice::polish_dictation,
             auth::set_session,

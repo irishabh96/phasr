@@ -979,6 +979,9 @@ export interface PolisherInfo {
 
 export type MicAccess = "authorized" | "not-determined" | "denied" | "restricted" | "unsupported";
 
+/** System Settings › Keyboard › "Press 🌐 key to" — it also fires when fn is let go after dictating. */
+export type GlobeKeyAction = "nothing" | "input-source" | "emoji" | "dictation" | "unsupported";
+
 /** One worktree of a repository (`list_repository_worktrees`; main checkout excluded). */
 export interface RepositoryWorktree {
   path: string;

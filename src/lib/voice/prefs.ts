@@ -10,6 +10,7 @@ import type { Polisher, PolisherInfo, VoiceModel } from "@/lib/types";
 const MODEL_KEY = "phasr.voice.model";
 const LANGUAGE_KEY = "phasr.voice.language";
 const POLISH_KEY = "phasr.voice.polish";
+const FN_HOLD_KEY = "phasr.voice.fnHold";
 const PREF_EVENT = "phasr:voice-prefs-changed";
 
 export interface VoicePrefs {
@@ -23,6 +24,8 @@ export interface VoicePrefs {
    * installed, else Codex's fast model.
    */
   polish: PolishPref;
+  /** Hold fn (🌐) to dictate. On by default. */
+  fnHold: boolean;
 }
 
 export type PolishPref = "auto" | "off" | Polisher;
@@ -34,15 +37,17 @@ function read(): VoicePrefs {
   let modelId: string | null = null;
   let language = "auto";
   let polish: PolishPref = "off";
+  let fnHold = true;
   try {
     modelId = localStorage.getItem(MODEL_KEY);
     language = localStorage.getItem(LANGUAGE_KEY) || "auto";
     const p = localStorage.getItem(POLISH_KEY);
     if (p === "auto" || p === "claude" || p === "codex") polish = p;
+    fnHold = localStorage.getItem(FN_HOLD_KEY) !== "off";
   } catch {
     /* ignore */
   }
-  cached = { modelId, language, polish };
+  cached = { modelId, language, polish, fnHold };
   return cached;
 }
 
@@ -60,6 +65,10 @@ function write(key: string, value: string | null) {
 export const setVoiceModel = (id: string | null) => write(MODEL_KEY, id);
 export const setVoiceLanguage = (lang: string) => write(LANGUAGE_KEY, lang);
 export const setVoicePolish = (p: PolishPref) => write(POLISH_KEY, p);
+export const setVoiceFnHold = (on: boolean) => write(FN_HOLD_KEY, on ? null : "off");
+
+/** The prefs outside React (the fn listener). */
+export const readVoicePrefs = (): VoicePrefs => read();
 
 function subscribe(listener: () => void) {
   const onStorage = () => {
@@ -74,7 +83,7 @@ function subscribe(listener: () => void) {
   };
 }
 
-const SERVER: VoicePrefs = { modelId: null, language: "auto", polish: "off" };
+const SERVER: VoicePrefs = { modelId: null, language: "auto", polish: "off", fnHold: true };
 
 export function useVoicePrefs(): VoicePrefs {
   return useSyncExternalStore(subscribe, read, () => SERVER);

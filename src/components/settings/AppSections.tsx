@@ -1,5 +1,5 @@
 import { Check, Minus, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { AgentMark } from "@/components/ui/AgentMark";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -653,9 +653,16 @@ export function KeyboardSection() {
           {g.ids.map((id) => {
             const s = SHORTCUTS[id] as Shortcut;
             return (
-              <SettingsRow key={id} label={s.label}>
-                <KeyCombo s={s} />
-              </SettingsRow>
+              <Fragment key={id}>
+                <SettingsRow label={s.label}>
+                  <KeyCombo s={s} />
+                </SettingsRow>
+                {id === "dictate" ? (
+                  <SettingsRow label="Dictate while held">
+                    <Kbd>fn</Kbd>
+                  </SettingsRow>
+                ) : null}
+              </Fragment>
             );
           })}
         </SettingsCard>

@@ -54,6 +54,8 @@ async function boot(page: Page, installed: boolean, polishers: unknown[] = []) {
     cancel_dictation: null,
     download_voice_model: null,
     list_dictation_polishers: polishers,
+    globe_key_action: "emoji",
+    open_keyboard_settings: null,
   };
   const res = await bootApp(page, f as never);
   await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25_000 });
@@ -286,4 +288,93 @@ test("By default the transcript goes in exactly as heard — no cleanup call", a
   await page.keyboard.press("Enter");
   await expect(box).toHaveValue("um add a test for the mark down parser");
   expect((await calls(page)).some((c) => c.cmd === "polish_dictation")).toBe(false);
+});
+
+const fn = (page: Page, kind: "down" | "up" | "chord") => emit(page, "phasr://fn-key", { kind });
+
+test("Hold fn: talks into the reply box you're in, letting go inserts the text", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await boot(page, true);
+  const box = page.getByPlaceholder(/^Reply to /);
+  await box.fill("Context:");
+  // Not focused: fn still finds the session's box, and the words go at the end.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await setResponse(page, "stop_dictation", "add a test for the parser");
+  await clearCalls(page);
+
+  await fn(page, "down");
+  await waitForCall(page, "start_dictation");
+  const bar = page.getByRole("group", { name: "Dictation" });
+  await expect(bar).toHaveAttribute("data-dictation", "recording");
+  await emit(page, "phasr://voice-partial", { text: "add a test" });
+  await expect(box).toHaveValue("Context: add a test");
+  await fn(page, "up");
+  await waitForCall(page, "stop_dictation");
+  await expect(box).toHaveValue("Context: add a test for the parser");
+  await expect(bar).toHaveCount(0);
+  await expect(box).toBeFocused();
+  expect((await calls(page)).some((c) => c.cmd === "send_message_to_task")).toBe(false);
+});
+
+test("fn: a tap or fn+key is not dictation; Esc while holding cancels; the setting turns it off", async ({ page }) => {
+  await boot(page, true);
+  const box = page.getByPlaceholder(/^Reply to /);
+  await box.click();
+  await clearCalls(page);
+  // Tap.
+  await fn(page, "down");
+  await fn(page, "up");
+  // fn+← (Home).
+  await fn(page, "down");
+  await fn(page, "chord");
+  await page.waitForTimeout(400);
+  await fn(page, "up");
+  expect((await calls(page)).some((c) => c.cmd === "start_dictation")).toBe(false);
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveCount(0);
+
+  // Holding, then Esc: cancelled; letting go after inserts nothing.
+  await fn(page, "down");
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveAttribute("data-dictation", "recording");
+  await page.keyboard.press("Escape");
+  await waitForCall(page, "cancel_dictation");
+  await fn(page, "up");
+  expect((await calls(page)).some((c) => c.cmd === "stop_dictation")).toBe(false);
+  await expect(box).toHaveValue("");
+
+  // Settings › Voice: on by default, with the macOS globe-key clash explained; off stops fn.
+  await page.goto(page.url().replace(/(\?.*)?$/, "?settings=voice"));
+  const sheet = page.getByRole("dialog", { name: "Settings" });
+  const toggle = sheet.getByRole("switch", { name: "Hold fn to talk" });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await expect(sheet.locator("#settings-row-voice-fn")).toContainText("opens the emoji picker");
+  await clearCalls(page);
+  await sheet.getByRole("button", { name: "Open Keyboard Settings" }).click();
+  await waitForCall(page, "open_keyboard_settings");
+  if (SHOTS) await sheet.screenshot({ path: `${SHOTS}/settings-voice-fn.png` });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  expect(await page.evaluate(() => localStorage.getItem("phasr.voice.fnHold"))).toBe("off");
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  await clearCalls(page);
+  await fn(page, "down");
+  await page.waitForTimeout(400);
+  await fn(page, "up");
+  expect((await calls(page)).some((c) => c.cmd === "start_dictation")).toBe(false);
+});
+
+test("fn with New task open talks into its prompt, not the reply box behind it", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await boot(page, true);
+  await page.getByRole("complementary", { name: "Sidebar" }).getByRole("button", { name: "New task", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "New task · phasr" });
+  await expect(modal).toBeVisible();
+  await setResponse(page, "stop_dictation", "Add dark mode.");
+  await fn(page, "down");
+  await expect(modal.getByRole("group", { name: "Dictation" })).toHaveAttribute("data-dictation", "recording");
+  await fn(page, "up");
+  await expect(page.locator("#new-task-prompt")).toHaveValue("Add dark mode.");
+  await expect(modal).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByPlaceholder(/^Reply to /)).toHaveValue("");
 });

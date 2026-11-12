@@ -68,6 +68,9 @@ pub const VOICE_MODEL_EVENT: &str = "phasr://voice-model";
 /// The live transcript while dictating (the whole text so far, ~every
 /// 0.8s). Payload: `VoicePartialPayload` (`{text}`).
 pub const VOICE_PARTIAL_EVENT: &str = "phasr://voice-partial";
+/// fn (🌐) went down, came up, or was joined by another key while held
+/// (hold-to-dictate). Payload: `{kind: "down" | "up" | "chord"}`.
+pub const FN_KEY_EVENT: &str = "phasr://fn-key";
 
 /// Drain `rx` on the async runtime, handing each event to `forward`.
 /// A lagging receiver skips what it missed rather than stopping: every

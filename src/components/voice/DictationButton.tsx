@@ -12,6 +12,7 @@ import type { Dictation } from "@/lib/voice/useDictation";
 import { useDownloadVoiceModel, useVoiceModels } from "@/lib/voice/useVoiceModels";
 
 const DICTATE = SHORTCUTS.dictate.display.join("");
+const DICTATE_HINT = `${DICTATE} or hold fn`;
 
 /**
  * The mic. With a model downloaded it starts dictating; before that it
@@ -42,7 +43,7 @@ export function DictationButton({
           <button
             type="button"
             aria-label="Dictate"
-            title={`Dictate (${DICTATE})`}
+            title={`Dictate (${DICTATE_HINT})`}
             aria-keyshortcuts="Meta+Shift+D"
             disabled={disabled || phase !== "idle"}
             onClick={start}
@@ -113,7 +114,7 @@ function VoiceSetup({
       {installed ? (
         <div className="flex items-center gap-[8px]">
           <span className="flex-1 text-(--color-text-muted)">
-            Ready · press <span className="font-mono">{DICTATE}</span> to dictate
+            Ready · hold <span className="font-mono">fn</span> or press <span className="font-mono">{DICTATE}</span>
           </span>
           <Button variant="primary" size="sm" onClick={onReady}>
             Start dictating
@@ -221,7 +222,7 @@ export const MicSlotButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<
       ref={ref}
       type={type}
       aria-label="Dictate"
-      title={`Dictate (${DICTATE})`}
+      title={`Dictate (${DICTATE_HINT})`}
       aria-keyshortcuts="Meta+Shift+D"
       className={cn(
         className,
@@ -241,7 +242,7 @@ export const DictateChip = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HT
     <button
       ref={ref}
       type={type}
-      title={`Dictate (${DICTATE})`}
+      title={`Dictate (${DICTATE_HINT})`}
       aria-keyshortcuts="Meta+Shift+D"
       className={cn(
         "inline-flex h-[26px] shrink-0 items-center gap-[6px] whitespace-nowrap rounded-(--radius-control) px-[8px]",

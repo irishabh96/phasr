@@ -73,6 +73,9 @@ export const VOICE_PARTIAL_EVENT = "phasr://voice-partial";
 /** A Whisper model download moved on. Payload: `VoiceModelProgress`. */
 export const VOICE_MODEL_EVENT = "phasr://voice-model";
 
+/** fn (🌐) down / up / joined by another key while held (hold to dictate). Payload: `{kind}`. */
+export const FN_KEY_EVENT = "phasr://fn-key";
+
 /**
  * Files changed in a watched worktree (debounced; `.git`, `node_modules`,
  * `target`, `dist` filtered). Emitted by `src-tauri/src/fswatch.rs` while a

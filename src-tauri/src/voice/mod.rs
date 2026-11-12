@@ -14,6 +14,7 @@
 
 pub mod audio;
 pub mod catalog;
+pub mod fn_key;
 #[cfg(target_os = "macos")]
 mod mac;
 pub mod models;

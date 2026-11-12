@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::auth::{AuthError, SessionState};
+use crate::voice::fn_key::GlobeKeyAction;
 use crate::voice::polish::{Polisher, PolisherInfo};
 use crate::voice::{MicAccess, VoiceError, VoiceModel, VoiceService};
 
@@ -138,6 +139,27 @@ pub async fn open_microphone_settings(session: Session<'_>) -> Result<(), VoiceC
     #[cfg(target_os = "macos")]
     tokio::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        .status()
+        .await
+        .map_err(|e| VoiceCmdError::Voice(VoiceError::Failed(e.to_string())))?;
+    Ok(())
+}
+
+/// What macOS does on a press of fn (🌐) alone, which also fires when you
+/// let go after holding it to dictate.
+#[tauri::command]
+pub async fn globe_key_action(session: Session<'_>) -> Result<GlobeKeyAction, VoiceCmdError> {
+    require_user(&session)?;
+    Ok(crate::voice::fn_key::globe_key_action().await)
+}
+
+/// System Settings → Keyboard (where "Press 🌐 key to" lives).
+#[tauri::command]
+pub async fn open_keyboard_settings(session: Session<'_>) -> Result<(), VoiceCmdError> {
+    require_user(&session)?;
+    #[cfg(target_os = "macos")]
+    tokio::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.Keyboard-Settings.extension")
         .status()
         .await
         .map_err(|e| VoiceCmdError::Voice(VoiceError::Failed(e.to_string())))?;

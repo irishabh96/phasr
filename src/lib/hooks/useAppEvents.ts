@@ -3,6 +3,7 @@ import { useInboxEvents } from "@/lib/hooks/useInbox";
 import { useCheckEvents } from "@/lib/hooks/useReview";
 import { useTaskCardEvents } from "@/lib/hooks/useTaskCards";
 import { useTranscriptEvents } from "@/lib/transcript/useTranscript";
+import { useFnHoldDictation } from "@/lib/voice/fnHold";
 import { useVoiceModelEvents } from "@/lib/voice/useVoiceModels";
 
 /**
@@ -21,4 +22,5 @@ export function useAppEvents() {
   useTranscriptEvents();
   // Speech-model download progress (Settings › Voice, the mic's setup).
   useVoiceModelEvents();
+  useFnHoldDictation();
 }

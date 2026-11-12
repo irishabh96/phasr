@@ -6,6 +6,7 @@ import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { tauri } from "@/lib/tauri";
 import { showToast } from "@/lib/toast";
 import type { PolisherInfo, VoiceModel } from "@/lib/types";
+import { registerHoldTarget } from "./fnHold";
 import { insertDictation } from "./insert";
 import { activePolisher, activeVoiceModel, useVoicePrefs } from "./prefs";
 import { useDictationPolishers, useVoiceModels } from "./useVoiceModels";
@@ -138,6 +139,8 @@ export function useDictation({
     base.current = valueRef.current;
     window.dispatchEvent(new CustomEvent(OWNER_EVENT, { detail: owner.current }));
     const gen = ++generation.current;
+    // Synchronously too: fn can be let go before the next render.
+    phaseRef.current = "starting";
     setPhase("starting");
     setLevels([]);
     const language = model.languages === "multilingual" ? prefs.language : null;
@@ -149,6 +152,7 @@ export function useDictation({
           return;
         }
         setStartedAt(Date.now());
+        phaseRef.current = "recording";
         setPhase("recording");
       },
       (err) => {
@@ -162,6 +166,7 @@ export function useDictation({
   const stop = useCallback(() => {
     if (phaseRef.current !== "recording") return;
     const gen = generation.current;
+    phaseRef.current = "transcribing";
     setPhase("transcribing");
     const done = () => {
       setPhase("idle");
@@ -216,6 +221,7 @@ export function useDictation({
     const was = phaseRef.current;
     if (was === "idle") return;
     generation.current++;
+    phaseRef.current = "idle";
     setPhase("idle");
     setStartedAt(null);
     if (was !== "polishing") setValueRef.current(base.current);
@@ -236,6 +242,31 @@ export function useDictation({
       return true;
     },
     [toggle],
+  );
+
+  // Hold fn to talk into this box (when it's the one you're in).
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+  const startRef = useRef(start);
+  startRef.current = start;
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  const cancelRef = useRef(cancel);
+  cancelRef.current = cancel;
+  useEffect(
+    () =>
+      registerHoldTarget({
+        textarea: () => textareaRef.current,
+        disabled: () => !!disabledRef.current,
+        phase: () => phaseRef.current,
+        start: () => startRef.current(),
+        release: () => {
+          // Let go before the mic opened: nothing was heard.
+          if (phaseRef.current === "starting") cancelRef.current();
+          else if (phaseRef.current === "recording") stopRef.current();
+        },
+      }),
+    [textareaRef],
   );
 
   // Another box started dictating: the backend already dropped ours.
