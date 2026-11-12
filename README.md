@@ -6,7 +6,9 @@ Phasr is a macOS app for running Claude Code, Codex, Copilot, Gemini and OpenCod
 
 > Pre-1.0, macOS on Apple Silicon only. Builds aren't code-signed yet (see [Install](#install-macos-apple-silicon)).
 
-![A Claude task: a table and an edit in the transcript, a subagent and a dev server running, and an approval waiting](docs/screenshots/session.png)
+[![Watch the 30-second demo: the board, a Claude task asking for approval, dictating a reply by holding fn, reviewing a diff, and ⌘K](docs/screenshots/demo-poster.jpg)](docs/screenshots/demo.mp4)
+
+<sub>30 seconds: the board → a Claude task asks to run a command → hold fn and dictate a reply → review a Codex task's diff → ⌘K.</sub>
 
 ## What it does
 
@@ -39,12 +41,23 @@ You can attach images and files, and **Show commands** lists exactly what Phasr 
   - Suggested replies follow from what Claude just said.
   - **Stop turn** interrupts Claude without ending the task.
 - **Terminal view (every agent).** A full terminal (ghostty-web). Open extra shell tabs with ⌘T.
-- **Voice input.** In an empty reply box the send button is a mic (⌘⇧D works anywhere you type, New task has a Dictate chip, or just hold **fn** and talk, then let go to insert). Whisper transcribes on your Mac as you talk, so the words appear live and your voice never leaves it. The text goes in exactly as heard. If you want, **Settings → Voice** can have a fast model (Claude Haiku, or Codex's fast model, through your own login) tidy up misheard terms, punctuation and filler words after you stop.
-  - The speech model isn't bundled. The first click offers a one-time download (148 MB); **Settings → Voice** has a more accurate English model and a multilingual one.
 - **Approvals.** When an agent asks to run a command or edit a file, a card appears in that task: **Allow once** (⌘Y), **Allow for this task**, or **Deny** (⌘⌫).
   - Phasr also sends a short macOS notification with **Allow** and **Deny** buttons, so you can answer without switching to the app.
   - The bell icon keeps an inbox of approvals, finished tasks, failures and check results.
 - **Side panel.** Shows the agent and model, base branch (with a **Sync** button when it falls behind), when the task started, token usage and cost (Claude and Codex), its run commands, and the repository's notes.
+
+![A Claude task: a table and an edit in the transcript, a subagent and a dev server running, and an approval waiting](docs/screenshots/session.png)
+
+### Talk instead of typing
+
+Hold **fn** and talk; let go and the text is in the box. Whisper transcribes on your Mac as you speak, so the words appear live, and your voice never leaves the machine.
+
+- **Three ways in:** hold **fn**, press ⌘⇧D, or click the mic (an empty reply box's send button is the mic). New task has a Dictate chip.
+- **As heard:** the text goes in exactly as Whisper heard it. ↵ inserts, Esc cancels. If you want, **Settings → Voice** can have a fast model (Claude Haiku, or Codex's fast model, through your own login) tidy up misheard terms, punctuation and filler words after you stop.
+- **Nothing bundled:** the first use offers a one-time model download (148 MB). **Settings → Voice** also has a more accurate English model and a multilingual one.
+- **fn and macOS:** if macOS is set to open the emoji picker on 🌐, it does that when you let go too. Set **System Settings → Keyboard → "Press 🌐 key to"** to **Do Nothing**; Settings → Voice links there.
+
+![Dictating a reply: the live transcript in the box above a waveform, timer, cancel and insert](docs/screenshots/voice.png)
 
 ### Review and ship
 

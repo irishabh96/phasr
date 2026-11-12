@@ -62,7 +62,7 @@ The release workflow declares `environment: release`, so GitHub only exposes the
 ## Rollback safety (migrations)
 
 **Release 0.4.4 before any release that contains migrations 0015 or later
-(currently 0015–0021, the Mission Control redesign).** `release.yml`
+(currently 0015–0023, the Mission Control redesign).** `release.yml`
 enforces this: a tag whose tree has migration 0015+ fails its first step
 unless `v0.4.4` is an ancestor of it (`git merge-base --is-ancestor v0.4.4
 HEAD`).
