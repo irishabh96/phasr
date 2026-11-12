@@ -18,8 +18,9 @@ export interface VoicePrefs {
   /** ISO code, or "auto". Multilingual models only. */
   language: string;
   /**
-   * Clean up the transcript afterwards with a fast model: "auto" = Claude
-   * Haiku if installed, else Codex's fast model, else off.
+   * Clean up the transcript afterwards with a fast model. Off by default:
+   * the text goes in exactly as Whisper heard it. "auto" = Claude Haiku if
+   * installed, else Codex's fast model.
    */
   polish: PolishPref;
 }
@@ -32,12 +33,12 @@ function read(): VoicePrefs {
   if (cached) return cached;
   let modelId: string | null = null;
   let language = "auto";
-  let polish: PolishPref = "auto";
+  let polish: PolishPref = "off";
   try {
     modelId = localStorage.getItem(MODEL_KEY);
     language = localStorage.getItem(LANGUAGE_KEY) || "auto";
     const p = localStorage.getItem(POLISH_KEY);
-    if (p === "off" || p === "claude" || p === "codex") polish = p;
+    if (p === "auto" || p === "claude" || p === "codex") polish = p;
   } catch {
     /* ignore */
   }
@@ -73,7 +74,7 @@ function subscribe(listener: () => void) {
   };
 }
 
-const SERVER: VoicePrefs = { modelId: null, language: "auto", polish: "auto" };
+const SERVER: VoicePrefs = { modelId: null, language: "auto", polish: "off" };
 
 export function useVoicePrefs(): VoicePrefs {
   return useSyncExternalStore(subscribe, read, () => SERVER);

@@ -39,7 +39,7 @@ You can attach images and files, and **Show commands** lists exactly what Phasr 
   - Suggested replies follow from what Claude just said.
   - **Stop turn** interrupts Claude without ending the task.
 - **Terminal view (every agent).** A full terminal (ghostty-web). Open extra shell tabs with ⌘T.
-- **Voice input.** In an empty reply box the send button is a mic (⌘⇧D works anywhere you type, and New task has a Dictate chip). Whisper transcribes on your Mac as you talk, so the words appear live and your voice never leaves it. When you stop, a fast model (Claude Haiku, or Codex's fast model, through your own login) can tidy up misheard terms, punctuation and filler words; turn it off in **Settings → Voice**.
+- **Voice input.** In an empty reply box the send button is a mic (⌘⇧D works anywhere you type, and New task has a Dictate chip). Whisper transcribes on your Mac as you talk, so the words appear live and your voice never leaves it. The text goes in exactly as heard. If you want, **Settings → Voice** can have a fast model (Claude Haiku, or Codex's fast model, through your own login) tidy up misheard terms, punctuation and filler words after you stop.
   - The speech model isn't bundled. The first click offers a one-time download (148 MB); **Settings → Voice** has a more accurate English model and a multilingual one.
 - **Approvals.** When an agent asks to run a command or edit a file, a card appears in that task: **Allow once** (⌘Y), **Allow for this task**, or **Deny** (⌘⌫).
   - Phasr also sends a short macOS notification with **Allow** and **Deny** buttons, so you can answer without switching to the app.

@@ -223,6 +223,7 @@ test("New task: the Dictate chip records into the prompt; Esc cancels without cl
 
 test("Live text appears in the box while you talk; a fast model cleans it up after", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => localStorage.setItem("phasr.voice.polish", "claude"));
   await boot(page, true, POLISHERS);
   const box = page.getByPlaceholder(/^Reply to /);
   await box.fill("Context:");
@@ -251,7 +252,7 @@ test("Live text appears in the box while you talk; a fast model cleans it up aft
   await expect(box).not.toHaveAttribute("readonly", "");
 });
 
-test("Esc while recording puts the box back; Settings › Voice turns cleanup off", async ({ page }) => {
+test("Esc while recording puts the box back; cleanup is off by default, as heard; Settings turns it on", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await boot(page, true, POLISHERS);
   const box = page.getByPlaceholder(/^Reply to /);
@@ -267,10 +268,22 @@ test("Esc while recording puts the box back; Settings › Voice turns cleanup of
   await page.goto(page.url().replace(/(\?.*)?$/, "?settings=voice"));
   const sheet = page.getByRole("dialog", { name: "Settings" });
   const seg = sheet.getByRole("radiogroup", { name: "Clean up with" });
-  await expect(seg.getByRole("radio", { name: "Claude Haiku" })).toHaveAttribute("aria-checked", "true");
+  await expect(seg.getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
   await expect(seg.getByRole("radio", { name: "Codex gpt-6-luna" })).toBeDisabled();
   if (SHOTS) await sheet.screenshot({ path: `${SHOTS}/settings-voice-cleanup.png` });
-  await seg.getByRole("radio", { name: "Off" }).click();
-  await expect(seg.getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
-  expect(await page.evaluate(() => localStorage.getItem("phasr.voice.polish"))).toBe("off");
+  await seg.getByRole("radio", { name: "Claude Haiku" }).click();
+  await expect(seg.getByRole("radio", { name: "Claude Haiku" })).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => localStorage.getItem("phasr.voice.polish"))).toBe("claude");
+});
+
+test("By default the transcript goes in exactly as heard — no cleanup call", async ({ page }) => {
+  await boot(page, true, POLISHERS);
+  const box = page.getByPlaceholder(/^Reply to /);
+  await setResponse(page, "stop_dictation", "um add a test for the mark down parser");
+  await clearCalls(page);
+  await page.getByRole("button", { name: "Dictate", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Dictation" })).toHaveAttribute("data-dictation", "recording");
+  await page.keyboard.press("Enter");
+  await expect(box).toHaveValue("um add a test for the mark down parser");
+  expect((await calls(page)).some((c) => c.cmd === "polish_dictation")).toBe(false);
 });
