@@ -1,6 +1,6 @@
 # Releasing Phasr
 
-Releases are built by GitHub Actions when a `v*` tag lands on the repo. A macos-14 (Apple Silicon) runner produces the `aarch64` DMG and uploads it to a draft Release. The maintainer writes notes and publishes. Intel Mac support is out of scope for pre-1.0.
+Releases are built by GitHub Actions when a `v*` tag lands on the repo. A macos-15 (Apple Silicon) runner produces the `aarch64` DMG and uploads it to a draft Release. The maintainer writes notes and publishes. Intel Mac support is out of scope for pre-1.0.
 
 This doc is maintainer-only — contributors do not need to do any of this to develop or open PRs.
 
@@ -42,7 +42,7 @@ The release workflow declares `environment: release`, so GitHub only exposes the
    ```
 
 4. **Watch the workflow.** Open Actions → Release. One job runs:
-   - `macos-14` builds `aarch64-apple-darwin` → `Phasr_<version>_aarch64.dmg`
+   - `macos-15` builds `aarch64-apple-darwin` → `Phasr_<version>_aarch64.dmg`
 
    Cold-cache build: ~10 min. Warm: ~3 min.
 
@@ -67,7 +67,7 @@ Tauri's default naming:
 - `Phasr_<version>_aarch64.dmg` — Apple Silicon
 - `Phasr.app.tar.gz` sibling — same .app, just zipped
 
-Intel (`x86_64`) DMGs aren't built. Adding them is a single matrix entry in `release.yml` when there's demand — either a `macos-14` cross-build (`rustup target add x86_64-apple-darwin`, no queue wait) or a native `macos-13` runner (subject to the public-runner pool).
+Intel (`x86_64`) DMGs aren't built. Adding them is a single matrix entry in `release.yml` when there's demand — either a `macos-15` cross-build (`rustup target add x86_64-apple-darwin`, no queue wait) or a native Intel runner.
 
 ## Code signing (future)
 
