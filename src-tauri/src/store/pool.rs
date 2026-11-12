@@ -292,6 +292,10 @@ mod version_compat {
         (20, "af073f3614f7ae5a6b2d178c15c30bf2a5f450531816594ecbc112a6bc4f63b5aa12060adeb24355311715cf97f72459"),
         // Local-only "queued on this machine" marker (review fix #8).
         (21, "38c571b805d08e217cf726b17d6e498db5bac0489fe5f7437f9d8f24945626a0668d99ed670234fdefe1f2678164fe90"),
+        // Task usage: cost is a lower bound when a model has no known price.
+        (22, "8cc379b7d2e39d87bf39a8188da42419f856f9f8a66e6309937348b15ef4ba1d49cfd965622ccd2e2b48769180b20df5"),
+        // Local-only agent view (transcript | terminal).
+        (23, "269872ffda1fb857e41be7b9de94731e0005b44ef1e95bba952250caa9f1aeda91f819750ee1bc9462120e9059ceaa5c"),
     ];
 
     fn migrations_dir() -> PathBuf {

@@ -291,6 +291,9 @@ test("By default the transcript goes in exactly as heard — no cleanup call", a
 });
 
 const fn = (page: Page, kind: "down" | "up" | "chord") => emit(page, "phasr://fn-key", { kind });
+/** Several fn events back to back, as macOS delivers a quick tap or fn+key (one round trip, so a slow machine can't stretch a tap into a hold). */
+const fnBurst = (page: Page, kinds: Array<"down" | "up" | "chord">) =>
+  page.evaluate((ks) => ks.forEach((kind) => (window as any).__E2E__.emit("phasr://fn-key", { kind })), kinds);
 
 test("Hold fn: talks into the reply box you're in, letting go inserts the text", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -322,11 +325,9 @@ test("fn: a tap or fn+key is not dictation; Esc while holding cancels; the setti
   await box.click();
   await clearCalls(page);
   // Tap.
-  await fn(page, "down");
-  await fn(page, "up");
-  // fn+← (Home).
-  await fn(page, "down");
-  await fn(page, "chord");
+  await fnBurst(page, ["down", "up"]);
+  // fn+← (Home): the arrow comes within the hold threshold; fn is let go later.
+  await fnBurst(page, ["down", "chord"]);
   await page.waitForTimeout(400);
   await fn(page, "up");
   expect((await calls(page)).some((c) => c.cmd === "start_dictation")).toBe(false);
