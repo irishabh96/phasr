@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { reportP0Warning } from "@/lib/sentry";
+import { useUiStore } from "@/lib/store";
 
 /**
  * React no longer owns cloud sync. Rust runs the Supabase REST worker;
@@ -11,7 +12,9 @@ export function useCloudSync() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    const setCloudSync = useUiStore.getState().setCloudSync;
     const refresh = () => {
+      setCloudSync("ok");
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
       void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       void queryClient.invalidateQueries({ queryKey: ["runCommands"] });
@@ -21,6 +24,7 @@ export function useCloudSync() {
 
     const unlistenUpdated = listen("cloud-sync-updated", refresh);
     const unlistenError = listen("cloud-sync-error", (event) => {
+      setCloudSync("error", typeof event.payload === "string" ? event.payload : null);
       // Surface the worker's error in the console too — it was
       // previously Sentry-only, which made sync failures (e.g. a row
       // that never reaches Supabase) invisible during local debugging.

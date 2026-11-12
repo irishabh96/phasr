@@ -9,6 +9,11 @@ import {
   type GhosttyClipboardTerminal,
 } from "@/lib/terminal/backends/ghostty/clipboard";
 import {
+  instantiateVt,
+  isolateGrids,
+} from "@/lib/terminal/backends/ghostty/engine";
+import ghosttyWasmUrl from "ghostty-web/ghostty-vt.wasm?url";
+import {
   installGhosttySelection,
   type GhosttySelectionTerminal,
 } from "@/lib/terminal/backends/ghostty/selection";
@@ -36,6 +41,7 @@ import {
   installGhosttyMouse,
   type MouseModes,
 } from "@/lib/terminal/backends/ghostty/mouse";
+import { isPanelAnimating } from "@/lib/panelMotion";
 import { reportP0Error } from "@/lib/sentry";
 import {
   diagAttach,
@@ -47,6 +53,7 @@ import {
   terminalDiagnosticsEnabled,
 } from "@/lib/terminal/diagnostics";
 import { safeWriteEnd } from "@/lib/terminal/graphemeTail";
+import { disableTextAssistance } from "@/lib/terminal/textAssist";
 import {
   applyChangedOptions,
   applyChangedTheme,
@@ -69,6 +76,7 @@ import {
   type GridSnapshot,
   type SnapshotCell,
   type SnapshotRow,
+  trimHistoryForReflow,
 } from "@/lib/terminal/serialize";
 import type {
   LinkSource,
@@ -96,12 +104,12 @@ import type {
  */
 
 /**
- * One WASM instance for the whole app. `ghostty-web` keeps its own module
- * singleton behind `init()`, but this is ours and explicit: the instance
- * is passed through `ITerminalOptions.ghostty`, so N terminals share ONE
- * `WebAssembly.Memory` rather than N. That is what makes the per-terminal
- * memory number in ADR-002 (question 5) incremental growth of one heap
- * instead of a fixed per-instance cost.
+ * One compiled WASM module for the whole app, and one INSTANCE per grid.
+ * `ghostty-web` keeps its own module singleton behind `init()`, but this is
+ * ours and explicit: the engine is passed through `ITerminalOptions.ghostty`
+ * as a wrapper whose `createTerminal` gives every grid fresh, zeroed memory
+ * (`ghostty/engine.ts`). Sharing one heap recycled a freed grid's pages
+ * into the next grid — stale cells on screen and out-of-bounds traps.
  */
 let enginePromise: Promise<GhosttyEngine> | null = null;
 
@@ -112,13 +120,32 @@ interface GhosttyEngine {
 
 export function preloadGhosttyEngine(): Promise<GhosttyEngine> {
   enginePromise ??= import("ghostty-web").then(async (mod) => {
-    // No network: `Ghostty.load()` with no argument fetches the inlined
-    // data: URL, so this is a compile + instantiate, not a download.
-    const ghostty = await mod.Ghostty.load();
-    exposeWasmProbe(ghostty);
-    return { ghostty, Terminal: mod.Terminal };
+    // Compile once; each grid then gets its own instance of the module
+    // (`ghostty/engine.ts` — recycled WASM pages are the stale-cell and
+    // out-of-bounds bugs). The `?url` asset is bundled, so this is a local
+    // read, not a download.
+    try {
+      const bytes = await (await fetch(ghosttyWasmUrl)).arrayBuffer();
+      const module = await WebAssembly.compile(bytes);
+      const shared = new mod.Ghostty(await instantiateVt(module));
+      const engine = isolateGrids(mod.Ghostty, shared, module);
+      exposeWasmProbe(engine.wasmBytes);
+      return { ghostty: engine.ghostty, Terminal: mod.Terminal };
+    } catch (err) {
+      // The bundled asset should always load; if it ever doesn't, the
+      // inlined copy still gives a working (shared-instance) terminal.
+      console.error("[terminal] per-grid engine unavailable; sharing one instance", err);
+      const ghostty = await mod.Ghostty.load();
+      exposeWasmProbe(() => sharedWasmBytes(ghostty));
+      return { ghostty, Terminal: mod.Terminal };
+    }
   });
   return enginePromise;
+}
+
+function sharedWasmBytes(ghostty: Ghostty): number {
+  const memory = (ghostty as unknown as { memory?: WebAssembly.Memory }).memory;
+  return memory?.buffer.byteLength ?? 0;
 }
 
 declare global {
@@ -138,16 +165,10 @@ declare global {
  * answer is load-bearing for the LRU bound in `cache.ts` — a number that
  * should be re-measurable rather than quoted from a one-off session.
  */
-function exposeWasmProbe(ghostty: Ghostty): void {
+function exposeWasmProbe(wasmBytes: () => number): void {
   if (!import.meta.env.DEV) return;
   if (typeof window === "undefined") return;
-  window.__PHASR_GHOSTTY__ = {
-    wasmBytes: () => {
-      const memory = (ghostty as unknown as { memory?: WebAssembly.Memory })
-        .memory;
-      return memory?.buffer.byteLength ?? 0;
-    },
-  };
+  window.__PHASR_GHOSTTY__ = { wasmBytes };
 }
 
 /** Test seam — drops the memoized instance so a spec can count loads. */
@@ -170,16 +191,19 @@ const MIN_ROWS = 1;
 /**
  * How long the container must hold still before a width change is applied.
  *
- * Both side panels animate their width over 220 ms and the `ResizeObserver`
- * fires on every frame of it, so this is what turns a gesture into ONE
- * event: one grid rebuild and — because the rebuild is where `onResize`
- * fires — one `resize_task`, in place of the thirteen a single panel toggle
- * used to send in 220 ms (ADR-002). A live window drag collapses the same
- * way, however long it lasts.
+ * Side panels no longer cause a stream of widths: they slide with a
+ * transform and the centre column changes width once, while the terminal
+ * holds its refits and fits exactly once when the slide settles (spec P1,
+ * `lib/panelMotion.ts`, `lib/terminal/refit.ts`). What still sends a stream
+ * is a live window drag or a sidebar resize-by-drag: the `ResizeObserver`
+ * fires every frame (coalesced to one fit per frame), and this debounce is
+ * what turns that gesture into ONE event: one grid rebuild and — because
+ * the rebuild is where `onResize` fires — one `resize_task`, however long
+ * the drag lasts (ADR-002).
  *
  * Same number as `settle.ts`'s quiet period, for the same reason: it has to
  * outlast a dropped frame without outlasting the user's patience. Too short
- * and a stutter mid-animation buys a second rebuild; too long and the grid
+ * and a stutter mid-drag buys a second rebuild; too long and the grid
  * visibly lags the pane.
  */
 const REBUILD_QUIET_MS = 120;
@@ -219,6 +243,10 @@ const MAX_HISTORY_ROWS = 25000;
 const MAX_REBUILD_ATTEMPTS = 3;
 
 /**
+ * Backstop since grids got their own instances (`ghostty/engine.ts`),
+ * which removed the recycled pages this was built around; it still guards
+ * the shared-instance fallback.
+ *
  * Grids that trapped mid-write, held forever so their pages are never
  * recycled into a future create. Deliberately a leak: each entry is one
  * poisoned allocator region discovered at runtime, kept out of circulation
@@ -334,6 +362,14 @@ export class GhosttySurface implements TerminalSurface {
 
   /** Has this terminal been shown anything? See `fitAnchored`. */
   private written = false;
+  /**
+   * The cell size changed (font size/family) since the last fit. The next
+   * width change is applied at once instead of after `REBUILD_QUIET_MS`:
+   * a font step is one deliberate change, not a drag, and waiting painted
+   * the old grid in the new font for a few frames before the rebuild
+   * re-laid it — the jump the user saw on ⌘+ / ⌘−.
+   */
+  private cellSizeChanged = false;
   /** Pending rebuild, waiting for the container to stop moving. */
   private rebuildTimer: number | null = null;
   /**
@@ -429,6 +465,10 @@ export class GhosttySurface implements TerminalSurface {
     // on a still-detached element is safe — the caller re-parents
     // `element` into its mount and the first `fit()` sizes the grid.
     term.open(this.element);
+    // Both of the editable elements `open` just made: no Writing Tools /
+    // "Write with Siri", predictions or autocorrect over the terminal.
+    disableTextAssistance(this.element);
+    if (term.textarea) disableTextAssistance(term.textarea);
 
     for (const cb of this.dataCbs) term.onData(cb);
     for (const cb of this.resizeCbs) term.onResize(cb);
@@ -548,6 +588,8 @@ export class GhosttySurface implements TerminalSurface {
     const target = this.measureGrid();
     if (!target) return;
 
+    const immediate = this.cellSizeChanged;
+    this.cellSizeChanged = false;
     switch (planResize({ cols: term.cols, rows: term.rows }, target)) {
       case "none":
         // A width change that came back before it settled — an open/close
@@ -562,6 +604,11 @@ export class GhosttySurface implements TerminalSurface {
         this.fit();
         return;
       case "rebuild":
+        if (immediate) {
+          this.cancelRebuild();
+          this.applySettledWidth();
+          return;
+        }
         this.scheduleRebuild();
     }
   }
@@ -607,6 +654,15 @@ export class GhosttySurface implements TerminalSurface {
   private applySettledWidth(): void {
     const term = this.term;
     if (this.disposed || !term) return;
+    // A side panel started tweening the pane's width after this was
+    // scheduled (a quick collapse-then-expand): the width now is a frame of
+    // that tween, not where it settles. Wait it out. The panels-settled
+    // refit re-plans against the final width and cancels this if the pane
+    // came back to the grid's width (lib/terminal/refit).
+    if (isPanelAnimating()) {
+      this.scheduleRebuild();
+      return;
+    }
     const target = this.measureGrid();
     // Parked, hidden, or mid-layout. The next `fitAnchored()` reschedules;
     // rebuilding against a 1px park host would collapse the grid to its
@@ -734,7 +790,7 @@ export class GhosttySurface implements TerminalSurface {
     // which is the only way to read the shell's scrollback while a TUI is
     // running. Safe to do to a grid that is about to be freed.
     if (alternate) term.write(decModeSequence(ALT_SCREEN_MODE, false));
-    const primary = this.snapshotPrimary(term);
+    const primary = this.snapshotPrimary(term, target);
     const plan = planPrimary(primary);
     if (this.diag)
       diagNote(
@@ -948,7 +1004,10 @@ export class GhosttySurface implements TerminalSurface {
    * always at the live bottom — `getLine(r)` is active-screen row `r` and
    * `getScrollbackLine(i)` is history line `i`, whatever the scrollbar says.
    */
-  private snapshotPrimary(term: GhosttyTerminal): GridSnapshot {
+  private snapshotPrimary(
+    term: GhosttyTerminal,
+    target?: { cols: number; rows: number },
+  ): GridSnapshot {
     const wasm = term.wasmTerm;
     if (!wasm) return { history: [], screen: [], cursor: { x: 0, y: 0 } };
     const defaultFg = wasm.getColors().foreground;
@@ -1019,8 +1078,19 @@ export class GhosttySurface implements TerminalSurface {
     }
 
     const cursor = wasm.getCursor();
+    // The row limit is a promise about the scrollback AFTER the rebuild, so
+    // count rows at the geometry being rebuilt to, not the one being left.
+    const fitted =
+      target && Number.isFinite(limit)
+        ? trimHistoryForReflow(history, screen, target.cols, target.rows, limit, Math.max(0, cursor.y))
+        : history;
+    if (fitted.length < history.length)
+      console.info(
+        `[terminal] rebuild trimmed ${history.length - fitted.length} more history rows so ` +
+          `the re-wrapped scrollback stays within ${limit} rows at ${target!.cols} columns`,
+      );
     return {
-      history,
+      history: fitted,
       screen,
       cursor: {
         x: Math.max(0, cursor.x),
@@ -1341,6 +1411,22 @@ export class GhosttySurface implements TerminalSurface {
   // I/O
   // -------------------------------------------------------------------
 
+  /**
+   * Parse now; paint on the next frame. Deliberately NOT queued per
+   * animation frame on this side (polish spec §6.2, P3, measured
+   * 2026-11-10):
+   *
+   * - painting is already once per frame: `term.write` only parses into the
+   *   grid, and the patched render loop (`startRenderLoop`) is the only
+   *   thing that paints, so N chunks in a frame cost one render;
+   * - the Rust coalescer already frames output at 32 KiB / 8 ms, and the
+   *   per-write overhead left is ~0.1 ms per 32 KiB chunk (8 chunks: 7.8 ms
+   *   as 8 writes, 6.8 ms as one), parse cost being linear in bytes;
+   * - a rAF-flushed queue was prototyped: identical frames and no long
+   *   tasks over a 5 MB burst (`e2e/perf-smoothness.spec.ts`), but a frame
+   *   of added paint latency (median 6–11 ms → 16–17 ms), because its rAF
+   *   callback is queued after the render loop's for the same frame.
+   */
   write(data: string | Uint8Array): void {
     if (this.disposed) return;
     if (this.diag) diagWrite(this.id, data);
@@ -1476,6 +1562,8 @@ export class GhosttySurface implements TerminalSurface {
     // mechanism: a `fontSize` write runs `handleFontChange()` (canvas
     // resize + full re-render) and `fontFamily` re-runs `measureFont()`.
     const written = applyChangedOptions(this.term.options, next);
+    if (written.includes("fontSize") || written.includes("fontFamily"))
+      this.cellSizeChanged = true;
     // `scrollback` is in the options bag but the engine only reads it at
     // terminal construction (`buildWasmConfig`) — `handleOptionChange` has
     // no case for it. A rebuild constructs a fresh terminal through that

@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
-use crate::domain::UserSettings;
+use crate::domain::{
+    agent_commands_from_json, agent_commands_to_json, NotificationPrefs, PermissionMode, UserSettings,
+};
 
 use super::error::StoreError;
 use super::pool::Db;
@@ -26,6 +28,13 @@ impl SettingsRepo {
         Ok(defaults)
     }
 
+    /// The stored settings, or the defaults when no row exists yet —
+    /// without inserting one (for background readers like sync pull and
+    /// task launch, which mustn't create a dirty row as a side effect).
+    pub async fn get_or_default(&self) -> Result<UserSettings, StoreError> {
+        Ok(self.try_get().await?.unwrap_or_default())
+    }
+
     pub async fn update(&self, settings: &UserSettings) -> Result<UserSettings, StoreError> {
         let now = Utc::now();
         sqlx::query(
@@ -37,6 +46,8 @@ impl SettingsRepo {
                 branch_prefix_template = ?, worktree_base_path = ?,
                 default_merge_strategy = ?, auto_fetch_seconds = ?,
                 honor_gpg_sign = ?, auto_push_on_commit = ?,
+                default_permission_mode = ?, agent_commands = ?, notification_prefs = ?,
+                terminal_shell = ?, copy_on_select = ?,
                 updated_at = ?, dirty = 1
              WHERE id = 1",
         )
@@ -57,6 +68,11 @@ impl SettingsRepo {
         .bind(settings.auto_fetch_seconds)
         .bind(settings.honor_gpg_sign as i64)
         .bind(settings.auto_push_on_commit as i64)
+        .bind(settings.default_permission_mode.as_str())
+        .bind(agent_commands_to_json(&settings.agent_commands))
+        .bind(settings.notification_prefs.to_json())
+        .bind(&settings.terminal_shell)
+        .bind(settings.copy_on_select as i64)
         .bind(now.to_rfc3339())
         .execute(&self.db)
         .await?;
@@ -73,7 +89,9 @@ impl SettingsRepo {
                     default_editor, default_terminal,
                     keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                     default_merge_strategy, auto_fetch_seconds,
-                    honor_gpg_sign, auto_push_on_commit, updated_at
+                    honor_gpg_sign, auto_push_on_commit,
+                    default_permission_mode, agent_commands, notification_prefs,
+                    terminal_shell, copy_on_select, updated_at
              FROM user_settings WHERE id = 1",
         )
         .fetch_optional(&self.db)
@@ -90,8 +108,11 @@ impl SettingsRepo {
                 default_editor, default_terminal,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                 default_merge_strategy, auto_fetch_seconds,
-                honor_gpg_sign, auto_push_on_commit, updated_at, synced_at, dirty
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+                honor_gpg_sign, auto_push_on_commit,
+                default_permission_mode, agent_commands, notification_prefs,
+                terminal_shell, copy_on_select, updated_at,
+                synced_at, dirty
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
         )
         .bind(&settings.theme)
         .bind(&settings.accent_color)
@@ -110,6 +131,11 @@ impl SettingsRepo {
         .bind(settings.auto_fetch_seconds)
         .bind(settings.honor_gpg_sign as i64)
         .bind(settings.auto_push_on_commit as i64)
+        .bind(settings.default_permission_mode.as_str())
+        .bind(agent_commands_to_json(&settings.agent_commands))
+        .bind(settings.notification_prefs.to_json())
+        .bind(&settings.terminal_shell)
+        .bind(settings.copy_on_select as i64)
         .bind(settings.updated_at.to_rfc3339())
         .execute(&self.db)
         .await?;
@@ -136,6 +162,18 @@ fn row_to_settings(row: &sqlx::sqlite::SqliteRow) -> Result<UserSettings, StoreE
         auto_fetch_seconds: row.try_get("auto_fetch_seconds")?,
         honor_gpg_sign: row.try_get::<i64, _>("honor_gpg_sign")? != 0,
         auto_push_on_commit: row.try_get::<i64, _>("auto_push_on_commit")? != 0,
+        // Lenient: a mode string from a newer build falls back to the
+        // default instead of making settings unreadable.
+        default_permission_mode: PermissionMode::from_str(
+            &row.try_get::<String, _>("default_permission_mode")?,
+        )
+        .unwrap_or_default(),
+        agent_commands: agent_commands_from_json(&row.try_get::<String, _>("agent_commands")?),
+        notification_prefs: NotificationPrefs::from_json(
+            &row.try_get::<String, _>("notification_prefs")?,
+        ),
+        terminal_shell: row.try_get("terminal_shell")?,
+        copy_on_select: row.try_get::<i64, _>("copy_on_select")? != 0,
         updated_at: parse_timestamp(row.try_get::<String, _>("updated_at")?, "updated_at")?,
     })
 }
@@ -192,5 +230,61 @@ mod tests {
         let reread = repo.get_or_init().await.unwrap();
         assert_eq!(reread.theme, "light");
         assert!(reread.auto_push_on_commit);
+    }
+
+    #[tokio::test]
+    async fn new_installs_default_to_ask_shell_with_no_overrides() {
+        let repo = fresh().await;
+        let settings = repo.get_or_init().await.unwrap();
+        assert_eq!(settings.default_permission_mode, PermissionMode::AskShell);
+        assert!(settings.agent_commands.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_persists_permission_mode_and_agent_commands() {
+        let repo = fresh().await;
+        let mut settings = repo.get_or_init().await.unwrap();
+        settings.default_permission_mode = PermissionMode::AskEdits;
+        settings
+            .agent_commands
+            .insert("codex".into(), "codex --profile work {{permissions}}".into());
+        repo.update(&settings).await.unwrap();
+
+        let reread = repo.get_or_init().await.unwrap();
+        assert_eq!(reread.default_permission_mode, PermissionMode::AskEdits);
+        assert_eq!(
+            reread.agent_commands.get("codex").map(String::as_str),
+            Some("codex --profile work {{permissions}}")
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_shell_and_copy_on_select_default_and_round_trip() {
+        let repo = fresh().await;
+        assert_eq!(repo.get_or_default().await.unwrap().terminal_shell, "");
+        let mut settings = repo.get_or_init().await.unwrap();
+        assert_eq!(settings.terminal_shell, "");
+        assert!(!settings.copy_on_select);
+        settings.terminal_shell = "/bin/zsh".into();
+        settings.copy_on_select = true;
+        repo.update(&settings).await.unwrap();
+        let reread = repo.get_or_init().await.unwrap();
+        assert_eq!(reread.terminal_shell, "/bin/zsh");
+        assert!(reread.copy_on_select);
+    }
+
+    #[tokio::test]
+    async fn notification_prefs_default_and_round_trip() {
+        let repo = fresh().await;
+        let mut settings = repo.get_or_init().await.unwrap();
+        assert_eq!(settings.notification_prefs, NotificationPrefs::default());
+        settings.notification_prefs.background_only = false;
+        settings.notification_prefs.quiet_hours.enabled = true;
+        if let Some(c) = settings.notification_prefs.matrix.get_mut("task_failed") {
+            c.sound = true;
+        }
+        repo.update(&settings).await.unwrap();
+        let reread = repo.get_or_init().await.unwrap();
+        assert_eq!(reread.notification_prefs, settings.notification_prefs);
     }
 }

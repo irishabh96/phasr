@@ -13,6 +13,11 @@ export interface DiffViewerProps {
   /** Reserved for future task-scoped views. Currently unused. */
   taskId?: string;
   className?: string;
+  /** Hide DiffView's own header (the caller draws one). */
+  noHeader?: boolean;
+  /** Controlled split/inline mode (the review pane owns one toggle). */
+  mode?: DiffViewMode;
+  onModeChange?: (m: DiffViewMode) => void;
 }
 
 /**
@@ -26,6 +31,9 @@ export function DiffViewer({
   filePath,
   displayName,
   className,
+  noHeader,
+  mode,
+  onModeChange,
 }: DiffViewerProps) {
   const { data, isLoading, error } = useGitDiff(workspaceId, scope, filePath);
 
@@ -39,6 +47,8 @@ export function DiffViewer({
         ? { errorMessage: String((error as Error).message ?? error) }
         : {})}
       {...(className !== undefined ? { className } : {})}
+      {...(noHeader ? { noHeader } : {})}
+      {...(mode && onModeChange ? { mode, onModeChange } : {})}
     />
   );
 }

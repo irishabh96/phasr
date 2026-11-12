@@ -1,7 +1,6 @@
 import {
   CircleAlert,
   CircleCheck,
-  CircleDashed,
   Loader2,
   type LucideIcon,
 } from "lucide-react";
@@ -15,6 +14,7 @@ export type TerminalStatusState =
   | "restarting"
   | "failed"
   | "exited"
+  | "setting-up"
   | "not-started";
 
 interface TerminalStatusProps {
@@ -78,6 +78,26 @@ function resolve(
         role: "status",
         button: { label: "Restart", disabled: true },
       };
+    case "setting-up":
+      return {
+        Icon: Loader2,
+        iconColor: "text-(--color-info)",
+        spin: true,
+        title: "Setting up the worktree…",
+        support: "The agent starts as soon as setup finishes.",
+        role: "status",
+        button: null,
+      };
+    case "not-started":
+      return {
+        Icon: CircleAlert,
+        iconColor: "text-(--color-text-muted)",
+        spin: false,
+        title: "Not started yet",
+        support: "Start this task from the board with Start now.",
+        role: "status",
+        button: null,
+      };
     case "failed":
       return {
         Icon: CircleAlert,
@@ -92,20 +112,6 @@ function resolve(
           disabled: false,
           ...(onRetry ? { onClick: onRetry } : {}),
         },
-      };
-    case "not-started":
-      // A draft/queued task synced from a newer build. Not an error: the
-      // backend refused on purpose (no worktree to run in), so no alarm
-      // colour and no Retry — retrying can't change the answer.
-      return {
-        Icon: CircleDashed,
-        iconColor: "text-(--color-text-muted)",
-        spin: false,
-        title: "Not started on this Mac",
-        support:
-          "This task was created on another Mac and hasn't been started yet. Start it there, or update phasr on this Mac to start it here.",
-        role: "status",
-        button: null,
       };
     case "exited": {
       const restart = {
@@ -176,7 +182,7 @@ export function TerminalStatus({
   }, []);
 
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_oklab,var(--color-bg-terminal)_88%,transparent)] p-6 backdrop-blur-sm">
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_oklab,var(--color-bg-terminal)_88%,transparent)] p-6">
       <div
         className="glass-panel w-full max-w-sm p-4 text-center"
         role={role}
@@ -200,7 +206,7 @@ export function TerminalStatus({
             <summary className="cursor-pointer select-none text-[11px] text-(--color-text-muted)">
               Details
             </summary>
-            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-(--color-bg-input) p-2 font-mono text-[11px] text-(--color-text-secondary)">
+            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-(--radius-control) bg-(--color-bg-input) p-2 font-mono text-[11px] text-(--color-text-secondary)">
               {error}
             </pre>
           </details>

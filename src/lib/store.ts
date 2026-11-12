@@ -1,9 +1,18 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
+import { runKey } from "./runScope";
 import {
+  applyAccent,
+  applyDensity,
   applyTheme,
+  readStoredAccent,
+  readStoredDensity,
   readStoredTheme,
+  writeStoredAccent,
+  writeStoredDensity,
   writeStoredTheme,
+  type Accent,
+  type Density,
   type Theme,
 } from "./theme";
 
@@ -81,19 +90,64 @@ interface RunPanelState {
   openTabs: string[];
   /** which tab is in focus; null if the panel is closed */
   activeTab: string | null;
-  /** open the run-command tab (and focus it) */
-  openTab(id: string): void;
-  /** close one tab (also moves focus or hides the pane) */
-  closeTab(id: string): void;
+  /**
+   * Open the run-command tab in a task (and focus it) — an explicit "run it
+   * here". `taskId` defaults to the task on screen; with no task (the
+   * board) there is nowhere to show it, so nothing is recorded.
+   */
+  openTab(id: string, taskId?: string | null): void;
+  /** Close one task's tab (also moves focus or hides the pane). `taskId` as in `openTab`. */
+  closeTab(id: string, taskId?: string | null): void;
   /** focus an already-open tab */
   setActiveTab(id: string): void;
   /** hide the panel without losing tabs */
   hidePanel(): void;
   /** show the panel and focus the first tab if none is active */
   showPanel(): void;
+  /**
+   * `runKey(runCommandId, taskId)` keys — the TASK the tab was opened in,
+   * never the backend run target (see `lib/runScope.ts`). `intents`: the
+   * user asked to RUN it there (consumed by the terminal's first start).
+   * `shown`: the tab belongs to that task's pane bar. Mounting a run tab
+   * only ever ATTACHES; it spawns only with an intent, so visiting another
+   * task never starts a command there.
+   */
+  intents: Record<string, true>;
+  shown: Record<string, true>;
+  consumeIntent(key: string): boolean;
+}
+
+// ---------- Files pane editor buffers ----------
+
+/**
+ * One open file's editor state, kept outside the editor component so it
+ * survives Edit ↔ Diff, closing the pane and switching tasks. Cleared only
+ * by a save (buffer → null), "Reload theirs", or a confirmed discard
+ * (closing the tab).
+ */
+export interface FileBuffer {
+  /** The disk version the edit is based on (save's `expectedHash`). */
+  base: { hash: string; contents: string };
+  /** The editor's text; null = the same as `base`. */
+  buffer: string | null;
+  /** Derived: `buffer` differs from `base.contents`. */
+  dirty: boolean;
+  /** The file moved on disk under unsaved edits (agent write). */
+  diskChanged: boolean;
+  /** Contents of the write in flight; null when idle (single-flight). */
+  saving: string | null;
+  /** ⌘S pressed during a save with newer edits: one follow-up save. */
+  saveQueued: { overwrite: boolean } | null;
+  /** Bumped when the editor must replace its document (a reload). */
+  rev: number;
+}
+
+export function fileBufferKey(workspaceId: string, path: string): string {
+  return `${workspaceId}:${path}`;
 }
 
 export type SidebarMode = "collapsed" | "pinned" | "hidden";
+export type SessionPane = "tabs" | "changes" | "files" | "notes" | "run";
 
 const SIDEBAR_KEY = "phasr.sidebar";
 const RIGHT_PANEL_KEY = "phasr.rightPanel";
@@ -101,12 +155,12 @@ const SIDEBAR_WIDTH_KEY = "phasr.sidebarWidth";
 const RIGHT_PANEL_WIDTH_KEY = "phasr.rightPanelWidth";
 const LAST_WORKSPACE_KEY = "phasr.lastWorkspace";
 
-export const SIDEBAR_WIDTH_MIN = 200;
-export const SIDEBAR_WIDTH_MAX = 480;
-export const SIDEBAR_WIDTH_DEFAULT = 260;
-export const RIGHT_PANEL_WIDTH_MIN = 300;
-export const RIGHT_PANEL_WIDTH_MAX = 640;
-export const RIGHT_PANEL_WIDTH_DEFAULT = 360;
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 420;
+export const SIDEBAR_WIDTH_DEFAULT = 248;
+export const RIGHT_PANEL_WIDTH_MIN = 260;
+export const RIGHT_PANEL_WIDTH_MAX = 480;
+export const RIGHT_PANEL_WIDTH_DEFAULT = 280; // --layout-inspector-width
 
 function clampWidth(value: number, min: number, max: number, fallback: number) {
   return Number.isFinite(value)
@@ -162,6 +216,38 @@ function readStoredLastWorkspace(): ActiveWorkspaceContext | null {
 interface UiState {
   theme: Theme;
   setTheme: (theme: Theme) => void;
+  /** Accent mirror of UserSettings.accentColor; localStorage copy boots FOUC-free. */
+  accent: Accent;
+  setAccent: (accent: Accent) => void;
+  /**
+   * Which pane fills a task session's content area (A-Workspace pane tabs).
+   * "tabs" = the agent/terminal/preview tab stack (always mounted, so PTYs
+   * survive); the others overlay it. Per workspace, in memory.
+   */
+  sessionPane: Record<string, SessionPane>;
+  setSessionPane: (workspaceId: string, pane: SessionPane) => void;
+  /** Selected file in a task's Files pane (palette `@file` deep-links it). */
+  sessionFile: Record<string, string>;
+  /** Open file tabs per task, in tab order. Opening selects and adds. */
+  openFiles: Record<string, string[]>;
+  openSessionFile: (workspaceId: string, path: string) => void;
+  /**
+   * Close a file tab and drop its buffer (the caller has confirmed any
+   * discard). Selects the neighbouring tab when it was the selected one.
+   */
+  closeSessionFile: (workspaceId: string, path: string) => void;
+  /** Editor buffers keyed by {@link fileBufferKey}. */
+  fileBuffers: Record<string, FileBuffer>;
+  /** Replace one buffer; `undefined` from `fn` removes it. `dirty` is derived. */
+  updateFileBuffer: (key: string, fn: (prev: FileBuffer | undefined) => FileBuffer | undefined) => void;
+  /** Title-bar repository switcher: null = all repositories. */
+  repoFilter: string | null;
+  setRepoFilter: (repositoryId: string | null) => void;
+  /** Cloud sync worker health, fed by useCloudSync (account menu, bell). */
+  cloudSync: { state: "unknown" | "ok" | "error"; at: number | null; reason: string | null };
+  setCloudSync: (state: "ok" | "error", reason?: string | null) => void;
+  density: Density;
+  setDensity: (density: Density) => void;
 
   sidebarMode: SidebarMode;
   setSidebarMode: (mode: SidebarMode) => void;
@@ -334,6 +420,65 @@ export const useUiStore = create<UiState>((set, get) => ({
     writeStoredTheme(theme);
     applyTheme(theme);
     set({ theme });
+  },
+  accent: readStoredAccent(),
+  setAccent: (accent) => {
+    writeStoredAccent(accent);
+    applyAccent(accent);
+    set({ accent });
+  },
+  sessionPane: {},
+  setSessionPane: (workspaceId, pane) =>
+    set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: pane } })),
+  sessionFile: {},
+  openFiles: {},
+  openSessionFile: (workspaceId, path) =>
+    set((st) => {
+      const tabs = st.openFiles[workspaceId] ?? [];
+      return {
+        sessionFile: { ...st.sessionFile, [workspaceId]: path },
+        sessionPane: { ...st.sessionPane, [workspaceId]: "files" },
+        openFiles: tabs.includes(path) ? st.openFiles : { ...st.openFiles, [workspaceId]: [...tabs, path] },
+      };
+    }),
+  closeSessionFile: (workspaceId, path) =>
+    set((st) => {
+      const tabs = st.openFiles[workspaceId] ?? [];
+      const at = tabs.indexOf(path);
+      const rest = tabs.filter((p) => p !== path);
+      const sessionFile = { ...st.sessionFile };
+      if (sessionFile[workspaceId] === path) {
+        const next = rest[Math.min(Math.max(at, 0), rest.length - 1)];
+        if (next) sessionFile[workspaceId] = next;
+        else delete sessionFile[workspaceId];
+      }
+      const fileBuffers = { ...st.fileBuffers };
+      delete fileBuffers[fileBufferKey(workspaceId, path)];
+      return { openFiles: { ...st.openFiles, [workspaceId]: rest }, sessionFile, fileBuffers };
+    }),
+  fileBuffers: {},
+  updateFileBuffer: (key, fn) =>
+    set((st) => {
+      const prev = st.fileBuffers[key];
+      const next = fn(prev);
+      if (next === prev) return {};
+      const fileBuffers = { ...st.fileBuffers };
+      if (next) {
+        fileBuffers[key] = { ...next, dirty: next.buffer !== null && next.buffer !== next.base.contents };
+      } else {
+        delete fileBuffers[key];
+      }
+      return { fileBuffers };
+    }),
+  repoFilter: null,
+  setRepoFilter: (repoFilter) => set({ repoFilter }),
+  cloudSync: { state: "unknown", at: null, reason: null },
+  setCloudSync: (state, reason = null) => set({ cloudSync: { state, at: Date.now(), reason } }),
+  density: readStoredDensity(),
+  setDensity: (density) => {
+    writeStoredDensity(density);
+    applyDensity(density);
+    set({ density });
   },
 
   sidebarMode: readSidebar(),
@@ -633,6 +778,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     });
   },
   openInnerAgentTab: (workspaceId, title) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     const existing = state?.tabs.find((t) => t.kind === "main");
     if (existing && state) {
@@ -658,6 +808,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     return tab;
   },
   openInnerTerminalTab: (workspaceId, options) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     const existingTerminals = (state?.tabs ?? []).filter(
       (t) => t.kind === "terminal",
@@ -682,6 +837,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     return tab;
   },
   openInnerPreviewTab: (workspaceId, filePath) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     const existing = state?.tabs.find(
       (t) => t.kind === "preview" && t.filePath === filePath,
@@ -747,9 +907,35 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   resetForAccountSwitch: () => {
-    set({ innerTabs: {}, repoInnerTabs: {}, activeWorkspaceContext: null });
+    const { runPanel } = get();
+    set({
+      innerTabs: {},
+      repoInnerTabs: {},
+      activeWorkspaceContext: null,
+      // Per-task view state is keyed by the previous account's task ids;
+      // a pending run intent must never fire for the next account.
+      sessionPane: {},
+      sessionFile: {},
+      runPanel: { ...runPanel, openTabs: [], activeTab: null, intents: {}, shown: {} },
+      // Ids of the previous account's repositories / tasks: a stale repo
+      // filter empties the board, a pending modal would act on a row the
+      // new account can't see.
+      repoFilter: null,
+      fileSearchTarget: null,
+      pendingGitInitRepoId: null,
+      pendingNewWorkspaceRepoId: null,
+      pendingRenameWorkspaceId: null,
+      // Unsaved editor buffers belong to the previous account's worktrees.
+      openFiles: {},
+      fileBuffers: {},
+    });
   },
   setActiveInnerTab: (workspaceId, tabId) => {
+    // Any tab activation brings the tab stack back in front of an overlay
+    // pane (Changes/Files/Notes/run).
+    if (get().sessionPane[workspaceId] !== "tabs") {
+      set((st) => ({ sessionPane: { ...st.sessionPane, [workspaceId]: "tabs" } }));
+    }
     const state = get().innerTabs[workspaceId];
     if (!state) return;
     set({
@@ -778,25 +964,61 @@ export const useUiStore = create<UiState>((set, get) => ({
   runPanel: {
     openTabs: [],
     activeTab: null,
-    openTab: (id) => {
-      const { runPanel } = get();
+    openTab: (id, taskId) => {
+      const { runPanel, activeWorkspaceContext } = get();
+      const task = taskId === undefined ? (activeWorkspaceContext?.workspaceId ?? null) : taskId;
+      // No task on screen (the board): there is no pane bar to show the tab
+      // in, and an intent recorded here must never be picked up by whatever
+      // task (e.g. a worktree-less draft) mounts next.
+      if (!task) return;
       const existing = runPanel.openTabs.includes(id)
         ? runPanel.openTabs
         : [...runPanel.openTabs, id];
-      set({
-        runPanel: { ...runPanel, openTabs: existing, activeTab: id },
-      });
+      // Opening a run tab is an explicit "run it here", and brings that
+      // task's run pane forward.
+      const key = runKey(id, task);
+      set((st) => ({
+        sessionPane: { ...st.sessionPane, [task]: "run" },
+        runPanel: {
+          ...runPanel,
+          openTabs: existing,
+          activeTab: id,
+          intents: { ...runPanel.intents, [key]: true },
+          shown: { ...runPanel.shown, [key]: true },
+        },
+      }));
     },
-    closeTab: (id) => {
+    intents: {},
+    shown: {},
+    consumeIntent: (key) => {
       const { runPanel } = get();
-      const remaining = runPanel.openTabs.filter((tab) => tab !== id);
+      if (!runPanel.intents[key]) return false;
+      const { [key]: _used, ...rest } = runPanel.intents;
+      set({ runPanel: { ...runPanel, intents: rest } });
+      return true;
+    },
+    closeTab: (id, taskId) => {
+      const { runPanel, activeWorkspaceContext } = get();
+      const task = taskId === undefined ? (activeWorkspaceContext?.workspaceId ?? null) : taskId;
+      const key = runKey(id, task);
+      const { [key]: _gone, ...shown } = runPanel.shown;
+      const { [key]: _unused, ...intents } = runPanel.intents;
+      // The tab stays open in any other task that still shows it.
+      const prefix = `${id}@`;
+      const elsewhere = Object.keys(shown).some((k) => k.startsWith(prefix));
+      const openTabs = elsewhere ? runPanel.openTabs : runPanel.openTabs.filter((tab) => tab !== id);
+      // Focus moves to another of THIS task's tabs, never to one that only
+      // exists in a different task.
+      const sameTask = openTabs.filter((tab) => tab !== id && shown[runKey(tab, task)]);
       set({
         runPanel: {
           ...runPanel,
-          openTabs: remaining,
+          shown,
+          intents,
+          openTabs,
           activeTab:
             runPanel.activeTab === id
-              ? (remaining[remaining.length - 1] ?? null)
+              ? (sameTask[sameTask.length - 1] ?? null)
               : runPanel.activeTab,
         },
       });

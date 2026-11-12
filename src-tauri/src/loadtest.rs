@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::pty::PtyEvent;
-use crate::pty::TaskRuntime;
+use crate::pty::{SpawnSpec, TaskRuntime};
 
 const AGENT_CMD: &str = "claude --dangerously-skip-permissions";
 /// Small, safe, and real: each is a genuine turn, none of them touch
@@ -89,12 +89,10 @@ fn drive_agent(
     let id = format!("load-{idx}");
     let started = Instant::now();
     let handle = match runtime.spawn(
-        id.clone(),
-        Some(AGENT_CMD.into()),
-        Some(TASKS[0].into()),
-        dir,
-        40,
-        120,
+        SpawnSpec::new(id.clone(), dir)
+            .with_initial_command(Some(AGENT_CMD.into()))
+            .with_initial_prompt(Some(TASKS[0].into()))
+            .with_size(40, 120),
     ) {
         Ok(h) => h,
         Err(e) => {
@@ -144,9 +142,11 @@ fn drive_agent(
                 deadline = Instant::now() + TASK_DEADLINE;
             }
         }
-        if !trust_done && seen.contains("safety") {
+        // Claude 2.1.x focuses "No, exit": trusting is Down then Enter.
+        if !trust_done && seen.contains("safety") && seen.contains("trust") {
             trust_done = true;
-            let _ = handle.write(b"\r");
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = handle.write(b"\x1b[B\r");
         }
         if task_idx >= TASKS.len() && submitted_ms.is_some() {
             break;
@@ -160,7 +160,11 @@ fn drive_agent(
                 bytes += chunk.len() as u64;
                 seen.push_str(&String::from_utf8_lossy(&chunk));
                 if seen.len() > 200_000 {
-                    seen.drain(..100_000);
+                    let mut cut = 100_000;
+                    while !seen.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    seen.drain(..cut);
                 }
             }
             Ok(PtyEvent::Exit { .. }) => break,
@@ -299,15 +303,26 @@ fn kill_reaps_the_agent_not_just_the_shell() {
     let runtime = TaskRuntime::new(dir.path().join("logs"));
 
     let handle = runtime
-        .spawn("reap".into(), Some(AGENT_CMD.into()), Some("say hi".into()),
-               wd.clone(), 40, 120)
+        .spawn(
+            SpawnSpec::new("reap", wd.clone())
+                .with_initial_command(Some(AGENT_CMD.into()))
+                .with_initial_prompt(Some("say hi".into()))
+                .with_size(40, 120),
+        )
         .unwrap();
 
     // Wait until the agent is genuinely up.
     let mut rx = handle.subscribe();
     let mut seen = String::new();
     let deadline = Instant::now() + Duration::from_secs(90);
+    let mut trusted = false;
     while Instant::now() < deadline && !seen.contains("esc to interrupt") {
+        // Claude 2.1.x focuses "No, exit": trusting is Down then Enter.
+        if !trusted && seen.contains("safety") && seen.contains("trust") {
+            trusted = true;
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = handle.write(b"\x1b[B\r");
+        }
         match rx.try_recv() {
             Ok(PtyEvent::Output { chunk, .. }) => {
                 seen.push_str(&String::from_utf8_lossy(&chunk))
@@ -334,7 +349,7 @@ fn kill_reaps_the_agent_not_just_the_shell() {
     // handle's own child tree instead: count claude processes before/after.
     let claude_before = String::from_utf8_lossy(
         &std::process::Command::new("sh").arg("-c")
-            .arg("pgrep -fc 'dangerously-skip-permissions'").output().unwrap().stdout,
+            .arg("pgrep -f 'claude --dangerously-skip-permissions' | wc -l").output().unwrap().stdout,
     ).trim().parse::<usize>().unwrap_or(0);
 
     let _ = handle.kill();
@@ -342,10 +357,12 @@ fn kill_reaps_the_agent_not_just_the_shell() {
 
     let claude_after = String::from_utf8_lossy(
         &std::process::Command::new("sh").arg("-c")
-            .arg("pgrep -fc 'dangerously-skip-permissions'").output().unwrap().stdout,
+            .arg("pgrep -f 'claude --dangerously-skip-permissions' | wc -l").output().unwrap().stdout,
     ).trim().parse::<usize>().unwrap_or(0);
 
     println!("REAP booted={booted} claude_before={claude_before} claude_after={claude_after} (marker_procs={})", count());
+    assert!(booted, "the agent never started");
+    assert!(claude_after < claude_before, "kill() left the agent running ({claude_before} → {claude_after})");
     println!("REAP verdict: {}", if claude_after < claude_before {
         "kill() DID reap the agent"
     } else {

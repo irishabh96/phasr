@@ -20,5 +20,10 @@ pub mod handle;
 mod runtime;
 mod shell;
 
-pub use handle::PtyEvent;
+pub use handle::LaunchMode;
+pub use handle::{PromptGate, PromptGateDecision, PtyEvent, SpawnSpec};
 pub use runtime::TaskRuntime;
+pub use shell::{
+    list_shells, login_args_for_shell, login_path, resolve_shell, terminal_env,
+    usable_shell_override,
+};

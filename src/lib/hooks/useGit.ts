@@ -15,7 +15,7 @@ import type {
   MergeStrategy,
 } from "@/lib/types";
 
-const gitKeys = {
+export const gitKeys = {
   status: (workspaceId: string) => ["git", "status", workspaceId] as const,
   branchStatus: (workspaceId: string) =>
     ["git", "branchStatus", workspaceId] as const,
@@ -49,6 +49,21 @@ function invalidateWorkspaceGit(
   qc.invalidateQueries({ queryKey: gitKeys.mergeInProgress(workspaceId) });
   qc.invalidateQueries({ queryKey: ["git", "diff", workspaceId] });
   qc.invalidateQueries({ queryKey: ["git", "log", workspaceId] });
+}
+
+/**
+ * A merge into the base can finish the task (outcome "merged"): the
+ * workspace row and the task cards change too, not only git state. Without
+ * this the Review inspector kept offering Approve / Merge locally / Discard
+ * on a task that was already merged.
+ */
+function invalidateAfterMerge(
+  qc: ReturnType<typeof useQueryClient>,
+  workspaceId: string,
+) {
+  invalidateWorkspaceGit(qc, workspaceId);
+  qc.invalidateQueries({ queryKey: ["workspaces", "detail", workspaceId] });
+  qc.invalidateQueries({ queryKey: ["task-cards"] });
 }
 
 /**
@@ -236,9 +251,20 @@ export function useGitSyncWithMain(workspaceId: string) {
 export function useGitMergeToMain(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (strategy: MergeStrategy) =>
-      tauri.gitMergeToMain(workspaceId, strategy),
-    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+    mutationFn: ({
+      strategy,
+      overrideChecks,
+      commitDirty,
+    }: {
+      strategy: MergeStrategy;
+      overrideChecks?: boolean;
+      commitDirty?: boolean;
+    }) =>
+      tauri.gitMergeToMain(workspaceId, strategy, {
+        ...(overrideChecks ? { overrideChecks: true } : {}),
+        ...(commitDirty ? { commitDirty: true } : {}),
+      }),
+    onSuccess: () => invalidateAfterMerge(qc, workspaceId),
   });
 }
 
@@ -254,7 +280,7 @@ export function useGitContinueMerge(workspaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => tauri.gitContinueMerge(workspaceId),
-    onSuccess: () => invalidateWorkspaceGit(qc, workspaceId),
+    onSuccess: () => invalidateAfterMerge(qc, workspaceId),
   });
 }
 

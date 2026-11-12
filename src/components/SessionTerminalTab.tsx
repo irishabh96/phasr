@@ -13,12 +13,14 @@ import {
 } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { TERMINAL_PADDING } from "@/lib/terminal/padding";
 import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
   TerminalBackendKind,
   TerminalSurface,
 } from "@/lib/terminal/surface";
+import { fitSurfaceNow, watchSurfaceSize } from "@/lib/terminal/refit";
 import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent } from "@/lib/types";
 
@@ -95,6 +97,9 @@ export function SessionTerminalTab({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
+  // The cursor and selection wash come from the accent, so an accent change
+  // re-pushes the palette exactly like a theme flip.
+  const accent = useUiStore((s) => s.accent);
   const [status, setStatus] = useState<TermStatus>(null);
   // See Terminal.tsx — mirrored onto the container for e2e.
   const [surfaceInfo, setSurfaceInfo] = useState<{
@@ -190,7 +195,7 @@ export function SessionTerminalTab({
           void tauri.resizeSession(id, rows, cols).catch(() => {});
         }),
       ];
-      surface.focus();
+      if (canTakeTerminalFocus()) surface.focus();
     };
 
     const start = async (mode: StartMode = "initial") => {
@@ -261,12 +266,11 @@ export function SessionTerminalTab({
       }
     }
 
-    const refit = () => {
-      // Skip when hidden — see isSurfaceVisible.
-      if (!isSurfaceVisible(surface.element)) return;
-      // See Terminal.tsx — a width change is rebuilt, never reflowed.
-      surface.fitAnchored();
-    };
+    // See Terminal.tsx — a width change is rebuilt, never reflowed; the
+    // refitter skips hidden surfaces, coalesces to one fit per frame and
+    // waits out side-panel animations.
+    const refitter = watchSurfaceSize(surface, surface.element);
+    const refit = () => refitter.now({ force: true });
     // See Terminal.tsx — one-shot full redraw after a re-parent, never on
     // a resize tick.
     const forceRepaint = () => {
@@ -288,17 +292,11 @@ export function SessionTerminalTab({
       window.setTimeout(refit, 600),
     ];
 
-    const onWindowResize = () => refit();
-    window.addEventListener("resize", onWindowResize);
-
-    const resizeObserver = new ResizeObserver(refit);
-    resizeObserver.observe(surface.element);
 
     return () => {
       cancelAnimationFrame(rafId);
       for (const t of settleTimers) window.clearTimeout(t);
-      window.removeEventListener("resize", onWindowResize);
-      resizeObserver.disconnect();
+      refitter.dispose();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
       // Stop routing channel updates to this (unmounting) instance — a
@@ -316,7 +314,7 @@ export function SessionTerminalTab({
     if (!entry) return;
     entry.linkContext.editorId = settings?.defaultEditor ?? null;
     entry.surface.applySettings(settings);
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
   }, [settings, tabId]);
 
   // See Terminal.tsx — a theme flip has to be pushed into the emulator,
@@ -325,7 +323,7 @@ export function SessionTerminalTab({
     const entry = sessionSurfaceCache.get(tabId);
     if (!entry) return;
     entry.surface.applyTheme(readTerminalTheme());
-  }, [theme, tabId]);
+  }, [theme, accent, tabId]);
 
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + repaint synchronously here
@@ -340,7 +338,7 @@ export function SessionTerminalTab({
     entry.surface.setActive(visible);
     if (!visible) return;
     if (!isSurfaceVisible(entry.surface.element)) return;
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();
@@ -352,15 +350,10 @@ export function SessionTerminalTab({
     <div
       onClick={() => sessionSurfaceCache.get(tabId)?.surface.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="shell"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
-      style={{
-        display: visible ? "block" : "none",
-        paddingTop: 8,
-        paddingRight: 8,
-        paddingBottom: 4,
-        paddingLeft: 16,
-      }}
+      style={{ display: visible ? "block" : "none", ...TERMINAL_PADDING }}
       className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
     >
       <div ref={mountRef} className="h-full w-full" />

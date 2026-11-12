@@ -1,7 +1,24 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { bootApp, expectBackend, ptyBurst, terminal } from "./harness";
+import { bootApp, expectBackend, ptyBurst, terminal, waitForCall } from "./harness";
+
+/**
+ * The surface can be ready before the agent's PTY channel is, and output
+ * sent in between goes nowhere — a feed that silently lands nothing is not
+ * an aged session. Wait for both.
+ */
+async function ptyReady(page: Page) {
+  await expectBackend(page);
+  await waitForCall(page, "open_task_terminal", 15_000);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as any).__E2E__.channelKeys() as string[]).includes("ws-agent"),
+      ),
+    )
+    .toBe(true);
+}
 
 /**
  * The aged-terminal rebuild, end to end — ADR-002's seventh pass.
@@ -118,6 +135,11 @@ async function snap(page: Page): Promise<Snap> {
 }
 
 async function settlePane(page: Page) {
+  // A panel toggle tweens the pane's width and the terminal refits once,
+  // after the tween — so wait for the tween itself first.
+  await expect
+    .poll(() => page.evaluate(() => !document.querySelector("[data-panel-animating]")), { timeout: 5_000 })
+    .toBe(true);
   let last = -1;
   let steady = 0;
   for (let i = 0; i < 80 && steady < 3; i++) {
@@ -138,8 +160,9 @@ async function settlePane(page: Page) {
 }
 
 async function togglePanel(page: Page) {
+  // The task Inspector is the right-hand panel now; its toggle swaps names.
   await page
-    .getByRole("button", { name: /^(Show|Hide) changes$/ })
+    .getByRole("button", { name: /^(Collapse|Show) inspector$/ })
     .first()
     .click();
   await settlePane(page);
@@ -187,7 +210,7 @@ test("an aged session survives width round trips: no traps, no drift, history co
 }) => {
   const errors = watchConsole(page);
   await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
   for (let i = 0; i < 17; i++) await feed(page, AGED_KEEP_HISTORY);
   await page.waitForTimeout(700);
@@ -251,7 +274,7 @@ test("a style-saturated session (engine trap ceiling) rebuilds and lands, quaran
   const errors = watchConsole(page, /\[terminal\].*(failed|FAILED|gave up)/);
   const trapped = countConsole(page, /\[terminal\].*trapped/);
   await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
   // 140 distinct styles: hard enough that the pre-fix rebuild trapped on
   // every narrowing, comfortably under the engine's ~200-style ceiling at
@@ -285,7 +308,7 @@ test("grapheme-heavy content into a live grid needs no rebuild and no quarantine
 }) => {
   const errors = watchConsole(page);
   await bootApp(page);
-  await expectBackend(page);
+  await ptyReady(page);
   await terminal(page).click();
   const lines: string[] = [];
   for (let i = 0; i < 700; i++)

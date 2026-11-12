@@ -86,10 +86,36 @@ test.describe("Workspace & terminals", () => {
     await expect.poll(() => fired(page, "start_session_terminal"), { timeout: 6000 }).toBe(true);
   });
 
-  test("branch chip renders ahead/behind from git_branch_status", async ({ page }) => {
+  test("inspector renders branch + base state from git_branch_status", async ({ page }) => {
     await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
     await expect.poll(() => fired(page, "git_branch_status")).toBe(true);
-    await expect(page.getByText("phasr/add-feature").first()).toBeVisible();
+    // A-Workspace: the branch lives in the title bar, not the inspector. The
+    // inspector's Base row carries the base and its state from
+    // git_branch_status: up to date → no Sync action, state in the tooltip.
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const props = inspector.getByRole("region", { name: "Task" });
+    await expect(props.getByText("Base", { exact: true })).toBeVisible();
+    const base = props.locator("dd").filter({ hasText: /^main/ });
+    await expect(base).toHaveText("main");
+    await expect(base).toHaveAttribute("title", "Up to date with origin/main");
+    await expect(inspector.getByText("phasr/add-feature")).toHaveCount(0);
+    await expect(inspector.getByRole("button", { name: "Sync" })).toHaveCount(0);
+  });
+
+  test("inspector Base row shows how far behind it is, with a Sync action", async ({ page }) => {
+    const f = makeFixtures();
+    f.branchStatus = { ...f.branchStatus, behind: 3, behindOfTarget: 3 };
+    await bootApp(page, f);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    const props = page.getByRole("complementary", { name: "Inspector" }).getByRole("region", { name: "Task" });
+    const base = props.locator("dd").filter({ hasText: /^main/ });
+    await expect(base).toContainText("3 behind");
+    await expect(base).toHaveAttribute("title", "3 commits behind origin/main");
+    // The Sync text action opens the merge/rebase popover (portalled, so the
+    // inspector's scroll box can't clip it).
+    await base.getByRole("button", { name: "Sync" }).click();
+    await expect(page.getByText("Pull", { exact: false }).filter({ hasText: "into this branch" })).toBeVisible();
   });
 
   /**
@@ -143,14 +169,28 @@ test.describe("Workspace & terminals", () => {
 });
 
 test.describe("Git / diff / changes", () => {
-  const openChanges = (page: Page) => pressMeta(page, "j");
+  // The right-sidebar Changes tab (⌘J) is gone: changes live in the
+  // session's "Changes" pane tab (⌘⇧R / inspector "Review diff").
+  const openChanges = async (page: Page) => {
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    const tab = page.getByRole("tablist", { name: "Workspace tabs" }).getByRole("tab", { name: /^Changes/ });
+    await expect(async () => {
+      await tab.click();
+      await expect(tab).toHaveAttribute("aria-selected", "true", { timeout: 1000 });
+    }).toPass({ timeout: 10000 });
+    // Agent tasks open on the Review view; staging/commit/push live in
+    // "Stage & commit".
+    await page.getByRole("radio", { name: "Stage & commit" }).click();
+  };
 
   test("DIFF-STORM P0: collapsed cards (beyond the 10-seed) do NOT fetch git_diff", async ({ page }) => {
     const f = makeFixtures();
     f.gitStatus = manyFiles(15);
     await bootApp(page, f);
     await openChanges(page);
-    await expect(page.getByText("src/f0.ts").first()).toBeVisible({ timeout: 8000 });
+    // f14 is past the inspector's 6-file preview, so this only resolves
+    // once the Changes pane itself has rendered its cards.
+    await expect(page.getByText("src/f14.ts").first()).toBeVisible({ timeout: 8000 });
     await page.waitForTimeout(900);
     const diffPaths = (await calls(page)).filter((c) => c.cmd === "git_diff").map((c) => JSON.stringify(c.args));
     // Panel seeds the first 10 per section expanded; those fetch. f10..f14 are
@@ -175,12 +215,12 @@ test.describe("Git / diff / changes", () => {
   test("commit fires git_commit", async ({ page }) => {
     await bootApp(page);
     await openChanges(page);
-    await expect(page.getByText("src/app.ts").first()).toBeVisible({ timeout: 8000 });
-    const msg = page.getByPlaceholder(/message|summary|commit/i).first();
-    if (await msg.count()) {
-      await msg.click();
-      await msg.fill("test commit");
-    }
+    // Exact placeholder: the agent composer ("Message Claude") also matches
+    // a loose /message/ pattern.
+    const msg = page.getByPlaceholder("Commit message");
+    await expect(msg).toBeVisible({ timeout: 8000 });
+    await msg.click();
+    await msg.fill("test commit");
     await pressMeta(page, "Enter");
     await expect.poll(() => fired(page, "git_commit"), { timeout: 5000 }).toBe(true);
   });
@@ -190,10 +230,16 @@ test.describe("Git / diff / changes", () => {
     await setResponse(page, "git_push", { __reject: "fatal: remote rejected (pre-receive hook declined)" });
     await openChanges(page);
     const pushBtn = page.getByRole("button", { name: /^push/i }).first();
-    if (await pushBtn.count()) {
-      await pushBtn.click();
-      await expect(page.locator('[role="alert"]').first()).toBeVisible({ timeout: 6000 });
-    }
+    // Not optional any more: the old `if (count)` guard let this pass
+    // without ever pushing when the panel wasn't open.
+    await expect(pushBtn).toBeVisible({ timeout: 8000 });
+    await pushBtn.click();
+    // ChangesPanel surfaces a push failure inline under the commit form,
+    // as one humanized line (a plain <p>, not role=alert — unchanged by the
+    // redesign), never a stack or JSON dump.
+    const msg = page.getByText("fatal: remote rejected (pre-receive hook declined)", { exact: true });
+    await expect(msg).toBeVisible({ timeout: 6000 });
+    await expect(page.getByText(/\bat \w+ \(|"__reject"|\{"/)).toHaveCount(0);
     expect(realErrors(errors)).toEqual([]);
   });
 
@@ -210,24 +256,55 @@ test.describe("Git / diff / changes", () => {
     expect(realErrors(errors)).toEqual([]);
   });
 
-  test("workspace actions ⋯ menu → Merge opens the merge dialog", async ({ page }) => {
+  // A-Workspace folded the "…" task-actions menu into "Open in ▾".
+  const openInMenu = async (page: Page) => {
+    const btn = page.getByRole("button", { name: /^Open in/ });
+    await expect(btn).toBeVisible({ timeout: 8000 });
+    await btn.click();
+    return page.getByRole("menu");
+  };
+
+  test("Open in ▾ → Merge into main opens the merge dialog", async ({ page }) => {
     await bootApp(page);
-    const menuBtn = page.getByRole("button", { name: /workspace actions/i }).first();
-    await expect(menuBtn).toBeVisible({ timeout: 8000 });
-    await menuBtn.click();
-    const merge = page.getByText(/merge to main/i).first();
-    if (await merge.count()) {
-      await merge.click();
-      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5000 });
-    }
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await expect.poll(() => fired(page, "git_branch_status")).toBe(true);
+    const menu = await openInMenu(page);
+    await menu.getByRole("menuitem", { name: /merge into main/i }).click();
+    await expect(page.getByRole("dialog")).toBeVisible({ timeout: 5000 });
   });
 
-  test("local workspace shows NO actions menu / remove button (intentional)", async ({ page }) => {
+  test("Open in ▾ keeps every moved action: launchers, copy path, PR, archive, delete", async ({ page }) => {
+    await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    const menu = await openInMenu(page);
+    for (const name of [/copy worktree path/i, /open pull request/i, /merge into main/i, /^archive$/i, /delete workspace/i]) {
+      await expect(menu.getByRole("menuitem", { name })).toBeVisible();
+    }
+    // Delete still confirms before doing anything.
+    await menu.getByRole("menuitem", { name: /delete workspace/i }).click();
+    await expect(page.getByRole("alertdialog").or(page.getByRole("dialog")).first()).toContainText(/delete workspace/i);
+    expect(await fired(page, "delete_workspace")).toBe(false);
+  });
+
+  test("the + menu runs a repository command (Run ▾ moved there)", async ({ page }) => {
+    await bootApp(page);
+    await expect(page).toHaveURL(/workspaces\/ws-agent/, { timeout: 25000 });
+    await page.getByRole("button", { name: "New pane" }).click();
+    await page.getByRole("menuitem", { name: /^test/ }).click();
+    await expect(
+      page.getByRole("tablist", { name: "Workspace tabs" }).getByRole("tab", { name: /^test/ }),
+    ).toHaveAttribute("aria-selected", "true", { timeout: 5000 });
+  });
+
+  test("local workspace's Open in ▾ has no task actions / remove (intentional)", async ({ page }) => {
     await bootApp(page);
     await page.goto("/repositories/repo-1/workspaces/ws-local");
     await expect(page).toHaveURL(/ws-local/, { timeout: 8000 });
-    await page.waitForTimeout(500);
-    expect(await page.getByRole("button", { name: /workspace actions/i }).count()).toBe(0);
+    const menu = await openInMenu(page);
+    await expect(menu.getByRole("menuitem", { name: /copy path/i })).toBeVisible();
+    for (const name of [/merge/i, /pull request/i, /archive/i, /delete/i, /remove from phasr/i]) {
+      expect(await menu.getByRole("menuitem", { name }).count()).toBe(0);
+    }
     expect(await page.getByRole("button", { name: /remove from phasr/i }).count()).toBe(0);
   });
 });

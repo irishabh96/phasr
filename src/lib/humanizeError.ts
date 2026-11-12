@@ -43,3 +43,13 @@ export function humanizeError(err: unknown): string {
 
   return raw || "Something went wrong.";
 }
+
+/**
+ * The backend refuses to type into an agent that is paused on a permission
+ * dialog (its Enter would answer the dialog): `"the agent is waiting for
+ * your answer"`. Matched loosely so a prefixed/wrapped error still counts.
+ */
+export function isAwaitingAnswerError(err: unknown): boolean {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.toLowerCase().includes("waiting for your answer");
+}

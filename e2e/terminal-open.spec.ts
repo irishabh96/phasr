@@ -11,6 +11,16 @@ import {
 } from "./harness";
 
 /**
+ * The terminal pane tabs (agent + shells). The tab strip also carries the
+ * fixed "Changes" and "Files" panes, which are not terminals.
+ */
+const terminalTabs = (page: Page) =>
+  page
+    .getByRole("tablist", { name: "Workspace tabs" })
+    .getByRole("tab")
+    .filter({ hasNotText: /^(Changes|Files|Notes)/ });
+
+/**
  * Opening terminals — the ⌘T path — end to end.
  *
  * Three things a user would notice, none of which any other spec covers:
@@ -292,7 +302,7 @@ test("several terminals opened in succession each render, and keystrokes reach t
   }
   await page.waitForTimeout(600);
 
-  const tabs = page.getByRole("tab");
+  const tabs = terminalTabs(page);
   await expect(tabs).toHaveCount(4);
 
   for (let i = 0; i < 4; i++) {

@@ -106,3 +106,59 @@ SOFTWARE.
      half-applied.
 
    The MIT licence permits this; the patch is intended for upstreaming.
+
+## Inter and JetBrains Mono (bundled fonts)
+
+The interface typefaces are bundled through `@fontsource-variable/inter` and
+`@fontsource/jetbrains-mono` (imported in `src/main.tsx`) so the app renders
+identically offline.
+
+- **Inter** — Copyright 2016 The Inter Project Authors
+  (https://github.com/rsms/inter). Licensed under the SIL Open Font License,
+  Version 1.1.
+- **JetBrains Mono** — Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono). Licensed under the SIL Open
+  Font License, Version 1.1.
+
+The full licence texts ship inside the app bundle at `licenses/Inter-OFL.txt`
+and `licenses/JetBrainsMono-OFL.txt` (copied into `public/licenses/`), as the
+OFL requires when the fonts are redistributed.
+
+## Mermaid (diagrams in the transcript)
+
+A ```` ```mermaid ```` block in an agent's reply is drawn with Mermaid
+(`src/components/transcript/MermaidDiagram.tsx`), loaded on demand and not
+at startup. MIT License. Copyright (c) 2014 - 2022 Knut Sveidqvist.
+<https://github.com/mermaid-js/mermaid>
+
+It brings, unmodified: d3 and its modules (ISC; `d3-array`, `d3-ease`,
+`d3-path`, `d3-sankey`, `d3-shape` BSD-3-Clause), dagre, cytoscape, KaTeX,
+lodash-es, khroma and others (MIT), `rw` (BSD-3-Clause),
+`robust-predicates` (Unlicense), Chevrotain (Apache-2.0), DOMPurify
+(MPL-2.0 OR Apache-2.0, used under Apache-2.0) and elkjs (EPL-2.0; source at
+<https://github.com/kieler/elkjs>). Each package's licence text ships in its
+`node_modules/<name>/LICENSE`.
+
+## whisper.cpp, Whisper and cpal (voice input)
+
+Dictation (`src-tauri/src/voice/`) transcribes on the Mac with whisper.cpp
+and ggml, compiled into the app through the `whisper-rs` bindings. MIT
+License, Copyright (c) 2023-2024 The ggml authors; the full text ships at
+`licenses/whisper.cpp-MIT.txt`. <https://github.com/ggml-org/whisper.cpp>.
+`whisper-rs` and `whisper-rs-sys` are released under the Unlicense.
+
+The speech models are not bundled. Settings › Voice downloads OpenAI's
+Whisper weights in whisper.cpp's ggml format from
+<https://huggingface.co/ggerganov/whisper.cpp> when you ask for them (MIT
+License, Copyright (c) 2022 OpenAI).
+
+The microphone is read through cpal (Apache-2.0,
+<https://github.com/RustAudio/cpal>) and permission is asked through
+`objc2-av-foundation` (Zlib OR Apache-2.0 OR MIT, used under MIT).
+
+## CodeMirror and Lezer (editor)
+
+The Files-tab editor uses CodeMirror 6 (`@codemirror/*`) and the Lezer
+parsers it depends on (`@lezer/*`). Copyright (C) 2018-2021 by Marijn
+Haverbeke and others. Licensed under the MIT License; the full text ships at
+`licenses/CodeMirror-MIT.txt` and `licenses/Lezer-MIT.txt`.

@@ -35,8 +35,8 @@ export function FilePreviewTab({ repoPath, filePath, visible }: FilePreviewTabPr
       style={{ display: visible ? "flex" : "none" }}
       className="h-full min-h-0 w-full flex-col overflow-hidden bg-(--color-bg-input)"
     >
-      <div className="flex shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4 py-2 text-[12px] text-(--color-text-secondary)">
-        <code className="truncate">{filePath}</code>
+      <div className="flex h-[34px] shrink-0 items-center gap-2 bg-(--color-bg-base) px-4 text-[12px] text-(--color-text-secondary)">
+        <code className="truncate font-mono">{filePath}</code>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {isLoading && (
@@ -52,7 +52,7 @@ export function FilePreviewTab({ repoPath, filePath, visible }: FilePreviewTabPr
           </div>
         )}
         {!isLoading && !error && lines && (
-          <table className="w-full border-collapse font-mono text-[11.5px] leading-[1.55]">
+          <table className="w-full border-collapse font-mono text-[11px] leading-[1.55]">
             <tbody>
               {lines.map((line, i) => (
                 <tr key={i}>

@@ -31,12 +31,12 @@ export function AddRepositoryPickerModal() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && close()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[180] bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <Dialog.Content className="fixed left-1/2 top-[16vh] z-[190] w-[min(520px,calc(100vw-32px))] -translate-x-1/2 outline-none">
-          <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
-            <header className="flex h-12 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+          <div className="glass-modal animate-modal-in overflow-hidden">
+            <header className="flex h-12 shrink-0 items-center gap-2 px-4">
               <Dialog.Title asChild>
-                <h2 className="text-[13.5px] font-semibold leading-none">
+                <h2 className="text-[13px] font-medium leading-none">
                   Add a repository
                 </h2>
               </Dialog.Title>
@@ -95,11 +95,11 @@ function PickerCard({
     <button
       type="button"
       onClick={onClick}
-      className="glass-panel group flex flex-col gap-2 p-4 text-left transition-all duration-150 hover:border-(--glass-border-strong)"
+      className="card-interactive group flex flex-col gap-2 p-4 text-left focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
     >
       <div className="flex items-center gap-2">
         {icon}
-        <span className="text-[13.5px] font-medium leading-none">{title}</span>
+        <span className="text-[13px] font-medium leading-none">{title}</span>
       </div>
       <p className="text-[12px] text-(--color-text-secondary)">{description}</p>
     </button>

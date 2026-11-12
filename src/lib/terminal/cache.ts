@@ -207,6 +207,10 @@ export class TerminalSurfaceCache<T extends SurfaceCacheEntry> {
  * to take from, because clicking a tab pill is exactly how you get here.
  */
 export function canTakeTerminalFocus(): boolean {
+  // An open modal (New task, settings sheet, palette) owns the keyboard even
+  // when its focus sits on a button rather than a field.
+  if (document.querySelector("[role='dialog'][data-state='open'], [role='alertdialog'][data-state='open']"))
+    return false;
   const active = document.activeElement as HTMLElement | null;
   if (!active || active === document.body) return true;
   const tag = active.tagName;

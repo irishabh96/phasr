@@ -46,7 +46,7 @@ export function PanelState(props: PanelStateProps) {
         {Array.from({ length: rows }, (_, i) => (
           <div
             key={i}
-            className="skeleton-bar h-11 rounded-[10px] bg-(--color-bg-hover) animate-[pulse-skeleton_1.4s_ease-in-out_infinite]"
+            className="skeleton-bar h-11 rounded-(--radius-card) bg-(--color-bg-hover) animate-[pulse-skeleton_1.4s_ease-in-out_infinite]"
           />
         ))}
       </div>
@@ -62,7 +62,7 @@ export function PanelState(props: PanelStateProps) {
             {icon}
           </div>
         ) : null}
-        <h3 className="text-[14px] font-medium text-(--color-text-primary)">
+        <h3 className="text-[13px] font-medium text-(--color-text-primary)">
           {title}
         </h3>
         {description ? (
@@ -87,7 +87,7 @@ export function PanelState(props: PanelStateProps) {
       <div className="mb-3 grid size-10 place-items-center rounded-full bg-(--color-bg-hover) text-(--color-danger)">
         <CircleAlert className="size-6" aria-hidden="true" />
       </div>
-      <h3 className="text-[14px] font-semibold text-(--color-danger)">
+      <h3 className="text-[13px] font-medium text-(--color-danger)">
         {title}
       </h3>
       <p className="mt-1 text-[13px] text-(--color-text-secondary)">

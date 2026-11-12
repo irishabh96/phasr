@@ -1,3 +1,4 @@
+import { useNavigate } from "@tanstack/react-router";
 import { Pencil, Pin, PinOff, Play, Plus, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -31,10 +32,24 @@ export function RunCommandsSection({
   const deleteRC = useDeleteRunCommand(repositoryId);
   const runPanel = useUiStore((s) => s.runPanel);
   const navigateToRepoEntry = useNavigateToRepoEntry();
+  const navigate = useNavigate();
 
-  const runHere = (id: string) => {
-    runPanel.openTab(id);
-    void navigateToRepoEntry(repositoryId);
+  // Run it in a task of this repository: the one on screen if it belongs
+  // here, else the one the repo entry lands on — never a task of another
+  // repository, and never "no task" (nothing would show it).
+  const runHere = async (id: string) => {
+    const ctx = useUiStore.getState().activeWorkspaceContext;
+    if (ctx?.repositoryId === repositoryId) {
+      runPanel.openTab(id, ctx.workspaceId);
+      // Back to that task, which also closes the Settings sheet.
+      await navigate({
+        to: "/repositories/$repositoryId/workspaces/$workspaceId",
+        params: { repositoryId, workspaceId: ctx.workspaceId },
+      }).catch(() => {});
+      return;
+    }
+    const landed = await navigateToRepoEntry(repositoryId).catch(() => null);
+    if (landed) useUiStore.getState().runPanel.openTab(id, landed);
   };
 
   const isControlled = onToggleAdd !== undefined;
@@ -117,10 +132,10 @@ export function RunCommandsSection({
     <section className="space-y-3">
       {!isControlled && (
         <div className="flex items-center justify-between">
-          <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
+          <div className="group-header">
             Commands
           </div>
-          <GlassButton variant="outline" size="sm" onClick={toggleAdd}>
+          <GlassButton variant="ghost" size="sm" onClick={toggleAdd}>
             <Plus size={12} />
             Add
           </GlassButton>
@@ -130,7 +145,7 @@ export function RunCommandsSection({
       {showAdd && (
         <form
           onSubmit={handleCreate}
-          className="space-y-2.5 rounded-[14px] border border-(--color-border-subtle) bg-(--color-bg-surface) p-4"
+          className="card space-y-2.5 p-4"
         >
           <GlassInput
             value={name}
@@ -169,11 +184,11 @@ export function RunCommandsSection({
       )}
 
       {sorted.length > 0 && (
-        <ul className="divide-y divide-(--color-border-subtle) overflow-hidden rounded-[14px] border border-(--color-border-subtle) bg-(--color-bg-surface)">
+        <ul className="card overflow-hidden py-1">
           {sorted.map((rc) => {
             const isEditing = editingId === rc.id;
             return (
-              <li key={rc.id} className="px-4 py-3">
+              <li key={rc.id} className="px-3.5 py-2.5">
                 <div className="flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     {isEditing ? (
@@ -191,10 +206,10 @@ export function RunCommandsSection({
                       </div>
                     ) : (
                       <>
-                        <span className="block truncate text-sm font-medium">
+                        <span className="block truncate text-[12px] font-medium">
                           {rc.name}
                         </span>
-                        <code className="block truncate text-[12px] text-(--color-text-muted)">
+                        <code className="block truncate font-mono text-[11px] text-(--color-text-muted)">
                           {rc.command}
                         </code>
                       </>
@@ -229,7 +244,7 @@ export function RunCommandsSection({
                         <GlassButton
                           variant="ghost"
                           size="sm"
-                          onClick={() => runHere(rc.id)}
+                          onClick={() => void runHere(rc.id)}
                           title="Run"
                         >
                           <Play

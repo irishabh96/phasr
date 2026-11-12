@@ -91,6 +91,25 @@ describe("theme tokens that become the WASM palette", () => {
   });
 });
 
+describe("accent blocks", () => {
+  // The picker sets data-accent on <html>; the terminal then re-reads the
+  // cursor (--color-accent-500) and selection wash (--ansi-selection). A block
+  // that forgot either would leave the terminal on the previous accent.
+  const blockFor = (selector: string) => {
+    const start = CSS.indexOf(`${selector} {`);
+    if (start < 0) return null;
+    return CSS.slice(start, CSS.indexOf("}", start));
+  };
+  it.each(["blue", "green", "violet", "amber"])("%s restates the terminal-bound accent tokens in both themes", (accent) => {
+    for (const selector of [`[data-accent="${accent}"]`, `[data-theme="light"][data-accent="${accent}"]`]) {
+      const block = blockFor(selector);
+      expect(block, `${selector} block is missing`).not.toBeNull();
+      expect(block).toMatch(/--color-accent-500:\s*#[0-9a-f]{6};/i);
+      expect(block).toMatch(/--ansi-selection:\s*rgba\(/);
+    }
+  });
+});
+
 describe("carriesAlpha", () => {
   it.each(["#f7816647", "#abcd", "rgba(1,2,3,0.5)", "hsla(1,2%,3%,0.5)", "rgb(1 2 3 / 50%)"])(
     "flags %s",

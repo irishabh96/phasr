@@ -24,13 +24,37 @@ async function boot(page: Page, fixtures = makeFixtures()) {
 }
 
 /**
- * Open the rail on Notes. The composer is summoned, not pinned, so the
- * settled state is the Notes tab being selected.
- * (The settled signal differs by state: a populated list shows the
- * "New note" canvas row, an empty one opens the composer directly.)
+ * The notes pane's rows. Note text also appears in the inspector's NOTES
+ * preview, and the inspector has its own list items (changes, run
+ * commands), so every row/text lookup is scoped to the panel's rows —
+ * the only list items that hold a note `article`.
+ */
+const noteRows = (page: Page) =>
+  page.getByRole("listitem").filter({ has: page.getByRole("article") });
+const inNotes = (page: Page, text: RegExp) =>
+  page.getByRole("article").getByText(text);
+
+/**
+ * Open the Notes pane from the inspector's NOTES "View all N" button. The
+ * composer is summoned, not pinned, so the settled state is the pane
+ * showing. (The settled signal differs by state: a populated list shows
+ * the "New note" canvas row, an empty one shows the composer directly.)
  */
 async function openNotesTab(page: Page) {
   await page.getByRole("button", { name: "Repository notes" }).click();
+  await settled(page);
+}
+
+/** Open the Notes pane via the pane bar's "+" menu — no composer request,
+ *  and available even when there are no open notes (the inspector's
+ *  "View all" link only renders with at least one). */
+async function openNotesFromPaneMenu(page: Page) {
+  await page.getByRole("button", { name: "New pane" }).click();
+  await page.getByRole("menuitem", { name: "Repository notes" }).click();
+  await settled(page);
+}
+
+async function settled(page: Page) {
   await expect(
     page
       .getByRole("button", { name: "New note" })
@@ -47,7 +71,7 @@ async function openComposer(page: Page) {
 
 /** Open a row's ⋯ menu and pick an item. */
 async function rowMenu(page: Page, index: number, item: string) {
-  const row = page.getByRole("listitem").nth(index);
+  const row = noteRows(page).nth(index);
   await row.hover();
   await row.getByRole("button", { name: "Note actions" }).click();
   await page.getByRole("menuitem", { name: item }).click();
@@ -70,14 +94,14 @@ test.describe("Notes panel", () => {
     expect(listArgs.at(-1)).toMatchObject({ repositoryId: "repo-1" });
 
     // Fixture note bodies + provenance render.
-    await expect(page.getByText(/Seed script needs DATABASE_URL/)).toBeVisible();
+    await expect(inNotes(page, /Seed script needs DATABASE_URL/)).toBeVisible();
     // Origin is icon-only now; the label lives in its tooltip.
     await expect(page.getByText("Terminal 2")).toHaveCount(0);
     // Provenance costs no vertical space now: the workspace ref lives in
     // the origin glyph's tooltip and menu header, not on the row. The
     // removed-workspace fact stays in the row's accessible name.
     await expect(page.getByText("checkout-flow")).toHaveCount(0);
-    const codexRow = page.getByRole("listitem").nth(1);
+    const codexRow = noteRows(page).nth(1);
     await expect(codexRow.getByRole("article")).toHaveAttribute(
       "aria-label",
       /\(workspace removed\)/,
@@ -120,11 +144,11 @@ test.describe("Notes panel", () => {
   }) => {
     await boot(page);
     await openNotesTab(page);
-    await expect(page.getByText(/Codex keeps rewriting/)).toBeVisible();
+    await expect(inNotes(page, /Codex keeps rewriting/)).toBeVisible();
 
     // Positional, not text-filtered: editing replaces the body text, so
     // a hasText filter would stop matching its own row mid-test.
-    const codexRow = page.getByRole("listitem").nth(1);
+    const codexRow = noteRows(page).nth(1);
     await expect(codexRow).toContainText("Codex keeps rewriting");
 
     // Cancel path — via the ⋯ menu.
@@ -158,7 +182,7 @@ test.describe("Notes panel", () => {
   }) => {
     await boot(page);
     await openNotesTab(page);
-    await expect(page.getByText(/Codex keeps rewriting/)).toBeVisible();
+    await expect(inNotes(page, /Codex keeps rewriting/)).toBeVisible();
 
     await rowMenu(page, 1, "Delete…");
 
@@ -181,7 +205,10 @@ test.describe("Notes panel", () => {
     const fixtures = makeFixtures();
     (fixtures as { notes: unknown[] }).notes = [];
     const { errors } = await boot(page, fixtures);
-    await openNotesTab(page);
+    // No open notes → the inspector has no "View all" link; the pane menu
+    // still reaches the panel.
+    await expect(page.getByRole("button", { name: "Repository notes" })).toHaveCount(0);
+    await openNotesFromPaneMenu(page);
 
     await expect(page.getByText("No notes yet")).toBeVisible();
     // The composer IS the empty state's affordance — present, but not
@@ -218,12 +245,12 @@ test.describe("Notes panel", () => {
   }) => {
     await boot(page);
     await openNotesTab(page);
-    const first = page.getByRole("listitem").nth(0);
+    const first = noteRows(page).nth(0);
     await first.click();
     await first.press("ArrowDown");
     await page.keyboard.press("Enter");
     await expect(
-      page.getByRole("listitem").nth(1).getByRole("textbox"),
+      noteRows(page).nth(1).getByRole("textbox"),
     ).toBeVisible();
   });
 });

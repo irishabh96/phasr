@@ -2,18 +2,21 @@ import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TerminalStatus } from "@/components/TerminalStatus";
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
+import { runKey } from "@/lib/runScope";
 import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
 import { canTakeTerminalFocus } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { TERMINAL_PADDING } from "@/lib/terminal/padding";
 import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
   TerminalBackendKind,
   TerminalSurface,
 } from "@/lib/terminal/surface";
+import { fitSurfaceNow, watchSurfaceSize } from "@/lib/terminal/refit";
 import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent } from "@/lib/types";
 
@@ -29,6 +32,14 @@ type TermStatus =
 interface RunCommandTerminalProps {
   /** Run command id (NOT a workspace id). */
   runCommandId: string;
+  /**
+   * The task view this tab belongs to — whose run intent may start it.
+   * Not the run target: a worktree-less task runs in the checkout
+   * (`workspaceId` null) yet only consumes its OWN intents.
+   */
+  taskId: string;
+  /** Run target (`runTarget(task)`): the task's worktree, or null = the repo checkout. */
+  workspaceId?: string | null;
   visible: boolean;
   onExit?: (exitCode: number | null) => void;
 }
@@ -45,6 +56,8 @@ interface RunCommandTerminalProps {
  */
 export function RunCommandTerminal({
   runCommandId,
+  taskId,
+  workspaceId = null,
   visible,
   onExit,
 }: RunCommandTerminalProps) {
@@ -61,6 +74,9 @@ export function RunCommandTerminal({
   const restartRef = useRef<(() => void) | null>(null);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
+  // The cursor and selection wash come from the accent, so an accent change
+  // re-pushes the palette exactly like a theme flip.
+  const accent = useUiStore((s) => s.accent);
   onExitRef.current = onExit;
   const editorIdRef = useRef<string | null>(null);
   editorIdRef.current = settings?.defaultEditor ?? null;
@@ -89,18 +105,22 @@ export function RunCommandTerminal({
     surface.fit();
 
     // See Terminal.tsx — every later resize is anchored, so a width change
-    // rebuilds the grid instead of rewrapping it.
-    const resizeObserver = new ResizeObserver(() => surface.fitAnchored());
-    resizeObserver.observe(container);
+    // rebuilds the grid instead of rewrapping it; one fit per frame at most,
+    // none while a side panel animates (spec P1/P2).
+    const refitter = watchSurfaceSize(surface, container);
 
     const disposables: SurfaceDisposable[] = [];
 
+    // Attaching to an exited command replays its output and exit, and the
+    // exit can arrive before the attach promise resolves.
+    let exitSeen = false;
     const channel = new Channel<PtyEvent>();
     channel.onmessage = (event) => {
       if (cancelled) return;
       if (event.type === "output") {
         surface.write(decodePtyChunk(event.chunk));
       } else if (event.type === "exit") {
+        exitSeen = true;
         setStatus({ state: "exited", exitCode: event.exitCode });
         onExitRef.current?.(event.exitCode);
       }
@@ -115,20 +135,43 @@ export function RunCommandTerminal({
             : { state: "starting" },
       );
       for (const d of disposables.splice(0)) d.dispose();
+      exitSeen = false;
       try {
         await whenGridSettles(surface);
-        await tauri.startRunCommand(
-          runCommandId,
-          channel,
-          surface.rows,
-          surface.cols,
-        );
+        // Mounting ATTACHES; only an explicit Run (an intent from openTab,
+        // or Retry/Restart here) spawns. Visiting another task — or coming
+        // back after an exec command exited — never runs it again by itself.
+        // An explicit Run goes straight to start, which re-attaches to a live
+        // command and otherwise spawns (attach would replay an old exit).
+        let attached = false;
+        if (mode === "initial") {
+          const key = runKey(runCommandId, taskId);
+          if (!useUiStore.getState().runPanel.consumeIntent(key)) {
+            try {
+              await tauri.attachRunCommand(runCommandId, channel, surface.rows, surface.cols, workspaceId);
+              attached = true;
+            } catch (err) {
+              if (String(err) !== "not running") throw err;
+              if (cancelled) return;
+              setStatus({ state: "exited", exitCode: null });
+              return;
+            }
+          }
+        }
+        if (!attached)
+          await tauri.startRunCommand(
+            runCommandId,
+            channel,
+            surface.rows,
+            surface.cols,
+            workspaceId,
+          );
         if (cancelled) return;
-        setStatus(null);
+        if (!exitSeen) setStatus(null);
         disposables.push(
           surface.onData((data) => {
             if (cancelled) return;
-            void tauri.sendRunCommandInput(runCommandId, data).catch((err) => {
+            void tauri.sendRunCommandInput(runCommandId, data, workspaceId).catch((err) => {
               if (cancelled) return;
               setStatus({ state: "failed", error: String(err) });
             });
@@ -136,11 +179,11 @@ export function RunCommandTerminal({
           surface.onResize(({ rows, cols }) => {
             if (cancelled) return;
             void tauri
-              .resizeRunCommand(runCommandId, rows, cols)
+              .resizeRunCommand(runCommandId, rows, cols, workspaceId)
               .catch(() => {});
           }),
         );
-        surface.focus();
+        if (canTakeTerminalFocus()) surface.focus();
       } catch (err) {
         if (cancelled) return;
         setStatus({ state: "failed", error: String(err) });
@@ -153,27 +196,27 @@ export function RunCommandTerminal({
 
     return () => {
       cancelled = true;
-      resizeObserver.disconnect();
+      refitter.dispose();
       for (const d of disposables) d.dispose();
       // Disposes the renderer too — this surface owns a WebGL context
       // that used to be leaked on every unmount.
       surface.dispose();
       surfaceRef.current = null;
     };
-  }, [runCommandId]);
+  }, [runCommandId, taskId, workspaceId]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
     if (!surface) return;
     surface.applySettings(settings);
-    surface.fitAnchored();
+    fitSurfaceNow(surface);
   }, [settings]);
 
   // See Terminal.tsx — a theme flip has to be pushed into the emulator,
   // which holds its own rasterized copy of the palette.
   useEffect(() => {
     surfaceRef.current?.applyTheme(readTerminalTheme());
-  }, [theme]);
+  }, [theme, accent]);
 
   // This surface renders even while its tab is hidden so the PTY stays
   // connected — which is exactly why it has to be told when it is offscreen.
@@ -182,7 +225,7 @@ export function RunCommandTerminal({
     if (!surface) return;
     surface.setActive(visible);
     if (!visible) return;
-    surface.fitAnchored();
+    fitSurfaceNow(surface);
     surface.repaint();
     // See Terminal.tsx — reveal hands over the keyboard.
     if (canTakeTerminalFocus()) surface.focus();
@@ -192,15 +235,10 @@ export function RunCommandTerminal({
     <div
       onClick={() => surfaceRef.current?.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="run"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
-      style={{
-        display: visible ? "block" : "none",
-        paddingTop: 8,
-        paddingRight: 8,
-        paddingBottom: 4,
-        paddingLeft: 16,
-      }}
+      style={{ display: visible ? "block" : "none", ...TERMINAL_PADDING }}
       className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
     >
       <div ref={containerRef} className="h-full w-full" />

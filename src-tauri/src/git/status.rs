@@ -38,6 +38,14 @@ pub struct FileChange {
     pub removes: Option<u32>,
 }
 
+/// Whether `cwd` has ANY uncommitted change: staged, unstaged or untracked
+/// (ignored files don't count). One porcelain call, no numstat — for gates
+/// that only need yes/no.
+pub fn is_dirty(cwd: &Path) -> Result<bool, GitError> {
+    let stdout = run_git(cwd, &["status", "--porcelain=v1", "--untracked-files=all", "-z"])?;
+    Ok(!stdout.trim().is_empty())
+}
+
 /// Lists the working-tree changes in `cwd` (which should be either a
 /// worktree directory or a regular repo path).
 pub fn status(cwd: &Path) -> Result<Vec<FileChange>, GitError> {
@@ -118,7 +126,7 @@ fn merge_numstat(numstat: &str, into: &mut HashMap<String, (Option<u32>, Option<
     }
 }
 
-fn parse_porcelain(input: &str) -> Vec<FileChange> {
+pub(super) fn parse_porcelain(input: &str) -> Vec<FileChange> {
     let mut out = Vec::new();
     let mut iter = input.split('\0').peekable();
     while let Some(entry) = iter.next() {

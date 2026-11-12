@@ -7,7 +7,6 @@ use crate::auth::{AuthError, SessionState};
 use crate::domain::{Repository, Workspace, WorkspaceKind, WorkspaceStatus};
 use crate::git::{self, GitError};
 use crate::orchestrator::TaskOrchestrator;
-use crate::pty::TaskRuntime;
 use crate::store::{RepositoryRepo, RepositoryUpdate, StoreError, WorkspaceRepo};
 use crate::sync::CloudSyncState;
 
@@ -17,6 +16,7 @@ pub enum RepositoryCmdError {
     Git(GitError),
     Auth(AuthError),
     NoLocalPath,
+    OutsideRoots,
 }
 
 impl From<StoreError> for RepositoryCmdError {
@@ -44,6 +44,7 @@ impl std::fmt::Display for RepositoryCmdError {
             Self::Git(e) => write!(f, "{e}"),
             Self::Auth(e) => write!(f, "{e}"),
             Self::NoLocalPath => write!(f, "repository has no local path on this machine"),
+            Self::OutsideRoots => write!(f, "path is outside your repositories and worktrees"),
         }
     }
 }
@@ -91,8 +92,13 @@ pub async fn create_repository(
             .and_then(|p| crate::git::get_remote_url(std::path::Path::new(p)))
     });
 
-    if let Some(existing) =
-        resolve_existing_repository(&repo, &current_session.user_id, &input, resolved_remote_url.as_deref()).await?
+    if let Some(existing) = resolve_existing_repository(
+        &repo,
+        &current_session.user_id,
+        &input,
+        resolved_remote_url.as_deref(),
+    )
+    .await?
     {
         // Re-running this for a plain (a)-case hit is deliberate: after a
         // wiped DB the repo row may exist while its local workspace row
@@ -230,6 +236,8 @@ pub async fn update_repository(
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<Repository, RepositoryCmdError> {
     let current_session = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    // Ownership first: `update` itself is keyed by id alone.
+    repo.get_for_user(&id, &current_session.user_id).await?;
     let patch = RepositoryUpdate {
         name: input.name,
         remote_url: input.remote_url.map(Some),
@@ -248,27 +256,29 @@ pub async fn delete_repository(
     repo: State<'_, RepositoryRepo>,
     workspaces: State<'_, WorkspaceRepo>,
     orchestrator: State<'_, TaskOrchestrator>,
-    runtime: State<'_, Arc<TaskRuntime>>,
+    board: State<'_, crate::orchestrator::TaskBoard>,
     session: State<'_, Arc<SessionState>>,
     sync_state: State<'_, Arc<CloudSyncState>>,
 ) -> Result<(), RepositoryCmdError> {
-    session.require()?;
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
 
-    // Need the repo's localPath for `git worktree remove` later.
-    // Tolerate NotFound so a double-delete doesn't error.
-    let repository = repo.get(&id).await.ok();
-    let repo_local_path = repository.as_ref().and_then(|r| r.local_path.clone());
+    // Ownership first, propagated: another account's repository is `not
+    // found` before any of its tasks are stopped or worktrees removed. (A
+    // double-delete already ended in `not found` from `repo.delete` below,
+    // so tolerating it here bought nothing.)
+    let repository = repo.get_for_user(&id, &current.user_id).await?;
+    let repo_local_path = repository.local_path.clone();
 
     // 1. Stop running tasks and force-kill any still-live PTYs.
     //    Workspaces are listed BEFORE the soft-delete + child wipe so
     //    we still have their ids + worktree paths.
     let owned_workspaces = workspaces.list_by_repository(&id).await?;
     for ws in &owned_workspaces {
-        // Silently ignore NotRunning. The task may already have exited.
-        let _ = orchestrator.stop_task(&ws.id).await;
-        if let Some(handle) = runtime.get(&ws.id) {
-            let _ = handle.kill();
-        }
+        // Row to `stopped` first (no false "agent failed"), then the PTY's
+        // whole session — the agent and any dev server started in it, not
+        // only the shell — and its signals state. A no-op for a task with
+        // no live PTY.
+        orchestrator.quiesce_task(&ws.id).await;
     }
 
     // 2. Remove worktree directories. `git::remove_worktree` runs
@@ -300,6 +310,9 @@ pub async fn delete_repository(
     // 3. Soft-delete the parent + hard-delete children in one tx
     //    (handled inside RepositoryRepo::delete).
     repo.delete(&id).await?;
+    // Its tasks are gone: refresh the board and sidebar (they read task
+    // cards, which nothing else would invalidate here).
+    board.notify_changed(&id);
     sync_state.request_sync();
     Ok(())
 }
@@ -314,8 +327,8 @@ pub async fn git_init_repository(
     repo: State<'_, RepositoryRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Repository, RepositoryCmdError> {
-    session.require()?;
-    let repository = repo.get(&id).await?;
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let repository = repo.get_for_user(&id, &current.user_id).await?;
     let local_path = repository
         .local_path
         .as_deref()
@@ -384,13 +397,28 @@ pub async fn git_init_empty_repository(
 /// List files inside a repository for the file-search modal. Honors
 /// `.gitignore` when the path is a git repo; falls back to a manual
 /// walk that skips heavy folders otherwise.
+///
+/// Confined to the user's registered checkouts and worktrees: an arbitrary
+/// path (`~`, another account's repo) would list files phasr has no
+/// business enumerating.
 #[tauri::command]
 pub async fn list_repo_files(
     path: String,
+    repositories: State<'_, RepositoryRepo>,
+    workspaces: State<'_, WorkspaceRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<Vec<String>, RepositoryCmdError> {
-    session.require()?;
-    Ok(git::list_files(std::path::Path::new(&path))?)
+    let current = session.require()?.ok_or(AuthError::NotSignedIn)?;
+    let roots =
+        super::files::registered_roots(&repositories, &workspaces, &current.user_id).await?;
+    let path = std::path::PathBuf::from(path);
+    if !git::is_within_roots(&path, &roots) {
+        return Err(RepositoryCmdError::OutsideRoots);
+    }
+    tokio::task::spawn_blocking(move || git::list_files(&path))
+        .await
+        .map_err(|e| RepositoryCmdError::Git(GitError::CommandFailed(e.to_string())))?
+        .map_err(RepositoryCmdError::Git)
 }
 
 /// Sorted list of local branch names in the repo. Used by the

@@ -24,36 +24,36 @@ interface CommitCardProps {
 export function CommitCard({ workspaceId, commit }: CommitCardProps) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <article className="overflow-hidden rounded-md border border-(--color-border-default) bg-(--color-bg-surface)">
+    <article className="card-interactive overflow-hidden">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-start gap-2 px-2.5 py-2 text-left hover:bg-(--color-bg-hover)"
+        className="flex w-full items-start gap-2 px-2.5 py-2 text-left"
       >
         <span className="mt-[1px] text-(--color-text-muted)">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <code className="shrink-0 font-mono text-[10.5px] text-(--color-text-muted)">
+            <code className="shrink-0 font-mono text-[11px] text-(--color-text-muted)">
               {commit.shortSha}
             </code>
             <span className="min-w-0 flex-1 truncate text-[12px] text-(--color-text-primary)">
               {commit.subject}
             </span>
             {commit.parents.length > 1 && (
-              <span className="shrink-0 rounded-sm bg-(--color-bg-elevated) px-1 text-[9.5px] uppercase tracking-[0.06em] text-(--color-text-muted)">
+              <span className="shrink-0 rounded-sm bg-(--color-bg-elevated) px-1 text-[10.5px] text-(--color-text-muted)">
                 merge
               </span>
             )}
           </div>
-          <p className="mt-0.5 text-[10.5px] text-(--color-text-muted)">
+          <p className="mt-0.5 text-[12px] tabular-nums text-(--color-text-muted)">
             {commit.authorName} • {formatRelative(commit.authorDate)}
           </p>
         </div>
       </button>
       {expanded && (
-        <div className={cn("border-t border-(--color-border-subtle) p-2")}>
+        <div className={cn("bg-(--color-bg-base) p-2")}>
           <CommitDiffList workspaceId={workspaceId} sha={commit.sha} />
         </div>
       )}

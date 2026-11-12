@@ -14,6 +14,7 @@ Thanks for contributing.
 - **Node 20+** and **pnpm 8+** (`corepack enable && corepack prepare pnpm@8 --activate` if you don't have it)
 - **Rust stable** (`rustup toolchain install stable`)
 - **Xcode Command Line Tools** (`xcode-select --install`)
+- **CMake** (`brew install cmake`): the backend compiles whisper.cpp for voice input. The first build takes a minute longer.
 
 ## Quick start
 
@@ -24,11 +25,11 @@ pnpm install
 pnpm tauri dev
 ```
 
-This boots the full desktop app — Rust backend + React UI — in development mode. **No `.env.local` is required.** Without cloud credentials, Phasr runs local-only: workspaces live in SQLite, no sign-in screen, no cross-device sync.
+This boots the full desktop app — Rust backend + React UI — in development mode. It needs a `.env.local` first (below): sign-in and sync are required, and without the Clerk and Supabase keys the app shows a configuration error instead of starting.
 
-## Optional: enable cloud sync locally
+## Clerk and Supabase (required for the desktop app)
 
-If you want to exercise the Clerk-auth and Supabase-sync paths during development, create your own Clerk + Supabase projects (free tiers are fine), then:
+Create your own Clerk + Supabase projects (free tiers are fine), then:
 
 ```sh
 cp .env.example .env.local

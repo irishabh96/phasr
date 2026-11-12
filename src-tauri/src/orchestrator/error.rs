@@ -3,6 +3,8 @@
 
 use thiserror::Error;
 
+use crate::agent_signals::AgentSignalError;
+use crate::agent_stream::StreamError;
 use crate::auth::AuthError;
 use crate::git::GitError;
 use crate::pty::handle::PtyError;
@@ -18,6 +20,10 @@ pub enum OrchestratorError {
     Pty(#[from] PtyError),
     #[error(transparent)]
     Auth(#[from] AuthError),
+    #[error(transparent)]
+    Signals(#[from] AgentSignalError),
+    #[error(transparent)]
+    Stream(#[from] StreamError),
 
     #[error("repository has no local path on this machine; pick or clone one first")]
     RepositoryHasNoLocalPath,
@@ -34,13 +40,50 @@ pub enum OrchestratorError {
          (no branch or local repository to recreate it from)"
     )]
     WorktreeUnavailable,
-    /// A draft/queued row from a newer build (see
-    /// `Workspace::is_unlaunched`). The frontend matches on the text
-    /// `hasn't been started on this Mac` (`NOT_STARTED_MARKER` in
-    /// `src/lib/terminalErrors.ts`) to show a calm state instead of
-    /// "Couldn't start", so keep that phrase stable.
-    #[error("this task hasn't been started on this Mac yet")]
+    #[error("{agent} can't run in the `{mode}` permission mode; choose another mode")]
+    UnsupportedPermissionMode {
+        agent: &'static str,
+        mode: &'static str,
+    },
+    /// Draft-only edits on a task that has already started.
+    #[error("this task has already started")]
+    AlreadyLaunched,
+    #[error("this task hasn't started yet; start it first")]
     NotStarted,
+    /// Its launch is still setting it up (fetch, worktree, after-create
+    /// hook); the agent starts when that's done.
+    #[error("this task is still being set up; its agent starts when setup finishes")]
+    Starting,
+    /// A message while the agent waits on a dialog would answer it (its
+    /// Enter picks the highlighted option). The frontend matches this
+    /// exact string.
+    #[error("the agent is waiting for your answer")]
+    AwaitingAnswer,
+    /// Missing, another account's, itself, or a cycle.
+    #[error("can't wait on task `{0}`: it doesn't exist or would wait on itself")]
+    InvalidDependency(String),
+    /// One in-place task per repository: they'd share one checkout.
+    #[error("an in-place task is already running in this repository")]
+    InPlaceTaskRunning,
+    /// A base branch git would parse as an option (or that can't be one).
+    #[error("{0}")]
+    InvalidBaseBranch(String),
+    /// `open_task_terminal` on a task shown as a transcript: its agent runs
+    /// headless, with no terminal to open. The frontend matches this string.
+    #[error("this task is in the transcript view; switch it to the terminal view first")]
+    TranscriptView,
+    /// `set_agent_view` while Claude is mid-turn (or waiting on an
+    /// approval): switching restarts it and would cut the turn off. The
+    /// frontend matches this string (and shows it as a toast).
+    #[error("Claude is in the middle of a turn; stop it or wait for it to finish, then switch views")]
+    TurnRunning,
+    /// `set_agent_view(…, "transcript")` for a task that can't have one.
+    #[error("only Claude tasks in their own worktree have a transcript view")]
+    NoTranscriptView,
+    /// `send_message_to_task(…, submit: false)` in the transcript view: there
+    /// is no half-typed input to stage text in.
+    #[error("in the transcript view a message is always sent whole; send it with submit")]
+    MessageNotSubmitted,
 }
 
 impl serde::Serialize for OrchestratorError {

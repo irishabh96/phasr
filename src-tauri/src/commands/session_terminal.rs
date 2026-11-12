@@ -13,10 +13,13 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::{AuthError, SessionState};
-use crate::pty::{PtyEvent, TaskRuntime};
+use crate::pty::{usable_shell_override, PtyEvent, SpawnSpec, TaskRuntime};
+use crate::store::SettingsRepo;
 
 /// Distinct from `run:` and bare workspace UUIDs so the keys never collide.
 const SESSION_PTY_PREFIX: &str = "session:";
+/// Per step of the SIGHUP → SIGTERM → SIGKILL escalation on stop.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn pty_id(session_id: &str) -> String {
     format!("{SESSION_PTY_PREFIX}{session_id}")
@@ -46,19 +49,28 @@ pub async fn start_session_terminal(
     cols: Option<u16>,
     on_event: Channel<PtyEvent>,
     runtime: State<'_, Arc<TaskRuntime>>,
+    settings: State<'_, SettingsRepo>,
+    meta: State<'_, crate::store::AppMetaRepo>,
     session: State<'_, Arc<SessionState>>,
 ) -> Result<String, SessionTerminalError> {
     session.require()?;
     let session_id = Uuid::new_v4().to_string();
     let key = pty_id(&session_id);
+    // Settings → Terminal → Shell; unreadable settings or a shell this
+    // machine lacks mean the login shell, never a failed terminal.
+    // A synced shell not confirmed on this machine isn't used either.
+    let shell = match settings.get_or_default().await {
+        Ok(s) => {
+            usable_shell_override(&crate::settings_trust::usable(&meta, s).await.terminal_shell)
+        }
+        Err(_) => None,
+    };
 
     let handle = runtime.spawn(
-        key.clone(),
-        initial_command,
-        None,
-        PathBuf::from(cwd),
-        rows.unwrap_or(24),
-        cols.unwrap_or(80),
+        SpawnSpec::new(key.clone(), PathBuf::from(cwd))
+            .with_initial_command(initial_command)
+            .with_shell(shell)
+            .with_size(rows.unwrap_or(24), cols.unwrap_or(80)),
     )?;
 
     let (replay, rx) = handle.subscribe_with_replay();
@@ -123,7 +135,10 @@ pub async fn stop_session_terminal(
     session.require()?;
     let key = pty_id(&session_id);
     if let Some(handle) = runtime.get(&key) {
-        let _ = handle.kill();
+        // The terminal's whole session: a `pnpm dev` (or any job) started
+        // in this tab runs in its own process group and outlived a kill of
+        // the shell alone, holding its port.
+        handle.terminate(STOP_GRACE);
         runtime.drop_task(&key);
     }
     Ok(())

@@ -9,6 +9,16 @@ import {
   waitForCall,
 } from "./harness";
 
+/**
+ * The terminal pane tabs (agent + shells). The tab strip also carries the
+ * fixed "Changes" and "Files" panes, which are not terminals.
+ */
+const terminalTabs = (page: Page) =>
+  page
+    .getByRole("tablist", { name: "Workspace tabs" })
+    .getByRole("tab")
+    .filter({ hasNotText: /^(Changes|Files|Notes)/ });
+
 async function expectNativeCaretHidden(page: Page) {
   const host = terminal(page).locator('[contenteditable="true"]');
   await expect(host).toBeVisible();
@@ -55,13 +65,13 @@ test("native caret stays hidden through focus, clicks and tab switches without l
   await expectInput(page, "b", "send_input_to_task:ws-agent");
 
   await page.keyboard.press("Meta+t");
-  await expect(page.getByRole("tab")).toHaveCount(2);
+  await expect(terminalTabs(page)).toHaveCount(2);
   await waitForCall(page, "start_session_terminal", 15_000);
   await expect(terminal(page)).not.toHaveAttribute("data-terminal-id", agentId!);
   await expectNativeCaretHidden(page);
   await expectInput(page, "c", "send_session_input:session-1");
 
-  await page.getByRole("tab").first().click();
+  await terminalTabs(page).first().click();
   await expect(terminal(page)).toHaveAttribute("data-terminal-id", agentId!);
   await expectNativeCaretHidden(page);
   await expectInput(page, "d", "send_input_to_task:ws-agent");

@@ -14,31 +14,29 @@ export function readTerminalTheme(): TerminalTheme {
 
   return {
     background: css("--color-bg-terminal", "#000000"),
-    foreground: css("--color-text-primary", "#e6edf3"),
-    cursor: css("--color-accent-500", "#f78166"),
-    // The cursor is a coral FILL, so the glyph inside it is ink on coral —
-    // which is exactly what `--color-accent-onfill` is for (8.1:1, and
-    // deliberately dark in both themes). The theme background would be the
-    // textbook inverse-video choice but only clears 2.43:1 on light.
-    cursorAccent: css("--color-accent-onfill", "#010409"),
-    // Tokenised (was a literal here) so a theme can override it; the base
-    // value is unchanged, and light deliberately does not override it.
-    selectionBackground: css("--ansi-selection", "rgba(247, 129, 102, 0.28)"),
+    foreground: css("--color-text-primary", "#ececee"),
+    cursor: css("--color-accent-500", "#e0674a"),
+    // The cursor is an accent FILL, so the glyph inside it is ink on the
+    // accent — exactly what `--color-accent-onfill` is for (it flips per
+    // theme/accent so it always clears 4.5:1 on that fill).
+    cursorAccent: css("--color-accent-onfill", "#0c0c0e"),
+    // Tokenised so each theme and accent block can restate it.
+    selectionBackground: css("--ansi-selection", "rgba(224, 103, 74, 0.28)"),
     black: css("--ansi-black", "#484f58"),
-    red: css("--ansi-red", "#ff7b72"),
-    green: css("--ansi-green", "#3fb950"),
-    yellow: css("--ansi-yellow", "#d29922"),
-    blue: css("--ansi-blue", "#58a6ff"),
-    magenta: css("--ansi-magenta", "#bc8cff"),
+    red: css("--ansi-red", "#f06b6b"),
+    green: css("--ansi-green", "#3dcf8e"),
+    yellow: css("--ansi-yellow", "#f5b548"),
+    blue: css("--ansi-blue", "#4f8cff"),
+    magenta: css("--ansi-magenta", "#b79cff"),
     cyan: css("--ansi-cyan", "#39c5cf"),
-    white: css("--ansi-white", "#b1bac4"),
+    white: css("--ansi-white", "#b9bec7"),
     brightBlack: css("--ansi-bright-black", "#6e7681"),
-    brightRed: css("--ansi-bright-red", "#ffa198"),
-    brightGreen: css("--ansi-bright-green", "#56d364"),
-    brightYellow: css("--ansi-bright-yellow", "#e3b341"),
-    brightBlue: css("--ansi-bright-blue", "#79c0ff"),
-    brightMagenta: css("--ansi-bright-magenta", "#d2a8ff"),
-    brightCyan: css("--ansi-bright-cyan", "#56d4dd"),
+    brightRed: css("--ansi-bright-red", "#ff9b9b"),
+    brightGreen: css("--ansi-bright-green", "#6fe0ad"),
+    brightYellow: css("--ansi-bright-yellow", "#f9cf7f"),
+    brightBlue: css("--ansi-bright-blue", "#7faaff"),
+    brightMagenta: css("--ansi-bright-magenta", "#d2c0ff"),
+    brightCyan: css("--ansi-bright-cyan", "#6fdce3"),
     brightWhite: css("--ansi-bright-white", "#ffffff"),
   };
 }

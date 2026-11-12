@@ -10,6 +10,7 @@ import {
 import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import { humanizeError } from "@/lib/humanizeError";
+import { mergeTargetBranch } from "@/lib/mergeTarget";
 import { cn } from "@/lib/utils";
 import type { MergeStrategy, Workspace } from "@/lib/types";
 
@@ -46,6 +47,12 @@ export function MergeToMainDialog({
   // Merge can't help — the user must resolve in the terminal — so the
   // primary action stays disabled until the dialog is reopened.
   const [hadConflict, setHadConflict] = useState(false);
+  // Merge is gated like Approve (required checks, uncommitted work). A
+  // confirmation adds its flag; flags add up within this dialog session so
+  // confirming one gate and then the other doesn't loop.
+  type Gates = { overrideChecks?: boolean; commitDirty?: boolean };
+  const [gates, setGates] = useState<Gates>({});
+  const [gate, setGate] = useState<{ kind: "checks" | "dirty"; message: string } | null>(null);
 
   // Reset state every time we open afresh.
   useEffect(() => {
@@ -54,6 +61,8 @@ export function MergeToMainDialog({
     setConflictNote(null);
     setClosing(false);
     setHadConflict(false);
+    setGates({});
+    setGate(null);
     const candidate = settings?.defaultMergeStrategy;
     if (
       candidate === "merge" ||
@@ -68,10 +77,11 @@ export function MergeToMainDialog({
 
   // Gate on ahead/behind-of-TARGET, not upstream. The upstream is
   // usually `origin/<this-branch>` which is in sync after a push;
-  // what matters here is the relationship to the merge target.
+  // what matters here is the relationship to the merge target — the
+  // task's BASE branch, which is what the backend merges into.
   const ahead = status?.aheadOfTarget ?? 0;
   const behind = status?.behindOfTarget ?? 0;
-  const targetBranch = repository?.defaultBranch ?? "main";
+  const targetBranch = mergeTargetBranch(status, workspace, repository);
   const sourceBranch = workspace.branch ?? "(no branch)";
   const blockedReason = !workspace.branch
     ? "Workspace has no branch yet."
@@ -85,11 +95,14 @@ export function MergeToMainDialog({
   // in flight or the dialog is closing after a clean merge.
   const busy = merge.isPending || closing;
 
-  const handleMerge = async () => {
+  const handleMerge = async (add: Gates = {}) => {
     setError(null);
     setConflictNote(null);
+    setGate(null);
+    const next = { ...gates, ...add };
+    setGates(next);
     try {
-      const outcome = await merge.mutateAsync(strategy);
+      const outcome = await merge.mutateAsync({ strategy, ...next });
       if (outcome.kind === "clean") {
         // Close after a brief moment so the success state registers.
         // Flag `closing` so the button stays disabled through the delay.
@@ -103,7 +116,14 @@ export function MergeToMainDialog({
         );
       }
     } catch (err) {
-      setError(humanizeError(err));
+      const message = String(err);
+      if (message.startsWith("required checks not passing")) setGate({ kind: "checks", message });
+      else if (message === "worktree has uncommitted changes")
+        setGate({
+          kind: "dirty",
+          message: `The worktree has uncommitted changes. They'd be left out of the merge. Commit everything as “${workspace.name}” first?`,
+        });
+      else setError(humanizeError(err));
     }
   };
 
@@ -112,9 +132,9 @@ export function MergeToMainDialog({
       open={open}
       onOpenChange={(o) => !o && onClose()}
       size="480px"
-      title={`Merge to ${targetBranch}`}
+      title={`Merge into ${targetBranch}`}
       description={
-        <div className="rounded-md border border-(--glass-border-hairline) bg-(--color-bg-elevated) px-3 py-2 text-[12px] leading-relaxed text-(--color-text-secondary)">
+        <div className="rounded-(--radius-card) bg-(--color-bg-elevated) px-3 py-2 text-[12px] leading-relaxed text-(--color-text-secondary)">
           Merge{" "}
           <code className="font-mono text-(--color-text-primary)">
             {sourceBranch}
@@ -139,7 +159,7 @@ export function MergeToMainDialog({
           <GlassButton
             variant="primary"
             size="sm"
-            onClick={handleMerge}
+            onClick={() => void handleMerge()}
             disabled={!canMerge || busy || hadConflict}
           >
             {merge.isPending ? (
@@ -156,13 +176,13 @@ export function MergeToMainDialog({
     >
       <div className="space-y-3">
         {blockedReason && (
-          <div className="space-y-2 rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2.5">
+          <div className="space-y-2 rounded-(--radius-card) bg-(--color-warning-tint) px-3 py-2.5">
             <p className="text-[12px] text-(--color-text-primary)">
               {blockedReason}
             </p>
             {behind > 0 && (
               <GlassButton
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 disabled={sync.isPending}
                 onClick={async () => {
@@ -196,7 +216,7 @@ export function MergeToMainDialog({
             aria-label="Merge strategy"
             className="space-y-1"
           >
-            <legend className="mb-1 text-[11px] uppercase tracking-[0.12em] text-(--color-text-muted)">
+            <legend className="group-header mb-1">
               Strategy
             </legend>
             <StrategyRow
@@ -226,24 +246,42 @@ export function MergeToMainDialog({
           </fieldset>
         )}
 
+        {gate && (
+          <div
+            role="alert"
+            className="space-y-2 rounded-(--radius-card) bg-(--color-warning-tint) px-3 py-2.5"
+          >
+            <p className="text-[12px] text-(--color-text-primary)">{gate.message}</p>
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void handleMerge(gate.kind === "checks" ? { overrideChecks: true } : { commitDirty: true })
+              }
+            >
+              {gate.kind === "checks" ? "Merge without passing checks" : "Commit everything and merge"}
+            </GlassButton>
+          </div>
+        )}
         {error && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-danger)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-danger)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-danger)">
+          <p className="rounded-(--radius-card) bg-(--color-danger-tint) px-3 py-2 text-[12px] text-(--color-danger)">
             {error}
           </p>
         )}
         {conflictNote && (
-          <p className="rounded-md border border-[color-mix(in_oklab,var(--color-warning)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-warning)_8%,transparent)] px-3 py-2 text-[11.5px] text-(--color-text-primary)">
+          <p className="rounded-(--radius-card) bg-(--color-warning-tint) px-3 py-2 text-[12px] text-(--color-text-primary)">
             {conflictNote}
           </p>
         )}
         {merge.isSuccess && merge.data?.kind === "clean" && (
-          <div className="flex items-center gap-2 rounded-md border border-[color-mix(in_oklab,var(--color-success)_30%,transparent)] bg-[color-mix(in_oklab,var(--color-success)_8%,transparent)] px-3 py-2">
+          <div className="flex items-center gap-2 rounded-(--radius-card) bg-(--color-success-tint) px-3 py-2">
             <Check
               size={14}
               className="shrink-0 text-(--color-success)"
               aria-hidden
             />
-            <p className="text-[11.5px] text-(--color-text-primary)">
+            <p className="text-[12px] text-(--color-text-primary)">
               Merged into {targetBranch}.
             </p>
           </div>
@@ -294,10 +332,10 @@ function StrategyRow({
         aria-hidden
       />
       <span className="flex flex-1 flex-col gap-0.5">
-        <span className="text-[12.5px] leading-none text-(--color-text-primary)">
+        <span className="text-[12px] leading-none text-(--color-text-primary)">
           {label}
         </span>
-        <span className="text-[11px] text-(--color-text-secondary)">
+        <span className="text-[12px] text-(--color-text-muted)">
           {hint}
         </span>
       </span>

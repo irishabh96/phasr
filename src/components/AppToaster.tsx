@@ -79,11 +79,14 @@ export function AppToaster() {
   }, []);
 
   return (
+    // Below the title bar, not over it: error and action toasts stay until
+    // dismissed, and on top of the bar they covered Board, search, the bell
+    // and settings — none of them clickable until you closed the toast.
     <ol
       role="region"
       aria-label="Notifications"
       tabIndex={-1}
-      className="pointer-events-none fixed right-4 top-4 z-(--z-toast) flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2"
+      className="pointer-events-none fixed right-4 top-[calc(var(--layout-header-height)+8px)] z-(--z-toast) flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2"
     >
       {items.map(({ toast, leaving }) => (
         <ToastCard key={toast.id} toast={toast} leaving={leaving} />
@@ -108,8 +111,8 @@ function ToastCard({ toast, leaving }: { toast: AppToast; leaving: boolean }) {
       onBlur={() => resumeToast(toast.id)}
       className={cn(
         "glass-panel pointer-events-auto p-3",
-        "animate-[toast-in_180ms_var(--ease-glass)]",
-        "data-[leaving]:animate-[toast-out_140ms_var(--ease-glass)]",
+        "animate-[toast-in_var(--dur-2)_var(--ease-out)]",
+        "data-[leaving]:animate-[toast-out_var(--dur-exit)_var(--ease-in)]",
       )}
     >
       <div className="flex items-start gap-2.5">
@@ -154,7 +157,7 @@ function ToastCard({ toast, leaving }: { toast: AppToast; leaving: boolean }) {
           type="button"
           aria-label="Dismiss notification"
           onClick={() => dismissToast(toast.id)}
-          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-[8px] text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
         >
           <X className="size-4" aria-hidden="true" />
         </button>

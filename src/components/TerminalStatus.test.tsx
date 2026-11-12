@@ -5,7 +5,7 @@ import { TerminalStatus } from "@/components/TerminalStatus";
 describe("TerminalStatus", () => {
   it("shows a calm, action-free state for a draft that wasn't started here", () => {
     render(<TerminalStatus state="not-started" onRetry={() => {}} />);
-    expect(screen.getByText("Not started on this Mac")).toBeInTheDocument();
+    expect(screen.getByText("Not started yet")).toBeInTheDocument();
     // Informational, not an alert — and no Retry, which can't help.
     expect(screen.getByRole("status")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();

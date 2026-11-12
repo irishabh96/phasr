@@ -31,7 +31,9 @@
 //! LIMITATION (do not overstate): no OS-level banner click currently reaches
 //! `activate_notification` on desktop — the plugin can't deliver it. Every piece
 //! here is wired, tested, and callable, but the banner-click → activate loop is
-//! not automatically closed on macOS today.
+//! not automatically closed on macOS today. (Needs-you notifications don't go
+//! through the plugin: `notifications::native` posts them itself and handles
+//! their click and Allow / Deny buttons.)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,7 +43,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::WorkspaceStatus;
+use crate::domain::{AppNotification, WorkspaceStatus};
+use crate::store::{NotificationRepo, StoreError};
+
+use super::require_user;
 
 /// Tauri event the frontend listens on to focus + route to a workspace when its
 /// completion notification is activated (DDR-003 §6).
@@ -111,11 +116,18 @@ pub enum NotificationCmdError {
     /// never fired (or predates this app session, since the map is in-memory).
     UnknownRoute(String),
     Emit(String),
+    Store(StoreError),
 }
 
 impl From<AuthError> for NotificationCmdError {
     fn from(e: AuthError) -> Self {
         Self::Auth(e)
+    }
+}
+
+impl From<StoreError> for NotificationCmdError {
+    fn from(e: StoreError) -> Self {
+        Self::Store(e)
     }
 }
 
@@ -125,6 +137,7 @@ impl std::fmt::Display for NotificationCmdError {
             Self::Auth(e) => write!(f, "{e}"),
             Self::UnknownRoute(id) => write!(f, "no notification route for task {id}"),
             Self::Emit(e) => write!(f, "{e}"),
+            Self::Store(e) => write!(f, "{e}"),
         }
     }
 }
@@ -174,6 +187,66 @@ pub fn activate_notification(
     app.emit(NOTIFICATION_ACTIVATED_EVENT, payload)
         .map_err(|e| NotificationCmdError::Emit(e.to_string()))?;
     Ok(())
+}
+
+// ── inbox (M8) ───────────────────────────────────────────────────────
+//
+// Entries are written by `crate::notifications::NotificationService` and
+// announced on `phasr://notification-created`; these commands read and
+// tidy the signed-in user's inbox.
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListNotificationsInput {
+    #[serde(default)]
+    pub unread_only: Option<bool>,
+    /// Newest first; capped at 500.
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn list_notifications(
+    input: Option<ListNotificationsInput>,
+    repo: State<'_, NotificationRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<Vec<AppNotification>, NotificationCmdError> {
+    let current = require_user(&session)?;
+    let input = input.unwrap_or_default();
+    Ok(repo
+        .list_for_user(&current.user_id, input.unread_only.unwrap_or(false), input.limit)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn unread_notification_count(
+    repo: State<'_, NotificationRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<i64, NotificationCmdError> {
+    let current = require_user(&session)?;
+    Ok(repo.unread_count(&current.user_id).await?)
+}
+
+/// Mark `ids` read, or everything when `ids` is null. Returns how many
+/// changed.
+#[tauri::command]
+pub async fn mark_notifications_read(
+    ids: Option<Vec<String>>,
+    repo: State<'_, NotificationRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<u64, NotificationCmdError> {
+    let current = require_user(&session)?;
+    Ok(repo.mark_read(&current.user_id, ids.as_deref()).await?)
+}
+
+/// Empty the user's inbox. Returns how many entries were removed.
+#[tauri::command]
+pub async fn clear_notifications(
+    repo: State<'_, NotificationRepo>,
+    session: State<'_, Arc<SessionState>>,
+) -> Result<u64, NotificationCmdError> {
+    let current = require_user(&session)?;
+    Ok(repo.clear(&current.user_id).await?)
 }
 
 #[cfg(test)]

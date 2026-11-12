@@ -5,7 +5,7 @@ import { disposeMainTerminal } from "@/components/Terminal";
 import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
 import { useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
-import type { Repository, Workspace } from "@/lib/types";
+import type { Repository, TaskCard, Workspace } from "@/lib/types";
 
 export const repositoryKeys = {
   all: ["repositories"] as const,
@@ -94,6 +94,13 @@ export function useDeleteRepository() {
         prev ? prev.filter((r) => r.id !== id) : prev,
       );
       queryClient.invalidateQueries({ queryKey: repositoryKeys.list() });
+      // Its tasks went with it. The board and sidebar read the task-card
+      // lists, which the backend doesn't announce a change for here: drop
+      // them now, or they stay on screen with no repository behind them.
+      queryClient.setQueriesData<TaskCard[]>({ queryKey: ["task-cards", "list"] }, (prev) =>
+        Array.isArray(prev) ? prev.filter((c) => c.workspace.repositoryId !== id) : prev,
+      );
+      queryClient.invalidateQueries({ queryKey: ["task-cards"] });
       queryClient.removeQueries({ queryKey: repositoryKeys.detail(id) });
       queryClient.removeQueries({ queryKey: workspaceKeys.byRepository(id) });
 

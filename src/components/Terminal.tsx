@@ -5,7 +5,6 @@ import { useUserSettings } from "@/lib/hooks/useUserSettings";
 import { useUiStore } from "@/lib/store";
 import { decodePtyChunk } from "@/lib/ptyChunk";
 import { tauri } from "@/lib/tauri";
-import { isNotStartedError } from "@/lib/terminalErrors";
 import {
   canTakeTerminalFocus,
   isSurfaceVisible,
@@ -14,12 +13,14 @@ import {
 } from "@/lib/terminal/cache";
 import { createTerminalSurface } from "@/lib/terminal/factory";
 import { createTerminalLinkSource } from "@/lib/terminal/links";
+import { TERMINAL_PADDING } from "@/lib/terminal/padding";
 import { whenGridSettles } from "@/lib/terminal/settle";
 import type {
   SurfaceDisposable,
   TerminalBackendKind,
   TerminalSurface,
 } from "@/lib/terminal/surface";
+import { fitSurfaceNow, watchSurfaceSize } from "@/lib/terminal/refit";
 import { readTerminalTheme } from "@/lib/terminal/theme";
 import type { PtyEvent, WorkspaceStatus } from "@/lib/types";
 
@@ -44,10 +45,9 @@ type StartMode = "initial" | "retry" | "restart";
 
 /** Overlay state driven onto <TerminalStatus>. `null` = no overlay. */
 type TermStatus =
-  | { state: "starting" | "retrying" | "restarting" }
+  | { state: "starting" | "retrying" | "restarting" | "setting-up" | "not-started" }
   | { state: "failed"; error: string }
   | { state: "exited"; exitCode: number | null }
-  | { state: "not-started" }
   | null;
 
 /**
@@ -73,13 +73,13 @@ interface CachedMain {
   setStatus: ((s: TermStatus) => void) | null;
   /** Set when the PTY exits so a later remount can restore the overlay. */
   exitStatus: { exitCode: number | null } | null;
-  /** Set when the backend refused to start an unlaunched draft, so a
-   *  remount restores the calm overlay instead of wiring input to a PTY
-   *  that doesn't exist. */
-  notStarted: boolean;
   /** Read at click time by the link layer — kept fresh across remounts
    *  (the surface and its link closures outlive component instances). */
   linkContext: { cwd: string | null; editorId: string | null };
+  /** Built to replay a finished task's log, not attached to a PTY. A task
+   *  that starts again (Retry on a failed card) must drop this view and
+   *  attach to its new agent. */
+  logOnly: boolean;
 }
 
 const mainSurfaceCache = new TerminalSurfaceCache<CachedMain>("agent");
@@ -97,9 +97,11 @@ export function Terminal({
   onExit,
 }: TerminalProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const initialStatusRef = useRef(status);
   const { data: settings } = useUserSettings();
   const theme = useUiStore((s) => s.theme);
+  // The cursor and selection wash come from the accent, so an accent change
+  // re-pushes the palette exactly like a theme flip.
+  const accent = useUiStore((s) => s.accent);
   const [termStatus, setTermStatus] = useState<TermStatus>(null);
   // Which surface this slot is showing, mirrored onto the container as
   // data-* so e2e can find a terminal and cross-reference the bridge
@@ -112,12 +114,33 @@ export function Terminal({
   // the PTY without recreating the whole terminal.
   const retryStartRef = useRef<(() => void) | null>(null);
   const restartRef = useRef<(() => void) | null>(null);
+  // Bumped to rebuild the surface when a log-only view's task starts again.
+  const [generation, setGeneration] = useState(0);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  // A failed task's session shows its log. If the task is started again
+  // (Retry / Start now) while that view is cached, throw the log view away
+  // and attach to the new agent — otherwise the session keeps showing the
+  // old log until the app restarts.
+  useEffect(() => {
+    if (FINISHED_STATUSES.includes(status)) return;
+    if (!mainSurfaceCache.get(workspaceId)?.logOnly) return;
+    // The mount effect re-runs (after its cleanup detached the old surface)
+    // and disposes the stale log view there.
+    setGeneration((g) => g + 1);
+  }, [status, workspaceId]);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
     let entry = mainSurfaceCache.get(workspaceId);
+    if (entry?.logOnly && !FINISHED_STATUSES.includes(statusRef.current)) {
+      // Started again while away: the cached log view is stale.
+      mainSurfaceCache.dispose(workspaceId);
+      entry = undefined;
+    }
     const isFresh = !entry;
 
     if (!entry) {
@@ -147,8 +170,8 @@ export function Terminal({
         onExit,
         setStatus: null,
         exitStatus: null,
-        notStarted: false,
         linkContext: { cwd: null, editorId: null },
+        logOnly: FINISHED_STATUSES.includes(statusRef.current),
       };
       const created = entry;
       surface.installLinks(
@@ -190,12 +213,12 @@ export function Terminal({
           void tauri.resizeTask(workspaceId, rows, cols).catch(() => {});
         }),
       ];
-      surface.focus();
+      // Not over an open dialog (New task, Settings): it would steal its focus.
+      if (canTakeTerminalFocus()) surface.focus();
     };
 
     const startOrAttach = async (mode: StartMode = "initial") => {
       entry!.exitStatus = null;
-      entry!.notStarted = false;
       entry!.setStatus?.(
         mode === "retry"
           ? { state: "retrying" }
@@ -233,14 +256,33 @@ export function Terminal({
           .resizeTask(workspaceId, surface.rows, surface.cols)
           .catch(() => {});
       } catch (err) {
-        if (isNotStartedError(err)) {
-          // A draft synced from a newer build — refused on purpose, not
-          // broken. Show the calm state, not "Couldn't start".
-          entry!.notStarted = true;
+        const message = String(err);
+        if (message.includes("still being set up")) {
+          // The worktree is still being prepared (fetch + after-create hook);
+          // the backend starts the agent itself when that finishes. Poll
+          // until it's attachable, while this terminal is still cached.
+          entry!.setStatus?.({ state: "setting-up" });
+          const pending = entry!;
+          window.setTimeout(() => {
+            if (mainSurfaceCache.get(workspaceId) === pending && !pending.started)
+              void startOrAttach("initial");
+          }, 2000);
+          return;
+        }
+        if (message.includes("hasn't started yet")) {
           entry!.setStatus?.({ state: "not-started" });
           return;
         }
-        entry!.setStatus?.({ state: "failed", error: String(err) });
+        if (message.includes("already finished")) {
+          // Finished since this terminal mounted — typically a setup that
+          // failed while we polled above. Its log says why (the backend
+          // writes the reason there); show it like any finished task.
+          retryStartRef.current = () => void loadLog(true);
+          restartRef.current = () => void loadLog(true);
+          void loadLog();
+          return;
+        }
+        entry!.setStatus?.({ state: "failed", error: message });
       }
     };
 
@@ -259,7 +301,7 @@ export function Terminal({
     };
 
     if (isFresh) {
-      if (FINISHED_STATUSES.includes(initialStatusRef.current)) {
+      if (entry.logOnly) {
         // Finished workspace — replay its log. Retry re-reads the log.
         retryStartRef.current = () => void loadLog(true);
         restartRef.current = () => void loadLog(true);
@@ -275,23 +317,21 @@ export function Terminal({
       // ended while this workspace was away; otherwise re-wire input.
       retryStartRef.current = () => void startOrAttach("retry");
       restartRef.current = () => void startOrAttach("restart");
-      if (entry.notStarted) {
-        setTermStatus({ state: "not-started" });
-      } else if (entry.exitStatus) {
+      if (entry.exitStatus) {
         setTermStatus({ state: "exited", exitCode: entry.exitStatus.exitCode });
       } else {
         wireInteractive();
       }
     }
 
-    const refit = () => {
-      // Skip when hidden — see isSurfaceVisible.
-      if (!isSurfaceVisible(surface.element)) return;
-      // Anchored, not `fit()`: a width change here is a panel toggle, a
-      // window drag or a font-size step, and reflowing for any of them
-      // walks the content down the screen. See lib/terminal/reflow.ts.
-      surface.fitAnchored();
-    };
+    // Anchored, not `fit()`: a width change here is a panel toggle, a
+    // window drag or a font-size step, and reflowing for any of them walks
+    // the content down the screen. See lib/terminal/reflow.ts. The
+    // refitter skips hidden surfaces (isSurfaceVisible), coalesces observer
+    // bursts into one frame and holds still while a side panel animates
+    // (spec P1/P2) — the panels-settled signal refits once at the end.
+    const refitter = watchSurfaceSize(surface, surface.element);
+    const refit = () => refitter.now({ force: true });
     // One-shot full redraw after a re-parent; see TerminalSurface.repaint.
     // NOT inside refit (which fires on every resize tick).
     const forceRepaint = () => {
@@ -317,17 +357,11 @@ export function Terminal({
       window.setTimeout(refit, 600),
     ];
 
-    const onWindowResize = () => refit();
-    window.addEventListener("resize", onWindowResize);
-
-    const resizeObserver = new ResizeObserver(refit);
-    resizeObserver.observe(surface.element);
 
     return () => {
       cancelAnimationFrame(rafId);
       for (const t of settleTimers) window.clearTimeout(t);
-      window.removeEventListener("resize", onWindowResize);
-      resizeObserver.disconnect();
+      refitter.dispose();
       for (const d of entry!.inputDisposables) d.dispose();
       entry!.inputDisposables = [];
       // Stop routing channel updates to this (unmounting) instance — a
@@ -338,7 +372,7 @@ export function Terminal({
       parkSurface(entry!.surface);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workspaceId, generation]);
 
   useEffect(() => {
     const entry = mainSurfaceCache.get(workspaceId);
@@ -347,7 +381,7 @@ export function Terminal({
     entry.surface.applySettings(settings);
     // A font-size change changes the column count, so it goes through the
     // same anchored path a panel toggle does.
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
   }, [settings, workspaceId]);
 
   // Colours come from CSS custom properties read at call time, so a theme
@@ -358,7 +392,7 @@ export function Terminal({
     const entry = mainSurfaceCache.get(workspaceId);
     if (!entry) return;
     entry.surface.applyTheme(readTerminalTheme());
-  }, [theme, workspaceId]);
+  }, [theme, accent, workspaceId]);
 
   // When the tab becomes visible (display: none → block), the browser
   // has just laid out the container — fit + repaint synchronously here
@@ -379,7 +413,7 @@ export function Terminal({
     // Revealing a tab into a same-width slot is a rows-only change at
     // most, which `fitAnchored` applies synchronously — so this is still
     // the flicker-free path it was.
-    entry.surface.fitAnchored();
+    fitSurfaceNow(entry.surface);
     // Reset the re-parented canvas so an inner-tab visibility flip
     // repaints without needing a resize.
     entry.surface.repaint();
@@ -392,16 +426,11 @@ export function Terminal({
     <div
       onClick={() => mainSurfaceCache.get(workspaceId)?.surface.focus()}
       data-testid="terminal-surface"
+      data-terminal-role="agent"
       data-terminal-kind={surfaceInfo?.kind}
       data-terminal-id={surfaceInfo?.id}
       className="relative h-full min-h-0 w-full overflow-hidden bg-(--color-bg-terminal)"
-      style={{
-        display: visible ? "block" : "none",
-        paddingTop: 8,
-        paddingRight: 8,
-        paddingBottom: 4,
-        paddingLeft: 16,
-      }}
+      style={{ display: visible ? "block" : "none", ...TERMINAL_PADDING }}
     >
       <div ref={mountRef} className="h-full w-full" />
       {termStatus && (

@@ -10,6 +10,7 @@ lerna-debug.log*
 # Node
 node_modules
 dist
+dist-sourcemaps
 dist-ssr
 .vercel
 *.local
@@ -102,11 +103,14 @@ dark-factory/
 !/docs/PERFORMANCE-RETENTION-REPORT.md
 !/docs/RELEASE-*.md
 !/docs/MANUAL-VERIFICATION.md
+!/docs/screenshots/
 patterns_library/
 # SAFe-template scripts stay ignored, EXCEPT phasr's own project scripts.
 /scripts/*
 !/scripts/generate-dmg-background.swift
 !/scripts/check-template-urls.mjs
+# The Tauri command-contract checker (`pnpm check:commands`, run in CI).
+!/scripts/check-command-contract.mjs
 # Referenced by docs/adr/ADR-002 — a tracked ADR must not point at an
 # untracked script.
 !/scripts/wkwebview-wasm-probe.swift

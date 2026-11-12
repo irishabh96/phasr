@@ -43,15 +43,8 @@ pub async fn init_pool(db_path: &Path) -> Result<Db, StoreError> {
 /// safe rollback target for any later build, *provided* later migrations
 /// stay additive (new nullable/defaulted columns, new tables): this
 /// build's queries name their columns, so it never sees what it doesn't
-/// know about.
-///
-/// What stays strict, by sqlx's design (sqlx-core 0.8 `run_direct`):
-/// checksums are compared only for migrations this build SHIPS, so a
-/// newer build's rows (any checksum) are never inspected, while an edited
-/// shipped migration still fails loudly. The `success = false` "dirty"
-/// check still applies to every row, but sqlx's SQLite driver writes the
-/// bookkeeping row inside the migration's own transaction with
-/// `success = TRUE`, so a newer build can't leave one behind.
+/// know about. Checksums of the migrations this build DOES ship are still
+/// verified, so an edited shipped migration still fails loudly.
 fn migrator() -> sqlx::migrate::Migrator {
     let mut migrator = sqlx::migrate!("./migrations");
     migrator.set_ignore_missing(true);
@@ -218,21 +211,21 @@ mod tests {
 
 /// Upgrade/downgrade compatibility across shipped versions.
 ///
-/// `sqlx` refuses to open a database whose `_sqlx_migrations` table contains a
-/// version the running binary does not ship: *"migration N was previously
-/// applied but is missing in the resolved migrations"*. That error surfaces
-/// inside the Tauri setup hook, which runs in an `extern "C"` callback, so it
-/// hits `panic_cannot_unwind` and **aborts before a window ever appears** —
-/// the user sees the app fail to launch, with no recourse from the UI. This is
-/// not hypothetical: it is exactly what happened downgrading 0.3.7 → 0.3.5
-/// (fixed in 82695bb by carrying migration 0014 into the older branch).
+/// A default sqlx migrator refuses to open a database whose `_sqlx_migrations`
+/// table contains a version the running binary does not ship: *"migration N
+/// was previously applied but is missing in the resolved migrations"*. That
+/// error surfaces inside the Tauri setup hook, which runs in an `extern "C"`
+/// callback, so it hits `panic_cannot_unwind` and **aborts before a window
+/// ever appears** — the user sees the app fail to launch, with no recourse
+/// from the UI. This is not hypothetical: it is exactly what happened
+/// downgrading 0.3.7 → 0.3.5 (fixed in 82695bb by carrying migration 0014
+/// into the older branch).
 ///
 /// Every build up to and including 0.4.3 opened the database that way. 0.4.4
 /// is the first to set `ignore_missing` (see `migrator()`), which turns "a
 /// newer build touched this database" from a launch abort into a non-event —
 /// so 0.4.4 is the rollback floor for every later migration, starting with
-/// the redesign's 0015–0021 (see
-/// `this_build_opens_a_db_the_redesign_migrated_through_0021`).
+/// 0015 (see `rolling_back_to_0_4_4_opens_a_db_this_build_wrote`).
 ///
 /// These tests build the migration set each shipped version actually contained
 /// (taken from `git ls-tree <tag> -- src-tauri/migrations/`) and drive a real
@@ -246,15 +239,81 @@ mod version_compat {
     /// Migration counts per shipped tag, verified against the git tags:
     ///   v0.3.4 → 0001..=0012      v0.3.5 → 0001..=0013
     ///   v0.3.6 → 0001..=0013      v0.3.7 → 0001..=0014
-    ///   v0.4.0 … v0.4.3 → 0001..=0014 (strict migrator)
-    ///   v0.4.4 (this build) → 0001..=0014, tolerant of unknown versions
+    ///   v0.4.0 … v0.4.3 → 0001..=0014 (no migration added since 0.3.7)
+    ///   v0.4.4 → 0001..=0014, the first build with `ignore_missing` (M0).
+    ///          NOT RELEASED YET — it must ship (master + `migrator()`'s
+    ///          `set_ignore_missing`) BEFORE any release containing 0015+,
+    ///          or there is no build a user can roll back to: see
+    ///          `rolling_back_to_0_4_3_is_impossible_so_0_4_4_must_ship_first`
+    ///          and RELEASING.md → "Rollback safety".
+    ///   this build → adds 0015 (permission modes), 0016 (agent signals),
+    ///   0017 (board), 0018 (review), 0019 (notifications),
+    ///   0020 (settings expansion), 0021 (local queue marker),
+    ///   0022 (task usage partial cost), 0023 (local-only agent view)
     const V0_3_4: usize = 12;
     const V0_3_5: usize = 13;
     const V0_3_6: usize = 13;
     const V0_3_7: usize = 14;
+    const V0_4_3: usize = 14;
+    const V0_4_4: usize = 14;
+
+    /// `(version, SHA-384 of the file)` for every migration that has ever
+    /// shipped. sqlx stores this checksum in `_sqlx_migrations` and compares
+    /// it on every launch, so editing a shipped migration — even whitespace —
+    /// makes every existing install fail to start. Append new rows when a
+    /// migration ships in a release; never change an existing one.
+    const SHIPPED: &[(i64, &str)] = &[
+        (1, "02852afe6945eb8acacd2a7d33bd8aef0309a3a4a29939892ef6ca0a259b8c1033daa4c299d01322313dcf86274099b6"),
+        (2, "840624193b09211fc1f61c3bbf23f3508d466879add7cd0397443f9131e10709204f48e495a008135dbb77d336fcad5c"),
+        (3, "9ab7aa3183db55081673e36937090f81d02c5196626eea316ec11825bcf75a273c32e44101022f23aebd54b31945f014"),
+        (4, "eca6e8bc2c0bbb9809d82aebd1320adc22a220cddc10fb47dbfbf157d1a5d237a68856742ab49a51cec92c6f4d1c673c"),
+        (5, "9e7f11342299c2dfedd16ee8d27d04089653e8fbf619fec1043490a0a231aaa03df7021da5551ff99b9466a3603dae16"),
+        (6, "c8440730455e62f6fd9b62823db645aa34850319dfc4790c9d16449415bf41dc0971828fc9d69080760a9e78ce949491"),
+        (7, "b22cf02186d6bfbb5846b5203c5d5bb4844af9482a1aaddb882dc1fa9abaa4bb2c888baa2c151be254894ec0e5d341cb"),
+        (8, "c1b594c6d5401aa86151586499293ac47ae0c85f709d1745e1ab906d081d0d7837efc5b06eb23505d915dc74688c3891"),
+        (9, "ee3c682c34156cc485d0b20d4ddb96f486a9ba0778ac2de2ec5610605388954bd012c3f43b075ab6e768b949b107ed6b"),
+        (10, "7c0214209ebbae1c2f734c4f0539097a23d2a418147e1efecd5156ac5c99c9e06ea343ad62bdb3f3d985c6e6db7e6be6"),
+        (11, "3374497fe89202e58785a0fcacba9941fab4c6b5dd1241bc7816879b018ad88cb17356753b1c0ed76d4b4bc3b4073fea"),
+        (12, "314ff0a0606dc6c2b34cba76940f11748d4978d39ee5c5244fc9becee288f843abd7de5f78869d456f88a39644f4ea0a"),
+        (13, "ebb7e8a2cf9dffbd195e9d4e65bbe3c2195a608413c17000c61b5269f01a209c52cc5125fed4336e649314ccbd6288ec"),
+        (14, "bb06d417d2fa7458cfebb61f1027f7b3fc3c7490a436f46bf4ec4c209a81a409b5c5a974ce30052480650c728405a81b"),
+        // Pinned from the moment it exists rather than at release: every
+        // dev/beta install that ran this build has already recorded it.
+        (15, "a791e96a85da88aa79257c3c53a08a63838052ff246af9379138bb2e7d9544f0fc86b9f3c2f51720e9d5b531d48596ed"),
+        // Agent signals (M6): session id, last turn end, task_usage.
+        (16, "24433b250df45b6e247da000e09d708cbc5928f0eb6c9a5a6bbe991676e30cb5f01563083c8cd1b68d45c3192d66fa42"),
+        // Board, queue, outcomes (M7).
+        (17, "7f8ebf92acc0bc2eaab5954588f26df09048b1b4053bf5dde18993c54c9badeef8af2746d2857ee27914a4a2f3737df6"),
+        // Review: run-command triggers, check_runs, review_comments (M8).
+        (18, "ab2f830e3050a3ceca41278babe0ecbf12049d8546e22489ecd9bcefbbff73a5ca3ae3ef27c465bb4f7872e99e2d7c2a"),
+        // Notifications inbox + notification_prefs (M8).
+        (19, "b4019d8ad5a8aba115e6c67940c7452af44419890fc65d7af348eb50f8bf6a15e28801ce9779a32d5e2da0e5454912c8"),
+        // Settings expansion: terminal shell, copy on select, repo rules (M11).
+        (20, "af073f3614f7ae5a6b2d178c15c30bf2a5f450531816594ecbc112a6bc4f63b5aa12060adeb24355311715cf97f72459"),
+        // Local-only "queued on this machine" marker (review fix #8).
+        (21, "38c571b805d08e217cf726b17d6e498db5bac0489fe5f7437f9d8f24945626a0668d99ed670234fdefe1f2678164fe90"),
+        // Task usage: cost is a lower bound when a model has no known price.
+        (22, "8cc379b7d2e39d87bf39a8188da42419f856f9f8a66e6309937348b15ef4ba1d49cfd965622ccd2e2b48769180b20df5"),
+        // Local-only agent view (transcript | terminal).
+        (23, "269872ffda1fb857e41be7b9de94731e0005b44ef1e95bba952250caa9f1aeda91f819750ee1bc9462120e9059ceaa5c"),
+    ];
 
     fn migrations_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations")
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn migration_files() -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(migrations_dir())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "sql"))
+            .collect();
+        files.sort();
+        files
     }
 
     /// A directory holding only the first `count` migrations, i.e. the
@@ -262,20 +321,21 @@ mod version_compat {
     /// checksums match the rows a real old build would have written.
     fn partial_migrations(count: usize) -> tempfile::TempDir {
         let out = tempfile::tempdir().unwrap();
-        let mut files: Vec<PathBuf> = std::fs::read_dir(migrations_dir())
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.extension().is_some_and(|e| e == "sql"))
-            .collect();
-        files.sort();
-        assert_eq!(files.len(), V0_3_7, "migration count changed — update these tests");
+        let files = migration_files();
+        assert!(
+            files.len() >= count,
+            "asked for the first {count} migrations but only {} exist",
+            files.len()
+        );
         for path in files.into_iter().take(count) {
             std::fs::copy(&path, out.path().join(path.file_name().unwrap())).unwrap();
         }
         out
     }
 
-    /// Open `db_path` with the resolved set an older binary shipped.
+    /// Open `db_path` the way a build up to 0.4.3 did: the first `count`
+    /// migrations, with sqlx's default (strict) handling of unknown applied
+    /// versions.
     async fn open_as_version(db_path: &Path, count: usize) -> Result<Db, sqlx::Error> {
         let dir = partial_migrations(count);
         let options = SqliteConnectOptions::new()
@@ -303,15 +363,30 @@ mod version_compat {
             .unwrap()
     }
 
-    /// THE RELEASE GATE: a database last written by 0.3.4 / 0.3.5 / 0.3.6 /
-    /// 0.3.7 must open under this build, with the user's data intact.
+    async fn insert_repository(pool: &Db, id: &str, name: &str) {
+        sqlx::query(
+            "INSERT INTO repositories (id, name, default_branch, created_at, updated_at)
+             VALUES (?, ?, 'main', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// THE RELEASE GATE: a database last written by any shipped version must
+    /// open under this build, with the user's data intact.
     #[tokio::test]
-    async fn every_shipped_0_3_x_database_upgrades_to_this_build() {
+    async fn every_shipped_database_upgrades_to_this_build() {
+        let this_build = migrator().iter().count();
         for (label, count) in [
             ("0.3.4", V0_3_4),
             ("0.3.5", V0_3_5),
             ("0.3.6", V0_3_6),
             ("0.3.7", V0_3_7),
+            ("0.4.3", V0_4_3),
+            ("0.4.4", V0_4_4),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let db_path = dir.path().join("phasr.sqlite");
@@ -320,13 +395,7 @@ mod version_compat {
             let old = open_as_version(&db_path, count)
                 .await
                 .unwrap_or_else(|e| panic!("{label} could not create its own db: {e}"));
-            sqlx::query(
-                "INSERT INTO repositories (id, name, default_branch, created_at, updated_at)
-                 VALUES ('r1', 'my-repo', 'main', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-            )
-            .execute(&old)
-            .await
-            .unwrap();
+            insert_repository(&old, "r1", "my-repo").await;
             old.close().await;
 
             // The user updates to this build and launches it.
@@ -358,45 +427,326 @@ mod version_compat {
 
             assert_eq!(
                 applied_versions(&new).await.len(),
-                V0_3_7,
-                "{label}: this build should end at the 0.3.7 migration set"
+                this_build,
+                "{label}: this build should end with its full migration set applied"
             );
             new.close().await;
         }
     }
 
-    /// This build must apply NO migration 0.3.7 does not already have —
-    /// which is what makes rolling back to 0.3.7 safe. If a future change
-    /// adds a migration, this test fails and the rollback plan must change
-    /// with it.
+    /// Shipped migrations are immutable. This replaces the old "this build
+    /// adds no migration beyond 0.3.7" pin: new migrations are now allowed
+    /// (this build ignores ones it doesn't know), but every migration an
+    /// install may already have applied must keep its version AND checksum,
+    /// or sqlx rejects that install at launch.
+    #[test]
+    fn shipped_migrations_are_unchanged() {
+        let resolved: Vec<(i64, String)> = migrator()
+            .iter()
+            .map(|m| (m.version, hex(&m.checksum)))
+            .collect();
+
+        assert!(
+            resolved.len() >= SHIPPED.len(),
+            "a shipped migration was removed: {} resolved, {} shipped",
+            resolved.len(),
+            SHIPPED.len()
+        );
+        for ((version, checksum), (shipped_version, shipped_checksum)) in
+            resolved.iter().zip(SHIPPED.iter())
+        {
+            assert_eq!(
+                version, shipped_version,
+                "shipped migration {shipped_version:04} was renumbered or removed"
+            );
+            assert_eq!(
+                checksum, shipped_checksum,
+                "shipped migration {version:04} was edited — every existing install \
+                 would refuse to launch. Add a NEW migration instead."
+            );
+        }
+        // Anything past the shipped set must sort after it, or it would be
+        // applied out of order relative to what installs already have.
+        let last_shipped = SHIPPED.last().map(|(v, _)| *v).unwrap_or(0);
+        for (version, _) in resolved.iter().skip(SHIPPED.len()) {
+            assert!(
+                *version > last_shipped,
+                "new migration {version:04} must be numbered above {last_shipped:04}"
+            );
+        }
+    }
+
+    /// The rollback guarantee this build exists to provide: a database that a
+    /// newer build has migrated further (simulated with an applied row for a
+    /// version this binary has never heard of) still opens, data intact,
+    /// and the foreign row is left alone for when the newer build returns.
     #[tokio::test]
-    async fn this_build_adds_no_migration_beyond_0_3_7() {
+    async fn this_build_opens_a_db_with_an_unknown_applied_migration() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("phasr.sqlite");
 
-        let new = init_pool(&db_path).await.unwrap();
-        let after_new = applied_versions(&new).await;
-        new.close().await;
+        let pool = init_pool(&db_path).await.unwrap();
+        insert_repository(&pool, "r1", "my-repo").await;
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations
+                 (version, description, installed_on, success, checksum, execution_time)
+             VALUES (9999, 'from a future build', CURRENT_TIMESTAMP, 1, X'00', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
 
-        assert_eq!(
-            after_new.len(),
-            V0_3_7,
-            "this build applied {} migrations; 0.3.7 shipped {V0_3_7}. \
-             A new migration means 0.3.7 can no longer open a 0.4.0 database.",
-            after_new.len()
-        );
-
-        // And 0.3.7 can re-open the database this build just created.
-        let back = open_as_version(&db_path, V0_3_7)
+        let reopened = init_pool(&db_path)
             .await
-            .expect("ROLLBACK to 0.3.7 must open a database written by this build");
-        back.close().await;
+            .expect("ROLLBACK onto this build must open a db a newer build migrated");
+        let name: String = sqlx::query_scalar("SELECT name FROM repositories WHERE id = 'r1'")
+            .fetch_one(&reopened)
+            .await
+            .unwrap();
+        assert_eq!(name, "my-repo");
+        assert!(
+            applied_versions(&reopened).await.contains(&9999),
+            "the newer build's bookkeeping must survive the rollback"
+        );
+        reopened.close().await;
+
+        // Negative control: the exact database 0.4.3 (strict migrator) would
+        // have refused — which is what makes the assertion above meaningful.
+        // It trips over this build's own 0015 before it ever reaches 9999.
+        let err = open_as_version(&db_path, V0_4_3)
+            .await
+            .expect_err("a strict migrator must refuse an unknown applied version");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("previously applied but is missing")
+                && (msg.contains("15") || msg.contains("9999")),
+            "expected the VersionMissing error, got: {msg}"
+        );
     }
 
-    /// Negative control — proves the two tests above can actually fail, and
-    /// pins the exact rollback boundary for the release notes: a database that
-    /// has seen 0014 (i.e. any 0.3.7 or 0.4.0 install) cannot be opened by a
-    /// binary that ships only 13 migrations, which is released 0.3.4/5/6.
+    /// The realistic version of the test above: a future build applies an
+    /// additive migration (new defaulted column on a synced table + a new
+    /// table) and writes rows; this build then opens that database and its
+    /// named-column queries keep reading and writing it.
+    #[tokio::test]
+    async fn this_build_reads_and_writes_after_a_future_additive_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("phasr.sqlite");
+
+        let future = partial_migrations(migration_files().len());
+        std::fs::write(
+            future.path().join("9000_future_additive.sql"),
+            "ALTER TABLE workspaces ADD COLUMN future_flag INTEGER NOT NULL DEFAULT 0;
+             CREATE TABLE future_things (id TEXT PRIMARY KEY NOT NULL);",
+        )
+        .unwrap();
+        {
+            let options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .foreign_keys(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .unwrap();
+            Migrator::new(future.path())
+                .await
+                .unwrap()
+                .run(&pool)
+                .await
+                .unwrap();
+            let repo = crate::domain::Repository::new("my-repo".into(), None, None);
+            crate::store::RepositoryRepo::new(pool.clone())
+                .insert(&repo)
+                .await
+                .unwrap();
+            let ws =
+                crate::domain::Workspace::new(repo.id.clone(), "from-future".into(), "c".into());
+            crate::store::WorkspaceRepo::new(pool.clone())
+                .insert(&ws)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE workspaces SET future_flag = 1")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        }
+
+        let pool = init_pool(&db_path)
+            .await
+            .expect("this build must open a db carrying a future additive migration");
+        let workspaces = crate::store::WorkspaceRepo::new(pool.clone());
+        let repo_id: String = sqlx::query_scalar("SELECT id FROM repositories LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let listed = workspaces.list_by_repository(&repo_id).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "from-future");
+
+        // Writes too: an INSERT that doesn't name the new column takes its
+        // DEFAULT, so the future build finds a well-formed row on return.
+        let ws = crate::domain::Workspace::new(repo_id.clone(), "from-now".into(), "c".into());
+        workspaces.insert(&ws).await.unwrap();
+        let flag: i64 = sqlx::query_scalar("SELECT future_flag FROM workspaces WHERE id = ?")
+            .bind(&ws.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(flag, 0);
+        pool.close().await;
+    }
+
+    /// Open `db_path` the way 0.4.4 does: its 14 migrations, tolerant of
+    /// ones it has never heard of.
+    async fn open_as_0_4_4(db_path: &Path) -> Result<Db, sqlx::Error> {
+        let dir = partial_migrations(V0_4_4);
+        let options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        let mut migrator = Migrator::new(dir.path()).await.unwrap();
+        migrator.set_ignore_missing(true);
+        migrator.run(&pool).await.map_err(sqlx::Error::from)?;
+        Ok(pool)
+    }
+
+    /// Rows written before 0015 upgrade to the documented legacy meaning:
+    /// workspaces keep launching skip-all (`permission_mode` NULL, and the
+    /// command they stored is untouched), notifications stay on, and the
+    /// user's default flips to Ask for shell (user decision).
+    #[tokio::test]
+    async fn pre_0015_rows_upgrade_to_legacy_modes_and_the_ask_shell_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("phasr.sqlite");
+
+        let old = open_as_version(&db_path, V0_4_3).await.unwrap();
+        insert_repository(&old, "r1", "my-repo").await;
+        sqlx::query(
+            "INSERT INTO workspaces (id, repository_id, workspace_kind, name, agent, command,
+                 status, created_at, updated_at, dirty)
+             VALUES ('w1', 'r1', 'agent', 'old task', 'claude',
+                 'claude --dangerously-skip-permissions', 'stopped',
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO user_settings (id, updated_at) VALUES (1, '2026-01-01T00:00:00Z')")
+            .execute(&old)
+            .await
+            .unwrap();
+        old.close().await;
+
+        let new = init_pool(&db_path).await.unwrap();
+        let ws = crate::store::WorkspaceRepo::new(new.clone())
+            .get("w1")
+            .await
+            .unwrap();
+        assert_eq!(ws.permission_mode, None);
+        assert!(ws.notify_on_attention);
+        assert_eq!(ws.command, "claude --dangerously-skip-permissions");
+        let settings = crate::store::SettingsRepo::new(new.clone())
+            .get_or_init()
+            .await
+            .unwrap();
+        assert_eq!(
+            settings.default_permission_mode,
+            crate::domain::PermissionMode::AskShell
+        );
+        assert!(settings.agent_commands.is_empty());
+        new.close().await;
+    }
+
+    /// The rollback this milestone relies on: a database this build has
+    /// migrated through 0015 and written to opens under 0.4.4, which can
+    /// keep writing rows (its INSERTs don't name the new columns, so they
+    /// take their defaults) that this build then reads back cleanly.
+    #[tokio::test]
+    async fn rolling_back_to_0_4_4_opens_a_db_this_build_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("phasr.sqlite");
+
+        let pool = init_pool(&db_path).await.unwrap();
+        insert_repository(&pool, "r1", "my-repo").await;
+        let mut ws = crate::domain::Workspace::new("r1".into(), "new task".into(), "c".into());
+        ws.permission_mode = Some(crate::domain::PermissionMode::AskShell);
+        crate::store::WorkspaceRepo::new(pool.clone())
+            .insert(&ws)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let rolled_back = open_as_0_4_4(&db_path)
+            .await
+            .expect("0.4.4 must open a database this build migrated");
+        assert!(applied_versions(&rolled_back).await.contains(&15));
+        sqlx::query(
+            "INSERT INTO workspaces (id, repository_id, workspace_kind, name, command, status,
+                 created_at, updated_at, dirty)
+             VALUES ('from-0.4.4', 'r1', 'agent', 'old build task', 'c', 'stopped',
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)",
+        )
+        .execute(&rolled_back)
+        .await
+        .unwrap();
+        rolled_back.close().await;
+
+        let pool = init_pool(&db_path).await.unwrap();
+        let workspaces = crate::store::WorkspaceRepo::new(pool.clone());
+        assert_eq!(
+            workspaces.get(&ws.id).await.unwrap().permission_mode,
+            Some(crate::domain::PermissionMode::AskShell)
+        );
+        let from_old = workspaces.get("from-0.4.4").await.unwrap();
+        assert_eq!(from_old.permission_mode, None);
+        assert!(from_old.notify_on_attention);
+        pool.close().await;
+    }
+
+    /// Why 0.4.4 must be RELEASED before this build ships (RELEASING.md →
+    /// "Rollback safety"): once this build has migrated a database, the
+    /// newest released build today — 0.4.3, strict migrator — refuses it at
+    /// launch ("migration 15 was previously applied but is missing"), the
+    /// 0.3.7 incident again. Only a build with `ignore_missing` (0.4.4,
+    /// `rolling_back_to_0_4_4_opens_a_db_this_build_wrote`) can open it, so
+    /// that build has to exist for users to roll back to.
+    #[tokio::test]
+    async fn rolling_back_to_0_4_3_is_impossible_so_0_4_4_must_ship_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("phasr.sqlite");
+        init_pool(&db_path).await.unwrap().close().await;
+
+        let err = open_as_version(&db_path, V0_4_3)
+            .await
+            .expect_err("0.4.3 cannot open a database this build migrated");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("previously applied but is missing") && msg.contains("15"),
+            "expected VersionMissing for 0015, got: {msg}"
+        );
+        // 0.4.4 (same 14 migrations + ignore_missing) can.
+        open_as_0_4_4(&db_path)
+            .await
+            .expect("0.4.4 is the rollback target")
+            .close()
+            .await;
+    }
+
+    /// Negative control — proves the strict-migrator path really does fail,
+    /// and pins the rollback boundary for the release notes: a database that
+    /// has seen 0014 (any install from 0.3.7 on) cannot be opened by a binary
+    /// that ships only 13 migrations and predates `ignore_missing`, which is
+    /// released 0.3.4/5/6.
     #[tokio::test]
     async fn rolling_back_past_0_3_7_is_refused_by_sqlx() {
         let dir = tempfile::tempdir().unwrap();
@@ -410,381 +760,6 @@ mod version_compat {
         assert!(
             msg.contains("14") && msg.contains("missing"),
             "expected the VersionMissing error, got: {msg}"
-        );
-    }
-
-    /// The schema the redesign's local migrations 0015–0021 add, copied from
-    /// the `feature/redesign-v2` branch's `src-tauri/migrations/` (statements
-    /// only, comments dropped). Applied by hand with bookkeeping rows whose
-    /// checksums this build cannot know, to stand in for a database a
-    /// redesign build last opened — without shipping those migrations here.
-    const REDESIGN_0015_TO_0021: &[(i64, &str, &str)] = &[
-        (
-            15,
-            "permission modes",
-            "ALTER TABLE workspaces ADD COLUMN permission_mode TEXT;
-             ALTER TABLE workspaces ADD COLUMN notify_on_attention INTEGER NOT NULL DEFAULT 1;
-             ALTER TABLE user_settings
-                 ADD COLUMN default_permission_mode TEXT NOT NULL DEFAULT 'ask-shell';
-             ALTER TABLE user_settings ADD COLUMN agent_commands TEXT NOT NULL DEFAULT '{}';",
-        ),
-        (
-            16,
-            "agent signals",
-            "ALTER TABLE workspaces ADD COLUMN agent_session_id TEXT;
-             ALTER TABLE workspaces ADD COLUMN last_turn_ended_at TEXT;
-             CREATE TABLE task_usage (
-                 workspace_id TEXT PRIMARY KEY NOT NULL
-                     REFERENCES workspaces(id) ON DELETE CASCADE,
-                 source TEXT NOT NULL,
-                 model TEXT,
-                 input_tokens INTEGER NOT NULL DEFAULT 0,
-                 output_tokens INTEGER NOT NULL DEFAULT 0,
-                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                 cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                 cost_usd_micros INTEGER,
-                 transcript_path TEXT,
-                 updated_at TEXT NOT NULL
-             );",
-        ),
-        (
-            17,
-            "board",
-            "ALTER TABLE workspaces ADD COLUMN base_branch TEXT;
-             ALTER TABLE workspaces ADD COLUMN queued_at TEXT;
-             ALTER TABLE workspaces ADD COLUMN depends_on_workspace_id TEXT;
-             ALTER TABLE workspaces ADD COLUMN outcome TEXT;
-             ALTER TABLE workspaces ADD COLUMN outcome_at TEXT;
-             ALTER TABLE workspaces ADD COLUMN merged_into TEXT;
-             ALTER TABLE workspaces ADD COLUMN pr_number INTEGER;
-             ALTER TABLE workspaces ADD COLUMN pr_url TEXT;
-             ALTER TABLE workspaces ADD COLUMN pr_state TEXT;",
-        ),
-        (
-            18,
-            "review",
-            "ALTER TABLE run_commands ADD COLUMN run_when TEXT NOT NULL DEFAULT 'manual';
-             ALTER TABLE run_commands ADD COLUMN detect_port INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE run_commands ADD COLUMN required_for_approve INTEGER NOT NULL DEFAULT 0;
-             CREATE TABLE check_runs (
-                 id TEXT PRIMARY KEY NOT NULL,
-                 workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                 run_command_id TEXT,
-                 name TEXT NOT NULL,
-                 command TEXT NOT NULL,
-                 status TEXT NOT NULL,
-                 exit_code INTEGER,
-                 fingerprint TEXT,
-                 created_at TEXT NOT NULL,
-                 started_at TEXT,
-                 finished_at TEXT,
-                 duration_ms INTEGER,
-                 output_tail TEXT NOT NULL DEFAULT '',
-                 log_path TEXT,
-                 user_id TEXT
-             );
-             CREATE INDEX idx_check_runs_workspace ON check_runs(workspace_id, created_at);
-             CREATE TABLE review_comments (
-                 id TEXT PRIMARY KEY NOT NULL,
-                 workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                 user_id TEXT,
-                 path TEXT NOT NULL,
-                 line INTEGER NOT NULL,
-                 side TEXT NOT NULL DEFAULT 'new',
-                 anchor_text TEXT,
-                 body TEXT NOT NULL,
-                 status TEXT NOT NULL DEFAULT 'pending',
-                 created_at TEXT NOT NULL,
-                 updated_at TEXT NOT NULL,
-                 sent_at TEXT,
-                 resolved_at TEXT,
-                 deleted_at TEXT
-             );
-             CREATE INDEX idx_review_comments_workspace
-                 ON review_comments(workspace_id, created_at);",
-        ),
-        (
-            19,
-            "notifications",
-            "CREATE TABLE notifications (
-                 id TEXT PRIMARY KEY NOT NULL,
-                 user_id TEXT,
-                 workspace_id TEXT,
-                 repository_id TEXT,
-                 kind TEXT NOT NULL,
-                 title TEXT NOT NULL,
-                 body TEXT,
-                 payload TEXT NOT NULL DEFAULT '{}',
-                 created_at TEXT NOT NULL,
-                 read_at TEXT
-             );
-             CREATE INDEX idx_notifications_user_created ON notifications(user_id, created_at);
-             ALTER TABLE user_settings ADD COLUMN notification_prefs TEXT NOT NULL DEFAULT '{}';",
-        ),
-        (
-            20,
-            "settings expansion",
-            "ALTER TABLE user_settings ADD COLUMN terminal_shell TEXT NOT NULL DEFAULT '';
-             ALTER TABLE user_settings ADD COLUMN copy_on_select INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE repository_config ADD COLUMN default_base_branch TEXT;
-             ALTER TABLE repository_config
-                 ADD COLUMN fetch_base_before_task INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE repository_config ADD COLUMN agents_may_push TEXT NOT NULL DEFAULT 'ask';
-             ALTER TABLE repository_config ADD COLUMN pr_mode TEXT NOT NULL DEFAULT 'draft';
-             ALTER TABLE repository_config ADD COLUMN protected_paths TEXT NOT NULL DEFAULT '[]';
-             ALTER TABLE repository_config
-                 ADD COLUMN copy_untracked_globs TEXT NOT NULL DEFAULT '[]';
-             ALTER TABLE repository_config
-                 ADD COLUMN cleanup_after_merge TEXT NOT NULL DEFAULT 'ask';",
-        ),
-        (
-            21,
-            "local queue marker",
-            "ALTER TABLE workspaces ADD COLUMN queued_here INTEGER NOT NULL DEFAULT 0;",
-        ),
-    ];
-
-    /// What a redesign build does to the database on launch: apply 0015–0021
-    /// and record them. The checksums are deliberately junk — this build has
-    /// no business comparing them, and must not.
-    async fn simulate_redesign_build(pool: &Db) {
-        for (version, description, sql) in REDESIGN_0015_TO_0021 {
-            sqlx::raw_sql(sql)
-                .execute(pool)
-                .await
-                .unwrap_or_else(|e| panic!("redesign migration {version:04}: {e}"));
-            sqlx::query(
-                "INSERT INTO _sqlx_migrations
-                     (version, description, installed_on, success, checksum, execution_time)
-                 VALUES (?, ?, CURRENT_TIMESTAMP, 1, ?, 0)",
-            )
-            .bind(version)
-            .bind(description)
-            .bind(format!("not-a-real-checksum-{version}").into_bytes())
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-    }
-
-    /// THE ROLLBACK GATE for the redesign: a user upgrades to a build with
-    /// migrations 0015–0021, works in it, then rolls back to this build. The
-    /// app must launch (no VersionMissing abort, no checksum complaint about
-    /// versions it doesn't ship), and its named-column reads and writes must
-    /// keep working on the wider schema — leaving the newer build's columns
-    /// and bookkeeping intact for when it returns.
-    #[tokio::test]
-    async fn this_build_opens_a_db_the_redesign_migrated_through_0021() {
-        use crate::domain::{Repository, RunCommand, Workspace, WorkspaceStatus};
-        use crate::store::{
-            RepositoryRepo, RunCommandRepo, SettingsRepo, WorkspaceRepo, WorkspaceUpdate,
-        };
-
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("phasr.sqlite");
-
-        // This build creates the database and the user does some work.
-        let pool = init_pool(&db_path).await.unwrap();
-        let repo = Repository::new("my-repo".into(), None, None);
-        RepositoryRepo::new(pool.clone())
-            .insert(&repo)
-            .await
-            .unwrap();
-        let before = Workspace::new(repo.id.clone(), "before upgrade".into(), "claude".into());
-        WorkspaceRepo::new(pool.clone())
-            .insert(&before)
-            .await
-            .unwrap();
-        SettingsRepo::new(pool.clone()).get_or_init().await.unwrap();
-
-        // They upgrade to the redesign, which migrates and writes rows that
-        // use its new columns and tables — including a never-launched draft.
-        simulate_redesign_build(&pool).await;
-        sqlx::query(
-            "INSERT INTO workspaces (id, repository_id, workspace_kind, name, prompt, agent,
-                 command, status, created_at, updated_at, dirty,
-                 permission_mode, notify_on_attention, base_branch, queued_at, queued_here)
-             VALUES ('draft-1', ?, 'agent', 'a draft', 'do the thing', 'claude',
-                 'claude --permission-mode acceptEdits', 'pending',
-                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1,
-                 'ask-edits', 0, 'develop', '2026-01-02T00:00:00Z', 1)",
-        )
-        .bind(&repo.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "UPDATE workspaces SET permission_mode = 'skip-all', outcome = 'merged',
-                 pr_number = 7, last_turn_ended_at = '2026-01-03T00:00:00Z'
-             WHERE id = ?",
-        )
-        .bind(&before.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO task_usage (workspace_id, source, input_tokens, updated_at)
-             VALUES (?, 'claude', 1000, '2026-01-03T00:00:00Z')",
-        )
-        .bind(&before.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO check_runs (id, workspace_id, name, command, status, created_at)
-             VALUES ('cr-1', ?, 'test', 'pnpm test', 'passed', '2026-01-03T00:00:00Z')",
-        )
-        .bind(&before.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "UPDATE user_settings SET default_permission_mode = 'skip-all',
-                 agent_commands = '{\"claude\":\"claude {{permissions}}\"}', copy_on_select = 1",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        pool.close().await;
-
-        // Rolled back to this build: it must launch.
-        let pool = init_pool(&db_path)
-            .await
-            .expect("ROLLBACK from the redesign must open the database it migrated");
-        let applied = applied_versions(&pool).await;
-        for version in 15..=21 {
-            assert!(
-                applied.contains(&version),
-                "the newer build's bookkeeping row {version} must survive the rollback"
-            );
-        }
-
-        // Reads.
-        let workspaces = WorkspaceRepo::new(pool.clone());
-        let listed = workspaces.list_by_repository(&repo.id).await.unwrap();
-        assert_eq!(
-            listed.len(),
-            2,
-            "both the old row and the redesign's draft list"
-        );
-        let draft = workspaces.get("draft-1").await.unwrap();
-        assert_eq!(draft.status, WorkspaceStatus::Pending);
-        assert_eq!(draft.branch, None);
-        assert_eq!(draft.prompt.as_deref(), Some("do the thing"));
-        let settings = SettingsRepo::new(pool.clone());
-        let mut current = settings.get_or_init().await.unwrap();
-
-        // Writes: insert, update, settings, run commands, soft delete.
-        let after = Workspace::new(repo.id.clone(), "after rollback".into(), "claude".into());
-        workspaces.insert(&after).await.unwrap();
-        workspaces
-            .update(
-                &before.id,
-                WorkspaceUpdate {
-                    name: Some("renamed after rollback".into()),
-                    status: Some(WorkspaceStatus::Running),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        current.theme = "light".into();
-        settings.update(&current).await.unwrap();
-        let rc = RunCommand::new(repo.id.clone(), "dev".into(), "pnpm dev".into());
-        RunCommandRepo::new(pool.clone()).insert(&rc).await.unwrap();
-        workspaces.delete(&after.id).await.unwrap();
-
-        // New rows took the redesign's defaults, so it finds them well-formed
-        // when it returns; the columns this build never names were left alone.
-        let (notify, queued_here, mode): (i64, i64, Option<String>) = sqlx::query_as(
-            "SELECT notify_on_attention, queued_here, permission_mode FROM workspaces WHERE id = ?",
-        )
-        .bind(&after.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!((notify, queued_here, mode), (1, 0, None));
-        let (mode, outcome, pr): (Option<String>, Option<String>, Option<i64>) = sqlx::query_as(
-            "SELECT permission_mode, outcome, pr_number FROM workspaces WHERE id = ?",
-        )
-        .bind(&before.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(mode.as_deref(), Some("skip-all"));
-        assert_eq!(outcome.as_deref(), Some("merged"));
-        assert_eq!(pr, Some(7));
-        let (default_mode, copy_on_select): (String, i64) = sqlx::query_as(
-            "SELECT default_permission_mode, copy_on_select FROM user_settings WHERE id = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!((default_mode.as_str(), copy_on_select), ("skip-all", 1));
-        let run_when: String = sqlx::query_scalar("SELECT run_when FROM run_commands WHERE id = ?")
-            .bind(&rc.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(run_when, "manual");
-
-        // Removing the repository hard-deletes its workspaces; the redesign's
-        // child tables cascade instead of failing the FK check.
-        RepositoryRepo::new(pool.clone())
-            .delete(&repo.id)
-            .await
-            .unwrap();
-        let orphans: i64 = sqlx::query_scalar(
-            "SELECT (SELECT COUNT(*) FROM task_usage) + (SELECT COUNT(*) FROM check_runs)",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(orphans, 0);
-        pool.close().await;
-
-        // And the app relaunches cleanly on top of all of that.
-        init_pool(&db_path)
-            .await
-            .expect("a second launch after rollback must also open")
-            .close()
-            .await;
-
-        // Negative control: 0.4.3's strict migrator (same 14 migrations,
-        // no `ignore_missing`) refuses this exact database — which is what
-        // makes the assertions above mean something.
-        let err = open_as_version(&db_path, V0_3_7)
-            .await
-            .expect_err("a strict migrator must refuse a db the redesign migrated");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("previously applied but is missing") && msg.contains("15"),
-            "expected VersionMissing for 0015, got: {msg}"
-        );
-    }
-
-    /// `ignore_missing` is not a blanket checksum bypass: a migration this
-    /// build SHIPS that was edited after it was applied still refuses to
-    /// open, exactly as before. Only versions this build has never heard of
-    /// go unchecked.
-    #[tokio::test]
-    async fn an_edited_shipped_migration_is_still_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("phasr.sqlite");
-        let pool = init_pool(&db_path).await.unwrap();
-        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 14")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-
-        let err = init_pool(&db_path)
-            .await
-            .expect_err("a shipped migration whose checksum changed must still fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("14") && msg.contains("modified"),
-            "expected VersionMismatch for 0014, got: {msg}"
         );
     }
 }

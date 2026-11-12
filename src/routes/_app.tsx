@@ -2,8 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, Navigate, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AddRepositoryPickerModal } from "@/components/AddRepositoryPickerModal";
-import { AppSidebar } from "@/components/AppSidebar";
-import { BackgroundOrb } from "@/components/BackgroundOrb";
+import { TaskSidebar } from "@/components/shell/TaskSidebar";
 import { CommandPalette } from "@/components/CommandPalette";
 import { GitInitConfirmModal } from "@/components/GitInitConfirmModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -12,19 +11,36 @@ import { RepoFileSearchModal } from "@/components/RepoFileSearchModal";
 import { disposeSessionTerminal } from "@/components/SessionTerminalTab";
 import { disposeMainTerminal } from "@/components/Terminal";
 import { TitleBar } from "@/components/TitleBar";
+import { SettingsSheet } from "@/components/settings/SettingsSheet";
+import { useSettingsRoute, validateSettingsSearch } from "@/components/settings/useSettingsRoute";
 import { useCloudSync } from "@/lib/hooks/useCloudSync";
-import { useAdjustTerminalFontSize } from "@/lib/hooks/useUserSettings";
+import { useAccentFromSettings, useAdjustTerminalFontSize } from "@/lib/hooks/useUserSettings";
 import { useCompletionNotifications } from "@/lib/hooks/useCompletionNotifications";
+import { useNeedsYouNotifications } from "@/lib/hooks/useNeedsYouNotifications";
+import { useAutoCollapse } from "@/lib/hooks/useAutoCollapse";
+import { useAppEvents } from "@/lib/hooks/useAppEvents";
+import { usePrRefresh } from "@/lib/hooks/usePrRefresh";
 import { useFileDrop } from "@/lib/hooks/useFileDrop";
 import { useExternalLinkOpener } from "@/lib/hooks/useExternalLinkOpener";
 import { useMacTextEditingKeys } from "@/lib/hooks/useMacTextEditingKeys";
 import { repositoryKeys } from "@/lib/hooks/useRepositories";
+import { workspaceKeys } from "@/lib/hooks/useWorkspaces";
+import { runTarget } from "@/lib/runScope";
 import { useTaskEvents } from "@/lib/hooks/useTaskEvents";
+import { isOverlayOpen } from "@/lib/keyboardGuards";
 import { matchShortcut, SHORTCUTS } from "@/lib/shortcuts";
 import { useUiStore } from "@/lib/store";
 import { useRustSession } from "@/lib/use-rust-session";
 import { tauri } from "@/lib/tauri";
-import type { Repository } from "@/lib/types";
+import type { Repository, Workspace } from "@/lib/types";
+
+const TASK_SHORTCUTS = [
+  SHORTCUTS.openNotes,
+  SHORTCUTS.newWorkspace,
+  SHORTCUTS.newTerminal,
+  SHORTCUTS.searchFiles,
+  SHORTCUTS.closeActiveTab,
+];
 
 function AppLayout() {
   return <AuthGate />;
@@ -63,10 +79,17 @@ function AppShell() {
   const adjustTerminalFontSize = useAdjustTerminalFontSize();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { open: openSettings } = useSettingsRoute();
 
   useCloudSync();
+  useAccentFromSettings();
   useTaskEvents();
   useCompletionNotifications();
+  useNeedsYouNotifications();
+  useAutoCollapse();
+  // One subscription per app event (board, agent signals, checks).
+  useAppEvents();
+  usePrRefresh();
   useFileDrop();
   // ⌘⌫ / ⌘← / ⌘→ in every field — the webview never runs the native
   // macOS editing actions for these, so we implement them ourselves.
@@ -80,21 +103,25 @@ function AppShell() {
     const handler = (e: KeyboardEvent) => {
       if (matchShortcut(e, SHORTCUTS.openSettings)) {
         e.preventDefault();
-        void navigate({ to: "/settings/account" });
+        openSettings();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarHide)) {
+        // Like ⌘I: the panel is under the dialog / sheet, out of sight.
+        if (isOverlayOpen()) return;
         e.preventDefault();
         toggleSidebarHidden();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.toggleSidebarPin)) {
+        if (isOverlayOpen()) return;
         e.preventDefault();
         toggleSidebarPin();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.toggleRightPanel)) {
-        // Don't steal ⌘⇧J — that's "Reload window" in some browsers.
+        // Folds a panel the sheet hides; skip while a dialog is on top.
+        if (isOverlayOpen()) return;
         e.preventDefault();
         toggleRightPanel();
         return;
@@ -120,25 +147,33 @@ function AppShell() {
         adjustTerminalFontSize("reset");
         return;
       }
+      // Everything below acts on the task (or board) underneath. With a
+      // dialog or the Settings sheet on top that task is out of sight, so ⌘W
+      // must not kill its hidden terminal, ⌘T must not open one behind the
+      // sheet, and ⌘N/⌘P/⌘⇧N must not stack another surface on the sheet.
+      if (TASK_SHORTCUTS.some((s) => matchShortcut(e, s)) && isOverlayOpen()) return;
       if (matchShortcut(e, SHORTCUTS.openNotes)) {
-        // Workspace context only — RepoHomeShell binds its own copy for
-        // the repo-home rail (the two never co-mount).
+        // In a task: bring the repository's notes pane forward with the
+        // composer open.
         const s = useUiStore.getState();
         const ctx = s.activeWorkspaceContext;
         if (!ctx) return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        s.setRightPanelCollapsed(false);
-        s.setRightPanelTab(ctx.workspaceId, "notes");
+        s.setSessionPane(ctx.workspaceId, "notes");
         s.openNotesComposer();
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newWorkspace)) {
-        const { activeWorkspaceContext, requestNewWorkspace } =
+        // In a task: its repository. On the board: the switcher's repo, else
+        // the first one.
+        const { activeWorkspaceContext, repoFilter, requestNewWorkspace } =
           useUiStore.getState();
-        if (!activeWorkspaceContext) return;
+        const repos = queryClient.getQueryData<Repository[]>(repositoryKeys.list());
+        const repoId = activeWorkspaceContext?.repositoryId ?? repoFilter ?? repos?.[0]?.id ?? null;
+        if (!repoId) return;
         e.preventDefault();
-        requestNewWorkspace(activeWorkspaceContext.repositoryId);
+        requestNewWorkspace(repoId);
         return;
       }
       if (matchShortcut(e, SHORTCUTS.newTerminal)) {
@@ -171,6 +206,23 @@ function AppShell() {
         const state = useUiStore.getState();
         const ctx = state.activeWorkspaceContext;
         if (!ctx) return;
+        // A pane in front (Changes / Files / Notes / a run command) is what
+        // ⌘W closes — never the terminal tab hidden behind it.
+        const pane = state.sessionPane[ctx.workspaceId] ?? "tabs";
+        if (pane !== "tabs") {
+          e.preventDefault();
+          // The task route keeps `activeTab` on this task's visible run tab.
+          if (pane === "run" && state.runPanel.activeTab) {
+            const id = state.runPanel.activeTab;
+            const ws = queryClient.getQueryData<Workspace>(workspaceKeys.detail(ctx.workspaceId));
+            // Stop it where it runs: the worktree, or the repo checkout
+            // for a worktree-less task.
+            if (ws) void tauri.stopRunCommand(id, runTarget(ws)).catch(() => {});
+            state.runPanel.closeTab(id, ctx.workspaceId);
+          }
+          state.setSessionPane(ctx.workspaceId, "tabs");
+          return;
+        }
         const inner = state.innerTabs[ctx.workspaceId];
         const activeInner = inner?.tabs.find((t) => t.id === inner.activeTabId);
         if (!activeInner?.closable) return;
@@ -199,16 +251,19 @@ function AppShell() {
     window.addEventListener("keydown", handler, { capture: true });
     return () =>
       window.removeEventListener("keydown", handler, { capture: true });
-  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, adjustTerminalFontSize, queryClient, navigate]);
+  }, [toggleSidebarPin, toggleSidebarHidden, toggleRightPanel, adjustTerminalFontSize, queryClient, navigate, openSettings]);
 
   return (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
-      <BackgroundOrb />
+    // `data-app-shell` carries `data-panel-animating` while the sidebar or
+    // inspector collapses or expands (lib/panelMotion).
+    <div data-app-shell className="relative flex h-screen flex-col overflow-hidden bg-(--color-bg-base) text-(--color-text-primary)">
       <TitleBar />
       <div className="flex min-h-0 min-w-0 flex-1">
-        <AppSidebar />
-        <main className="relative min-h-0 flex-1 overflow-hidden">
-          <Outlet />
+        <TaskSidebar />
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <Outlet />
+          </div>
         </main>
       </div>
       <CommandPalette />
@@ -217,10 +272,12 @@ function AppShell() {
       <AddRepositoryPickerModal />
       <RepoFileSearchModal />
       <GitInitConfirmModal />
+      <SettingsSheet />
     </div>
   );
 }
 
 export const Route = createFileRoute("/_app")({
   component: AppLayout,
+  validateSearch: validateSettingsSearch,
 });

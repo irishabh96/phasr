@@ -1,18 +1,11 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "@tanstack/react-router";
-import {
-  Archive,
-  ChevronDown,
-  GitMerge,
-  GitPullRequest,
-  MoreHorizontal,
-  Trash2,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Archive, GitMerge, GitPullRequest, Trash2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { MergeToMainDialog } from "@/components/MergeToMainDialog";
 import { ConfirmDialog, ErrorDialog } from "@/components/ui/Dialog";
-import { GlassButton } from "@/components/ui/GlassButton";
 import { useGitBranchStatus } from "@/lib/hooks/useGit";
+import { mergeTargetBranch } from "@/lib/mergeTarget";
 import { useRepository } from "@/lib/hooks/useRepositories";
 import {
   useArchiveWorkspace,
@@ -21,12 +14,7 @@ import {
   useOpenPullRequest,
 } from "@/lib/hooks/useWorkspaces";
 import { dismissToast, showToast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
 import type { Workspace } from "@/lib/types";
-
-interface WorkspaceActionsMenuProps {
-  workspace: Workspace;
-}
 
 interface ConfirmState {
   title: string;
@@ -36,7 +24,33 @@ interface ConfirmState {
   onConfirm: () => void;
 }
 
-export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
+/** One task-level action, rendered as a menu item by the caller. */
+export interface WorkspaceAction {
+  id: "merge" | "open-pr" | "archive" | "delete";
+  label: string;
+  icon: ReactNode;
+  onSelect: () => void;
+  disabled?: boolean;
+  /** Why it's disabled (shown as the item's tooltip). */
+  title?: string;
+  danger?: boolean;
+}
+
+/**
+ * The task's git/lifecycle actions — Merge into base, Open pull request,
+ * Archive, Delete — plus the dialogs they open. They used to sit in the
+ * session bar's "…" menu; the A-Workspace bar folds them into "Open in ▾".
+ *
+ * The dialogs live outside any menu (a menu unmounts its content as it
+ * closes), so the caller renders `dialogs` next to its menu.
+ *
+ * Local workspaces return no actions: the only one was a destructive
+ * "Remove from Phasr", which lives in the sidebar's right-click menu.
+ */
+export function useWorkspaceActions(workspace: Workspace): {
+  actions: WorkspaceAction[];
+  dialogs: ReactNode;
+} {
   const { data: repository } = useRepository(workspace.repositoryId);
   const { data: branchStatus } = useGitBranchStatus(workspace.id);
   const navigate = useNavigate();
@@ -51,30 +65,12 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
     void navigate({ to: "/" });
   };
 
-  const [open, setOpen] = useState(false);
   const [errorState, setErrorState] = useState<{
     title: string;
     error: unknown;
   } | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   const isLocalWorkspace = workspace.workspaceKind === "local";
   const canOpenPr =
@@ -82,12 +78,14 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   const canArchive = !isLocalWorkspace && workspace.status !== "archived";
   const canMergeToMain =
     !isLocalWorkspace && !!workspace.branch && !!repository?.localPath;
+  // Merges go into the task's base branch, not the repository default.
+  const mergeTarget = mergeTargetBranch(branchStatus, workspace, repository);
   const mergeBlocked = !branchStatus
     ? null
     : branchStatus.aheadOfTarget === 0
       ? "Nothing to merge"
       : branchStatus.behindOfTarget > 0
-        ? `Branch is behind ${repository?.defaultBranch ?? "main"} — sync first`
+        ? `Branch is behind ${mergeTarget} — sync first`
         : null;
 
   // Raw error is humanized inside ErrorDialog (never shown raw).
@@ -96,7 +94,6 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   };
 
   const handleArchive = () => {
-    setOpen(false);
     archive.mutate(workspace.id, {
       onSuccess: leaveWorkspace,
       onError: (err) => showError("Couldn't archive workspace", err),
@@ -104,7 +101,6 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   };
 
   const handleOpenPr = async () => {
-    setOpen(false);
     // Open PR pushes the branch then opens the compare page — several
     // seconds during which the menu is already gone. Surface a toast so
     // the action isn't silent; dismiss it once the browser opens (or an
@@ -126,7 +122,6 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
   };
 
   const handleDelete = async () => {
-    setOpen(false);
     let warning = "";
     try {
       const check = await checkDelete.mutateAsync(workspace.id);
@@ -157,78 +152,48 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
     });
   };
 
-  // Local workspaces expose no header actions here — the only one was a
-  // destructive "Remove from Phasr", which still lives in the sidebar's
-  // right-click menu. Render nothing.
-  if (isLocalWorkspace) return null;
+  const actions: WorkspaceAction[] = [];
+  if (!isLocalWorkspace) {
+    if (canOpenPr) {
+      actions.push({
+        id: "open-pr",
+        icon: <GitPullRequest size={13} />,
+        label: openPr.isPending ? "Pushing & opening…" : "Open pull request",
+        onSelect: () => void handleOpenPr(),
+        disabled: openPr.isPending,
+      });
+    }
+    if (canMergeToMain) {
+      actions.push({
+        id: "merge",
+        icon: <GitMerge size={13} />,
+        label: `Merge into ${mergeTarget}`,
+        onSelect: () => setMergeOpen(true),
+        disabled: !!mergeBlocked,
+        ...(mergeBlocked ? { title: mergeBlocked } : {}),
+      });
+    }
+    if (canArchive) {
+      actions.push({
+        id: "archive",
+        icon: <Archive size={13} />,
+        label: "Archive",
+        onSelect: handleArchive,
+        disabled: archive.isPending,
+      });
+    }
+    actions.push({
+      id: "delete",
+      icon: <Trash2 size={13} />,
+      label: "Delete workspace",
+      onSelect: () => void handleDelete(),
+      disabled: deleteWorkspace.isPending,
+      danger: true,
+    });
+  }
 
-  return (
+  const dialogs = (
     <>
-      <div ref={containerRef} className="relative">
-        <GlassButton
-          variant="ghost"
-          size="sm"
-          onClick={() => setOpen((v) => !v)}
-          title="Workspace actions"
-          className="gap-0.5 px-1.5"
-        >
-          <MoreHorizontal size={13} />
-          <ChevronDown size={11} />
-        </GlassButton>
-
-        {open && (
-          <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
-            <ul className="p-1 text-[12.5px]">
-              {canMergeToMain && (
-                <MenuItem
-                  icon={<GitMerge size={12} />}
-                  label={`Merge to ${repository?.defaultBranch ?? "main"}`}
-                  onClick={() => {
-                    setOpen(false);
-                    setMergeOpen(true);
-                  }}
-                  disabled={!!mergeBlocked}
-                  {...(mergeBlocked ? { title: mergeBlocked } : {})}
-                />
-              )}
-              {canOpenPr && (
-                <MenuItem
-                  icon={<GitPullRequest size={12} />}
-                  label={
-                    openPr.isPending
-                      ? "Pushing & opening…"
-                      : "Open pull request"
-                  }
-                  onClick={handleOpenPr}
-                  disabled={openPr.isPending}
-                />
-              )}
-              {canArchive && (
-                <MenuItem
-                  icon={<Archive size={12} />}
-                  label="Archive"
-                  onClick={handleArchive}
-                  disabled={archive.isPending}
-                />
-              )}
-              {(canMergeToMain || canOpenPr || canArchive) && (
-                <li
-                  className="my-1 h-px bg-(--glass-border-hairline)"
-                  aria-hidden
-                />
-              )}
-              <MenuItem
-                icon={<Trash2 size={12} />}
-                label="Delete workspace"
-                onClick={handleDelete}
-                disabled={deleteWorkspace.isPending}
-                danger
-              />
-            </ul>
-          </div>
-        )}
-      </div>
-
       <ConfirmDialog
         open={confirmState !== null}
         onOpenChange={(o) => !o && setConfirmState(null)}
@@ -246,50 +211,15 @@ export function WorkspaceActionsMenu({ workspace }: WorkspaceActionsMenuProps) {
         error={errorState?.error}
       />
 
-      <MergeToMainDialog
-        workspace={workspace}
-        open={mergeOpen}
-        onClose={() => setMergeOpen(false)}
-      />
+      {isLocalWorkspace ? null : (
+        <MergeToMainDialog
+          workspace={workspace}
+          open={mergeOpen}
+          onClose={() => setMergeOpen(false)}
+        />
+      )}
     </>
   );
-}
 
-function MenuItem({
-  icon,
-  label,
-  onClick,
-  disabled,
-  danger,
-  title,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  danger?: boolean;
-  title?: string;
-}) {
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        title={title}
-        className={cn(
-          "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left",
-          "transition-colors duration-100",
-          "hover:bg-(--color-bg-hover)",
-          danger
-            ? "text-(--color-danger) hover:bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)]"
-            : "text-(--color-text-primary)",
-          "disabled:opacity-60",
-        )}
-      >
-        {icon}
-        <span className="flex-1 leading-none">{label}</span>
-      </button>
-    </li>
-  );
+  return { actions, dialogs };
 }

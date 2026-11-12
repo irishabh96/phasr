@@ -1,0 +1,629 @@
+//! Voice input: dictate into the composer or the New task prompt, and
+//! Whisper turns it into text on this Mac. Nothing is uploaded; the model is
+//! downloaded once on request (never bundled) into
+//! `<app data>/models/whisper/`.
+//!
+//! One dictation at a time: `start` opens the microphone (asking for
+//! permission the first time) and meters it; `stop` closes it and returns
+//! the text; `cancel` closes it and throws the audio away. Tauri-agnostic —
+//! levels and download progress go out on a broadcast that
+//! `commands::events` bridges.
+
+// Off macOS only the model downloads work; capture and Whisper don't build.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
+pub mod audio;
+pub mod catalog;
+pub mod fn_key;
+#[cfg(target_os = "macos")]
+mod mac;
+pub mod models;
+pub mod polish;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use serde::Serialize;
+use tokio::sync::broadcast;
+
+use catalog::{Languages, ModelSpec, MODELS};
+use models::{DownloadError, ModelStore};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceModel {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub detail: &'static str,
+    pub size_bytes: u64,
+    pub languages: Languages,
+    pub installed: bool,
+    /// Bytes so far while a download is running.
+    pub downloading: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DownloadPhase {
+    Downloading,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProgress {
+    pub model_id: &'static str,
+    pub phase: DownloadPhase,
+    pub downloaded: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum VoiceEvent {
+    /// The microphone's level, 0–1, every 50ms while dictating.
+    Level(f32),
+    /// The whole live transcript so far, about every 0.8s while dictating.
+    Partial(String),
+    Model(ModelProgress),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MicAccess {
+    Authorized,
+    NotDetermined,
+    Denied,
+    Restricted,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    Unsupported,
+}
+
+#[derive(Debug)]
+pub enum VoiceError {
+    UnknownModel(String),
+    NotInstalled,
+    MicDenied,
+    NotDictating,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    Unsupported,
+    Failed(String),
+}
+
+impl std::fmt::Display for VoiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownModel(id) => write!(f, "unknown voice model: {id}"),
+            Self::NotInstalled => write!(f, "voice model not downloaded"),
+            Self::MicDenied => write!(f, "microphone access denied"),
+            Self::NotDictating => write!(f, "not dictating"),
+            Self::Unsupported => write!(f, "voice input needs macOS"),
+            Self::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+struct Download {
+    cancel: AtomicBool,
+    downloaded: AtomicU64,
+}
+
+#[cfg(target_os = "macos")]
+struct Dictation {
+    recorder: mac::Recorder,
+    model: &'static ModelSpec,
+    meter: tokio::task::JoinHandle<()>,
+    live_task: tokio::task::JoinHandle<()>,
+    live: Arc<Mutex<Live>>,
+    decode: Arc<tokio::sync::Mutex<()>>,
+    lang: String,
+}
+
+pub struct VoiceService {
+    store: ModelStore,
+    events: broadcast::Sender<VoiceEvent>,
+    downloads: Mutex<HashMap<&'static str, Arc<Download>>>,
+    #[cfg(target_os = "macos")]
+    dictation: tokio::sync::Mutex<Option<Dictation>>,
+    #[cfg(target_os = "macos")]
+    engine: Arc<mac::Engine>,
+}
+
+impl VoiceService {
+    pub fn new(models_dir: PathBuf) -> Arc<Self> {
+        let (events, _) = broadcast::channel(64);
+        Arc::new(Self {
+            store: ModelStore::new(models_dir),
+            events,
+            downloads: Mutex::new(HashMap::new()),
+            #[cfg(target_os = "macos")]
+            dictation: tokio::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            engine: Arc::new(mac::Engine::default()),
+        })
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<VoiceEvent> {
+        self.events.subscribe()
+    }
+
+    fn spec(id: &str) -> Result<&'static ModelSpec, VoiceError> {
+        catalog::find(id).ok_or_else(|| VoiceError::UnknownModel(id.to_string()))
+    }
+
+    pub fn list(&self) -> Vec<VoiceModel> {
+        let downloads = self.downloads.lock();
+        MODELS
+            .iter()
+            .map(|m| VoiceModel {
+                id: m.id,
+                label: m.label,
+                detail: m.detail,
+                size_bytes: m.size,
+                languages: m.languages,
+                installed: self.store.is_installed(m),
+                downloading: downloads.get(m.id).map(|d| d.downloaded.load(Ordering::Relaxed)),
+            })
+            .collect()
+    }
+
+    /// Start downloading in the background; progress and the outcome
+    /// arrive as `VoiceEvent::Model`. A second call while one runs is a
+    /// no-op.
+    pub fn download(self: &Arc<Self>, id: &str) -> Result<(), VoiceError> {
+        let spec = Self::spec(id)?;
+        if self.store.is_installed(spec) {
+            self.emit_progress(spec, DownloadPhase::Done, spec.size, None);
+            return Ok(());
+        }
+        let dl = {
+            let mut downloads = self.downloads.lock();
+            if downloads.contains_key(spec.id) {
+                return Ok(());
+            }
+            let dl = Arc::new(Download { cancel: AtomicBool::new(false), downloaded: AtomicU64::new(0) });
+            downloads.insert(spec.id, dl.clone());
+            dl
+        };
+        let this = self.clone();
+        tokio::spawn(async move {
+            this.emit_progress(spec, DownloadPhase::Downloading, 0, None);
+            let result = match models::fetch(spec).await {
+                Ok(res) => {
+                    this.store
+                        .save(spec, res, &dl.cancel, |n| {
+                            dl.downloaded.store(n, Ordering::Relaxed);
+                            this.emit_progress(spec, DownloadPhase::Downloading, n, None);
+                        })
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            this.downloads.lock().remove(spec.id);
+            match result {
+                Ok(_) => this.emit_progress(spec, DownloadPhase::Done, spec.size, None),
+                Err(DownloadError::Cancelled) => this.emit_progress(spec, DownloadPhase::Cancelled, 0, None),
+                Err(e) => {
+                    eprintln!("[phasr] voice model {} download failed: {e}", spec.id);
+                    this.emit_progress(spec, DownloadPhase::Failed, 0, Some(e.to_string()))
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub fn cancel_download(&self, id: &str) -> Result<(), VoiceError> {
+        let spec = Self::spec(id)?;
+        if let Some(dl) = self.downloads.lock().get(spec.id) {
+            dl.cancel.store(true, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), VoiceError> {
+        let spec = Self::spec(id)?;
+        #[cfg(target_os = "macos")]
+        self.engine.unload(spec.id);
+        self.store.delete(spec).map_err(|e| VoiceError::Failed(format!("couldn't delete the model: {e}")))
+    }
+
+    fn emit_progress(&self, spec: &'static ModelSpec, phase: DownloadPhase, downloaded: u64, error: Option<String>) {
+        let _ = self.events.send(VoiceEvent::Model(ModelProgress {
+            model_id: spec.id,
+            phase,
+            downloaded,
+            total: spec.size,
+            error,
+        }));
+    }
+
+    pub fn mic_access(&self) -> MicAccess {
+        #[cfg(target_os = "macos")]
+        {
+            match mac::mic_access() {
+                mac::MicAccess::Authorized => MicAccess::Authorized,
+                mac::MicAccess::NotDetermined => MicAccess::NotDetermined,
+                mac::MicAccess::Denied => MicAccess::Denied,
+                mac::MicAccess::Restricted => MicAccess::Restricted,
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        MicAccess::Unsupported
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl VoiceService {
+    /// Open the microphone for `model_id` (which must be downloaded). Asks
+    /// for microphone access the first time. A dictation already running
+    /// (say its composer went away mid-sentence) is discarded.
+    ///
+    /// While it runs, the live transcript arrives as `VoiceEvent::Partial`.
+    /// `language` (ISO code, or "auto") applies to multilingual models;
+    /// English models ignore it.
+    pub async fn start(self: &Arc<Self>, model_id: &str, language: Option<String>) -> Result<(), VoiceError> {
+        let model = Self::spec(model_id)?;
+        if !self.store.is_installed(model) {
+            return Err(VoiceError::NotInstalled);
+        }
+        match mac::mic_access() {
+            mac::MicAccess::Authorized => {}
+            mac::MicAccess::NotDetermined => {
+                if !mac::request_mic_access().await {
+                    return Err(VoiceError::MicDenied);
+                }
+            }
+            _ => return Err(VoiceError::MicDenied),
+        }
+        let mut slot = self.dictation.lock().await;
+        if let Some(old) = slot.take() {
+            old.abort();
+        }
+        let recorder = tokio::task::spawn_blocking(mac::Recorder::start)
+            .await
+            .map_err(|e| VoiceError::Failed(e.to_string()))?
+            .map_err(VoiceError::Failed)?;
+
+        // The meter: one reading per 50ms of wall time over what arrived.
+        let samples = recorder.samples();
+        let events = self.events.clone();
+        let meter = tokio::spawn(async move {
+            let mut seen = 0usize;
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(audio::METER_MS as u64));
+            loop {
+                tick.tick().await;
+                let level = {
+                    let s = samples.lock();
+                    let from = seen.min(s.len());
+                    seen = s.len();
+                    audio::meter_level(audio::rms(&s[from..]))
+                };
+                let _ = events.send(VoiceEvent::Level(level));
+            }
+        });
+
+        // Load the model while you talk, so the live text starts quickly
+        // and stopping goes straight to the final text.
+        let engine = self.engine.clone();
+        let path = self.store.path(model);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = engine.load(model.id, &path) {
+                eprintln!("[phasr] voice model preload failed: {e}");
+            }
+        });
+
+        let lang = match model.languages {
+            Languages::English => "en".to_string(),
+            Languages::Multilingual => language.filter(|l| !l.trim().is_empty()).unwrap_or_else(|| "auto".into()),
+        };
+        let live = Arc::new(Mutex::new(Live::default()));
+        let decode = Arc::new(tokio::sync::Mutex::new(()));
+        let live_task = tokio::spawn(live_loop(LiveCtx {
+            samples: recorder.samples(),
+            rate: recorder.rate(),
+            engine: self.engine.clone(),
+            model,
+            path: self.store.path(model),
+            lang: lang.clone(),
+            live: live.clone(),
+            decode: decode.clone(),
+            events: self.events.clone(),
+        }));
+
+        *slot = Some(Dictation { recorder, model, meter, live_task, live, decode, lang });
+        Ok(())
+    }
+
+    /// Close the microphone and return the final text: what the live loop
+    /// already committed plus the rest. Empty when nothing was said.
+    pub async fn stop(&self) -> Result<String, VoiceError> {
+        let Dictation { recorder, model, meter, live_task, live, decode, lang } =
+            self.dictation.lock().await.take().ok_or(VoiceError::NotDictating)?;
+        meter.abort();
+        live_task.abort();
+        // A decode already running finishes first (it may commit).
+        let _turn = decode.lock().await;
+        let failed = recorder.device_failed();
+        let engine = self.engine.clone();
+        let path = self.store.path(model);
+        let (committed_text, committed_at) = {
+            let l = live.lock();
+            (l.committed_text.clone(), l.committed_at)
+        };
+        tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let rate = recorder.rate();
+            let raw = recorder.finish();
+            let tail = &raw[committed_at.min(raw.len())..];
+            if !audio::has_speech(tail, rate) {
+                if committed_text.is_empty() && failed {
+                    return Err("the microphone stopped working".into());
+                }
+                return Ok(committed_text);
+            }
+            let samples = audio::pad_to_one_second(audio::to_whisper_rate(tail, rate));
+            let text = engine.transcribe(model.id, &path, &samples, &lang)?;
+            Ok(audio::join_text(&committed_text, &text))
+        })
+        .await
+        .map_err(|e| VoiceError::Failed(e.to_string()))?
+        .map_err(VoiceError::Failed)
+    }
+
+    pub async fn cancel(&self) {
+        if let Some(d) = self.dictation.lock().await.take() {
+            d.abort();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Dictation {
+    fn abort(self) {
+        self.meter.abort();
+        self.live_task.abort();
+        drop(self.recorder);
+    }
+}
+
+/// The live transcript so far: text for audio before `committed_at` (a
+/// sample index at the device rate) is settled; the rest is re-read on
+/// every pass.
+#[derive(Default)]
+struct Live {
+    committed_text: String,
+    committed_at: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct LiveCtx {
+    samples: Arc<Mutex<Vec<f32>>>,
+    rate: u32,
+    engine: Arc<mac::Engine>,
+    model: &'static ModelSpec,
+    path: PathBuf,
+    lang: String,
+    live: Arc<Mutex<Live>>,
+    decode: Arc<tokio::sync::Mutex<()>>,
+    events: broadcast::Sender<VoiceEvent>,
+}
+
+/// How often the live text is refreshed while you talk.
+const LIVE_EVERY: std::time::Duration = std::time::Duration::from_millis(800);
+/// Past this much unsettled audio, the oldest part is settled at a pause
+/// (keeps each pass well under a second, and inside Whisper's 30s window).
+const LIVE_WINDOW_SECS: usize = 20;
+
+/// Re-transcribe the unsettled audio every `LIVE_EVERY` and publish the
+/// whole text so far. Passes never overlap (`decode`), and each waits for
+/// new audio and for the model to be loaded.
+#[cfg(target_os = "macos")]
+async fn live_loop(ctx: LiveCtx) {
+    let rate = ctx.rate as usize;
+    let mut decoded_len = 0usize;
+    loop {
+        tokio::time::sleep(LIVE_EVERY).await;
+        if !ctx.engine.is_loaded(ctx.model.id) {
+            continue;
+        }
+        let committed_at = ctx.live.lock().committed_at;
+        let window: Vec<f32> = {
+            let s = ctx.samples.lock();
+            s[committed_at.min(s.len())..].to_vec()
+        };
+        if window.len() < rate / 2 || window.len() < decoded_len + rate * 3 / 10 {
+            continue;
+        }
+        decoded_len = window.len();
+        if !audio::has_speech(&window, ctx.rate) {
+            continue;
+        }
+        let _turn = ctx.decode.lock().await;
+        let settle = window.len() > rate * LIVE_WINDOW_SECS;
+        let cut = if settle { audio::quietest_cut(&window, ctx.rate, 4.0) } else { window.len() };
+        let piece = window[..cut].to_vec();
+        let (engine, path, lang, id, src_rate) =
+            (ctx.engine.clone(), ctx.path.clone(), ctx.lang.clone(), ctx.model.id, ctx.rate);
+        let text = tokio::task::spawn_blocking(move || {
+            let samples = audio::pad_to_one_second(audio::to_whisper_rate(&piece, src_rate));
+            engine.transcribe(id, &path, &samples, &lang)
+        })
+        .await;
+        let Ok(Ok(text)) = text else { continue };
+        let shown = {
+            let mut l = ctx.live.lock();
+            if settle {
+                l.committed_text = audio::join_text(&l.committed_text, &text);
+                l.committed_at += cut;
+                decoded_len = 0;
+                l.committed_text.clone()
+            } else {
+                audio::join_text(&l.committed_text, &text)
+            }
+        };
+        let _ = ctx.events.send(VoiceEvent::Partial(shown));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl VoiceService {
+    pub async fn start(self: &Arc<Self>, model_id: &str, _language: Option<String>) -> Result<(), VoiceError> {
+        Self::spec(model_id)?;
+        Err(VoiceError::Unsupported)
+    }
+
+    pub async fn stop(&self) -> Result<String, VoiceError> {
+        Err(VoiceError::Unsupported)
+    }
+
+    pub async fn cancel(&self) {}
+}
+
+/// The real thing, end to end: download base.en through `ModelStore`
+/// (checksum and all) and transcribe a 48 kHz stereo WAV through the same
+/// resample → pad → Whisper path dictation uses.
+///
+/// `PHASR_VOICE_E2E=<dir> PHASR_VOICE_WAV=<file.wav> cargo test voice::e2e -- --ignored --nocapture`
+#[cfg(all(test, target_os = "macos"))]
+mod e2e {
+    use super::*;
+
+    fn read_wav(path: &str) -> (Vec<f32>, u32) {
+        let b = std::fs::read(path).unwrap();
+        assert_eq!(&b[0..4], b"RIFF");
+        let (mut i, mut channels, mut rate, mut out) = (12usize, 1usize, 0u32, Vec::new());
+        while i + 8 <= b.len() {
+            let id = &b[i..i + 4];
+            let len = u32::from_le_bytes(b[i + 4..i + 8].try_into().unwrap()) as usize;
+            let body = &b[i + 8..(i + 8 + len).min(b.len())];
+            if id == b"fmt " {
+                assert_eq!(u16::from_le_bytes([body[14], body[15]]), 16, "16-bit PCM only");
+                channels = u16::from_le_bytes([body[2], body[3]]) as usize;
+                rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+            } else if id == b"data" {
+                let pcm: Vec<f32> = body.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect();
+                audio::downmix(&pcm, channels, &mut out);
+            }
+            i += 8 + len + (len & 1);
+        }
+        (out, rate)
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn download_and_transcribe() {
+        let (Ok(dir), Ok(wav)) = (std::env::var("PHASR_VOICE_E2E"), std::env::var("PHASR_VOICE_WAV")) else {
+            return;
+        };
+        let store = ModelStore::new(dir.into());
+        let spec = catalog::find("base-en").unwrap();
+        if !store.is_installed(spec) {
+            let res = models::fetch(spec).await.unwrap();
+            store.save(spec, res, &AtomicBool::new(false), |_| {}).await.unwrap();
+        }
+        let (raw, rate) = read_wav(&wav);
+        assert!(audio::has_speech(&raw, rate));
+        let samples = audio::pad_to_one_second(audio::to_whisper_rate(&raw, rate));
+        let engine = mac::Engine::default();
+        let t = std::time::Instant::now();
+        engine.load(spec.id, &store.path(spec)).unwrap();
+        eprintln!("LOAD {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        engine.transcribe(spec.id, &store.path(spec), &samples, "en").unwrap();
+        eprintln!("FIRST {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let text = engine.transcribe(spec.id, &store.path(spec), &samples, "en").unwrap();
+        eprintln!("TRANSCRIPT ({:?}, {} Hz): {text}", t.elapsed(), rate);
+        assert!(!text.is_empty());
+
+        // The live loop settles long dictations at a pause: the two halves
+        // read the same as the whole.
+        let cut = audio::quietest_cut(&raw[..raw.len() * 2 / 3], rate, 3.0);
+        let a = engine.transcribe(spec.id, &store.path(spec), &audio::pad_to_one_second(audio::to_whisper_rate(&raw[..cut], rate)), "en").unwrap();
+        let b = engine.transcribe(spec.id, &store.path(spec), &audio::pad_to_one_second(audio::to_whisper_rate(&raw[cut..], rate)), "en").unwrap();
+        eprintln!("CHUNKED at {:.2}s: {}", cut as f32 / rate as f32, audio::join_text(&a, &b));
+    }
+
+    /// Stress: a ~70s dictation (the clip seven times, with pauses) fed to
+    /// the live loop's settle-at-a-pause logic in 0.8s steps of audio,
+    /// timing every pass on the real model. Each pass must stay well under
+    /// a second and the final text must hold every repetition.
+    #[tokio::test]
+    #[ignore]
+    async fn live_long_dictation() {
+        let (Ok(dir), Ok(wav)) = (std::env::var("PHASR_VOICE_E2E"), std::env::var("PHASR_VOICE_WAV")) else {
+            return;
+        };
+        let store = ModelStore::new(dir.into());
+        let spec = catalog::find("base-en").unwrap();
+        let (clip, rate) = read_wav(&wav);
+        let mut audio_all = Vec::new();
+        for _ in 0..7 {
+            audio_all.extend_from_slice(&clip);
+            audio_all.extend(std::iter::repeat(0.0f32).take(rate as usize * 6 / 10));
+        }
+        let engine = mac::Engine::default();
+        engine.load(spec.id, &store.path(spec)).unwrap();
+        let path = store.path(spec);
+        let r = rate as usize;
+        let step = r * 8 / 10;
+        let mut live = Live::default();
+        let (mut worst, mut passes) = (std::time::Duration::ZERO, 0);
+        let mut have = 0;
+        while have < audio_all.len() {
+            have = (have + step).min(audio_all.len());
+            let window = &audio_all[live.committed_at..have];
+            if window.len() < r / 2 || !audio::has_speech(window, rate) {
+                continue;
+            }
+            let settle = window.len() > r * LIVE_WINDOW_SECS;
+            let cut = if settle { audio::quietest_cut(window, rate, 4.0) } else { window.len() };
+            let t = std::time::Instant::now();
+            let text = engine
+                .transcribe(spec.id, &path, &audio::pad_to_one_second(audio::to_whisper_rate(&window[..cut], rate)), "en")
+                .unwrap();
+            worst = worst.max(t.elapsed());
+            passes += 1;
+            if settle {
+                live.committed_text = audio::join_text(&live.committed_text, &text);
+                live.committed_at += cut;
+            }
+        }
+        let tail = &audio_all[live.committed_at..];
+        let t = std::time::Instant::now();
+        let last = engine
+            .transcribe(spec.id, &path, &audio::pad_to_one_second(audio::to_whisper_rate(tail, rate)), "en")
+            .unwrap();
+        let stop_latency = t.elapsed();
+        let full = audio::join_text(&live.committed_text, &last);
+        let reps = full.to_lowercase().matches("markdown table parser").count();
+        eprintln!(
+            "LIVE {:.0}s audio: {passes} passes, worst pass {:?}, stop {:?}, {reps}/7 repetitions\n{full}",
+            audio_all.len() as f32 / rate as f32, worst, stop_latency
+        );
+        assert!(worst < std::time::Duration::from_millis(1500), "{worst:?}");
+        assert!(reps >= 6, "{reps}");
+    }
+
+    /// The real cleanup calls through the user's CLIs.
+    /// `PHASR_VOICE_POLISH=1 cargo test voice::e2e::polish -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn polish_with_both_clis() {
+        if std::env::var("PHASR_VOICE_POLISH").is_err() {
+            return;
+        }
+        let raw = "um so can you like add a unit test for the mark down table parser and uh then run p n p m test";
+        eprintln!("POLISHERS {:?}", polish::polishers().await);
+        for p in [polish::Polisher::Claude, polish::Polisher::Codex] {
+            let t = std::time::Instant::now();
+            let out = polish::polish(p, raw).await;
+            eprintln!("{p:?} ({:?}): {out:?}", t.elapsed());
+            assert!(out.is_ok());
+        }
+    }
+}

@@ -96,15 +96,15 @@ export function Dialog({
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[overlay-in_180ms_var(--ease-glass)] data-[state=closed]:animate-[overlay-out_140ms_var(--ease-glass)]" />
+        <RadixDialog.Overlay className="fixed inset-0 z-(--z-overlay) bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <RadixDialog.Content
           onOpenAutoFocus={handleOpenAutoFocus}
           style={{ width: `min(${maxWidth}, calc(100vw - 32px))` }}
-          className="glass-modal fixed left-1/2 top-[12vh] z-(--z-modal) max-h-[80vh] -translate-x-1/2 overflow-hidden outline-none data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)] data-[state=closed]:animate-[modal-out_140ms_var(--ease-glass)]"
+          className="glass-modal fixed left-1/2 top-[12vh] z-(--z-modal) max-h-[80vh] -translate-x-1/2 overflow-hidden outline-none data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out"
         >
-          <header className="flex h-11 shrink-0 items-center gap-2 border-b border-(--glass-border-hairline) px-4">
+          <header className="flex h-11 shrink-0 items-center gap-2 px-[18px]">
             <RadixDialog.Title asChild>
-              <h2 className="text-[13.5px] font-semibold leading-none">
+              <h2 className="text-[13px] font-medium leading-none">
                 {title}
               </h2>
             </RadixDialog.Title>
@@ -113,16 +113,16 @@ export function Dialog({
                 type="button"
                 aria-label="Close dialog"
                 data-dialog-close
-                className="ml-auto grid size-8 shrink-0 place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors duration-100 hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
+                className="ml-auto grid size-[26px] shrink-0 place-items-center rounded-(--radius-control) text-(--color-text-muted) transition-colors duration-(--dur-1) hover:bg-(--color-bg-elevated) hover:text-(--color-text-primary) focus-visible:shadow-[var(--ring-focus)] focus-visible:outline-none"
               >
-                <X className="size-4" aria-hidden="true" />
+                <X className="size-3.5" aria-hidden="true" />
               </button>
             </RadixDialog.Close>
           </header>
 
-          <div className="max-h-[calc(80vh-2.75rem)] overflow-y-auto px-5 py-4">
+          <div className="max-h-[calc(80vh-2.75rem)] overflow-y-auto px-[18px] pb-[18px] pt-1">
             <RadixDialog.Description asChild>
-              <div className="text-[12.5px] leading-relaxed text-(--color-text-secondary) [&:empty]:hidden">
+              <div className="text-[12px] leading-relaxed text-(--color-text-secondary) [&:empty]:hidden">
                 {description}
               </div>
             </RadixDialog.Description>
@@ -134,7 +134,7 @@ export function Dialog({
           {footer != null ? (
             <footer
               data-dialog-footer
-              className="flex shrink-0 items-center justify-end gap-2 border-t border-(--glass-border-hairline) px-4 py-3"
+              className="flex shrink-0 items-center justify-end gap-2 px-[18px] pb-[18px]"
             >
               {footer}
             </footer>
@@ -191,7 +191,7 @@ export function ConfirmDialog({
         <>
           <GlassButton
             ref={cancelRef}
-            variant="outline"
+            variant="ghost"
             size="sm"
             disabled={pending}
             onClick={() => onOpenChange(false)}
@@ -199,7 +199,7 @@ export function ConfirmDialog({
             {cancelLabel}
           </GlassButton>
           <GlassButton
-            variant={destructive ? "danger" : "primary"}
+            variant={destructive ? "danger-solid" : "primary"}
             size="sm"
             disabled={pending}
             onClick={onConfirm}

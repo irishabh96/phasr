@@ -15,7 +15,9 @@ use thiserror::Error;
 use tokio::sync::Notify;
 
 use crate::auth::{AuthError, SessionState};
-use crate::domain::{Agent, Repository, UserSettings, WorkspaceStatus};
+use crate::domain::{
+    agent_commands_from_json, NotificationPrefs, PermissionMode, Repository, RunWhen, UserSettings,
+};
 use crate::store::Db;
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(30);
@@ -56,12 +58,27 @@ impl From<sqlx::Error> for SyncError {
     }
 }
 
+/// What the cloud-sync worker is doing — the status bar's sync dot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncPhase {
+    /// No worker (signed out, or sync never started / stopped).
+    #[default]
+    Off,
+    Idle,
+    Syncing,
+    /// The last cycle failed; the next one retries.
+    Error,
+}
+
 #[derive(Default)]
 pub struct CloudSyncState {
     handle: Mutex<Option<JoinHandle<()>>>,
     /// Signalled by mutating commands so the worker runs a sync cycle
     /// immediately instead of waiting for the next `SYNC_INTERVAL` tick.
     trigger: Arc<Notify>,
+    /// Written by the worker around every cycle.
+    phase: Arc<Mutex<SyncPhase>>,
 }
 
 impl CloudSyncState {
@@ -77,6 +94,11 @@ impl CloudSyncState {
         if let Some(existing) = self.handle.lock().take() {
             existing.abort();
         }
+        *self.phase.lock() = SyncPhase::Off;
+    }
+
+    pub fn phase(&self) -> SyncPhase {
+        *self.phase.lock()
     }
 
     /// Ask the running sync worker to push/pull now. Coalesces a burst of
@@ -199,14 +221,19 @@ pub async fn start_cloud_sync(
     let client = SupabaseRestClient::new(config, session.user_id, session.jwt)?;
     let app_for_loop = app.clone();
     let trigger = sync_state.trigger.clone();
+    let phase = sync_state.phase.clone();
+    *phase.lock() = SyncPhase::Idle;
 
     let handle = tauri::async_runtime::spawn(async move {
         loop {
+            *phase.lock() = SyncPhase::Syncing;
             match sync_once(&client, &db).await {
                 Ok(()) => {
+                    *phase.lock() = SyncPhase::Idle;
                     let _ = app_for_loop.emit("cloud-sync-updated", ());
                 }
                 Err(err) => {
+                    *phase.lock() = SyncPhase::Error;
                     let _ = app_for_loop.emit("cloud-sync-error", err.to_string());
                 }
             }
@@ -418,6 +445,56 @@ struct CloudWorkspaceRow {
     finished_at: Option<DateTime<Utc>>,
     archived_at: Option<DateTime<Utc>>,
     updated_at: DateTime<Utc>,
+    // Added in cloud migration 0010. `None` = the column isn't in the
+    // payload at all (cloud not migrated yet) → keep the local value;
+    // `Some(None)` = genuinely NULL (a legacy skip-all row).
+    #[serde(default, deserialize_with = "present")]
+    permission_mode: Option<Option<String>>,
+    #[serde(default)]
+    notify_on_attention: Option<bool>,
+    // Added in cloud migration 0011; same absent-vs-null split as
+    // `permission_mode`, so an unmigrated cloud never clears a local value.
+    #[serde(default, deserialize_with = "present")]
+    last_turn_ended_at: Option<Option<DateTime<Utc>>>,
+    // Added in cloud migration 0012 (board). Same absent-vs-null split.
+    #[serde(default, deserialize_with = "present")]
+    base_branch: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    queued_at: Option<Option<DateTime<Utc>>>,
+    #[serde(default, deserialize_with = "present")]
+    depends_on_workspace_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    outcome: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    outcome_at: Option<Option<DateTime<Utc>>>,
+    #[serde(default, deserialize_with = "present")]
+    merged_into: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pr_number: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "present")]
+    pr_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pr_state: Option<Option<String>>,
+}
+
+/// `(present, value)` binds for a `CASE WHEN ? THEN ? ELSE col END` that
+/// applies a cloud column only when the payload carries it.
+fn present_text(v: &Option<Option<String>>) -> (bool, Option<String>) {
+    (v.is_some(), v.clone().flatten())
+}
+
+fn present_time(v: &Option<Option<DateTime<Utc>>>) -> (bool, Option<String>) {
+    (v.is_some(), v.flatten().map(|dt| dt.to_rfc3339()))
+}
+
+/// Distinguishes "field absent" (`None`, via `serde(default)`) from
+/// "field present, null" (`Some(None)`).
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -429,6 +506,14 @@ struct CloudRunCommandRow {
     shortcut: Option<String>,
     pinned: bool,
     sort_order: i64,
+    // Added in cloud migration 0013 (review). Absent = the cloud isn't
+    // migrated yet → keep the local value (`COALESCE` on pull).
+    #[serde(default)]
+    run_when: Option<String>,
+    #[serde(default)]
+    detect_port: Option<bool>,
+    #[serde(default)]
+    required_for_approve: Option<bool>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -453,6 +538,19 @@ struct CloudUserSettingsRow {
     auto_fetch_seconds: i64,
     honor_gpg_sign: bool,
     auto_push_on_commit: bool,
+    // Added in cloud migration 0010; absent → keep the local value.
+    #[serde(default)]
+    default_permission_mode: Option<String>,
+    #[serde(default)]
+    agent_commands: Option<Value>,
+    // Added in cloud migration 0014; absent → keep the local value.
+    #[serde(default)]
+    notification_prefs: Option<Value>,
+    // Added in cloud migration 0015; absent → keep the local value.
+    #[serde(default)]
+    terminal_shell: Option<String>,
+    #[serde(default)]
+    copy_on_select: Option<bool>,
     updated_at: DateTime<Utc>,
 }
 
@@ -762,35 +860,20 @@ async fn upsert_workspace_from_cloud(
         return Ok(());
     }
 
-    // A row a NEWER build wrote may carry a status or agent this build has
-    // no variant for. Landing it would poison every read of its repository
-    // (`row_to_workspace` rejects unknown values, so the whole workspace
-    // list — the sidebar — fails), so leave it in the cloud until this
-    // machine is upgraded. Nothing is lost, and the tombstone path above
-    // still applies because it doesn't depend on either field.
-    if !is_known_workspace_shape(row) {
-        eprintln!(
-            "[cloud-sync] skipping workspace {}: status `{}` / agent {:?} unknown to this build",
-            row.id, row.status, row.agent
-        );
-        return Ok(());
-    }
+    // F2: `worktree_path` is machine-local, so we never write the value
+    // that travelled through the cloud — on a second machine it points at
+    // a filesystem path that doesn't exist there, which is exactly what
+    // made synced workspaces fail to open. See `local_worktree_path`.
+    let worktree_path = local_worktree_path(db, row).await?;
 
-    // F2: `worktree_path` is machine-local and fully derivable from the
-    // workspace id (`default_worktree_base_path().join(id)`), so we never
-    // write the value that travelled through the cloud — on a second
-    // machine it points at a filesystem path that doesn't exist there,
-    // which is exactly what made synced workspaces fail to open. Derive it
-    // locally instead, but only when the row actually has a branch (i.e. a
-    // worktree was ever created). On first open, `cwd_for_task` self-heals
-    // the missing dir from that branch (F1). The push side stores NULL
-    // remotely so nothing leaks a local absolute path to the cloud.
-    let worktree_path: Option<String> = row.branch.as_ref().map(|_| {
-        crate::git::default_worktree_base_path()
-            .join(&row.id)
-            .to_string_lossy()
-            .into_owned()
-    });
+    let base_branch = present_text(&row.base_branch);
+    let queued_at = present_time(&row.queued_at);
+    let depends_on = present_text(&row.depends_on_workspace_id);
+    let outcome = present_text(&row.outcome);
+    let outcome_at = present_time(&row.outcome_at);
+    let merged_into = present_text(&row.merged_into);
+    let pr_url = present_text(&row.pr_url);
+    let pr_state = present_text(&row.pr_state);
 
     let current = get_updated_at(db, "workspaces", &row.id, &client.user_id).await?;
     if let Some(current) = current {
@@ -802,6 +885,26 @@ async fn upsert_workspace_from_cloud(
                 user_id = ?, repository_id = ?, name = ?, prompt = ?, agent = ?, command = ?, status = ?,
                 branch = ?, worktree_path = ?, exit_code = ?,
                 created_at = ?, started_at = ?, finished_at = ?, archived_at = ?,
+                permission_mode = CASE WHEN ? THEN ? ELSE permission_mode END,
+                notify_on_attention = COALESCE(?, notify_on_attention),
+                last_turn_ended_at = CASE WHEN ? THEN ? ELSE last_turn_ended_at END,
+                base_branch = CASE WHEN ? THEN ? ELSE base_branch END,
+                -- Another machine re-queued (or unqueued / launched) it: it is
+                -- theirs to start now. The RHS sees the OLD queued_at. Compared
+                -- as instants with a little slack, not as text: the cloud
+                -- round-trip trims nanoseconds, and an unrelated edit made
+                -- elsewhere (a rename) must not unqueue it here.
+                queued_here = CASE WHEN ? AND (? IS NULL OR queued_at IS NULL
+                        OR abs(julianday(queued_at) - julianday(?)) > 0.00002)
+                    THEN 0 ELSE queued_here END,
+                queued_at = CASE WHEN ? THEN ? ELSE queued_at END,
+                depends_on_workspace_id = CASE WHEN ? THEN ? ELSE depends_on_workspace_id END,
+                outcome = CASE WHEN ? THEN ? ELSE outcome END,
+                outcome_at = CASE WHEN ? THEN ? ELSE outcome_at END,
+                merged_into = CASE WHEN ? THEN ? ELSE merged_into END,
+                pr_number = CASE WHEN ? THEN ? ELSE pr_number END,
+                pr_url = CASE WHEN ? THEN ? ELSE pr_url END,
+                pr_state = CASE WHEN ? THEN ? ELSE pr_state END,
                 updated_at = ?, synced_at = ?, dirty = 0
              WHERE id = ?",
         )
@@ -819,6 +922,32 @@ async fn upsert_workspace_from_cloud(
         .bind(row.started_at.map(|dt| dt.to_rfc3339()))
         .bind(row.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(row.archived_at.map(|dt| dt.to_rfc3339()))
+        .bind(row.permission_mode.is_some())
+        .bind(row.permission_mode.clone().flatten())
+        .bind(row.notify_on_attention.map(i64::from))
+        .bind(row.last_turn_ended_at.is_some())
+        .bind(row.last_turn_ended_at.flatten().map(|dt| dt.to_rfc3339()))
+        .bind(base_branch.0)
+        .bind(base_branch.1.clone())
+        .bind(queued_at.0)
+        .bind(queued_at.1.clone())
+        .bind(queued_at.1.clone())
+        .bind(queued_at.0)
+        .bind(queued_at.1.clone())
+        .bind(depends_on.0)
+        .bind(depends_on.1.clone())
+        .bind(outcome.0)
+        .bind(outcome.1.clone())
+        .bind(outcome_at.0)
+        .bind(outcome_at.1.clone())
+        .bind(merged_into.0)
+        .bind(merged_into.1.clone())
+        .bind(row.pr_number.is_some())
+        .bind(row.pr_number.flatten())
+        .bind(pr_url.0)
+        .bind(pr_url.1.clone())
+        .bind(pr_state.0)
+        .bind(pr_state.1.clone())
         .bind(row.updated_at.to_rfc3339())
         .bind(Utc::now().to_rfc3339())
         .bind(&row.id)
@@ -830,8 +959,12 @@ async fn upsert_workspace_from_cloud(
                 id, user_id, repository_id, name, prompt, agent, command, status,
                 branch, worktree_path, exit_code,
                 created_at, started_at, finished_at, archived_at, updated_at,
+                permission_mode, notify_on_attention, last_turn_ended_at,
+                base_branch, queued_at, depends_on_workspace_id,
+                outcome, outcome_at, merged_into, pr_number, pr_url, pr_state,
                 synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1), ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         )
         .bind(&row.id)
         .bind(&client.user_id)
@@ -849,6 +982,18 @@ async fn upsert_workspace_from_cloud(
         .bind(row.finished_at.map(|dt| dt.to_rfc3339()))
         .bind(row.archived_at.map(|dt| dt.to_rfc3339()))
         .bind(row.updated_at.to_rfc3339())
+        .bind(row.permission_mode.clone().flatten())
+        .bind(row.notify_on_attention.map(i64::from))
+        .bind(row.last_turn_ended_at.flatten().map(|dt| dt.to_rfc3339()))
+        .bind(base_branch.1)
+        .bind(queued_at.1)
+        .bind(depends_on.1)
+        .bind(outcome.1)
+        .bind(outcome_at.1)
+        .bind(merged_into.1)
+        .bind(row.pr_number.flatten())
+        .bind(pr_url.1)
+        .bind(pr_state.1)
         .bind(Utc::now().to_rfc3339())
         .execute(db)
         .await?;
@@ -856,16 +1001,46 @@ async fn upsert_workspace_from_cloud(
     Ok(())
 }
 
-/// Whether this build can represent `row` locally. Additive columns a
-/// newer build syncs (`permission_mode`, `queued_at`, `outcome`, …) never
-/// matter here — serde ignores fields `CloudWorkspaceRow` doesn't name —
-/// but a new VALUE in a column this build parses into an enum would.
-fn is_known_workspace_shape(row: &CloudWorkspaceRow) -> bool {
-    WorkspaceStatus::from_str(&row.status).is_some()
-        && row
-            .agent
-            .as_deref()
-            .is_none_or(|agent| Agent::from_str(agent).is_some())
+/// The `worktree_path` to store for a pulled workspace row.
+///
+/// - No branch → `None`: no worktree was ever created, and deriving a path
+///   would trigger a doomed self-heal on open.
+/// - This machine already has the row with a worktree that exists on disk
+///   → keep it. The worktree base can change after a task was created
+///   (Settings → Worktrees); re-deriving on every pull would point a live
+///   task at an empty directory under the new base and lose its work.
+/// - Otherwise derive `<resolved base>/<id>` from this machine's settings
+///   (repository override > user setting > default). On first open,
+///   `cwd_for_task` self-heals the missing dir from the branch (F1).
+///
+/// The push side stores NULL remotely so nothing leaks a local absolute
+/// path to the cloud.
+async fn local_worktree_path(db: &Db, row: &CloudWorkspaceRow) -> Result<Option<String>, SyncError> {
+    if row.branch.is_none() {
+        return Ok(None);
+    }
+    let existing: Option<String> = sqlx::query_scalar("SELECT worktree_path FROM workspaces WHERE id = ?")
+        .bind(&row.id)
+        .fetch_optional(db)
+        .await?
+        .flatten();
+    if let Some(path) = existing.filter(|p| std::path::Path::new(p).exists()) {
+        return Ok(Some(path));
+    }
+    let config = crate::store::RepositoryConfigRepo::new(db.clone())
+        .get(&row.repository_id)
+        .await
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    let settings = crate::store::SettingsRepo::new(db.clone())
+        .get_or_default()
+        .await
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    Ok(Some(
+        crate::git::resolve_worktree_base(config.worktree_base(&settings))
+            .join(&row.id)
+            .to_string_lossy()
+            .into_owned(),
+    ))
 }
 
 async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
@@ -897,6 +1072,18 @@ async fn push_dirty_workspaces(client: &SupabaseRestClient, db: &Db) -> Result<(
                     "finished_at": row.try_get::<Option<String>, _>("finished_at")?,
                     "archived_at": row.try_get::<Option<String>, _>("archived_at")?,
                     "updated_at": row.try_get::<String, _>("updated_at")?,
+                    "permission_mode": row.try_get::<Option<String>, _>("permission_mode")?,
+                    "notify_on_attention": row.try_get::<i64, _>("notify_on_attention")? != 0,
+                    "last_turn_ended_at": row.try_get::<Option<String>, _>("last_turn_ended_at")?,
+                    "base_branch": row.try_get::<Option<String>, _>("base_branch")?,
+                    "queued_at": row.try_get::<Option<String>, _>("queued_at")?,
+                    "depends_on_workspace_id": row.try_get::<Option<String>, _>("depends_on_workspace_id")?,
+                    "outcome": row.try_get::<Option<String>, _>("outcome")?,
+                    "outcome_at": row.try_get::<Option<String>, _>("outcome_at")?,
+                    "merged_into": row.try_get::<Option<String>, _>("merged_into")?,
+                    "pr_number": row.try_get::<Option<i64>, _>("pr_number")?,
+                    "pr_url": row.try_get::<Option<String>, _>("pr_url")?,
+                    "pr_state": row.try_get::<Option<String>, _>("pr_state")?,
                 }),
             )
             .await?;
@@ -911,7 +1098,10 @@ async fn dirty_workspace_rows(
 ) -> Result<Vec<sqlx::sqlite::SqliteRow>, SyncError> {
     Ok(sqlx::query(
         "SELECT id, repository_id, name, prompt, agent, command, status, branch, worktree_path,
-                exit_code, created_at, started_at, finished_at, archived_at, updated_at
+                exit_code, created_at, started_at, finished_at, archived_at, updated_at,
+                permission_mode, notify_on_attention, last_turn_ended_at,
+                base_branch, queued_at, depends_on_workspace_id,
+                outcome, outcome_at, merged_into, pr_number, pr_url, pr_state
          FROM workspaces
          WHERE dirty = 1 AND deleted_at IS NULL AND user_id = ? AND workspace_kind = 'agent'",
     )
@@ -986,7 +1176,11 @@ async fn upsert_run_command_from_cloud(
         sqlx::query(
             "UPDATE run_commands SET
                 user_id = ?, repository_id = ?, name = ?, command = ?, shortcut = ?, pinned = ?,
-                sort_order = ?, created_at = ?, updated_at = ?, synced_at = ?, dirty = 0
+                sort_order = ?,
+                run_when = COALESCE(?, run_when),
+                detect_port = COALESCE(?, detect_port),
+                required_for_approve = COALESCE(?, required_for_approve),
+                created_at = ?, updated_at = ?, synced_at = ?, dirty = 0
              WHERE id = ?",
         )
         .bind(&client.user_id)
@@ -996,6 +1190,9 @@ async fn upsert_run_command_from_cloud(
         .bind(&row.shortcut)
         .bind(row.pinned as i64)
         .bind(row.sort_order)
+        .bind(cloud_run_when(row))
+        .bind(row.detect_port.map(i64::from))
+        .bind(row.required_for_approve.map(i64::from))
         .bind(row.created_at.to_rfc3339())
         .bind(row.updated_at.to_rfc3339())
         .bind(Utc::now().to_rfc3339())
@@ -1006,8 +1203,10 @@ async fn upsert_run_command_from_cloud(
         sqlx::query(
             "INSERT INTO run_commands (
                 id, user_id, repository_id, name, command, shortcut, pinned, sort_order,
+                run_when, detect_port, required_for_approve,
                 created_at, updated_at, synced_at, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'manual'), COALESCE(?, 0),
+                      COALESCE(?, 0), ?, ?, ?, 0)",
         )
         .bind(&row.id)
         .bind(&client.user_id)
@@ -1017,6 +1216,9 @@ async fn upsert_run_command_from_cloud(
         .bind(&row.shortcut)
         .bind(row.pinned as i64)
         .bind(row.sort_order)
+        .bind(cloud_run_when(row))
+        .bind(row.detect_port.map(i64::from))
+        .bind(row.required_for_approve.map(i64::from))
         .bind(row.created_at.to_rfc3339())
         .bind(row.updated_at.to_rfc3339())
         .bind(Utc::now().to_rfc3339())
@@ -1024,6 +1226,14 @@ async fn upsert_run_command_from_cloud(
         .await?;
     }
     Ok(())
+}
+
+/// The cloud's `run_when`, normalized: a value this build doesn't know (a
+/// newer client's trigger) is stored as `manual` rather than kept verbatim,
+/// so nothing this build can't reason about ever auto-runs. `None` = the
+/// column isn't in the payload (cloud not migrated) → keep the local value.
+fn cloud_run_when(row: &CloudRunCommandRow) -> Option<&'static str> {
+    row.run_when.as_deref().map(|w| RunWhen::parse_lenient(w).as_str())
 }
 
 async fn push_dirty_run_commands(client: &SupabaseRestClient, db: &Db) -> Result<(), SyncError> {
@@ -1044,6 +1254,9 @@ async fn push_dirty_run_commands(client: &SupabaseRestClient, db: &Db) -> Result
                     "shortcut": row.try_get::<Option<String>, _>("shortcut")?,
                     "pinned": row.try_get::<i64, _>("pinned")? != 0,
                     "sort_order": row.try_get::<i64, _>("sort_order")?,
+                    "run_when": row.try_get::<String, _>("run_when")?,
+                    "detect_port": row.try_get::<i64, _>("detect_port")? != 0,
+                    "required_for_approve": row.try_get::<i64, _>("required_for_approve")? != 0,
                     "created_at": row.try_get::<String, _>("created_at")?,
                     "updated_at": row.try_get::<String, _>("updated_at")?,
                 }),
@@ -1060,7 +1273,7 @@ async fn dirty_run_command_rows(
 ) -> Result<Vec<sqlx::sqlite::SqliteRow>, SyncError> {
     Ok(sqlx::query(
         "SELECT id, repository_id, name, command, shortcut, pinned, sort_order,
-                created_at, updated_at
+                run_when, detect_port, required_for_approve, created_at, updated_at
          FROM run_commands
          WHERE dirty = 1 AND user_id = ?",
     )
@@ -1091,6 +1304,11 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
             branch_prefix_template = ?, worktree_base_path = ?,
             default_merge_strategy = ?, auto_fetch_seconds = ?,
             honor_gpg_sign = ?, auto_push_on_commit = ?,
+            default_permission_mode = COALESCE(?, default_permission_mode),
+            agent_commands = COALESCE(?, agent_commands),
+            notification_prefs = COALESCE(?, notification_prefs),
+            terminal_shell = COALESCE(?, terminal_shell),
+            copy_on_select = COALESCE(?, copy_on_select),
             updated_at = ?, synced_at = ?, dirty = 0, user_id = ?
          WHERE id = 1 AND (user_id IS NULL OR user_id = ?)",
     )
@@ -1111,6 +1329,29 @@ async fn pull_user_settings(client: &SupabaseRestClient, db: &Db) -> Result<(), 
     .bind(row.auto_fetch_seconds)
     .bind(row.honor_gpg_sign as i64)
     .bind(row.auto_push_on_commit as i64)
+    // Ignore a mode string this build doesn't know (written by a newer
+    // client) rather than storing a value it would then misread.
+    .bind(
+        row.default_permission_mode
+            .as_deref()
+            .and_then(PermissionMode::from_str)
+            .map(PermissionMode::as_str),
+    )
+    // Only a JSON object is a valid override map.
+    .bind(
+        row.agent_commands
+            .as_ref()
+            .filter(|v| v.is_object())
+            .map(Value::to_string),
+    )
+    .bind(
+        row.notification_prefs
+            .as_ref()
+            .filter(|v| v.is_object())
+            .map(Value::to_string),
+    )
+    .bind(row.terminal_shell.as_deref())
+    .bind(row.copy_on_select.map(i64::from))
     .bind(row.updated_at.to_rfc3339())
     .bind(Utc::now().to_rfc3339())
     .bind(&client.user_id)
@@ -1127,7 +1368,8 @@ async fn push_dirty_user_settings(client: &SupabaseRestClient, db: &Db) -> Resul
                 default_terminal,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                 default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
-                auto_push_on_commit, updated_at
+                auto_push_on_commit, default_permission_mode, agent_commands,
+                notification_prefs, terminal_shell, copy_on_select, updated_at
          FROM user_settings
          WHERE id = 1 AND dirty = 1 AND user_id = ?",
     )
@@ -1162,6 +1404,11 @@ async fn push_dirty_user_settings(client: &SupabaseRestClient, db: &Db) -> Resul
                 "auto_fetch_seconds": row.try_get::<i64, _>("auto_fetch_seconds")?,
                 "honor_gpg_sign": row.try_get::<i64, _>("honor_gpg_sign")? != 0,
                 "auto_push_on_commit": row.try_get::<i64, _>("auto_push_on_commit")? != 0,
+                "default_permission_mode": row.try_get::<String, _>("default_permission_mode")?,
+                "agent_commands": parse_json_column(row.try_get("agent_commands")?)?,
+                "notification_prefs": parse_json_column(row.try_get("notification_prefs")?)?,
+                "terminal_shell": row.try_get::<String, _>("terminal_shell")?,
+                "copy_on_select": row.try_get::<i64, _>("copy_on_select")? != 0,
                 "updated_at": updated_at,
             }),
         )
@@ -1183,7 +1430,8 @@ async fn get_or_init_user_settings(
                 default_terminal,
                 keyboard_shortcuts, branch_prefix_template, worktree_base_path,
                 default_merge_strategy, auto_fetch_seconds, honor_gpg_sign,
-                auto_push_on_commit, updated_at
+                auto_push_on_commit, default_permission_mode, agent_commands,
+                notification_prefs, terminal_shell, copy_on_select, updated_at
          FROM user_settings
          WHERE id = 1",
     )
@@ -1218,6 +1466,16 @@ async fn get_or_init_user_settings(
             auto_fetch_seconds: row.try_get("auto_fetch_seconds")?,
             honor_gpg_sign: row.try_get::<i64, _>("honor_gpg_sign")? != 0,
             auto_push_on_commit: row.try_get::<i64, _>("auto_push_on_commit")? != 0,
+            default_permission_mode: PermissionMode::from_str(
+                &row.try_get::<String, _>("default_permission_mode")?,
+            )
+            .unwrap_or_default(),
+            agent_commands: agent_commands_from_json(&row.try_get::<String, _>("agent_commands")?),
+            notification_prefs: NotificationPrefs::from_json(
+                &row.try_get::<String, _>("notification_prefs")?,
+            ),
+            terminal_shell: row.try_get("terminal_shell")?,
+            copy_on_select: row.try_get::<i64, _>("copy_on_select")? != 0,
             updated_at: parse_timestamp(row.try_get("updated_at")?, "updated_at")?,
         }));
     }
@@ -1603,6 +1861,18 @@ mod tests {
                 finished_at: None,
                 archived_at: None,
                 updated_at: now,
+                permission_mode: None,
+                notify_on_attention: None,
+                last_turn_ended_at: None,
+                base_branch: None,
+                queued_at: None,
+                depends_on_workspace_id: None,
+                outcome: None,
+                outcome_at: None,
+                merged_into: None,
+                pr_number: None,
+                pr_url: None,
+                pr_state: None,
             },
         )
         .await
@@ -1619,6 +1889,9 @@ mod tests {
                 shortcut: None,
                 pinned: false,
                 sort_order: 0,
+                run_when: None,
+                detect_port: None,
+                required_for_approve: None,
                 created_at: now,
                 updated_at: now,
             },
@@ -1682,6 +1955,18 @@ mod tests {
                 finished_at: None,
                 archived_at: None,
                 updated_at: now,
+                permission_mode: None,
+                notify_on_attention: None,
+                last_turn_ended_at: None,
+                base_branch: None,
+                queued_at: None,
+                depends_on_workspace_id: None,
+                outcome: None,
+                outcome_at: None,
+                merged_into: None,
+                pr_number: None,
+                pr_url: None,
+                pr_state: None,
             },
         )
         .await
@@ -1731,6 +2016,18 @@ mod tests {
                 finished_at: None,
                 archived_at: None,
                 updated_at: now,
+                permission_mode: None,
+                notify_on_attention: None,
+                last_turn_ended_at: None,
+                base_branch: None,
+                queued_at: None,
+                depends_on_workspace_id: None,
+                outcome: None,
+                outcome_at: None,
+                merged_into: None,
+                pr_number: None,
+                pr_url: None,
+                pr_state: None,
             },
         )
         .await
@@ -1743,6 +2040,94 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stored, None);
+    }
+
+    fn cloud_ws(id: &str, branch: Option<&str>, updated_at: DateTime<Utc>) -> CloudWorkspaceRow {
+        CloudWorkspaceRow {
+            id: id.into(),
+            repository_id: "repo-1".into(),
+            name: "W".into(),
+            prompt: None,
+            agent: Some("claude".into()),
+            deleted_at: None,
+            command: "echo".into(),
+            status: "stopped".into(),
+            branch: branch.map(str::to_string),
+            worktree_path: Some("/other/machine/wt".into()),
+            exit_code: None,
+            created_at: updated_at,
+            started_at: None,
+            finished_at: None,
+            archived_at: None,
+            updated_at,
+            permission_mode: None,
+            notify_on_attention: None,
+            last_turn_ended_at: None,
+            base_branch: None,
+            queued_at: None,
+            depends_on_workspace_id: None,
+            outcome: None,
+            outcome_at: None,
+            merged_into: None,
+            pr_number: None,
+            pr_url: None,
+            pr_state: None,
+        }
+    }
+
+    // M11: a new row is derived under this machine's resolved worktree base
+    // (repository override here); an existing row whose worktree is on disk
+    // keeps it even after the base setting moved; one whose dir is gone is
+    // re-derived.
+    #[tokio::test]
+    async fn pull_derives_under_the_resolved_base_and_keeps_an_existing_local_path() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-b").await;
+        insert_repo(&db, "repo-1", "user-b", 0).await;
+        let client = test_client("user-b");
+        let stored = |db: Db, id: &'static str| async move {
+            sqlx::query_scalar::<_, Option<String>>("SELECT worktree_path FROM workspaces WHERE id = ?")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+        let base = tempfile::tempdir().unwrap();
+        let configs = crate::store::RepositoryConfigRepo::new(db.clone());
+        let mut cfg = configs.get("repo-1").await.unwrap();
+        cfg.worktree_base_path = Some(base.path().to_string_lossy().into_owned());
+        configs.upsert(&cfg, None).await.unwrap();
+
+        let t0 = Utc::now() - chrono::Duration::minutes(10);
+        upsert_workspace_from_cloud(&client, &db, &cloud_ws("ws-new", Some("phasr/x"), t0))
+            .await
+            .unwrap();
+        let derived = base.path().join("ws-new").to_string_lossy().into_owned();
+        assert_eq!(stored(db.clone(), "ws-new").await.as_deref(), Some(derived.as_str()));
+
+        // The worktree exists on disk; then the base setting moves.
+        std::fs::create_dir_all(&derived).unwrap();
+        cfg.worktree_base_path = Some("/somewhere/else".into());
+        configs.upsert(&cfg, None).await.unwrap();
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &cloud_ws("ws-new", Some("phasr/x"), t0 + chrono::Duration::minutes(1)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored(db.clone(), "ws-new").await.as_deref(), Some(derived.as_str()), "kept");
+
+        // Gone from disk → re-derived under the current base.
+        std::fs::remove_dir_all(&derived).unwrap();
+        upsert_workspace_from_cloud(
+            &client,
+            &db,
+            &cloud_ws("ws-new", Some("phasr/x"), t0 + chrono::Duration::minutes(2)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored(db.clone(), "ws-new").await.as_deref(), Some("/somewhere/else/ws-new"));
     }
 
     // F2 push: the local (machine-specific) worktree path must never leave
@@ -1788,6 +2173,471 @@ mod tests {
         // Upserts post a single-object body.
         assert_eq!(body["worktree_path"], Value::Null);
         assert_eq!(body["branch"], "phasr/abc");
+    }
+
+    // 0015: the permission-mode columns travel with the workspace row.
+    #[tokio::test]
+    async fn push_workspace_sends_permission_mode_and_notify() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-new", "user-a", "repo-a", "claude").await;
+        insert_agent_workspace(&db, "ws-legacy", "user-a", "repo-a", "codex").await;
+        sqlx::query(
+            "UPDATE workspaces SET permission_mode = 'ask-shell', notify_on_attention = 0
+             WHERE id = 'ws-new'",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        push_dirty_workspaces(&client, &db).await.unwrap();
+
+        let bodies: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        let body_for = |id: &str| bodies.iter().find(|b| b["id"] == id).unwrap().clone();
+
+        let new = body_for("ws-new");
+        assert_eq!(new["permission_mode"], "ask-shell");
+        assert_eq!(new["notify_on_attention"], false);
+        // A pre-0015 row goes up as an explicit NULL (= legacy skip-all),
+        // with the column default for notify.
+        let legacy = body_for("ws-legacy");
+        assert!(legacy.get("permission_mode").is_some_and(Value::is_null));
+        assert_eq!(legacy["notify_on_attention"], true);
+    }
+
+    fn cloud_workspace(id: &str, updated_at: DateTime<Utc>) -> CloudWorkspaceRow {
+        CloudWorkspaceRow {
+            id: id.into(),
+            repository_id: "repo-a".into(),
+            name: "W".into(),
+            prompt: None,
+            agent: Some("claude".into()),
+            deleted_at: None,
+            command: "claude".into(),
+            status: "stopped".into(),
+            branch: None,
+            worktree_path: None,
+            exit_code: None,
+            created_at: updated_at,
+            started_at: None,
+            finished_at: None,
+            archived_at: None,
+            updated_at,
+            permission_mode: None,
+            notify_on_attention: None,
+            last_turn_ended_at: None,
+            base_branch: None,
+            queued_at: None,
+            depends_on_workspace_id: None,
+            outcome: None,
+            outcome_at: None,
+            merged_into: None,
+            pr_number: None,
+            pr_url: None,
+            pr_state: None,
+        }
+    }
+
+    async fn local_mode(db: &Db, id: &str) -> (Option<String>, i64) {
+        sqlx::query_as("SELECT permission_mode, notify_on_attention FROM workspaces WHERE id = ?")
+            .bind(id)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    /// Pull writes the new columns when the cloud has them, and leaves the
+    /// local values alone when the payload predates cloud migration 0010.
+    #[tokio::test]
+    async fn pull_workspace_applies_permission_columns_only_when_present() {
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        let client = test_client("user-a");
+        let t0 = Utc::now() - chrono::Duration::minutes(10);
+
+        // Insert from a cloud row that carries the columns.
+        let mut row = cloud_workspace("ws-c", t0);
+        row.permission_mode = Some(Some("ask-edits".into()));
+        row.notify_on_attention = Some(false);
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(local_mode(&db, "ws-c").await, (Some("ask-edits".into()), 0));
+
+        // A newer cloud row WITHOUT the columns (cloud not migrated): local
+        // values survive.
+        let row = cloud_workspace("ws-c", t0 + chrono::Duration::minutes(1));
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(local_mode(&db, "ws-c").await, (Some("ask-edits".into()), 0));
+
+        // An explicit NULL is applied (legacy skip-all row).
+        let mut row = cloud_workspace("ws-c", t0 + chrono::Duration::minutes(2));
+        row.permission_mode = Some(None);
+        row.notify_on_attention = Some(true);
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(local_mode(&db, "ws-c").await, (None, 1));
+
+        // An insert from a pre-0010 payload takes the local defaults.
+        upsert_workspace_from_cloud(&client, &db, &cloud_workspace("ws-old", t0))
+            .await
+            .unwrap();
+        assert_eq!(local_mode(&db, "ws-old").await, (None, 1));
+    }
+
+    // 0016: `last_turn_ended_at` travels both ways; `agent_session_id` is
+    // machine-local and must never reach the cloud nor be cleared by a pull.
+    // 0023: `agent_view` (transcript / terminal) is local in exactly the same way.
+    #[tokio::test]
+    async fn last_turn_ended_at_syncs_and_agent_session_id_stays_local() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-t", "user-a", "repo-a", "claude").await;
+        sqlx::query(
+            "UPDATE workspaces SET last_turn_ended_at = '2026-11-09T10:00:00+00:00',
+                    agent_session_id = 'local-session', agent_view = 'transcript'
+             WHERE id = 'ws-t'",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        push_dirty_workspaces(&client, &db).await.unwrap();
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["last_turn_ended_at"], "2026-11-09T10:00:00+00:00");
+        assert!(body.get("agent_session_id").is_none());
+        assert!(body.get("agent_view").is_none());
+
+        let read = |db: Db| async move {
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT last_turn_ended_at, agent_session_id FROM workspaces WHERE id = 'ws-t'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        let later = Utc::now() + chrono::Duration::minutes(5);
+
+        // A newer cloud row from an unmigrated cloud (column absent) keeps
+        // the local value; the session id survives every pull.
+        let mut row = cloud_workspace("ws-t", later);
+        row.repository_id = "repo-a".into();
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        let (ended, session) = read(db.clone()).await;
+        assert!(ended.is_some_and(|e| e.starts_with("2026-11-09T10:00:00")));
+        assert_eq!(session.as_deref(), Some("local-session"));
+
+        // A present value is applied.
+        let mut row = cloud_workspace("ws-t", later + chrono::Duration::minutes(1));
+        let other = Utc::now();
+        row.last_turn_ended_at = Some(Some(other));
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        let (ended, session) = read(db.clone()).await;
+        assert_eq!(ended, Some(other.to_rfc3339()));
+        assert_eq!(session.as_deref(), Some("local-session"));
+        let view: Option<String> =
+            sqlx::query_scalar("SELECT agent_view FROM workspaces WHERE id = 'ws-t'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(view.as_deref(), Some("transcript"), "a pull never clears the view");
+    }
+
+    // 0017: the board columns travel both ways.
+    #[tokio::test]
+    async fn board_columns_sync_both_ways() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        insert_agent_workspace(&db, "ws-b", "user-a", "repo-a", "claude").await;
+        insert_agent_workspace(&db, "ws-plain", "user-a", "repo-a", "codex").await;
+        sqlx::query(
+            "UPDATE workspaces SET base_branch = 'develop', queued_at = '2026-11-09T09:00:00+00:00',
+                    depends_on_workspace_id = 'ws-plain', outcome = 'merged',
+                    outcome_at = '2026-11-09T11:00:00+00:00', merged_into = 'main',
+                    pr_number = 142, pr_url = 'https://github.com/o/r/pull/142', pr_state = 'merged'
+             WHERE id = 'ws-b'",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/workspaces"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        push_dirty_workspaces(&client, &db).await.unwrap();
+        let bodies: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        let body = bodies.iter().find(|b| b["id"] == "ws-b").unwrap();
+        assert_eq!(body["base_branch"], "develop");
+        assert_eq!(body["queued_at"], "2026-11-09T09:00:00+00:00");
+        assert_eq!(body["depends_on_workspace_id"], "ws-plain");
+        assert_eq!(body["outcome"], "merged");
+        assert_eq!(body["outcome_at"], "2026-11-09T11:00:00+00:00");
+        assert_eq!(body["merged_into"], "main");
+        assert_eq!(body["pr_number"], 142);
+        assert_eq!(body["pr_url"], "https://github.com/o/r/pull/142");
+        assert_eq!(body["pr_state"], "merged");
+        // Unset columns go up as explicit NULLs, not missing keys.
+        let plain = bodies.iter().find(|b| b["id"] == "ws-plain").unwrap();
+        for key in ["base_branch", "queued_at", "depends_on_workspace_id", "outcome", "pr_number"] {
+            assert!(plain.get(key).is_some_and(Value::is_null), "{key}");
+        }
+
+        let read = |db: Db| async move {
+            sqlx::query_as::<_, (Option<String>, Option<String>, Option<i64>)>(
+                "SELECT base_branch, outcome, pr_number FROM workspaces WHERE id = 'ws-b'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        // A newer cloud row from an unmigrated cloud (columns absent)
+        // keeps every local value.
+        let later = Utc::now() + chrono::Duration::minutes(5);
+        upsert_workspace_from_cloud(&client, &db, &cloud_workspace("ws-b", later))
+            .await
+            .unwrap();
+        assert_eq!(
+            read(db.clone()).await,
+            (Some("develop".into()), Some("merged".into()), Some(142))
+        );
+        // Present values (including an explicit NULL) are applied.
+        let mut row = cloud_workspace("ws-b", later + chrono::Duration::minutes(1));
+        row.base_branch = Some(Some("main".into()));
+        row.outcome = Some(None);
+        row.pr_number = Some(Some(7));
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(read(db.clone()).await, (Some("main".into()), None, Some(7)));
+        // And on insert.
+        let mut row = cloud_workspace("ws-new", later);
+        row.queued_at = Some(Some(later));
+        row.depends_on_workspace_id = Some(Some("ws-b".into()));
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        let (queued, dep): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT queued_at, depends_on_workspace_id FROM workspaces WHERE id = 'ws-new'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(queued, Some(later.to_rfc3339()));
+        assert_eq!(dep.as_deref(), Some("ws-b"));
+
+        // Queued elsewhere: the local "queued on this machine" marker is
+        // never set by a pull, so this machine's scheduler won't start it.
+        let queued_here = |db: Db, id: &'static str| async move {
+            sqlx::query_scalar::<_, i64>("SELECT queued_here FROM workspaces WHERE id = ?")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(queued_here(db.clone(), "ws-new").await, 0);
+        // Queued HERE, then an unrelated edit from elsewhere (same queued_at,
+        // trimmed to microseconds by the cloud round-trip) keeps it ours…
+        let mine = Utc::now();
+        sqlx::query("UPDATE workspaces SET queued_at = ?, queued_here = 1 WHERE id = 'ws-new'")
+            .bind(mine.to_rfc3339_opts(chrono::SecondsFormat::Nanos, false))
+            .execute(&db)
+            .await
+            .unwrap();
+        let mut row = cloud_workspace("ws-new", later + chrono::Duration::minutes(2));
+        row.queued_at = Some(Some(
+            DateTime::parse_from_rfc3339(&mine.to_rfc3339_opts(chrono::SecondsFormat::Micros, false))
+                .unwrap()
+                .with_timezone(&Utc),
+        ));
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(queued_here(db.clone(), "ws-new").await, 1);
+        // …while another machine re-queueing (or launching) it hands it over.
+        let mut row = cloud_workspace("ws-new", later + chrono::Duration::minutes(3));
+        row.queued_at = Some(None);
+        upsert_workspace_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(queued_here(db.clone(), "ws-new").await, 0);
+    }
+
+    /// Absent vs null must survive JSON decoding, not just struct literals.
+    #[test]
+    fn cloud_workspace_row_distinguishes_absent_from_null() {
+        let base = serde_json::json!({
+            "id": "w", "repository_id": "r", "name": "n", "prompt": null,
+            "command": "c", "status": "stopped", "branch": null, "worktree_path": null,
+            "exit_code": null, "created_at": "2026-01-01T00:00:00Z", "started_at": null,
+            "finished_at": null, "archived_at": null, "updated_at": "2026-01-01T00:00:00Z",
+        });
+        let absent: CloudWorkspaceRow = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(absent.permission_mode, None);
+        assert_eq!(absent.notify_on_attention, None);
+
+        let mut with_null = base.clone();
+        with_null["permission_mode"] = Value::Null;
+        let parsed: CloudWorkspaceRow = serde_json::from_value(with_null).unwrap();
+        assert_eq!(parsed.permission_mode, Some(None));
+
+        let mut with_value = base;
+        with_value["permission_mode"] = "skip-all".into();
+        with_value["notify_on_attention"] = false.into();
+        let parsed: CloudWorkspaceRow = serde_json::from_value(with_value).unwrap();
+        assert_eq!(parsed.permission_mode, Some(Some("skip-all".into())));
+        assert_eq!(parsed.notify_on_attention, Some(false));
+    }
+
+    #[tokio::test]
+    async fn push_user_settings_sends_permission_mode_and_agent_commands() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        get_or_init_user_settings(&db, "user-a").await.unwrap();
+        sqlx::query(
+            "UPDATE user_settings SET default_permission_mode = 'ask-edits',
+                agent_commands = '{\"claude\":\"claude --x {{permissions}}\"}', dirty = 1
+             WHERE id = 1",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        push_dirty_user_settings(&client, &db).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["default_permission_mode"], "ask-edits");
+        // jsonb in the cloud: an object, not a string.
+        assert_eq!(body["agent_commands"]["claude"], "claude --x {{permissions}}");
+    }
+
+    #[tokio::test]
+    async fn pull_user_settings_applies_new_columns_only_when_present() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        get_or_init_user_settings(&db, "user-a").await.unwrap();
+        sqlx::query(
+            "UPDATE user_settings SET default_permission_mode = 'skip-all',
+                agent_commands = '{\"codex\":\"codex {{permissions}}\"}',
+                updated_at = '2026-01-01T00:00:00Z'
+             WHERE id = 1",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let cloud = |extra: Value| {
+            // Cloud rows are snake_case; built from the local defaults.
+            let d = UserSettings::default();
+            let mut row = serde_json::json!({
+                "theme": "light", "accent_color": d.accent_color, "sans_font": d.sans_font,
+                "mono_font": d.mono_font, "base_font_size": d.base_font_size,
+                "cursor_style": d.cursor_style, "cursor_blink": d.cursor_blink,
+                "terminal_scrollback": d.terminal_scrollback, "default_editor": d.default_editor,
+                "default_terminal": d.default_terminal, "keyboard_shortcuts": {},
+                "branch_prefix_template": d.branch_prefix_template,
+                "worktree_base_path": d.worktree_base_path,
+                "default_merge_strategy": d.default_merge_strategy,
+                "auto_fetch_seconds": d.auto_fetch_seconds, "honor_gpg_sign": d.honor_gpg_sign,
+                "auto_push_on_commit": d.auto_push_on_commit,
+                "updated_at": "2026-06-01T00:00:00Z",
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                row[k] = v.clone();
+            }
+            serde_json::json!([row])
+        };
+        let read = |db: Db| async move {
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT theme, default_permission_mode, agent_commands FROM user_settings WHERE id = 1",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+
+        // Pre-0010 cloud row: theme applies, the new local values survive.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(cloud(serde_json::json!({}))))
+            .mount(&server)
+            .await;
+        pull_user_settings(&client_at("user-a", &server.uri()), &db)
+            .await
+            .unwrap();
+        let (theme, mode, commands) = read(db.clone()).await;
+        assert_eq!(theme, "light");
+        assert_eq!(mode, "skip-all");
+        assert_eq!(commands, r#"{"codex":"codex {{permissions}}"}"#);
+
+        // Migrated cloud row: the new columns apply.
+        sqlx::query("UPDATE user_settings SET updated_at = '2026-01-01T00:00:00Z' WHERE id = 1")
+            .execute(&db)
+            .await
+            .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(cloud(serde_json::json!({
+                "default_permission_mode": "ask-edits",
+                "agent_commands": {"gemini": "gemini {{permissions}}"},
+            }))))
+            .mount(&server)
+            .await;
+        pull_user_settings(&client_at("user-a", &server.uri()), &db)
+            .await
+            .unwrap();
+        let (_, mode, commands) = read(db.clone()).await;
+        assert_eq!(mode, "ask-edits");
+        assert_eq!(commands, r#"{"gemini":"gemini {{permissions}}"}"#);
     }
 
     #[tokio::test]
@@ -1916,185 +2766,6 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(agent.as_deref(), Some("codex"));
-    }
-
-    /// Rollback safety (0.4.4): rows the redesign pushes carry columns from
-    /// its cloud migrations 0010–0015 (permission mode, board/queue, PR,
-    /// turn-ended) and draft rows (`pending`, no branch). This build must
-    /// pull them without failing and keep them readable; and a row with a
-    /// status/agent VALUE it has no variant for must be skipped rather than
-    /// landed (it would break every read of its repository) or allowed to
-    /// abort the rest of the pull.
-    #[tokio::test]
-    async fn pull_tolerates_rows_from_newer_builds() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let db = fresh_db().await;
-        insert_user(&db, "user-a").await;
-        insert_repo(&db, "repo-a", "user-a", 0).await;
-
-        let now = Utc::now().to_rfc3339();
-        let row = |id: &str, status: &str, agent: &str, branch: Option<&str>| {
-            serde_json::json!({
-                "id": id,
-                "user_id": "user-a",
-                "repository_id": "repo-a",
-                "name": id,
-                "prompt": "do the thing",
-                "agent": agent,
-                "command": "claude --permission-mode acceptEdits",
-                "status": status,
-                "branch": branch,
-                "worktree_path": null,
-                "exit_code": null,
-                "created_at": now,
-                "started_at": null,
-                "finished_at": null,
-                "archived_at": null,
-                "updated_at": now,
-                "deleted_at": null,
-                // Redesign cloud columns (supabase 0010–0012).
-                "permission_mode": "ask-edits",
-                "notify_on_attention": false,
-                "last_turn_ended_at": now,
-                "base_branch": "develop",
-                "queued_at": now,
-                "depends_on_workspace_id": "8c1f4a3e-0000-0000-0000-000000000000",
-                "outcome": "merged",
-                "outcome_at": now,
-                "merged_into": "develop",
-                "pr_number": 12,
-                "pr_url": "https://github.com/o/r/pull/12",
-                "pr_state": "merged",
-            })
-        };
-        let body = serde_json::json!([
-            row("draft", "pending", "claude", None),
-            row("launched", "running", "codex", Some("phasr/launched")),
-            // Values a later build might add — skipped, not fatal.
-            row("future-status", "starting", "claude", Some("phasr/x")),
-            row("future-agent", "stopped", "cursor", Some("phasr/y")),
-            // …and the rows after them still land.
-            row("after", "stopped", "claude", Some("phasr/after")),
-        ]);
-
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/rest/v1/workspaces"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .mount(&server)
-            .await;
-
-        let client = client_at("user-a", &server.uri());
-        pull_workspaces(&client, &db)
-            .await
-            .expect("a pull carrying a newer build's rows must not fail");
-
-        let workspaces = crate::store::WorkspaceRepo::new(db.clone());
-        let mut ids: Vec<String> = workspaces
-            .list_by_repository_for_user("repo-a", "user-a")
-            .await
-            .expect("the repository's workspaces must stay readable")
-            .into_iter()
-            .map(|w| w.id)
-            .collect();
-        ids.sort();
-        assert_eq!(ids, vec!["after", "draft", "launched"]);
-
-        let draft = workspaces.get("draft").await.unwrap();
-        assert!(draft.is_unlaunched(), "a synced draft lands as a draft");
-        assert_eq!(
-            draft.worktree_path, None,
-            "no path derived without a branch"
-        );
-        let launched = workspaces.get("launched").await.unwrap();
-        assert_eq!(launched.status, WorkspaceStatus::Running);
-        assert_eq!(launched.agent, Some(Agent::Codex));
-    }
-
-    /// The redesign's synced run-command and settings columns (supabase
-    /// 0013–0015) are ignored on pull, not rejected.
-    #[tokio::test]
-    async fn pull_tolerates_newer_run_command_and_settings_columns() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let db = fresh_db().await;
-        insert_user(&db, "user-a").await;
-        insert_repo(&db, "repo-a", "user-a", 0).await;
-        let later = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/rest/v1/run_commands"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                    "id": "rc-1",
-                    "user_id": "user-a",
-                    "repository_id": "repo-a",
-                    "name": "test",
-                    "command": "pnpm test",
-                    "shortcut": null,
-                    "pinned": true,
-                    "sort_order": 0,
-                    "created_at": later,
-                    "updated_at": later,
-                    "run_when": "before_review",
-                    "detect_port": true,
-                    "required_for_approve": true,
-                }])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/rest/v1/user_settings"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                    "user_id": "user-a",
-                    "theme": "light",
-                    "accent_color": "blue",
-                    "sans_font": "Inter",
-                    "mono_font": "JetBrains Mono",
-                    "base_font_size": 14,
-                    "cursor_style": "bar",
-                    "cursor_blink": false,
-                    "terminal_scrollback": 5000,
-                    "default_editor": "vscode",
-                    "default_terminal": "terminal",
-                    "keyboard_shortcuts": {},
-                    "branch_prefix_template": "phasr/",
-                    "worktree_base_path": "",
-                    "default_merge_strategy": "squash",
-                    "auto_fetch_seconds": 60,
-                    "honor_gpg_sign": true,
-                    "auto_push_on_commit": false,
-                    "updated_at": later,
-                    "default_permission_mode": "skip-all",
-                    "agent_commands": {"claude": "claude {{permissions}}"},
-                    "notification_prefs": {"backgroundOnly": true},
-                    "terminal_shell": "/bin/zsh",
-                    "copy_on_select": true,
-                }])),
-            )
-            .mount(&server)
-            .await;
-
-        let client = client_at("user-a", &server.uri());
-        pull_run_commands(&client, &db).await.unwrap();
-        pull_user_settings(&client, &db).await.unwrap();
-
-        let rc = crate::store::RunCommandRepo::new(db.clone())
-            .get("rc-1")
-            .await
-            .unwrap();
-        assert_eq!(rc.command, "pnpm test");
-        let settings = crate::store::SettingsRepo::new(db.clone())
-            .get_or_init()
-            .await
-            .unwrap();
-        assert_eq!(settings.theme, "light");
-        assert_eq!(settings.cursor_style, "bar");
     }
 
     #[tokio::test]
@@ -2370,6 +3041,18 @@ mod tests {
                 finished_at: None,
                 archived_at: None,
                 updated_at: now,
+                permission_mode: None,
+                notify_on_attention: None,
+                last_turn_ended_at: None,
+                base_branch: None,
+                queued_at: None,
+                depends_on_workspace_id: None,
+                outcome: None,
+                outcome_at: None,
+                merged_into: None,
+                pr_number: None,
+                pr_url: None,
+                pr_state: None,
             },
         )
         .await
@@ -2423,6 +3106,18 @@ mod tests {
                 finished_at: None,
                 archived_at: None,
                 updated_at: now_dt,
+                permission_mode: None,
+                notify_on_attention: None,
+                last_turn_ended_at: None,
+                base_branch: None,
+                queued_at: None,
+                depends_on_workspace_id: None,
+                outcome: None,
+                outcome_at: None,
+                merged_into: None,
+                pr_number: None,
+                pr_url: None,
+                pr_state: None,
             },
         )
         .await
@@ -2573,5 +3268,191 @@ mod tests {
             repo_flags(&db, "local-owner").await.1.as_deref(),
             Some("/Users/x/code/app")
         );
+    }
+
+    /// 0018: the review columns travel both ways; an unmigrated cloud (no
+    /// columns in the payload) never clears them, and a trigger this build
+    /// doesn't know lands as `manual`.
+    #[tokio::test]
+    async fn run_command_review_columns_sync_both_ways() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        insert_repo(&db, "repo-a", "user-a", 0).await;
+        sqlx::query(
+            "INSERT INTO run_commands (id, user_id, repository_id, name, command, pinned, sort_order,
+                run_when, detect_port, required_for_approve, created_at, updated_at, dirty)
+             VALUES ('rc', 'user-a', 'repo-a', 'test', 'pnpm test', 0, 0, 'before_review', 1, 1,
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/run_commands"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        push_dirty_run_commands(&client, &db).await.unwrap();
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["run_when"], "before_review");
+        assert_eq!(body["detect_port"], true);
+        assert_eq!(body["required_for_approve"], true);
+
+        let read = |db: Db| async move {
+            sqlx::query_as::<_, (String, i64, i64)>(
+                "SELECT run_when, detect_port, required_for_approve FROM run_commands WHERE id = 'rc'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        let newer = |extra: Value| {
+            let mut row = json!({
+                "id": "rc", "repository_id": "repo-a", "name": "test", "command": "pnpm test",
+                "shortcut": null, "pinned": false, "sort_order": 0,
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-06-01T00:00:00Z"
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                row[k] = v.clone();
+            }
+            serde_json::from_value::<CloudRunCommandRow>(row).unwrap()
+        };
+        // Unmigrated cloud: columns absent → local values kept.
+        upsert_run_command_from_cloud(&client, &db, &newer(json!({}))).await.unwrap();
+        assert_eq!(read(db.clone()).await, ("before_review".into(), 1, 1));
+        // Migrated cloud: applied; an unknown trigger is stored as manual.
+        let mut row = newer(json!({"run_when": "on_merge", "detect_port": false, "required_for_approve": false}));
+        row.updated_at = "2026-07-01T00:00:00Z".parse().unwrap();
+        upsert_run_command_from_cloud(&client, &db, &row).await.unwrap();
+        assert_eq!(read(db.clone()).await, ("manual".into(), 0, 0));
+    }
+
+    #[tokio::test]
+    async fn notification_prefs_sync_as_jsonb_and_absent_keeps_local() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        get_or_init_user_settings(&db, "user-a").await.unwrap();
+        sqlx::query(
+            "UPDATE user_settings SET notification_prefs = '{\"backgroundOnly\":false}', dirty = 1,
+                updated_at = '2026-01-01T00:00:00Z' WHERE id = 1",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        push_dirty_user_settings(&client, &db).await.unwrap();
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["notification_prefs"]["backgroundOnly"], false, "jsonb object, not a string");
+
+        // A newer cloud row WITHOUT the column keeps the local prefs.
+        let server = MockServer::start().await;
+        let row = json!([{
+            "theme": "light", "accent_color": "coral", "sans_font": "Inter", "mono_font": "x",
+            "base_font_size": 13, "cursor_style": "block", "cursor_blink": true,
+            "terminal_scrollback": 1000, "default_editor": "vscode", "default_terminal": "iterm",
+            "keyboard_shortcuts": {}, "branch_prefix_template": "phasr/{{slug}}",
+            "worktree_base_path": "~/.phasr/worktrees", "default_merge_strategy": "merge",
+            "auto_fetch_seconds": 60, "honor_gpg_sign": true, "auto_push_on_commit": false,
+            "updated_at": "2026-06-01T00:00:00Z"
+        }]);
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(row))
+            .mount(&server)
+            .await;
+        let client = client_at("user-a", &server.uri());
+        pull_user_settings(&client, &db).await.unwrap();
+        let prefs: String =
+            sqlx::query_scalar("SELECT notification_prefs FROM user_settings WHERE id = 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(!NotificationPrefs::from_json(&prefs).background_only);
+    }
+    #[tokio::test]
+    async fn terminal_shell_and_copy_on_select_sync_and_absent_keeps_local() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let db = fresh_db().await;
+        insert_user(&db, "user-a").await;
+        get_or_init_user_settings(&db, "user-a").await.unwrap();
+        sqlx::query(
+            "UPDATE user_settings SET terminal_shell = '/bin/zsh', copy_on_select = 1, dirty = 1,
+                updated_at = '2026-01-01T00:00:00Z' WHERE id = 1",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        push_dirty_user_settings(&client_at("user-a", &server.uri()), &db).await.unwrap();
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["terminal_shell"], "/bin/zsh");
+        assert_eq!(body["copy_on_select"], true, "boolean, not 0/1");
+
+        let base = json!({
+            "theme": "light", "accent_color": "coral", "sans_font": "Inter", "mono_font": "x",
+            "base_font_size": 13, "cursor_style": "block", "cursor_blink": true,
+            "terminal_scrollback": 1000, "default_editor": "vscode", "default_terminal": "iterm",
+            "keyboard_shortcuts": {}, "branch_prefix_template": "phasr/{{slug}}",
+            "worktree_base_path": "~/.phasr/worktrees", "default_merge_strategy": "merge",
+            "auto_fetch_seconds": 60, "honor_gpg_sign": true, "auto_push_on_commit": false,
+            "updated_at": "2026-06-01T00:00:00Z"
+        });
+        let read = |db: Db| async move {
+            sqlx::query_as::<_, (String, i64)>(
+                "SELECT terminal_shell, copy_on_select FROM user_settings WHERE id = 1",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        // A newer cloud row from an unmigrated cloud keeps the local values…
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([base.clone()])))
+            .mount(&server)
+            .await;
+        pull_user_settings(&client_at("user-a", &server.uri()), &db).await.unwrap();
+        assert_eq!(read(db.clone()).await, ("/bin/zsh".into(), 1));
+
+        // …and a migrated one applies.
+        let mut migrated = base;
+        migrated["terminal_shell"] = json!("/opt/homebrew/bin/fish");
+        migrated["copy_on_select"] = json!(false);
+        migrated["updated_at"] = json!("2026-07-01T00:00:00Z");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/v1/user_settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([migrated])))
+            .mount(&server)
+            .await;
+        pull_user_settings(&client_at("user-a", &server.uri()), &db).await.unwrap();
+        assert_eq!(read(db.clone()).await, ("/opt/homebrew/bin/fish".into(), 0));
     }
 }

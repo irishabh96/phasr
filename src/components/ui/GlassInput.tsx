@@ -6,21 +6,21 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * Shared field chrome — border/hover/focus/disabled tokens. Exported so
- * `GlassSelect` renders as a visually matched set with the input/textarea.
+ * Shared field chrome (A-Polish "Inputs"): inset background, no border, a
+ * 1px hairline ring; focus is an accent ring + a 4px accent glow at 14%.
+ * Exported so `GlassSelect` and `BaseBranchField` render as a matched set.
  */
 export const inputBaseClasses = [
   "block w-full",
-  "bg-[color-mix(in_oklab,var(--color-bg-input)_70%,transparent)]",
-  "backdrop-blur-md",
-  "text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]",
-  "border border-[var(--glass-border-hairline)]",
-  "rounded-[10px]",
-  "transition-all duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+  "bg-(--color-bg-input)",
+  "text-(--color-text-primary) placeholder:text-(--color-text-muted)",
+  "border-0 shadow-(--ring-input)",
+  "rounded-(--radius-control)",
+  "transition-[box-shadow] duration-(--dur-1) ease-(--ease-out)",
   "outline-none",
-  "hover:border-[var(--color-border-strong)]",
-  "focus:border-[var(--color-focus-ring)]",
-  "focus:shadow-[0_0_0_4px_color-mix(in_oklab,var(--color-focus-ring)_22%,transparent)]",
+  "hover:shadow-(--ring-input-hover)",
+  "focus:shadow-(--ring-input-focus)",
+  "aria-[invalid=true]:shadow-(--ring-input-invalid)",
   "disabled:opacity-50 disabled:cursor-not-allowed",
 ].join(" ");
 
@@ -31,7 +31,7 @@ export const GlassInput = forwardRef<HTMLInputElement, InputProps>(
     return (
       <input
         ref={ref}
-        className={cn(inputBaseClasses, "h-9 px-3 text-[13px]", className)}
+        className={cn(inputBaseClasses, "h-8 px-2.5 text-[13px]", className)}
         {...props}
       />
     );
@@ -49,7 +49,7 @@ export const GlassTextarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         rows={rows}
         className={cn(
           inputBaseClasses,
-          "py-2 px-3 text-[13px] resize-none leading-relaxed",
+          "py-2.5 px-3 text-[13px] resize-none leading-[1.55]",
           className,
         )}
         {...props}

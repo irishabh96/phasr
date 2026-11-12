@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tauri } from "@/lib/tauri";
 import {
@@ -6,6 +6,8 @@ import {
   clampTerminalFontSize,
 } from "@/lib/terminal/fontSize";
 import type { UserSettings } from "@/lib/types";
+import { useUiStore } from "@/lib/store";
+import { isAccent } from "@/lib/theme";
 
 // Re-exported so font-size consumers need one import, not two.
 export { TERMINAL_FONT_SIZE, clampTerminalFontSize };
@@ -74,6 +76,9 @@ export function useUpdateUserSettings() {
     onSuccess: (settings) => {
       if (isLastUpdate())
         queryClient.setQueryData(settingsKeys.current, settings);
+      // Saving trusts any synced value the user changed here; the
+      // SyncedSettingsBanner list (`unconfirmedSettingsKey`) is stale now.
+      void queryClient.invalidateQueries({ queryKey: ["settings", "unconfirmed"] });
     },
   });
 }
@@ -98,4 +103,21 @@ export function useAdjustTerminalFontSize() {
     },
     [queryClient, mutate],
   );
+}
+
+/**
+ * Adopt the synced accent once settings load. The store's localStorage copy
+ * already painted the first frame; this only moves it when another device
+ * (or an older default like "indigo", which is not an A accent) differs.
+ */
+export function useAccentFromSettings() {
+  const { data } = useUserSettings();
+  const setAccent = useUiStore((s) => s.setAccent);
+  const current = useUiStore((s) => s.accent);
+  const remote = data?.accentColor;
+  useEffect(() => {
+    if (isAccent(remote) && remote !== current) setAccent(remote);
+    // Only react to the server value; local picks write through the mutation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remote]);
 }

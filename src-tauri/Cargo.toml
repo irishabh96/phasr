@@ -1,6 +1,6 @@
 [package]
 name = "phasr"
-version = "0.4.4"
+version = "0.5.0"
 description = "Phasr — run multiple coding agents in parallel, each in an isolated git worktree."
 authors = ["Rishabh Bhatia <irishabh96@gmail.com>"]
 edition = "2021"
@@ -41,6 +41,10 @@ bytes = "1"
 anyhow = "1"
 notify = "6"
 notify-debouncer-mini = { version = "0.4", default-features = false }
+# Agent-signal heuristics (approval-dialog patterns over PTY output) and
+# reading the user's Codex `notify` setting so phasr can chain it.
+regex = "1"
+toml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 jsonwebtoken = { version = "9", default-features = false }
 # Hardware-derived machine id (IOPlatformUUID on macOS) so cloud-sync's
@@ -58,8 +62,26 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSEvent", "block2"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+# The main webview's configuration (Writing Tools off; src/writing_tools.rs).
+# Same crate and version tauri/wry already link.
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
+# API keys for agents (Settings → Agents & keys) live in the login Keychain,
+# never in SQLite or the cloud. macOS-only: elsewhere `secrets::KeychainStore`
+# reports "keychain unavailable" and the in-memory store backs tests.
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+# Needs-you notifications with Allow / Deny buttons (`notifications::native`).
+# Already in the tree under `tauri-plugin-notification`, which can't show
+# buttons or report a click on desktop.
+mac-notification-sys = "0.6.15"
+# Voice input (`voice`): the microphone through CoreAudio, transcribed on
+# this Mac by whisper.cpp (Metal). The model is downloaded on request, never
+# bundled. macOS-only like the app; elsewhere the commands report it.
+cpal = "0.18"
+whisper-rs = { version = "0.16", features = ["metal"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
+block2 = "0.6"
 
 # VT engine selection for `src/vt` (B1).
 #

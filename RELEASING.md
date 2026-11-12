@@ -25,6 +25,13 @@ The release workflow declares `environment: release`, so GitHub only exposes the
 
 ## Cutting a release
 
+0. **Pre-flight.** If this release adds local migrations 0015+ or Supabase
+   migrations, follow [Rollback safety](#rollback-safety-migrations) first
+   (0.4.4 out, other Macs upgraded, Supabase migrated). Run
+   `pnpm check:commands` (`scripts/check-command-contract.mjs --all`): every
+   Tauri command must be wired in `tauri.ts`, its `#[tauri::command]` fn and
+   `generate_handler!`.
+
 1. **Bump the version** in all three places (they must match — they're not derived from each other):
    - `package.json` → `"version"`
    - `src-tauri/tauri.conf.json` → `"version"`
@@ -51,6 +58,46 @@ The release workflow declares `environment: release`, so GitHub only exposes the
 6. **Write release notes** in the draft. Highlights, breaking changes, known issues. Reference notable PRs.
 
 7. **Publish.**
+
+## Rollback safety (migrations)
+
+**Release 0.4.4 before any release that contains migrations 0015 or later
+(currently 0015–0023, the Mission Control redesign).** `release.yml`
+enforces this: a tag whose tree has migration 0015+ fails its first step
+unless `v0.4.4` is an ancestor of it (`git merge-base --is-ancestor v0.4.4
+HEAD`).
+
+Before tagging the redesign release, in this order:
+
+1. **Ship 0.4.4 first** — `v0.4.3` + the tolerant `migrator()` (below) +
+   `open_terminal` refusing a `pending` task that has no branch yet. Tag it
+   `v0.4.4` and publish it.
+2. **Upgrade every other Mac to 0.4.4 first.** Drafts and the other new
+   rows sync: a Mac still on 0.4.3 that opens a synced draft (a `pending`
+   row with no branch or worktree yet) starts its agent, with its prompt,
+   in the repository's main checkout. 0.4.4 refuses that.
+3. **Apply the Supabase migrations `supabase/migrations/0010`–`0015`** to
+   the production project before publishing. Without them every push from
+   the new build fails, every 30 seconds.
+4. Then tag the release; the guard checks step 1.
+
+0.4.4 is `master` plus `migrator()`'s `set_ignore_missing(true)`
+(`src-tauri/src/store/pool.rs`), with no new migrations. Every build up to
+0.4.3 uses sqlx's strict migrator: if a user upgrades to a build that has
+applied 0015+ and then reinstalls 0.4.3, the app fails at launch with
+"migration 15 was previously applied but is missing" — the 0.3.7 incident
+again — and there is no version they can roll back to. With 0.4.4 out
+first, 0.4.4 is a safe rollback target, because it ignores migrations it
+doesn't know and the later ones are additive only.
+
+The `version_compat` tests in `store/pool.rs` pin this:
+`rolling_back_to_0_4_3_is_impossible_so_0_4_4_must_ship_first` and
+`rolling_back_to_0_4_4_opens_a_db_this_build_wrote`. If 0.4.4 can't be
+released first, say in the release notes that the release can't be rolled
+back.
+
+When you add a migration, keep it additive (new nullable or defaulted
+columns, new tables), and pin its checksum in `SHIPPED` in the same file.
 
 ## Versioning
 

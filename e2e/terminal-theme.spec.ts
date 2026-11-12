@@ -17,9 +17,10 @@ import { bootApp, expectBackend, makeFixtures, ptyOut } from "./harness";
  *
  * Why a control: the cursor blinks. Naive "screenshot A ≠ screenshot B"
  * diffing goes green on cursor phase alone and would pass with the theme
- * switch ripped out. So we first re-pick the ALREADY-ACTIVE theme and
- * measure how much the same patch moves on its own — the noise floor — and
- * require the real flip to clear it by a wide margin.
+ * switch ripped out. So we first open the palette and dismiss it (it never
+ * offers the already-active theme) and measure how much the same patch
+ * moves on its own — the noise floor — and require the real flip to clear
+ * it by a wide margin.
  */
 
 type Rgb = [number, number, number];
@@ -89,13 +90,24 @@ async function meanColor(page: Page, patch: Patch): Promise<Rgb> {
   }, png);
 }
 
-/** Pick a theme through the real user path: ⌘K → the palette entry. */
-async function pickTheme(page: Page, name: "dark" | "light") {
+/**
+ * Pick a theme through the real user path: ⌘K → the palette entry. The
+ * palette only offers the themes that are NOT current, so `null` opens it
+ * and dismisses it with Escape — the control, with the same overlay
+ * coming and going as a real pick.
+ */
+async function pickTheme(page: Page, name: "dark" | "light" | null) {
   await page.keyboard.press("Meta+k");
   await expect(page.locator("[cmdk-root]").first()).toBeVisible({
     timeout: 5000,
   });
-  await page.getByRole("option", { name: `Switch to ${name} theme` }).click();
+  if (name) {
+    await page.keyboard.type("theme");
+    await page.getByRole("option", { name: `Switch to ${name} theme` }).click();
+  } else {
+    await expect(page.getByRole("option", { name: "Switch to dark theme" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+  }
   // The palette closes on select; its backdrop sits over the terminal, so
   // sampling before it is gone would measure the overlay, not the grid.
   await expect(page.locator("[cmdk-root]")).toHaveCount(0, { timeout: 5000 });
@@ -124,10 +136,11 @@ test("theme switch repaints the terminal itself, not just the chrome", async ({
   const patch = await gridPatch(page);
   const before = await meanColor(page, patch);
 
-  // Control: re-pick the theme that is already active. Everything that can
-  // move on its own (cursor blink, antialiasing, compositing) moves here;
-  // the palette itself opens and closes exactly as in the real flip.
-  await pickTheme(page, "dark");
+  // Control: open the palette and dismiss it without picking (the active
+  // theme is not offered). Everything that can move on its own (cursor
+  // blink, antialiasing, compositing) moves here; the palette itself opens
+  // and closes exactly as in the real flip.
+  await pickTheme(page, null);
   const control = await meanColor(page, patch);
   const noise = dist(before, control);
 

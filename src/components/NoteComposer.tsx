@@ -110,7 +110,7 @@ export function NoteComposer({
           "block w-full resize-none rounded-[6px] bg-transparent py-[5px] pl-[30px] pr-[8px]",
           "text-[13px] leading-[20px] text-(--color-text-primary)",
           "placeholder:text-(--color-text-muted)",
-          "min-h-[30px] outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
+          "min-h-[30px] shadow-none focus:shadow-none outline outline-1 -outline-offset-1 outline-(--glass-border-hairline)",
           "focus:outline-2 focus:outline-(--color-focus-ring)",
           "transition-[outline-color,background-color] duration-[var(--duration-glass)] [transition-timing-function:var(--ease-glass)]",
           "disabled:opacity-50",

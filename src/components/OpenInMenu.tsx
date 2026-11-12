@@ -56,7 +56,8 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
     terminal: [],
     filemanager: [],
   };
-  for (const launcher of launchers ?? []) {
+  // Only installed apps; unavailable ones are noise.
+  for (const launcher of (launchers ?? []).filter((l) => l.available)) {
     grouped[launcher.kind].push(launcher);
   }
 
@@ -89,8 +90,8 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
       </GlassButton>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden glass-modal animate-[modal-in_180ms_var(--ease-glass)]">
-          {launchers && launchers.length === 0 && (
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden surface-floating animate-popover-in">
+          {launchers && !launchers.some((l) => l.available) && (
             <div className="px-3 py-3 text-[12px] text-(--color-text-muted)">
               No editors or terminals detected.
             </div>
@@ -103,7 +104,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                 key={kind}
                 className="border-b border-(--glass-border-hairline) p-1 last:border-b-0"
               >
-                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-(--color-text-muted)">
+                <div className="group-header px-2 py-1">
                   {KIND_LABEL[kind]}
                 </div>
                 {items.map((launcher) => (
@@ -118,7 +119,7 @@ export function OpenInMenu({ path }: OpenInMenuProps) {
                         : "Not installed or not found"
                     }
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] transition-colors duration-100",
+                      "flex w-full items-center gap-2 rounded-(--radius-control) px-2 py-1.5 text-left text-[12px] transition-colors duration-100",
                       launcher.available
                         ? "text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                         : "cursor-not-allowed text-(--color-text-muted) opacity-55",

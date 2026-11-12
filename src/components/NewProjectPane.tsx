@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
 import {
@@ -44,7 +44,8 @@ export function NewProjectPane() {
   const createRepository = useCreateRepository();
 
   const [location, setLocation] = useState("");
-  const [mode, setMode] = useState<Mode>("empty");
+  const initialMode = (useSearch({ strict: false }) as { mode?: Mode }).mode;
+  const [mode, setMode] = useState<Mode>(initialMode ?? "empty");
 
   // Empty mode pre-fills "my-project" rather than just showing it as
   // placeholder — Create is one click away.
@@ -162,12 +163,12 @@ export function NewProjectPane() {
           <button
             type="button"
             onClick={() => void navigate({ to: "/" })}
-            className="mb-5 inline-flex items-center gap-1.5 rounded-[6px] text-[11px] text-(--color-text-muted) transition-colors hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+            className="mb-5 inline-flex items-center gap-1.5 rounded-[6px] text-[12px] text-(--color-text-muted) transition-colors duration-(--dur-1) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
           >
             <ArrowLeft size={11} />
             Back
           </button>
-          <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-(--color-text-primary)">
+          <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.015em] text-(--color-text-primary)">
             New Project
           </h1>
         </header>
@@ -181,14 +182,14 @@ export function NewProjectPane() {
               value={location}
               onChange={(e) => setLocation(e.target.value)}
               placeholder="/Users/you/projects"
-              className="h-10 flex-1 font-mono text-[12.5px]"
+              className="h-10 flex-1 font-mono text-[12px]"
             />
             <button
               type="button"
               onClick={browse}
               aria-label="Browse for parent folder"
               title="Browse for parent folder"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-(--glass-border-strong) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-(--radius-control) bg-(--color-bg-elevated) text-(--color-text-secondary) transition-colors duration-(--dur-1) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]"
             >
               <FolderOpen size={14} />
             </button>
@@ -221,7 +222,7 @@ export function NewProjectPane() {
 
         {mode === "empty" && (
           <form
-            className="space-y-2 border-t border-(--color-border-subtle) pt-5"
+            className="space-y-2 pt-3"
             onSubmit={(e) => {
               e.preventDefault();
               void runEmpty();
@@ -259,7 +260,7 @@ export function NewProjectPane() {
 
         {mode === "clone" && (
           <form
-            className="space-y-2 border-t border-(--color-border-subtle) pt-5"
+            className="space-y-2 pt-3"
             onSubmit={(e) => {
               e.preventDefault();
               void runClone();
@@ -276,12 +277,12 @@ export function NewProjectPane() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https:// or git@github.com:user/repo.git"
-              className="h-10 font-mono text-[12.5px]"
+              className="h-10 font-mono text-[12px]"
               autoFocus
             />
             {url.trim() && location.trim() && (
               <p
-                className="truncate font-mono text-[11.5px] text-(--color-text-muted)"
+                className="truncate font-mono text-[11px] text-(--color-text-muted)"
                 title={`${location.replace(/\/$/, "")}/${deriveNameFromUrl(url.trim())}`}
               >
                 Creates {location.replace(/\/$/, "")}/
@@ -306,7 +307,7 @@ export function NewProjectPane() {
 
         {mode === "template" && (
           <form
-            className="space-y-3 border-t border-(--color-border-subtle) pt-5"
+            className="space-y-3 pt-3"
             onSubmit={(e) => {
               e.preventDefault();
               void runTemplate();
@@ -398,31 +399,14 @@ function ModeTile({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-[10px] border-2 px-4 py-5 text-center transition-all",
+        "flex flex-col items-center gap-2 rounded-(--radius-card) px-4 py-5 text-center shadow-(--shadow-card) transition-colors duration-(--dur-1) ease-(--ease-out)",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
-        active
-          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
-          : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
+        active ? "bg-(--color-bg-hover)" : "bg-(--color-bg-surface) hover:bg-(--color-bg-elevated)",
       )}
     >
-      <span
-        className={cn(
-          active ? "text-(--color-accent-text)" : "text-(--color-text-primary)",
-        )}
-      >
-        {icon}
-      </span>
-      <span
-        className={cn(
-          "text-[14px] text-(--color-text-primary)",
-          active ? "font-semibold" : "font-medium",
-        )}
-      >
-        {title}
-      </span>
-      <span className="text-[11.5px] text-(--color-text-secondary)">
-        {description}
-      </span>
+      <span className={active ? "text-(--color-text-primary)" : "text-(--color-text-secondary)"}>{icon}</span>
+      <span className="text-[13px] font-medium text-(--color-text-primary)">{title}</span>
+      <span className="text-[12px] text-(--color-text-muted)">{description}</span>
     </button>
   );
 }
@@ -442,29 +426,20 @@ function TemplateCard({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-col gap-1 rounded-[10px] border-2 p-3 text-left transition-all",
+        "flex flex-col gap-1 rounded-(--radius-card) p-3 text-left shadow-(--shadow-card) transition-colors duration-(--dur-1) ease-(--ease-out)",
         "focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]",
-        active
-          ? "border-(--color-accent-500) bg-[color-mix(in_oklab,var(--color-accent-500)_15%,transparent)] shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-accent-500)_20%,transparent)]"
-          : "border-(--glass-border-hairline) bg-(--color-bg-surface) hover:border-(--glass-border-strong) hover:bg-(--color-bg-hover)",
+        active ? "bg-(--color-bg-hover)" : "bg-(--color-bg-surface) hover:bg-(--color-bg-elevated)",
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <span
-          className={cn(
-            "text-[13px] text-(--color-text-primary)",
-            active ? "font-semibold" : "font-medium",
-          )}
-        >
-          {template.name}
-        </span>
+        <span className="text-[13px] font-medium text-(--color-text-primary)">{template.name}</span>
         {template.tag && (
-          <span className="rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-(--color-text-muted)">
+          <span className="rounded bg-(--color-bg-elevated) px-1.5 py-0.5 text-[12px] text-(--color-text-muted)">
             {template.tag}
           </span>
         )}
       </div>
-      <span className="text-[11.5px] text-(--color-text-secondary)">
+      <span className="text-[12px] text-(--color-text-muted)">
         {template.description}
       </span>
     </button>
@@ -473,7 +448,7 @@ function TemplateCard({
 
 function Footer({ error, right }: { error: string | null; right: ReactNode }) {
   return (
-    <div className="mt-3 flex items-center justify-between border-t border-(--color-border-subtle) pt-3">
+    <div className="mt-4 flex items-center justify-between">
       {error ? (
         <span className="truncate text-[12px] text-(--color-danger)">
           {error}

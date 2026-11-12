@@ -10,7 +10,9 @@ import {
   useCheckWorkspaceDelete,
   useDeleteWorkspace,
 } from "@/lib/hooks/useWorkspaces";
+import { humanizeError } from "@/lib/humanizeError";
 import { useUiStore } from "@/lib/store";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type { Workspace } from "@/lib/types";
 
@@ -95,6 +97,11 @@ export function WorkspaceSidebarMenu({
             void navigate({ to: "/" });
           }
         },
+        // Never leave the dialog sitting there silently.
+        onError: (err) => {
+          setConfirming(false);
+          showToast({ intent: "error", title: `Couldn't close "${workspace.name}"`, message: humanizeError(err) });
+        },
       },
     );
   };
@@ -107,7 +114,7 @@ export function WorkspaceSidebarMenu({
           <ContextMenu.Content
             className={cn(
               "z-[200] min-w-[180px] overflow-hidden p-1",
-              "glass-modal animate-[modal-in_140ms_var(--ease-glass)]",
+              "surface-floating data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
             )}
           >
             <Item
@@ -164,8 +171,8 @@ function Item({
     <ContextMenu.Item
       onSelect={onSelect}
       className={cn(
-        "flex cursor-pointer items-center gap-2 rounded-[8px] px-2 py-1.5",
-        "text-[12.5px] leading-none outline-none",
+        "flex cursor-pointer items-center gap-2 rounded-(--radius-control) px-2 py-1.5",
+        "text-[12px] leading-none outline-none",
         "transition-colors duration-100",
         "data-[highlighted]:bg-(--color-bg-hover)",
         danger
@@ -213,20 +220,20 @@ function CloseConfirm({
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) backdrop-blur-md data-[state=open]:animate-[modal-in_180ms_var(--ease-glass)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[150] bg-(--color-bg-overlay) data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-[160] w-[min(460px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 outline-none"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="glass-modal animate-[modal-in_220ms_var(--ease-glass)] overflow-hidden">
+          <div className="glass-modal animate-modal-in overflow-hidden">
             <header className="border-b border-(--glass-border-hairline) px-5 py-3.5">
               <Dialog.Title asChild>
-                <h3 className="text-[13.5px] font-semibold leading-none">
+                <h3 className="text-[13px] font-semibold leading-none">
                   {isLocal ? "Remove" : "Close"} workspace &quot;{name}&quot;?
                 </h3>
               </Dialog.Title>
             </header>
-            <div className="space-y-2 px-5 py-4 text-[12.5px] leading-relaxed text-(--color-text-secondary)">
+            <div className="space-y-2 px-5 py-4 text-[12px] leading-relaxed text-(--color-text-secondary)">
               {isLocal ? (
                 <p>
                   Removes this workspace from Phasr. The repository folder stays
@@ -256,7 +263,7 @@ function CloseConfirm({
                 Cancel
               </GlassButton>
               <GlassButton
-                variant="danger"
+                variant="danger-solid"
                 size="sm"
                 onClick={onConfirm}
                 disabled={pending}

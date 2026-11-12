@@ -282,7 +282,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {allFiles.length > 0 && (
-        <div className="flex shrink-0 items-center justify-end border-b border-(--color-border-subtle) px-2 py-1.5">
+        <div className="flex h-10 shrink-0 items-center justify-end px-3">
           <DiffModeToggle mode={diffMode} onChange={handleDiffModeChange} />
         </div>
       )}
@@ -396,7 +396,8 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-(--color-border-subtle) p-3">
+      {/* The commit box sits on the surface step instead of under a rule. */}
+      <div className="shrink-0 bg-(--color-bg-surface) p-3">
         {inMerge && (
           <MergeBanner
             kind={mergeKind === "rebase" ? "rebase" : "merge"}
@@ -531,7 +532,7 @@ function MergeBanner({
   const label = kind === "rebase" ? "Rebase" : "Merge";
   return (
     <div className="space-y-2">
-      <div className="flex items-start gap-2 rounded-md border border-(--color-border-default) bg-(--color-bg-elevated) p-2.5">
+      <div className="flex items-start gap-2 rounded-(--radius-card) bg-(--color-bg-elevated) p-2.5">
         <AlertTriangle
           size={14}
           className={
@@ -592,8 +593,8 @@ function Section({
   return (
     <section className="flex flex-col gap-2">
       <header className="flex items-center justify-between px-1">
-        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-(--color-text-muted)">
-          {title} <span className="text-(--color-text-secondary)">{count}</span>
+        <span className="group-header">
+          {title} <span className="tabular-nums">{count}</span>
         </span>
         {action}
       </header>

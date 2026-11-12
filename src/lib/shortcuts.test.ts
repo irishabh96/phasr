@@ -78,3 +78,53 @@ describe("terminal font size shortcuts", () => {
     ]);
   });
 });
+
+// ⌘I, ⌘⇧R and the approval keys must leave their Ctrl chords to the
+// terminal on macOS: Ctrl+I is Tab, Ctrl+Shift+R and Ctrl+Y belong to the
+// shell / TUI. `meta` alone still means "⌘ or Ctrl" everywhere else.
+describe("metaOnly bindings", () => {
+  const MAC = true;
+  const OTHER = false;
+
+  it("match ⌘ on macOS", () => {
+    expect(matchShortcut(key("i", { meta: true }), SHORTCUTS.toggleRightPanel, MAC)).toBe(true);
+    expect(matchShortcut(key("r", { meta: true, shift: true }), SHORTCUTS.reviewChanges, MAC)).toBe(true);
+    expect(matchShortcut(key("y", { meta: true }), SHORTCUTS.approveAgent, MAC)).toBe(true);
+    expect(matchShortcut(key("Backspace", { meta: true }), SHORTCUTS.denyAgent, MAC)).toBe(true);
+  });
+
+  it("let Ctrl through to the terminal on macOS", () => {
+    expect(matchShortcut(key("i", { ctrl: true }), SHORTCUTS.toggleRightPanel, MAC)).toBe(false);
+    expect(matchShortcut(key("r", { ctrl: true, shift: true }), SHORTCUTS.reviewChanges, MAC)).toBe(false);
+    expect(matchShortcut(key("y", { ctrl: true }), SHORTCUTS.approveAgent, MAC)).toBe(false);
+    expect(matchShortcut(key("Backspace", { ctrl: true }), SHORTCUTS.denyAgent, MAC)).toBe(false);
+    // ⌘ and Ctrl together is not ⌘.
+    expect(matchShortcut(key("i", { meta: true, ctrl: true }), SHORTCUTS.toggleRightPanel, MAC)).toBe(false);
+  });
+
+  it("keep Ctrl as the modifier off macOS", () => {
+    expect(matchShortcut(key("i", { ctrl: true }), SHORTCUTS.toggleRightPanel, OTHER)).toBe(true);
+  });
+
+  it("let Ctrl+W/N/T/K/B reach the terminal on macOS", () => {
+    for (const [k, s] of [
+      ["w", SHORTCUTS.closeActiveTab],
+      ["n", SHORTCUTS.newWorkspace],
+      ["t", SHORTCUTS.newTerminal],
+      ["k", SHORTCUTS.togglePalette],
+      ["b", SHORTCUTS.toggleSidebarPin],
+    ] as const) {
+      expect(matchShortcut(key(k, { ctrl: true }), s, MAC)).toBe(false);
+      expect(matchShortcut(key(k, { meta: true }), s, MAC)).toBe(true);
+    }
+  });
+
+  it("keep Ctrl for the font-size keys", () => {
+    expect(matchShortcut(key("=", { ctrl: true }), SHORTCUTS.increaseFontSize, MAC)).toBe(true);
+  });
+
+  it("approval keys need the exact chord", () => {
+    expect(matchShortcut(key("y", { meta: true, shift: true }), SHORTCUTS.approveAgent, MAC)).toBe(false);
+    expect(matchShortcut(key("Backspace"), SHORTCUTS.denyAgent, MAC)).toBe(false);
+  });
+});

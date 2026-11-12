@@ -10,6 +10,16 @@ import { DiffList } from "@/components/diff/DiffList";
 import { SAMPLE_DIFF_LIST } from "@/components/diff/sampleDiffs";
 import { showToast } from "@/lib/toast";
 import { useUiStore } from "@/lib/store";
+import { ACCENTS, ACCENT_SWATCH } from "@/lib/theme";
+import { Button } from "@/components/ui/Button";
+import { AgentMark } from "@/components/ui/AgentMark";
+import { Chip, DiffCount } from "@/components/ui/Chip";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { Switch } from "@/components/ui/Switch";
+import { Kbd } from "@/components/ui/Kbd";
+import { GroupHeader } from "@/components/ui/GroupHeader";
+import { SettingsCard, SettingsRow } from "@/components/ui/SettingsRow";
 
 /**
  * Dev-only Playwright harness. Renders the design-fix surfaces with NO Tauri
@@ -23,6 +33,10 @@ function DesignTest() {
   const setTheme = useUiStore((s) => s.setTheme);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const accent = useUiStore((s) => s.accent);
+  const setAccent = useUiStore((s) => s.setAccent);
+  const [view, setView] = useState<"board" | "list">("board");
+  const [on, setOn] = useState(true);
 
   return (
     <div className="min-h-screen bg-(--color-bg-base) p-6 text-(--color-text-primary)">
@@ -54,7 +68,82 @@ function DesignTest() {
           <GlassButton variant="ghost" data-testid="btn-ghost">
             Ghost
           </GlassButton>
+          <Button variant="danger-solid" data-testid="btn-danger-solid">
+            Delete forever
+          </Button>
+          <Button variant="secondary" shortcut="⌘N" data-testid="btn-shortcut">
+            Shortcut
+          </Button>
+          <Button variant="secondary" menu>
+            With menu
+          </Button>
+          <Button variant="dashed">+ Add</Button>
+          <Button disabled>Disabled</Button>
         </section>
+
+        {/* A-System primitives */}
+        <section data-testid="accent-picker" className="flex items-center gap-2">
+          <GroupHeader>Accent</GroupHeader>
+          {ACCENTS.map((a) => (
+            <button
+              key={a}
+              type="button"
+              aria-label={a}
+              aria-pressed={accent === a}
+              data-testid={`accent-${a}`}
+              onClick={() => setAccent(a)}
+              className="size-[22px] rounded-full border-2 focus-visible:outline-none focus-visible:shadow-(--ring-focus)"
+              style={{
+                background: ACCENT_SWATCH[a],
+                borderColor: accent === a ? "var(--color-text-primary)" : "transparent",
+              }}
+            />
+          ))}
+        </section>
+
+        <section data-testid="status" className="flex flex-wrap items-center gap-3 text-[12px]">
+          <StatusBadge kind="queued" />
+          <StatusBadge kind="running" halo />
+          <StatusBadge kind="needs-you" />
+          <StatusBadge kind="done" />
+          <StatusBadge kind="failed" />
+          <Chip tone="success">tests ✓</Chip>
+          <Chip tone="warning">approval</Chip>
+          <Chip>7 files</Chip>
+          <Chip tone="outline" mono>
+            phasr/branch
+          </Chip>
+          <DiffCount adds={212} removes={48} />
+          <Kbd>⌘K</Kbd>
+        </section>
+
+        <section data-testid="agents" className="flex flex-wrap items-center gap-3 text-[12px]">
+          {(["claude", "codex", "copilot", "gemini", "opencode"] as const).map((a) => (
+            <AgentMark key={a} agent={a} withLabel />
+          ))}
+        </section>
+
+        <section className="flex items-center gap-3">
+          <SegmentedControl
+            label="View"
+            value={view}
+            onChange={setView}
+            options={[
+              { value: "board", label: "Board" },
+              { value: "list", label: "List" },
+            ]}
+          />
+          <Switch checked={on} onChange={setOn} label="Example switch" />
+        </section>
+
+        <SettingsCard title="Terminal">
+          <SettingsRow label="Font" help="Monospace faces found on this machine">
+            <span className="font-mono text-[12px]">JetBrains Mono</span>
+          </SettingsRow>
+          <SettingsRow label="Blink" help="Cursor blink">
+            <Switch checked={on} onChange={setOn} label="Blink" />
+          </SettingsRow>
+        </SettingsCard>
 
         <section data-testid="select">
           <GlassSelect

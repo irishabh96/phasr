@@ -1,6 +1,25 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { tauri } from "@/lib/tauri";
-import type { Workspace } from "@/lib/types";
+import { useSubagentStore } from "@/lib/transcript/subagentStore";
+import type { TaskCard, Workspace } from "@/lib/types";
+
+/**
+ * The board and sidebar read the task-card lists (`["task-cards", "list",
+ * repo|"*"]`), not the workspace list. Drop a removed task from every card
+ * list right away and refetch them, or it lingers on screen (and a second
+ * Close then fails with "not found").
+ */
+function dropTaskCard(queryClient: QueryClient, id: string) {
+  queryClient.setQueriesData<TaskCard[]>({ queryKey: ["task-cards", "list"] }, (prev) =>
+    Array.isArray(prev) ? prev.filter((c) => c.workspace.id !== id) : prev,
+  );
+  void queryClient.invalidateQueries({ queryKey: ["task-cards"] });
+}
+
+/** Refetch the card lists after a change that shows on cards (name, status). */
+function refreshTaskCards(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ["task-cards"] });
+}
 
 export const workspaceKeys = {
   all: ["workspaces"] as const,
@@ -37,6 +56,7 @@ export function useCreateWorkspace() {
     mutationKey: workspaceMutationKeys.create,
     mutationFn: tauri.createWorkspace,
     onSuccess: (workspace: Workspace) => {
+      refreshTaskCards(queryClient);
       queryClient.invalidateQueries({
         queryKey: workspaceKeys.byRepository(workspace.repositoryId),
       });
@@ -52,6 +72,7 @@ export function useUpdateWorkspace(id: string) {
     mutationFn: (input: Parameters<typeof tauri.updateWorkspace>[1]) =>
       tauri.updateWorkspace(id, input),
     onSuccess: (workspace: Workspace) => {
+      refreshTaskCards(queryClient);
       queryClient.invalidateQueries({
         queryKey: workspaceKeys.byRepository(workspace.repositoryId),
       });
@@ -64,8 +85,16 @@ export function useDeleteWorkspace() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationKey: workspaceMutationKeys.delete,
-    mutationFn: ({ id }: { id: string; repositoryId: string }) => tauri.deleteWorkspace(id),
+    // Already gone (deleted from another view, or a double click) is the
+    // outcome the user asked for, not an error.
+    mutationFn: ({ id }: { id: string; repositoryId: string }) =>
+      tauri.deleteWorkspace(id).catch((err: unknown) => {
+        if (String(err) === "not found") return;
+        throw err;
+      }),
     onSuccess: (_v, { id, repositoryId }) => {
+      dropTaskCard(queryClient, id);
+      useSubagentStore.getState().forgetTask(id);
       // Optimistically drop the workspace from the repo's list so any
       // route that reads it (sidebar, home redirect) sees the new
       // truth immediately — invalidateQueries alone returns stale
@@ -89,6 +118,7 @@ export function useArchiveWorkspace() {
     mutationKey: ["mirror", "updateWorkspace", "archive"] as const,
     mutationFn: (id: string) => tauri.archiveWorkspace(id),
     onSuccess: (workspace: Workspace) => {
+      refreshTaskCards(queryClient);
       queryClient.invalidateQueries({
         queryKey: workspaceKeys.byRepository(workspace.repositoryId),
       });

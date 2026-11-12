@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Phasr</title>
     <script>
-      // Pre-React theme bootstrap. Reads localStorage and applies data-theme
+      // Pre-React theme bootstrap. Reads localStorage and applies data-theme,
+      // data-accent and data-density
       // to <html> before any styles paint so there's no flash.
       (function () {
         try {
@@ -18,6 +19,15 @@
               : "dark";
           }
           document.documentElement.setAttribute("data-theme", resolved);
+          var accent = localStorage.getItem("phasr.accent");
+          document.documentElement.setAttribute(
+            "data-accent",
+            ["coral", "blue", "green", "violet", "amber"].indexOf(accent) >= 0 ? accent : "coral",
+          );
+          document.documentElement.setAttribute(
+            "data-density",
+            localStorage.getItem("phasr.density") === "comfortable" ? "comfortable" : "compact",
+          );
         } catch (_e) {
           document.documentElement.setAttribute("data-theme", "dark");
         }
