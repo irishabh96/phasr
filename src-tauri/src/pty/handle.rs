@@ -626,8 +626,13 @@ impl PtyHandle {
     /// Stop paths use `terminate` instead.
     pub fn kill(&self) -> Result<(), PtyError> {
         let mut killer = self.killer.lock();
-        killer.kill().map_err(|e| PtyError::Pty(e.to_string()))?;
-        Ok(())
+        match killer.kill() {
+            Ok(()) => Ok(()),
+            // Already gone (it exited on its own): that's what we wanted.
+            #[cfg(unix)]
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            Err(e) => Err(PtyError::Pty(e.to_string())),
+        }
     }
 
     /// Stop EVERYTHING running in this terminal, escalating: SIGHUP (what
