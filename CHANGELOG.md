@@ -2,7 +2,7 @@
 
 What changed in each Phasr release. Versions follow [RELEASING.md → Versioning](RELEASING.md#versioning); downloads are on the [Releases page](https://github.com/irishabh96/phasr/releases).
 
-## [0.5.0] — Unreleased
+## [0.5.0] — 2026-11-13
 
 Phasr has been rebuilt around a board of tasks: every agent's work in one place, the ones waiting on you flagged, and a review step before anything ships.
 
@@ -93,7 +93,7 @@ Phasr has been rebuilt around a board of tasks: every agent's work in one place,
   - The transcript view is Claude only. Usage and cost cover Claude and Codex.
   - Codex, Copilot, Gemini and OpenCode run in the terminal view.
 
-## [0.4.4] — Unreleased
+## [0.4.4] — 2026-11-13
 
 A safety release, to install before 0.5.0. It makes 0.4.4 a version you can roll back to from 0.5.0.
 
